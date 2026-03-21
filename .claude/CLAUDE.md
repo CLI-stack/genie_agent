@@ -212,6 +212,9 @@ cd /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent/users/$USER
 python3 script/genie_cli.py -i "run lint at /proj/xxx for umc9_3" --execute --email
 ```
 
+> **WARNING:** Always run from `users/$USER/` — NOT from the main `genie_agent/` directory.
+> If you run from the main directory, your runs/data will mix with other users in the shared `data/` and `runs/` folders.
+
 ---
 
 ## Available Commands
