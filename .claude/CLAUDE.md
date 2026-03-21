@@ -27,6 +27,12 @@ git commit -m "your message"
 git push
 ```
 
+**Git Identity (one-time setup):**
+```bash
+git config --global user.name "Azman Bin Babah"
+git config --global user.email "abinbaba@amd.com"
+```
+
 Others can clone the latest version with:
 ```bash
 git clone https://github.com/azmangenji/genie_agent.git
