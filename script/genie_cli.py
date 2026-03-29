@@ -3745,6 +3745,8 @@ Examples:
                         help='Internal: Send completion email for a finished task')
     parser.add_argument('--send-analysis-email', type=str, metavar='TAG',
                         help='Internal: Send analysis HTML report email for a completed analysis')
+    parser.add_argument('--check-type', type=str, metavar='CHECK_TYPE',
+                        help='Check type for --send-analysis-email (cdc_rdc, lint, spg_dft)')
     parser.add_argument('--kill', '-k', type=str, metavar='TAG',
                         help='Kill a running background task by tag')
     parser.add_argument('--status', '-s', type=str, metavar='TAG',
@@ -3892,10 +3894,21 @@ Examples:
     # Handle analysis email (called by Claude Code after analysis completes)
     if args.send_analysis_email:
         tag = args.send_analysis_email
-        analysis_html_file = os.path.join(cli.base_dir, 'data', f'{tag}_analysis.html')
         analyze_file = os.path.join(cli.base_dir, 'data', f'{tag}_analyze')
         email_flag_file = os.path.join(cli.base_dir, 'data', f'{tag}_email')
         analysis_email_file = os.path.join(cli.base_dir, 'data', f'{tag}_analysis_email')
+
+        # Determine which HTML file to read based on --check-type
+        check_type_arg = getattr(args, 'check_type', None)
+        check_suffix_map = {'cdc_rdc': 'cdc', 'lint': 'lint', 'spg_dft': 'spgdft'}
+        if check_type_arg and check_type_arg in check_suffix_map:
+            suffix = check_suffix_map[check_type_arg]
+            analysis_html_file = os.path.join(cli.base_dir, 'data', f'{tag}_analysis_{suffix}.html')
+            email_check_type = check_type_arg.upper().replace('_', '/')
+        else:
+            # Fallback: try legacy file or suffix-less file
+            analysis_html_file = os.path.join(cli.base_dir, 'data', f'{tag}_analysis.html')
+            email_check_type = None
 
         # Get email recipients — priority: --to > _analysis_email > _email > assignment.csv
         emails = []
@@ -3924,38 +3937,43 @@ Examples:
             html_content = f.read()
 
         # Read metadata for email subject
-        check_type = 'ANALYSIS'
         ref_dir = ''
         ip = ''
+        meta_check_type = 'ANALYSIS'
         if os.path.exists(analyze_file):
             with open(analyze_file) as f:
                 for line in f:
                     if line.startswith('check_type='):
-                        check_type = line.split('=', 1)[1].strip().upper()
+                        meta_check_type = line.split('=', 1)[1].strip().upper()
                     elif line.startswith('ref_dir='):
                         ref_dir = line.split('=', 1)[1].strip()
                     elif line.startswith('ip='):
                         ip = line.split('=', 1)[1].strip()
 
+        # Use --check-type label if given, else fall back to metadata
+        check_type_label = email_check_type if email_check_type else meta_check_type
+
         # Get directory name from ref_dir
         dir_name = os.path.basename(ref_dir) if ref_dir else ''
 
         # Build subject
-        # Format: [Analysis] CDC_RDC - umc17_0 @ tree_name (tag)
+        # Format: [Analysis] CDC/RDC - umc17_0 @ tree_name (tag)
         if ip and dir_name:
-            subject = f"[Analysis] {check_type} - {ip} @ {dir_name} ({tag})"
+            subject = f"[Analysis] {check_type_label} - {ip} @ {dir_name} ({tag})"
         elif ip:
-            subject = f"[Analysis] {check_type} - {ip} ({tag})"
+            subject = f"[Analysis] {check_type_label} - {ip} ({tag})"
         else:
-            subject = f"[Analysis] {check_type} ({tag})"
+            subject = f"[Analysis] {check_type_label} ({tag})"
 
         # Send email with HTML content
         cli.send_email(emails, subject, html_content, use_html=True)
         print(f"Analysis email sent to: {', '.join(emails)}")
         print(f"Subject: {subject}")
-        # Clean up analysis email file
-        if os.path.exists(analysis_email_file):
-            os.remove(analysis_email_file)
+        # Clean up analysis email file only when last check type email is sent
+        # (for full_static_check this is called 3 times — keep file until all 3 are done)
+        if check_type_arg == 'spg_dft' or not check_type_arg:
+            if os.path.exists(analysis_email_file):
+                os.remove(analysis_email_file)
         return
 
     # Handle kill task

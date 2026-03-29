@@ -308,27 +308,31 @@ Also creates: `data/<tag>_analyze` with the same info.
 
 ### Full Static Check Flow
 
-**ONLY** for `full_static_check` - runs all three flows:
+**ONLY** for `full_static_check` - runs all three flows in parallel, then produces **3 SEPARATE reports and 3 SEPARATE emails**:
+
 ```
-1. CDC/RDC Flow → compile CDC/RDC results (FULL DETAIL)
-2. Lint Flow → compile Lint results (FULL DETAIL)
-3. SpgDFT Flow → compile SpgDFT results (FULL DETAIL)
-4. Merge all results → send email
+1. CDC/RDC Flow → all agents complete
+2. Lint Flow    → all agents complete    (parallel with CDC/RDC)
+3. SpgDFT Flow  → all agents complete    (parallel with CDC/RDC)
+              │
+4. Spawn 3 PARALLEL report compilers, each for ONE check type:
+   ├── CDC/RDC Report Compiler → data/<tag>_analysis_cdc.html
+   ├── Lint Report Compiler    → data/<tag>_analysis_lint.html
+   └── SpgDFT Report Compiler  → data/<tag>_analysis_spgdft.html
+              │
+5. Send 3 SEPARATE emails:
+   ├── python3 script/genie_cli.py --send-analysis-email <tag> --check-type cdc_rdc
+   ├── python3 script/genie_cli.py --send-analysis-email <tag> --check-type lint
+   └── python3 script/genie_cli.py --send-analysis-email <tag> --check-type spg_dft
 ```
 
-**CRITICAL: DO NOT COMPRESS OR SUMMARIZE for full_static_check!**
-
-When running `full_static_check`, each check type (CDC/RDC, Lint, SpgDFT) MUST have the SAME level of detail as when running individually:
-- **Same violation details** - full source/dest paths, clock crossings, RTL locations
-- **Same root cause analysis** - explain WHY each violation occurs
-- **Same recommendations** - full waiver commands with justifications
-- **Same code snippets** - include actual constraint/waiver TCL code
-
-The only difference is that full_static_check combines all three in one report. Each section should be as detailed as a standalone report.
+Each report covers ONLY its own check type — full detail, same as running that check individually.
+Each recipient gets 3 emails in their inbox, one per check type.
 
 **For individual check types (`cdc_rdc`, `lint`, `spg_dft`):**
 - Only run that specific flow
-- Do NOT invoke agents from other check types
+- Spawn ONE report compiler for that check type only
+- Send ONE email with `--check-type <check_type>`
 
 ---
 
@@ -706,13 +710,24 @@ The agent instruction files provide guidance on WHAT to look for:
 4. Collect all agent results
    - DO NOT read reports yourself - use agent outputs
 
-5. Compile HTML report (main session does this)
-   - Use results returned by agents
+5. Compile HTML report(s) using the report_compiler agent via Task tool:
+   - For single check types (`cdc_rdc`, `lint`, `spg_dft`):
+     Spawn ONE report compiler Task for that check type.
+     Output: data/<tag>_analysis_<check>.html  (cdc / lint / spgdft)
+   - For `full_static_check`:
+     Spawn 3 PARALLEL report compiler Tasks, one per check type.
+     Outputs: data/<tag>_analysis_cdc.html
+              data/<tag>_analysis_lint.html
+              data/<tag>_analysis_spgdft.html
    - Reference: shared/report_compiler.md
-   - Write to: data/<tag>_analysis.html
 
-6. Send email
-   - python3 script/genie_cli.py --send-analysis-email <tag> --to <email>
+6. Send email(s)
+   - Single check type:
+     python3 script/genie_cli.py --send-analysis-email <tag> --check-type <check_type>
+   - Full static check (3 separate emails):
+     python3 script/genie_cli.py --send-analysis-email <tag> --check-type cdc_rdc
+     python3 script/genie_cli.py --send-analysis-email <tag> --check-type lint
+     python3 script/genie_cli.py --send-analysis-email <tag> --check-type spg_dft
 ```
 
 ### What Main Session Does vs What Agents Do
@@ -724,8 +739,8 @@ The agent instruction files provide guidance on WHAT to look for:
 | Read Lint reports | Agent via Task tool |
 | Read SpgDFT reports | Agent via Task tool |
 | Parse violations | Agent via Task tool |
-| Compile HTML report | Main session (from agent outputs) |
-| Send email | Main session |
+| Compile HTML report | Report Compiler agent via Task tool |
+| Send email(s) | Main session (1 per check type) |
 
 ---
 
@@ -866,25 +881,33 @@ vs Single Agent (~100,000+ tokens)
 │                         FEEDBACK FLOW                                    │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
-│  1. Collect all agent results                                            │
+│  1. Collect all agent results (JSON files on disk)                       │
 │           │                                                              │
 │           ▼                                                              │
-│  2. COMPILE HTML REPORT                                                  │
-│     - All precondition results (tables)                                  │
-│     - All violation summaries (tables)                                   │
-│     - All RTL analysis results (tables)                                  │
-│     - All recommendations (organized sections)                           │
-│     - Save to: data/<tag>_analysis.html                                  │
+│  2. SPAWN REPORT COMPILER AGENT(S) via Task tool                         │
+│     - Single check: 1 compiler → data/<tag>_analysis_<check>.html       │
+│     - full_static_check: 3 compilers IN PARALLEL:                       │
+│         data/<tag>_analysis_cdc.html      (CDC/RDC only)                │
+│         data/<tag>_analysis_lint.html     (Lint only)                   │
+│         data/<tag>_analysis_spgdft.html   (SpgDFT only)                 │
 │           │                                                              │
 │           ▼                                                              │
-│  3. SEND ANALYSIS EMAIL (ALL DETAILS IN EMAIL)                           │
-│     - Subject: [Analysis] CDC_RDC - umc17_0 @ tree_name (tag)           │
-│     - Body: FULL HTML report with all tables and analysis               │
-│     - To: debuggers from assignment.csv                                  │
+│  3. SEND ANALYSIS EMAIL(S) — one per check type                          │
+│     Single check:                                                        │
+│       python3 script/genie_cli.py --send-analysis-email <tag>           │
+│                                   --check-type <check_type>             │
+│     Full static check (3 emails):                                        │
+│       python3 script/genie_cli.py --send-analysis-email <tag>           │
+│                                   --check-type cdc_rdc                  │
+│       python3 script/genie_cli.py --send-analysis-email <tag>           │
+│                                   --check-type lint                      │
+│       python3 script/genie_cli.py --send-analysis-email <tag>           │
+│                                   --check-type spg_dft                  │
 │           │                                                              │
 │           ▼                                                              │
 │  4. CONVERSATION OUTPUT (minimal - save context)                         │
-│     - Just say: "Analysis complete. Email sent to debuggers."           │
+│     - Single: "Analysis complete. Email sent."                           │
+│     - Full:   "Analysis complete. 3 emails sent (CDC/RDC, Lint, SpgDFT)"│
 │     - DO NOT display tables or analysis in conversation                  │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -903,19 +926,31 @@ vs Single Agent (~100,000+ tokens)
 
 ### Send Analysis Email
 
-Use genie_cli.py to send the analysis email:
+Use genie_cli.py to send the analysis email. Always pass `--check-type`:
 
 ```bash
-python3 script/genie_cli.py --send-analysis-email <tag>
+# Single check type:
+python3 script/genie_cli.py --send-analysis-email <tag> --check-type cdc_rdc
+python3 script/genie_cli.py --send-analysis-email <tag> --check-type lint
+python3 script/genie_cli.py --send-analysis-email <tag> --check-type spg_dft
+
+# Full static check — run all three (3 separate emails):
+python3 script/genie_cli.py --send-analysis-email <tag> --check-type cdc_rdc
+python3 script/genie_cli.py --send-analysis-email <tag> --check-type lint
+python3 script/genie_cli.py --send-analysis-email <tag> --check-type spg_dft
 ```
 
-This reads:
-- `data/<tag>_analysis.html` - The HTML report
-- `data/<tag>_analyze` - Task metadata (check_type, ref_dir, ip)
+HTML file mapping (--check-type → file):
+- `cdc_rdc` → `data/<tag>_analysis_cdc.html`
+- `lint`    → `data/<tag>_analysis_lint.html`
+- `spg_dft` → `data/<tag>_analysis_spgdft.html`
+
+This also reads:
+- `data/<tag>_analyze` - Task metadata (ref_dir, ip)
 - `assignment.csv` - Debugger email addresses
 
 Email format:
-- **Subject:** `[Analysis] CHECK_TYPE - IP @ tree_name (tag)`
+- **Subject:** `[Analysis] CDC_RDC - IP @ tree_name (tag)`
 - **Body:** Full HTML report (inline, not attachment)
 - **To:** First debugger, **CC:** Other debuggers
 
@@ -963,13 +998,28 @@ That's it. All details are in the email.
    │   - One agent per violation (up to 5 CDC + 5 RDC + N Lint + N SpgDFT)
    │   - Skipped checks → mark "CLEAN" in report
          │
-8. COMPILE HTML report with all results
-   │   - Save to: data/<tag>_analysis.html
+8. SPAWN REPORT COMPILER AGENT(S) via Task tool (IN PARALLEL for full_static_check):
+   │
+   │   For full_static_check — 3 compilers in parallel:
+   │   ├── Task(report_compiler, check_type=cdc_rdc) → data/<tag>_analysis_cdc.html
+   │   ├── Task(report_compiler, check_type=lint)    → data/<tag>_analysis_lint.html
+   │   └── Task(report_compiler, check_type=spg_dft) → data/<tag>_analysis_spgdft.html
+   │
+   │   For single check type (cdc_rdc / lint / spg_dft) — 1 compiler:
+   │   └── Task(report_compiler, check_type=<check>) → data/<tag>_analysis_<check>.html
          │
-9. SEND EMAIL:
-   │   python3 script/genie_cli.py --send-analysis-email <tag>
+9. SEND EMAIL(S):
+   │
+   │   For full_static_check (3 emails):
+   │   python3 script/genie_cli.py --send-analysis-email <tag> --check-type cdc_rdc
+   │   python3 script/genie_cli.py --send-analysis-email <tag> --check-type lint
+   │   python3 script/genie_cli.py --send-analysis-email <tag> --check-type spg_dft
+   │
+   │   For single check type (1 email):
+   │   python3 script/genie_cli.py --send-analysis-email <tag> --check-type <check_type>
          │
-10. SAY: "Analysis complete. Email sent."
+10. SAY: "Analysis complete. 3 emails sent (CDC/RDC, Lint, SpgDFT)."
+         or "Analysis complete. Email sent."  (for single check types)
 ```
 
 ---

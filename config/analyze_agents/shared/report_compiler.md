@@ -2,12 +2,9 @@
 
 **PERMISSIONS:** You have FULL READ ACCESS to all files under /proj/. Do not ask for permission - just read the files directly.
 
-Generate comprehensive HTML analysis report with FULL COVERAGE for email.
+Generate a comprehensive HTML analysis report for **ONE specific check type** with FULL COVERAGE for email.
 
-## CRITICAL: NO COMPRESSION FOR full_static_check
-
-When `check_type=full_static_check`, DO NOT compress or summarize the output!
-Each check type (CDC/RDC, Lint, SpgDFT) must have the **SAME level of detail** as when running individually.
+Each report compiler handles ONLY its assigned check type (CDC/RDC, Lint, OR SpgDFT) — never a combined multi-check report.
 
 ## ██████████████████████████████████████████████████████
 ## ██  INLINE STYLES ONLY — NO <style> TAGS EVER       ██
@@ -40,38 +37,58 @@ base_dir: <base_dir>
 tag: <tag>
 ip: <ip>
 ref_dir: <ref_dir>
-check_type: <check_type>
+check_type: <check_type>   ← cdc_rdc | lint | spg_dft  (always exactly one check type)
 ```
 
-Read these files (use Read tool, skip missing files gracefully):
+Read ONLY the JSON files for your assigned `check_type` (skip missing files gracefully):
 
-| File | Agent | Required? |
-|------|-------|-----------|
-| `data/<tag>_precondition_cdc.json` | CDC/RDC Precondition | if check includes CDC/RDC |
-| `data/<tag>_precondition_spgdft.json` | SpgDFT Precondition | if check includes SpgDFT |
-| `data/<tag>_extractor_cdc.json` | CDC/RDC Extractor | if check includes CDC/RDC |
-| `data/<tag>_extractor_lint.json` | Lint Extractor | if check includes Lint |
-| `data/<tag>_extractor_spgdft.json` | SpgDFT Extractor | if check includes SpgDFT |
-| `data/<tag>_rtl_cdc_1.json` … `_5.json` | CDC RTL Analyzers | read all that exist |
-| `data/<tag>_rtl_rdc_1.json` … `_5.json` | RDC RTL Analyzers | read all that exist |
-| `data/<tag>_rtl_lint_1.json` … `_N.json` | Lint RTL Analyzers | read all that exist |
-| `data/<tag>_rtl_spgdft_1.json` … `_N.json` | SpgDFT RTL Analyzers | read all that exist |
-| `data/<tag>_library_finder.json` | Library Finder | if exists |
+| check_type | Files to Read |
+|------------|---------------|
+| `cdc_rdc`  | `data/<tag>_precondition_cdc.json`, `data/<tag>_extractor_cdc.json`, `data/<tag>_rtl_cdc_*.json`, `data/<tag>_rtl_rdc_*.json`, `data/<tag>_library_finder.json` |
+| `lint`     | `data/<tag>_extractor_lint.json`, `data/<tag>_rtl_lint_*.json` |
+| `spg_dft`  | `data/<tag>_precondition_spgdft.json`, `data/<tag>_extractor_spgdft.json`, `data/<tag>_rtl_spgdft_*.json`, `data/<tag>_library_finder.json` |
 
-Use Glob to find all RTL analyzer files: `data/<tag>_rtl_*.json`
+Use Glob to find all RTL analyzer files for your check type, e.g.:
+- CDC/RDC: `data/<tag>_rtl_cdc_*.json` and `data/<tag>_rtl_rdc_*.json`
+- Lint: `data/<tag>_rtl_lint_*.json`
+- SpgDFT: `data/<tag>_rtl_spgdft_*.json`
 
 ## Output
-Write HTML to: `data/<tag>_analysis.html`
+
+Output filename depends on `check_type`:
+
+| check_type | Output File |
+|------------|-------------|
+| `cdc_rdc`  | `data/<tag>_analysis_cdc.html` |
+| `lint`     | `data/<tag>_analysis_lint.html` |
+| `spg_dft`  | `data/<tag>_analysis_spgdft.html` |
+
+Write HTML using the Write tool to the appropriate file above.
 
 ## Report Sections
 
-1. Header + flowchart (inline styles + table layout)
-2. Per-check summary table
+Generate sections for your assigned check type ONLY:
+
+**For `cdc_rdc`:**
+1. Header (IP, tag, ref_dir, check type = CDC/RDC)
+2. CDC/RDC status card (counts, focus)
 3. CDC/RDC section — preconditions, clock pairs, violation types, top violations
-4. Lint section
-5. SpgDFT section
-6. Recommendations (High / Medium / Low)
-7. Configuration files reference
+4. Recommendations (High / Medium / Low)
+5. Configuration files reference
+
+**For `lint`:**
+1. Header (IP, tag, ref_dir, check type = Lint)
+2. Lint status card (counts, focus)
+3. Lint section — violation types, top violations with RTL analysis
+4. Recommendations (High / Medium / Low)
+5. Configuration files reference
+
+**For `spg_dft`:**
+1. Header (IP, tag, ref_dir, check type = SpgDFT)
+2. SpgDFT status card (counts, focus)
+3. SpgDFT section — blackbox modules, violation types, top violations
+4. Recommendations (High / Medium / Low)
+5. Configuration files reference
 
 ## HTML Template Structure
 
@@ -82,7 +99,7 @@ Write HTML to: `data/<tag>_analysis.html`
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Static Check Analysis - {ip} @ {dir_name}</title>
+<title>{check_type_label} Analysis - {ip} @ {dir_name}</title>
 </head>
 <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif; font-size:14px; color:#e0e0e0; background:#16213e; margin:0; padding:20px;">
 <div style="max-width:1100px; margin:0 auto;">
@@ -94,7 +111,7 @@ Write HTML to: `data/<tag>_analysis.html`
 <!-- Header Node -->
 <div style="text-align:center; margin-bottom:0;">
   <div style="display:inline-block; background:#1e2d4a; border:2px solid #00d4ff; border-radius:8px; padding:14px 24px; text-align:center; min-width:480px;">
-    <div style="font-size:18px; font-weight:700; color:#00d4ff; letter-spacing:1px;">Static Check Analysis Report</div>
+    <div style="font-size:18px; font-weight:700; color:#00d4ff; letter-spacing:1px;">{check_type_label} Analysis Report</div>
     <div style="font-size:12px; color:#c0cfe0; margin-top:6px;">{ip} &nbsp;@&nbsp; {dir_name} &nbsp;|&nbsp; Tag: {tag}</div>
     <div style="font-size:10px; color:#445566; margin-top:3px;">{ref_dir}</div>
   </div>
@@ -383,7 +400,7 @@ Write HTML to: `data/<tag>_analysis.html`
 
 <!-- Footer -->
 <div style="text-align:center; padding:16px; font-size:11px; color:#445566; border-top:1px solid #2a3f5f; margin-top:10px;">
-  Generated by Claude Code Analysis &nbsp;|&nbsp; {tag} &nbsp;|&nbsp; {ip} @ {dir_name}
+  Generated by Claude Code Analysis &nbsp;|&nbsp; {check_type_label} &nbsp;|&nbsp; {tag} &nbsp;|&nbsp; {ip} @ {dir_name}
 </div>
 
 </div>
@@ -423,9 +440,17 @@ Write HTML to: `data/<tag>_analysis.html`
 
 ## Instructions
 
-1. **Read all agent JSON files** for this tag
-2. **Generate HTML** — zero `<style>` tags, zero CSS classes, all inline
-3. **Flowchart:** use `<table border-spacing>` for 4-column grid; `display:inline-block` for centered nodes; simple `border-top/left/right` divs for brackets; `◆` character in inline-styled div for gate
-4. **Every `<td>`** must have explicit `color:` attribute
-5. **Include code snippets** for fixes
-6. **Write to** `data/<tag>_analysis.html`
+1. **Read only the JSON files for your check_type** (skip files from other check types)
+2. **Set `check_type_label`** based on check_type:
+   - `cdc_rdc` → `"CDC / RDC"`
+   - `lint`    → `"Lint"`
+   - `spg_dft` → `"SpgDFT"`
+3. **Generate HTML** — zero `<style>` tags, zero CSS classes, all inline
+4. **Show only sections for your check type** — do NOT include sections for other checks
+5. **Flowchart header:** use `<table border-spacing>` for grid; `display:inline-block` for centered nodes; simple `border-top/left/right` divs for brackets; `◆` character in inline-styled div for gate
+6. **Every `<td>`** must have explicit `color:` attribute
+7. **Include code snippets** for fixes
+8. **Write to the correct output file** (see Output section above):
+   - `cdc_rdc`  → `data/<tag>_analysis_cdc.html`
+   - `lint`     → `data/<tag>_analysis_lint.html`
+   - `spg_dft`  → `data/<tag>_analysis_spgdft.html`
