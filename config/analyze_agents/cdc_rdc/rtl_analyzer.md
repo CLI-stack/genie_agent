@@ -90,21 +90,27 @@ Trace the full chain:
 
 1. Find where the wrapper is instantiated in RTL → note its module file path
 2. Read the wrapper module source → find what it instantiates inside (e.g., `techind_sync`)
-3. Read that inner module → find the actual technology cell instantiated (e.g., `SDFSYNC*`, `hdsync*`, `SDFRNQ*`)
-4. That deepest cell name is what must be registered in the CDC constraint file
+3. Read the implementation file (e.g., `techind_sync3_implementation.v`, `techind_sync4_implementation.v`) → find the instantiation line
 
-**Why this matters:** The CDC tool traces through wrapper modules and only recognizes synchronization at the cell level. If the tech cell is not registered, the tool sees "Receiver outside sync module" even though synchronization exists.
+**CRITICAL — Module name vs Instance name:**
 
-**Check the constraint file** (`project.0in_ctrl.v.tcl`) — look at existing `cdc custom sync` entries to see what other tech cells are registered. The new cell should follow the same pattern.
-
-**Correct fix syntax:**
-```tcl
-cdc custom sync <actual_tech_cell_name> -type two_dff
-netlist port domain <DataIn_port> -async -clock <CLK_port> -module <actual_tech_cell_name>
-netlist port domain <DataOut_port> -clock <CLK_port> -module <actual_tech_cell_name>
+In Verilog, an instantiation has the form:
+```verilog
+<MODULE_NAME>  <instance_name>  (.port(signal), ...);
 ```
 
-**Wrong fix** (do not do this):
+- `<MODULE_NAME>` = the tech cell to register in CDC constraints (`cdc custom sync` takes MODULE names)
+- `<instance_name>` = just a label; **do NOT use this** in constraints
+
+When reading the implementation file, identify the line that instantiates the deepest sync cell. The first token on that line is the MODULE name — that is what must go into `cdc custom sync`. The second token is the instance name — ignore it for constraint purposes.
+
+**Also note the clock port name.** Read the port connections (`.CP(...)`, `.CLK(...)`, etc.) in the same instantiation line to identify the correct clock port — it varies by cell family. Match the port name used in existing `netlist port domain` entries for similar cells in the constraint file.
+
+**Check the constraint file** (`project.0in_ctrl.v.tcl`) — look at existing `cdc custom sync` entries to see what other tech cells are registered. The new cell should follow the same pattern (module name, clock port name).
+
+**Why this matters:** The CDC tool traces through wrapper modules and only recognizes synchronization at the cell level using MODULE names. If the correct module name is not registered, the tool sees "Receiver outside sync module" even though synchronization exists.
+
+**Also wrong** (wrapper level — too high):
 ```tcl
 cdc custom sync UMCSYNC -type two_dff   ← wrapper, tool ignores it
 ```
@@ -206,11 +212,14 @@ netlist constant <path> -value <0|1>
 netlist reset <path> -group <group>
 ```
 
-Constraint — register unrecognized tech-cell synchronizer (use actual deepest cell name, not wrapper):
+Constraint — register unrecognized tech-cell synchronizer:
 ```tcl
-cdc custom sync <actual_tech_cell_name> -type two_dff
-netlist port domain <DataIn_port> -async -clock <CLK_port> -module <actual_tech_cell_name>
-netlist port domain <DataOut_port> -clock <CLK_port> -module <actual_tech_cell_name>
+# <module_name>  = MODULE name from the instantiation line (first token), NOT the instance name (second token)
+# <CLK_port>     = clock port name read from the instantiation's port connections (.CP, .CLK, etc.)
+cdc custom sync <module_name> -type dff
+netlist port domain <DataIn_port>  -async -clock <CLK_port> -module <module_name>
+netlist port domain <DataOut_port> -clock <CLK_port>        -module <module_name>
+netlist port domain <SI_port>      -clock <CLK_port>        -module <module_name>
 ```
 
 ## Instructions
