@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Analyze Mode Flow Guide</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      color: #e0e0e0;
+      min-height: 100vh;
+      padding: 30px 20px;
+    }
+    .container { max-width: 1000px; margin: 0 auto; }
+
+    h1 { text-align: center; color: #00d4ff; font-size: 24px; margin-bottom: 6px; letter-spacing: 1px; }
+    .subtitle { text-align: center; color: #667788; font-size: 13px; margin-bottom: 36px; }
+
+    /* ── Flow nodes ── */
+    .flow { display: flex; flex-direction: column; align-items: center; gap: 0; }
+
+    .node {
+      width: 420px;
+      padding: 12px 18px;
+      border-radius: 8px;
+      text-align: center;
+      font-size: 13px;
+      font-weight: 600;
+      position: relative;
+    }
+    .node-sub { font-size: 11px; font-weight: 400; color: #8899aa; margin-top: 4px; }
+
+    .node-cmd    { background: #1e2d4a; border: 2px solid #00d4ff; color: #00d4ff; }
+    .node-proc   { background: #1e2d4a; border: 1px solid #2a3f5f; color: #c0cfe0; }
+    .node-bg     { background: #162840; border: 1px solid #2a3f5f; color: #8899aa; font-style: italic; }
+    .node-gate   { background: #1a1510; border: 2px solid #ffd93d; color: #ffd93d; border-radius: 4px; transform: rotate(-1deg); }
+    .node-gate-label { font-size: 10px; color: #8899aa; font-weight: 400; transform: rotate(1deg); display: block; margin-top: 2px; }
+    .node-wave   { background: #0e1f18; border: 1px solid #6bcb77; color: #6bcb77; }
+    .node-skip   { background: #1a1a10; border: 1px dashed #ffd93d; color: #ffd93d; }
+    .node-rtl    { background: #1f1020; border: 1px solid #ff6b6b; color: #ff8e8e; }
+    .node-report { background: #162030; border: 2px solid #00d4ff; color: #00d4ff; }
+    .node-email  { background: #0e1f18; border: 2px solid #6bcb77; color: #6bcb77; }
+    .node-end    { background: #1e2d4a; border: 1px solid #445566; color: #667788; font-size: 12px; }
+    .node-fail   { background: #1f1020; border: 1px solid #ff6b6b; color: #ff6b6b; }
+
+    /* ── Arrows ── */
+    .arrow { display: flex; flex-direction: column; align-items: center; }
+    .arrow-line { width: 2px; background: #2a3f5f; }
+    .arrow-head { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 8px solid #2a3f5f; }
+    .arrow-label { font-size: 10px; color: #667788; margin: 2px 0; }
+
+    /* ── Diamond gate ── */
+    .diamond-wrap { position: relative; width: 240px; height: 70px; margin: 0 auto; }
+    .diamond {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%) rotate(45deg);
+      width: 90px; height: 90px;
+      background: #1a1510;
+      border: 2px solid #ffd93d;
+    }
+    .diamond-text {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+      color: #ffd93d;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.4;
+      width: 100px;
+    }
+
+    /* ── Parallel block ── */
+    .parallel-wrap {
+      width: 100%;
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    .parallel-label {
+      text-align: center;
+      font-size: 11px;
+      color: #667788;
+      margin-bottom: 8px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+    .parallel-row {
+      display: grid;
+      gap: 10px;
+      margin-bottom: 0;
+    }
+    .parallel-row.cols3 { grid-template-columns: repeat(3, 1fr); }
+    .parallel-row.cols2 { grid-template-columns: repeat(2, 1fr); }
+    .parallel-row.cols5 { grid-template-columns: repeat(5, 1fr); }
+    .parallel-node {
+      padding: 10px 12px;
+      border-radius: 6px;
+      font-size: 11px;
+      text-align: center;
+    }
+    .p-pre  { background: #162840; border: 1px solid #2a3f5f; color: #8899aa; }
+    .p-ext  { background: #1e2d4a; border: 1px solid #00d4ff; color: #00d4ff; }
+    .p-rtl-cdc { background: #1f1020; border: 1px solid #ff6b6b; color: #ff8e8e; }
+    .p-rtl-lint { background: #1a1a10; border: 1px solid #ffd93d; color: #ffd93d; }
+    .p-rtl-spg  { background: #0e1f18; border: 1px solid #6bcb77; color: #6bcb77; }
+    .p-lib  { background: #162030; border: 1px solid #00d4ff; color: #00d4ff; }
+    .p-bold { font-weight: 700; margin-bottom: 4px; }
+    .p-sub  { font-size: 10px; color: #667788; margin-top: 3px; }
+
+    /* ── Skip gate row ── */
+    .skip-row {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+      width: 100%;
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    .skip-item { text-align: center; }
+    .skip-check {
+      padding: 6px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      background: #1a1510;
+      border: 1px solid #ffd93d;
+      color: #ffd93d;
+      margin-bottom: 4px;
+    }
+    .skip-arrow-down { font-size: 14px; color: #2a3f5f; }
+    .skip-yes { font-size: 9px; color: #6bcb77; margin: 2px 0; }
+    .skip-no  { font-size: 9px; color: #ff6b6b;  margin: 2px 0; }
+    .skip-box-clean { padding: 5px 6px; border-radius: 4px; font-size: 10px; background: #0e1f18; border: 1px dashed #6bcb77; color: #6bcb77; }
+    .skip-box-rtl   { padding: 5px 6px; border-radius: 4px; font-size: 10px; background: #1f1020; border: 1px solid #ff6b6b; color: #ff8e8e; }
+
+    /* ── Section divider ── */
+    .section-label {
+      text-align: center;
+      font-size: 10px;
+      color: #445566;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      margin: 4px 0;
+    }
+
+    /* ── Bracket line ── */
+    .bracket {
+      width: 80%;
+      height: 2px;
+      background: #2a3f5f;
+      margin: 0 auto;
+    }
+    .bracket-top    { border-top: 1px solid #2a3f5f; border-left: 1px solid #2a3f5f; border-right: 1px solid #2a3f5f; height: 12px; width: 80%; margin: 0 auto; border-radius: 4px 4px 0 0; }
+    .bracket-bottom { border-bottom: 1px solid #2a3f5f; border-left: 1px solid #2a3f5f; border-right: 1px solid #2a3f5f; height: 12px; width: 80%; margin: 0 auto; border-radius: 0 0 4px 4px; }
+
+    /* ── Legend ── */
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      justify-content: center;
+      margin-top: 36px;
+      padding-top: 20px;
+      border-top: 1px solid #2a3f5f;
+    }
+    .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #8899aa; }
+    .legend-box { width: 14px; height: 14px; border-radius: 3px; }
+
+    .spacer-sm { height: 6px; }
+    .spacer-md { height: 14px; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <h1>Analyze Mode — Complete Flow</h1>
+  <p class="subtitle">From <code style="color:#00d4ff">run full_static_check … --analyze --email</code> to the final report email</p>
+
+  <div class="flow">
+
+    <!-- 1. USER COMMAND -->
+    <div class="node node-cmd" style="width:520px">
+      run full_static_check at /proj/… for umc17_0 --analyze --email
+      <div class="node-sub">User instruction to genie_cli.py</div>
+    </div>
+
+    <div class="arrow"><div class="arrow-line" style="height:14px"></div><div class="arrow-head"></div></div>
+
+    <!-- 2. GENIE CLI -->
+    <div class="node node-proc" style="width:520px">
+      genie_cli.py — Instruction Matching
+      <div class="node-sub">keyword.csv → instruction.csv → arguement.csv → resolves script</div>
+      <div class="node-sub">Generates tag · writes runs/&lt;tag&gt;.csh · saves PID → data/&lt;tag&gt;_pid</div>
+    </div>
+
+    <div class="arrow"><div class="arrow-line" style="height:14px"></div><div class="arrow-head"></div></div>
+
+    <!-- 3. PRINTS SIGNAL -->
+    <div class="node node-proc" style="width:520px; border-color:#00d4ff; color:#00d4ff">
+      Prints ANALYZE_MODE_ENABLED
+      <div class="node-sub" style="color:#667788">TAG · CHECK_TYPE · REF_DIR · IP · LOG_FILE · SPEC_FILE → also writes data/&lt;tag&gt;_analyze</div>
+    </div>
+
+    <div class="arrow"><div class="arrow-line" style="height:14px"></div><div class="arrow-head"></div></div>
+
+    <!-- PARALLEL: tool running + monitor -->
+    <div style="width:100%; max-width:900px">
+      <div class="parallel-label">runs in parallel</div>
+      <div class="bracket-top"></div>
+      <div class="parallel-row cols2" style="margin:0; padding:10px 20px; background:rgba(0,0,0,0.15); border-left:1px solid #2a3f5f; border-right:1px solid #2a3f5f;">
+        <div class="parallel-node p-pre" style="padding:14px">
+          <div class="p-bold" style="color:#c0cfe0">static_check_unified.csh</div>
+          <div class="p-sub">Runs EDA tools (CDC / RDC / Lint / SpgDFT)<br>Can take hours<br>Writes reports to out/…<br>Writes summary → data/&lt;tag&gt;_spec<br>Deletes data/&lt;tag&gt;_pid on finish</div>
+        </div>
+        <div class="parallel-node" style="background:#162840; border:1px solid #2a3f5f; padding:14px">
+          <div class="p-bold" style="color:#8899aa">Background Monitor Agent (haiku)</div>
+          <div class="p-sub">Polls data/&lt;tag&gt;_pid every 15-30s<br>Checks ps -p &lt;PID&gt;<br>When PID gone → reads spec file<br>Main conversation stays FREE</div>
+        </div>
+      </div>
+      <div class="bracket-bottom"></div>
+    </div>
+
+    <div class="arrow"><div class="arrow-line" style="height:14px"></div><div class="arrow-head"></div></div>
+
+    <!-- 4. SKIP_ANALYSIS GATE -->
+    <div style="width:100%; max-width:600px; position:relative">
+      <div style="text-align:center; margin-bottom:6px">
+        <div style="display:inline-block; padding:10px 24px; background:#1a1510; border:2px solid #ffd93d; border-radius:6px; color:#ffd93d; font-size:13px; font-weight:700">
+          ◆ &nbsp; skip_analysis?
+          <div style="font-size:10px; font-weight:400; color:#8899aa; margin-top:3px">Monitor reads data/&lt;tag&gt;_spec for errors</div>
+        </div>
+      </div>
+      <div style="display:flex; justify-content:center; gap:80px; margin-top:6px">
+        <div style="text-align:center">
+          <div style="font-size:11px; color:#ff6b6b; font-weight:700">YES — spec has errors</div>
+          <div class="arrow"><div class="arrow-line" style="height:12px; background:#ff6b6b"></div><div class="arrow-head" style="border-top-color:#ff6b6b"></div></div>
+          <div class="node node-fail" style="width:180px; font-size:12px; padding:10px">
+            "Task failed.<br>Skipping analysis."
+            <div class="node-sub">STOP</div>
+          </div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:11px; color:#6bcb77; font-weight:700">NO — spec OK</div>
+          <div class="arrow"><div class="arrow-line" style="height:12px; background:#6bcb77"></div><div class="arrow-head" style="border-top-color:#6bcb77"></div></div>
+          <div style="font-size:11px; color:#6bcb77">proceed ↓</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow"><div class="arrow-line" style="height:20px"></div><div class="arrow-head"></div></div>
+
+    <!-- WAVE 1 -->
+    <div style="width:100%; max-width:900px">
+      <div class="parallel-label" style="color:#6bcb77">wave 1 — always run (parallel)</div>
+      <div class="bracket-top" style="border-color:#6bcb77"></div>
+      <div style="background:rgba(11,31,24,0.4); border-left:1px solid #6bcb77; border-right:1px solid #6bcb77; padding:12px 16px">
+        <div class="parallel-row cols3" style="margin-bottom:10px">
+          <div class="parallel-node p-pre">
+            <div class="p-bold" style="color:#c0cfe0">CDC/RDC Precondition</div>
+            <div class="p-sub">haiku · always runs<br>cdc_report.rpt §2<br>rdc_report.rpt §3<br>Reads constraint file first<br>→ inferred clks/rsts<br>→ unresolved/blackbox mods</div>
+          </div>
+          <div class="parallel-node p-pre">
+            <div class="p-bold" style="color:#c0cfe0">SpgDFT Precondition</div>
+            <div class="p-sub">haiku · always runs<br>moresimple.rpt<br>→ BlackboxModule entries<br>→ needs_library_search?</div>
+          </div>
+          <div class="parallel-node p-pre" style="visibility:hidden"></div>
+        </div>
+        <div class="parallel-row cols3">
+          <div class="parallel-node p-ext">
+            <div class="p-bold">CDC/RDC Extractor</div>
+            <div class="p-sub">sonnet<br>§3 CDC + §5 RDC<br>ERROR only · filter rsmu/dft<br>bucket coverage (2-3/type)<br>→ focus violations</div>
+          </div>
+          <div class="parallel-node p-ext">
+            <div class="p-bold">Lint Extractor</div>
+            <div class="p-sub">sonnet<br>leda_waiver.log<br>ERROR only · filter rsmu/dft<br>→ focus violations</div>
+          </div>
+          <div class="parallel-node p-ext">
+            <div class="p-bold">SpgDFT Extractor</div>
+            <div class="p-sub">sonnet<br>moresimple.rpt<br>ERROR only · skip BlackboxMod<br>filter rsmu/dft<br>→ focus violations</div>
+          </div>
+        </div>
+      </div>
+      <div class="bracket-bottom" style="border-color:#6bcb77"></div>
+    </div>
+
+    <div class="arrow"><div class="arrow-line" style="height:14px"></div><div class="arrow-head"></div></div>
+
+    <!-- SKIP LOGIC GATE -->
+    <div style="width:100%; max-width:900px">
+      <div class="parallel-label" style="color:#ffd93d">skip logic gate — evaluated per check</div>
+      <div style="padding:14px 16px; background:#1a1510; border:1px solid #ffd93d; border-radius:6px; margin:0 auto">
+        <div class="skip-row">
+          <div class="skip-item">
+            <div class="skip-check">CDC<br>violations == 0?</div>
+            <div class="skip-yes">YES →</div><div class="skip-box-clean">Skip CDC<br>RTL Analyzers<br>"CDC CLEAN"</div>
+            <div class="skip-no">NO →</div><div class="skip-box-rtl">Spawn CDC<br>RTL Analyzers</div>
+          </div>
+          <div class="skip-item">
+            <div class="skip-check">RDC<br>violations == 0?</div>
+            <div class="skip-yes">YES →</div><div class="skip-box-clean">Skip RDC<br>RTL Analyzers<br>"RDC CLEAN"</div>
+            <div class="skip-no">NO →</div><div class="skip-box-rtl">Spawn RDC<br>RTL Analyzers</div>
+          </div>
+          <div class="skip-item">
+            <div class="skip-check">Lint<br>violations == 0?</div>
+            <div class="skip-yes">YES →</div><div class="skip-box-clean">Skip Lint<br>RTL Analyzers<br>"Lint CLEAN"</div>
+            <div class="skip-no">NO →</div><div class="skip-box-rtl">Spawn Lint<br>RTL Analyzers</div>
+          </div>
+          <div class="skip-item">
+            <div class="skip-check">SpgDFT<br>violations == 0?</div>
+            <div class="skip-yes">YES →</div><div class="skip-box-clean">Skip SpgDFT<br>RTL Analyzers<br>"SpgDFT CLEAN"</div>
+            <div class="skip-no">NO →</div><div class="skip-box-rtl">Spawn SpgDFT<br>RTL Analyzers</div>
+          </div>
+          <div class="skip-item">
+            <div class="skip-check">unresolved/<br>blackbox == 0?</div>
+            <div class="skip-yes">YES →</div><div class="skip-box-clean">Skip Library<br>Finder</div>
+            <div class="skip-no">NO →</div><div class="skip-box-rtl">Spawn Library<br>Finder</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow"><div class="arrow-line" style="height:14px"></div><div class="arrow-head"></div></div>
+
+    <!-- WAVE 2 -->
+    <div style="width:100%; max-width:900px">
+      <div class="parallel-label" style="color:#ff6b6b">wave 2 — only non-skipped agents (parallel, one per violation)</div>
+      <div class="bracket-top" style="border-color:#ff6b6b"></div>
+      <div style="background:rgba(31,16,32,0.4); border-left:1px solid #ff6b6b; border-right:1px solid #ff6b6b; padding:12px 16px">
+        <div class="parallel-row cols5">
+          <div class="parallel-node p-rtl-cdc">
+            <div class="p-bold">CDC RTL<br>Analyzer ×N</div>
+            <div class="p-sub">haiku · per violation<br>Check LEARNING.md<br>Find RTL file<br>Understand signal<br>WHY no sync?<br>Risk: H/M/L<br>Fix: waiver/<br>constraint/rtl</div>
+          </div>
+          <div class="parallel-node p-rtl-cdc">
+            <div class="p-bold">RDC RTL<br>Analyzer ×N</div>
+            <div class="p-sub">haiku · per violation<br>Check LEARNING.md<br>Find RTL file<br>Reset domain<br>WHY flagged?<br>Risk: H/M/L<br>Fix: waiver/<br>constraint/rtl</div>
+          </div>
+          <div class="parallel-node p-rtl-lint">
+            <div class="p-bold">Lint RTL<br>Analyzer ×N</div>
+            <div class="p-sub">sonnet · per violation<br>Check LEARNING.md<br>Read RTL ±20 lines<br>Generate block?<br>DFT port?<br>WHY undriven?<br>Fix: rtl/tie-off/<br>filter</div>
+          </div>
+          <div class="parallel-node p-rtl-spg">
+            <div class="p-bold">SpgDFT RTL<br>Analyzer ×N</div>
+            <div class="p-sub">sonnet · per violation<br>Check LEARNING.md<br>TDR/scan port?<br>Parent connect?<br>WHY violation?<br>Fix: rtl/tie-off/<br>filter</div>
+          </div>
+          <div class="parallel-node p-lib">
+            <div class="p-bold">Library<br>Finder</div>
+            <div class="p-sub">haiku · if needed<br>Find lib.list<br>grep module names<br>Already in list?<br>→ path to add</div>
+          </div>
+        </div>
+      </div>
+      <div class="bracket-bottom" style="border-color:#ff6b6b"></div>
+    </div>
+
+    <div class="arrow"><div class="arrow-line" style="height:14px"></div><div class="arrow-head"></div></div>
+
+    <!-- COMPILE REPORT -->
+    <div class="node node-report" style="width:520px">
+      Main Session — Compile HTML Report
+      <div class="node-sub">Collects all agent JSON outputs<br>Builds dark-theme report · writes data/&lt;tag&gt;_analysis.html<br>Sections: summary cards · per-check tables · violation cards · recommendations · config files</div>
+    </div>
+
+    <div class="arrow"><div class="arrow-line" style="height:14px"></div><div class="arrow-head"></div></div>
+
+    <!-- SEND EMAIL -->
+    <div class="node node-email" style="width:520px">
+      Send Analysis Email
+      <div class="node-sub">python3 script/genie_cli.py --send-analysis-email &lt;tag&gt;<br>Subject: [Analysis] FULL_STATIC_CHECK - ip @ tree (tag)<br>Full HTML inline · sendmail -oi · From: Genie AI Agent @atlmail.amd.com</div>
+    </div>
+
+    <div class="arrow"><div class="arrow-line" style="height:14px"></div><div class="arrow-head"></div></div>
+
+    <!-- END -->
+    <div class="node node-end" style="width:420px">
+      "Analysis complete. Email sent."
+      <div class="node-sub">All detail in email · conversation context kept clean</div>
+    </div>
+
+  </div><!-- end .flow -->
+
+  <!-- LEGEND -->
+  <div class="legend">
+    <div class="legend-item"><div class="legend-box" style="background:#1e2d4a; border:2px solid #00d4ff"></div>User command / key signal</div>
+    <div class="legend-item"><div class="legend-box" style="background:#162840; border:1px solid #2a3f5f"></div>Background / monitoring</div>
+    <div class="legend-item"><div class="legend-box" style="background:#1a1510; border:2px solid #ffd93d"></div>Decision gate</div>
+    <div class="legend-item"><div class="legend-box" style="background:#0e1f18; border:1px solid #6bcb77"></div>Wave 1 — precondition + extractor</div>
+    <div class="legend-item"><div class="legend-box" style="background:#1f1020; border:1px solid #ff6b6b"></div>Wave 2 — RTL analyzers</div>
+    <div class="legend-item"><div class="legend-box" style="background:#162030; border:2px solid #00d4ff"></div>Report + email</div>
+    <div class="legend-item"><div class="legend-box" style="background:#1a1a10; border:1px dashed #ffd93d"></div>Skipped (0 violations = CLEAN)</div>
+  </div>
+
+  <div style="text-align:center; margin-top:20px; font-size:11px; color:#445566; border-top:1px solid #2a3f5f; padding-top:14px">
+    Analyze Mode Flow Guide &nbsp;|&nbsp; Rosenhorn Agent Flow &nbsp;|&nbsp; 2026-03-19
+  </div>
+
+</div>
+</body>
+</html>

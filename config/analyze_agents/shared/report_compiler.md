@@ -91,6 +91,20 @@ Write HTML using the Write tool to the appropriate file above.
 
 ---
 
+## ⚠️ STRICT LAYOUT RULES — VIOLATIONS WILL BREAK THE EMAIL
+
+**Read these rules BEFORE writing any HTML. Do NOT deviate from the template below.**
+
+1. **COPY THE TEMPLATE LITERALLY.** Do NOT add outer wrapper tables, gray page backgrounds (`#f0f0f0`), or any structural elements not in the template.
+2. **`max-width` is `680px`** — NEVER use `width="860"` or any other fixed table width. NEVER use `max-width:960px`.
+3. **`body padding` is `16px 20px`** — NEVER use `padding:28px` or more. That creates the large empty space at the top.
+4. **MINIMUM font-size is `14px` everywhere** — NEVER write `font-size:11px`, `font-size:12px`, or `font-size:13px` ANYWHERE. This includes badges, labels, monospace text, footers, and `<pre>` blocks.
+5. **Header is a light left-border div** (as shown in template) — NEVER use a dark/filled background color block for the header.
+6. **Table cell numbers use the SAME font-size as the table** — NEVER set numbers to `font-size:18px` or `font-size:20px` to make them look "big".
+7. **Zero nested table structures in the header** — one simple `<div>` is enough.
+
+---
+
 ## HTML Template — Light / Clean Style
 
 **White background, 15px font, minimal decoration. No flowchart, no arrows, no gates.**
@@ -102,8 +116,8 @@ Write HTML using the Write tool to the appropriate file above.
 <meta charset="UTF-8">
 <title>{check_type_label} Analysis - {ip} @ {dir_name}</title>
 </head>
-<body style="font-family:Arial,Helvetica,sans-serif; font-size:15px; color:#1a1a1a; background:#ffffff; margin:0; padding:28px;">
-<div style="max-width:960px; margin:0 auto;">
+<body style="font-family:Arial,Helvetica,sans-serif; font-size:15px; color:#1a1a1a; background:#ffffff; margin:0; padding:16px 20px;">
+<div style="max-width:680px; margin:0 auto;">
 
 <!-- ══════════════════════════════════════════
      HEADER
@@ -113,7 +127,7 @@ Write HTML using the Write tool to the appropriate file above.
   <div style="font-size:14px; color:#555; margin-top:6px;">
     <b>IP:</b> {ip} &nbsp;&nbsp;|&nbsp;&nbsp; <b>Tag:</b> {tag} &nbsp;&nbsp;|&nbsp;&nbsp; <b>Tree:</b> {dir_name}
   </div>
-  <div style="font-size:12px; color:#888; margin-top:3px;">{ref_dir}</div>
+  <div style="font-size:14px; color:#888; margin-top:3px;">{ref_dir}</div>
 </div>
 
 <!-- ══════════════════════════════════════════
@@ -140,7 +154,7 @@ Write HTML using the Write tool to the appropriate file above.
         <td style="padding:11px 14px; text-align:center; color:#2563eb; font-weight:700;">{cdc_focus}</td>
         <td style="padding:11px 14px; text-align:center;">
           <!-- NEEDS ACTION badge: bg #fee2e2 color #b91c1c | CLEAN badge: bg #d1fae5 color #065f46 -->
-          <span style="background:{cdc_badge_bg}; color:{cdc_badge_color}; padding:3px 11px; border-radius:4px; font-size:13px; font-weight:600;">{cdc_status}</span>
+          <span style="background:{cdc_badge_bg}; color:{cdc_badge_color}; padding:3px 11px; border-radius:4px; font-size:14px; font-weight:600;">{cdc_status}</span>
         </td>
       </tr>
       <!-- RDC row — only for cdc_rdc check_type -->
@@ -150,7 +164,7 @@ Write HTML using the Write tool to the appropriate file above.
         <td style="padding:11px 14px; text-align:center; color:#666;">{rdc_filtered}</td>
         <td style="padding:11px 14px; text-align:center; color:#2563eb; font-weight:700;">{rdc_focus}</td>
         <td style="padding:11px 14px; text-align:center;">
-          <span style="background:{rdc_badge_bg}; color:{rdc_badge_color}; padding:3px 11px; border-radius:4px; font-size:13px; font-weight:600;">{rdc_status}</span>
+          <span style="background:{rdc_badge_bg}; color:{rdc_badge_color}; padding:3px 11px; border-radius:4px; font-size:14px; font-weight:600;">{rdc_status}</span>
         </td>
       </tr>
       <!-- Lint row — only for lint check_type -->
@@ -160,7 +174,7 @@ Write HTML using the Write tool to the appropriate file above.
         <td style="padding:11px 14px; text-align:center; color:#666;">{lint_filtered}</td>
         <td style="padding:11px 14px; text-align:center; color:#2563eb; font-weight:700;">{lint_focus}</td>
         <td style="padding:11px 14px; text-align:center;">
-          <span style="background:{lint_badge_bg}; color:{lint_badge_color}; padding:3px 11px; border-radius:4px; font-size:13px; font-weight:600;">{lint_status}</span>
+          <span style="background:{lint_badge_bg}; color:{lint_badge_color}; padding:3px 11px; border-radius:4px; font-size:14px; font-weight:600;">{lint_status}</span>
         </td>
       </tr>
       <!-- SpgDFT row — only for spg_dft check_type -->
@@ -170,7 +184,7 @@ Write HTML using the Write tool to the appropriate file above.
         <td style="padding:11px 14px; text-align:center; color:#666;">{spg_filtered}</td>
         <td style="padding:11px 14px; text-align:center; color:#2563eb; font-weight:700;">{spg_focus}</td>
         <td style="padding:11px 14px; text-align:center;">
-          <span style="background:{spg_badge_bg}; color:{spg_badge_color}; padding:3px 11px; border-radius:4px; font-size:13px; font-weight:600;">{spg_status}</span>
+          <span style="background:{spg_badge_bg}; color:{spg_badge_color}; padding:3px 11px; border-radius:4px; font-size:14px; font-weight:600;">{spg_status}</span>
         </td>
       </tr>
     </tbody>
@@ -196,20 +210,20 @@ Write HTML using the Write tool to the appropriate file above.
       <tr style="border-bottom:1px solid #eee;">
         <td style="padding:10px 14px; color:#555;">Inferred Clocks</td>
         <td style="padding:10px 14px; text-align:center; color:#1a1a1a; font-family:monospace;">{inferred_clk_count}</td>
-        <td style="padding:10px 14px; color:#333; font-family:monospace; font-size:13px;">{inferred_clk_signals}</td>
-        <td style="padding:10px 14px; color:#555; font-size:13px;">{inferred_clk_action}</td>
+        <td style="padding:10px 14px; color:#333; font-family:monospace; font-size:14px;">{inferred_clk_signals}</td>
+        <td style="padding:10px 14px; color:#555; font-size:14px;">{inferred_clk_action}</td>
       </tr>
       <tr style="border-bottom:1px solid #eee; background:#fafafa;">
         <td style="padding:10px 14px; color:#555;">Inferred Resets</td>
         <td style="padding:10px 14px; text-align:center; color:#1a1a1a; font-family:monospace;">{inferred_rst_count}</td>
-        <td style="padding:10px 14px; color:#333; font-family:monospace; font-size:13px;">{inferred_rst_signals}</td>
-        <td style="padding:10px 14px; color:#555; font-size:13px;">{inferred_rst_action}</td>
+        <td style="padding:10px 14px; color:#333; font-family:monospace; font-size:14px;">{inferred_rst_signals}</td>
+        <td style="padding:10px 14px; color:#555; font-size:14px;">{inferred_rst_action}</td>
       </tr>
       <tr style="border-bottom:1px solid #eee;">
         <td style="padding:10px 14px; color:#c0392b;">Unresolved Modules</td>
         <td style="padding:10px 14px; text-align:center; color:#1a1a1a; font-family:monospace;">{unresolved_count}</td>
-        <td style="padding:10px 14px; color:#333; font-family:monospace; font-size:13px;">{unresolved_modules}</td>
-        <td style="padding:10px 14px; color:#555; font-size:13px;">{unresolved_action}</td>
+        <td style="padding:10px 14px; color:#333; font-family:monospace; font-size:14px;">{unresolved_modules}</td>
+        <td style="padding:10px 14px; color:#555; font-size:14px;">{unresolved_action}</td>
       </tr>
     </tbody>
   </table>
@@ -230,8 +244,8 @@ Write HTML using the Write tool to the appropriate file above.
     <tbody>
       <!-- One row per module found -->
       <tr style="border-bottom:1px solid #eee;">
-        <td style="padding:10px 14px; color:#333; font-family:monospace; font-size:13px;">{module_name}</td>
-        <td style="padding:10px 14px; color:#2563eb; font-family:monospace; font-size:13px;">{library_path}</td>
+        <td style="padding:10px 14px; color:#333; font-family:monospace; font-size:14px;">{module_name}</td>
+        <td style="padding:10px 14px; color:#2563eb; font-family:monospace; font-size:14px;">{library_path}</td>
       </tr>
     </tbody>
   </table>
@@ -278,23 +292,23 @@ Write HTML using the Write tool to the appropriate file above.
     <div style="font-size:15px; font-weight:700; color:#1a1a1a; margin-bottom:10px;">
       {violation_id}
       <!-- Risk badge: HIGH=#fee2e2/#b91c1c  MEDIUM=#fef3c7/#92400e  LOW=#d1fae5/#065f46 -->
-      <span style="background:{risk_bg}; color:{risk_color}; padding:2px 9px; border-radius:4px; font-size:12px; font-weight:700; margin-left:8px;">{risk_level}</span>
-      <span style="background:#f1f5f9; color:#475569; padding:2px 9px; border-radius:4px; font-size:12px; margin-left:4px;">{viol_type}</span>
+      <span style="background:{risk_bg}; color:{risk_color}; padding:2px 9px; border-radius:4px; font-size:14px; font-weight:700; margin-left:8px;">{risk_level}</span>
+      <span style="background:#f1f5f9; color:#475569; padding:2px 9px; border-radius:4px; font-size:14px; margin-left:4px;">{viol_type}</span>
     </div>
 
     <!-- Signal/location details -->
     <table style="font-size:14px; border-collapse:collapse; width:100%; margin-bottom:12px;">
       <tr>
         <td style="padding:4px 0; color:#666; width:150px; vertical-align:top;"><b>Signal:</b></td>
-        <td style="padding:4px 0; color:#1a1a1a; font-family:monospace; font-size:13px;">{signal_name}</td>
+        <td style="padding:4px 0; color:#1a1a1a; font-family:monospace; font-size:14px;">{signal_name}</td>
       </tr>
       <tr>
         <td style="padding:4px 0; color:#666; vertical-align:top;"><b>Clock Crossing:</b></td>
-        <td style="padding:4px 0; color:#2563eb; font-family:monospace; font-size:13px;">{src_clock} → {dst_clock}</td>
+        <td style="padding:4px 0; color:#2563eb; font-family:monospace; font-size:14px;">{src_clock} → {dst_clock}</td>
       </tr>
       <tr>
         <td style="padding:4px 0; color:#666; vertical-align:top;"><b>RTL Location:</b></td>
-        <td style="padding:4px 0; color:#059669; font-family:monospace; font-size:13px;">{rtl_file}:{line}</td>
+        <td style="padding:4px 0; color:#059669; font-family:monospace; font-size:14px;">{rtl_file}:{line}</td>
       </tr>
       <tr>
         <td style="padding:4px 0; color:#666; vertical-align:top;"><b>Signal Purpose:</b></td>
@@ -313,7 +327,7 @@ Write HTML using the Write tool to the appropriate file above.
     </div>
 
     <!-- Code snippet -->
-    <pre style="background:#f5f5f5; color:#1a1a1a; padding:12px 14px; border-radius:4px; font-size:13px; font-family:'Courier New',Courier,monospace; overflow-x:auto; margin:0; border:1px solid #e5e7eb; white-space:pre;">{fix_action}</pre>
+    <pre style="background:#f5f5f5; color:#1a1a1a; padding:12px 14px; border-radius:4px; font-size:14px; font-family:'Courier New',Courier,monospace; overflow-x:auto; margin:0; border:1px solid #e5e7eb; white-space:pre;">{fix_action}</pre>
 
   </div>
   <!-- end violation card -->
@@ -334,7 +348,7 @@ Write HTML using the Write tool to the appropriate file above.
     </thead>
     <tbody>
       <tr style="border-bottom:1px solid #eee;">
-        <td style="padding:10px 14px; color:#333; font-family:monospace; font-size:13px;">{module_name}</td>
+        <td style="padding:10px 14px; color:#333; font-family:monospace; font-size:14px;">{module_name}</td>
         <td style="padding:10px 14px; color:#555; font-size:14px;">{message}</td>
       </tr>
     </tbody>
@@ -349,7 +363,7 @@ Write HTML using the Write tool to the appropriate file above.
 
   <!-- High priority -->
   <div style="padding:14px 18px; background:#fff5f5; border-left:4px solid #c0392b; border-radius:4px; margin-bottom:10px;">
-    <div style="font-size:13px; font-weight:700; color:#c0392b; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">High Priority ({high_count})</div>
+    <div style="font-size:14px; font-weight:700; color:#c0392b; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">High Priority ({high_count})</div>
     <ul style="margin:0; padding-left:20px; font-size:14px; color:#333; line-height:1.7;">
       <li style="color:#333;">{high_item_1}</li>
     </ul>
@@ -357,7 +371,7 @@ Write HTML using the Write tool to the appropriate file above.
 
   <!-- Medium priority -->
   <div style="padding:14px 18px; background:#fffbeb; border-left:4px solid #d97706; border-radius:4px; margin-bottom:10px;">
-    <div style="font-size:13px; font-weight:700; color:#d97706; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">Medium Priority ({med_count})</div>
+    <div style="font-size:14px; font-weight:700; color:#d97706; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">Medium Priority ({med_count})</div>
     <ul style="margin:0; padding-left:20px; font-size:14px; color:#333; line-height:1.7;">
       <li style="color:#333;">{med_item_1}</li>
     </ul>
@@ -365,7 +379,7 @@ Write HTML using the Write tool to the appropriate file above.
 
   <!-- Low priority -->
   <div style="padding:14px 18px; background:#f0fdf4; border-left:4px solid #059669; border-radius:4px; margin-bottom:10px;">
-    <div style="font-size:13px; font-weight:700; color:#059669; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">Low Priority ({low_count})</div>
+    <div style="font-size:14px; font-weight:700; color:#059669; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">Low Priority ({low_count})</div>
     <ul style="margin:0; padding-left:20px; font-size:14px; color:#333; line-height:1.7;">
       <li style="color:#333;">{low_item_1}</li>
     </ul>
@@ -387,22 +401,22 @@ Write HTML using the Write tool to the appropriate file above.
     <tbody>
       <tr style="border-bottom:1px solid #eee;">
         <td style="padding:10px 14px; color:#c0392b; font-weight:600;">CDC / RDC</td>
-        <td style="padding:10px 14px; color:#1a1a1a; font-family:monospace; font-size:13px;">{cdc_config_path}</td>
+        <td style="padding:10px 14px; color:#1a1a1a; font-family:monospace; font-size:14px;">{cdc_config_path}</td>
       </tr>
       <tr style="border-bottom:1px solid #eee; background:#fafafa;">
         <td style="padding:10px 14px; color:#d97706; font-weight:600;">Lint</td>
-        <td style="padding:10px 14px; color:#1a1a1a; font-family:monospace; font-size:13px;">{lint_config_path}</td>
+        <td style="padding:10px 14px; color:#1a1a1a; font-family:monospace; font-size:14px;">{lint_config_path}</td>
       </tr>
       <tr style="border-bottom:1px solid #eee;">
         <td style="padding:10px 14px; color:#059669; font-weight:600;">SpgDFT</td>
-        <td style="padding:10px 14px; color:#1a1a1a; font-family:monospace; font-size:13px;">{spgdft_config_path}</td>
+        <td style="padding:10px 14px; color:#1a1a1a; font-family:monospace; font-size:14px;">{spgdft_config_path}</td>
       </tr>
     </tbody>
   </table>
 </div>
 
 <!-- Footer -->
-<div style="text-align:center; padding:16px; font-size:12px; color:#888; border-top:1px solid #eee; margin-top:16px;">
+<div style="text-align:center; padding:16px; font-size:14px; color:#888; border-top:1px solid #eee; margin-top:16px;">
   Generated by Claude Code Analysis &nbsp;|&nbsp; {check_type_label} &nbsp;|&nbsp; {tag} &nbsp;|&nbsp; {ip} @ {dir_name}
 </div>
 

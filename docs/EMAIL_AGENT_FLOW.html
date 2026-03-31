@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>VTO Routing Key Flow</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0d1b2a;
+    color: #e0e0e0;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    padding: 40px 20px;
+  }
+  h1 {
+    text-align: center;
+    color: #00d4ff;
+    font-size: 1.4em;
+    margin-bottom: 6px;
+  }
+  .subtitle {
+    text-align: center;
+    color: #8899aa;
+    font-size: 0.82em;
+    margin-bottom: 40px;
+  }
+
+  .main {
+    max-width: 900px;
+    margin: 0 auto;
+  }
+
+  /* shared pipeline at the top */
+  .pipeline {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    margin-bottom: 10px;
+  }
+  .pipe-node {
+    background: #1e2d4a;
+    border: 1px solid #2a4a7a;
+    border-radius: 8px;
+    padding: 10px 16px;
+    text-align: center;
+    font-size: 0.8em;
+    min-width: 120px;
+  }
+  .pipe-node .icon { font-size: 1.4em; display: block; margin-bottom: 4px; }
+  .pipe-node .label { color: #aabbcc; }
+  .pipe-arrow {
+    color: #4a6a8a;
+    font-size: 1.4em;
+    padding: 0 6px;
+    flex-shrink: 0;
+  }
+
+  /* routing key box */
+  .routing-key {
+    text-align: center;
+    margin: 20px 0 8px;
+    font-size: 0.78em;
+    color: #ffd93d;
+  }
+  .routing-box {
+    background: #1e2a1a;
+    border: 2px solid #ffd93d;
+    border-radius: 8px;
+    padding: 12px 20px;
+    text-align: center;
+    margin: 0 auto 6px;
+    max-width: 420px;
+    font-size: 0.82em;
+    color: #ffe88a;
+    line-height: 1.6;
+  }
+  .routing-box strong { color: #ffd93d; font-size: 1.05em; }
+
+  /* two columns for good vs bad */
+  .columns {
+    display: flex;
+    gap: 30px;
+    margin-top: 24px;
+  }
+  .col { flex: 1; }
+
+  .col-title {
+    text-align: center;
+    font-size: 0.78em;
+    font-weight: bold;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    padding: 5px 10px;
+    border-radius: 4px;
+    margin-bottom: 16px;
+  }
+  .good { background: #0f2a0f; color: #6bcb77; border: 1px solid #6bcb77; }
+  .bad  { background: #2a0f0f; color: #ff6b6b; border: 1px solid #ff6b6b; }
+
+  /* person rows */
+  .person {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #1a2a3a;
+    border: 1px solid #2a4a6a;
+    border-radius: 7px;
+    padding: 9px 12px;
+    margin-bottom: 6px;
+    font-size: 0.8em;
+  }
+  .person .avatar {
+    font-size: 1.5em;
+    flex-shrink: 0;
+  }
+  .person .info { flex: 1; }
+  .person .name { font-weight: bold; color: #00d4ff; }
+  .person .vto  { color: #ffd93d; font-size: 0.9em; }
+
+  .arrow-down {
+    text-align: center;
+    font-size: 1.3em;
+    margin: 4px 0;
+    line-height: 1;
+  }
+  .arrow-down.green  { color: #6bcb77; }
+  .arrow-down.red    { color: #ff6b6b; }
+  .arrow-down.yellow { color: #ffd93d; }
+
+  /* shared csv box */
+  .csv-box {
+    background: #1e1e10;
+    border: 1px solid #5a5a20;
+    border-radius: 7px;
+    padding: 9px 12px;
+    font-size: 0.8em;
+    text-align: center;
+    color: #ffd93d;
+    margin: 4px 0;
+  }
+  .csv-box .sub { color: #8899aa; font-size: 0.85em; margin-top: 2px; }
+
+  /* router */
+  .router-box {
+    background: #1e1020;
+    border: 2px solid #ffd93d;
+    border-radius: 7px;
+    padding: 9px 14px;
+    font-size: 0.8em;
+    text-align: center;
+    color: #ffd93d;
+    margin: 4px 0;
+  }
+
+  /* agent result boxes */
+  .agents {
+    display: flex;
+    gap: 8px;
+    margin-top: 4px;
+  }
+  .agent-box {
+    flex: 1;
+    border-radius: 7px;
+    padding: 9px 10px;
+    font-size: 0.78em;
+    text-align: center;
+    line-height: 1.5;
+  }
+  .agent-ok  { background: #0f2a0f; border: 1px solid #6bcb77; color: #aaffaa; }
+  .agent-err { background: #2a0f0f; border: 1px solid #ff6b6b; color: #ffaaaa; }
+  .agent-box .agent-name { font-weight: bold; font-size: 1.0em; margin-bottom: 3px; }
+
+  /* outcome */
+  .outcome {
+    border-radius: 7px;
+    padding: 10px 14px;
+    margin-top: 8px;
+    font-size: 0.8em;
+    line-height: 1.6;
+  }
+  .outcome-ok  { background: #0f2a0f; border: 1px dashed #6bcb77; color: #aaffaa; }
+  .outcome-err { background: #2a0f0f; border: 1px dashed #ff6b6b; color: #ffaaaa; }
+
+  /* rule banner */
+  .rule {
+    max-width: 900px;
+    margin: 28px auto 0;
+    background: #1a1a10;
+    border: 1px solid #ffd93d;
+    border-radius: 8px;
+    padding: 12px 20px;
+    font-size: 0.82em;
+    color: #ffe88a;
+    text-align: center;
+    line-height: 1.8;
+  }
+  .rule strong { color: #ffd93d; }
+  code {
+    background: rgba(0,0,0,0.3);
+    border-radius: 3px;
+    padding: 1px 5px;
+    color: #00d4ff;
+    font-size: 0.92em;
+  }
+</style>
+</head>
+<body>
+<div class="main">
+
+  <h1>VTO Name — The Routing Key</h1>
+  <p class="subtitle">Each person must have a unique VTO name. It is the key that routes emails to the right Linux agent.</p>
+
+  <!-- shared pipeline -->
+  <div class="pipeline">
+    <div class="pipe-node">
+      <span class="icon">📧</span>
+      <span class="label">Send email<br>to VTO address</span>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-node">
+      <span class="icon">📋</span>
+      <span class="label">tasksMail.csv<br>(Windows)</span>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-node">
+      <span class="icon">🔄</span>
+      <span class="label">Sync to<br>Linux</span>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-node" style="border-color:#ffd93d;">
+      <span class="icon">🔑</span>
+      <span class="label" style="color:#ffd93d;">vtoHybridModel<br>reads VTO name</span>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-node" style="border-color:#6bcb77;">
+      <span class="icon">⚙️</span>
+      <span class="label" style="color:#6bcb77;">Agent executes<br>instruction</span>
+    </div>
+  </div>
+
+  <div class="routing-key">▼ VTO name is the routing key ▼</div>
+  <div class="routing-box">
+    <strong>vtoHybridModel.py</strong> scans every row in <code>tasksMail.csv</code><br>
+    and checks: <em>does the email mention <strong>my VTO name</strong>?</em><br>
+    If yes → execute. If no → ignore.
+  </div>
+
+  <!-- two columns -->
+  <div class="columns">
+
+    <!-- GOOD -->
+    <div class="col">
+      <div class="col-title good">✓ Unique VTO names</div>
+
+      <div class="person">
+        <div class="avatar">👤</div>
+        <div class="info">
+          <div class="name">Azman</div>
+          <div class="vto">emails → <code>AgentAzman</code></div>
+        </div>
+      </div>
+      <div class="person">
+        <div class="avatar">👤</div>
+        <div class="info">
+          <div class="name">Ram</div>
+          <div class="vto">emails → <code>AgentRam</code></div>
+        </div>
+      </div>
+
+      <div class="arrow-down yellow">↓</div>
+      <div class="csv-box">
+        📋 tasksMail.csv
+        <div class="sub">Row 1: VTO = <code>AgentAzman</code> &nbsp;|&nbsp; Row 2: VTO = <code>AgentRam</code></div>
+      </div>
+
+      <div class="arrow-down yellow">↓</div>
+      <div class="router-box">🔑 vtoHybridModel.py — match by VTO name</div>
+
+      <div class="arrow-down green">↓</div>
+      <div class="agents">
+        <div class="agent-box agent-ok">
+          <div class="agent-name">AgentAzman</div>
+          picks up Row 1 only<br>runs on Azman's disk
+        </div>
+        <div class="agent-box agent-ok">
+          <div class="agent-name">AgentRam</div>
+          picks up Row 2 only<br>runs on Ram's disk
+        </div>
+      </div>
+
+      <div class="outcome outcome-ok">
+        ✓ Each agent executes only its own instructions.<br>
+        ✓ Correct disk, correct paths, correct email recipients.
+      </div>
+    </div>
+
+    <!-- BAD -->
+    <div class="col">
+      <div class="col-title bad">✗ Same VTO name</div>
+
+      <div class="person">
+        <div class="avatar">👤</div>
+        <div class="info">
+          <div class="name">Azman</div>
+          <div class="vto">VTO name configured as <code>AgentUmc</code> ✗</div>
+        </div>
+      </div>
+      <div class="person" style="border-color:#ff6b6b;">
+        <div class="avatar">👤</div>
+        <div class="info">
+          <div class="name">Ram</div>
+          <div class="vto" style="color:#ff6b6b;">VTO name also configured as <code>AgentUmc</code> ✗</div>
+        </div>
+      </div>
+
+      <div class="arrow-down yellow">↓</div>
+      <div class="csv-box">
+        📋 tasksMail.csv — one email, one instruction
+        <div class="sub">Row: VTO = <code>AgentUmc</code> &nbsp;·&nbsp; instruction: <em>"run lint for umc17_0"</em></div>
+      </div>
+
+      <div class="arrow-down red">↓</div>
+      <div class="router-box" style="border-color:#ff6b6b; color:#ff6b6b;">🔑 vtoHybridModel.py — BOTH agents match <code>AgentUmc</code></div>
+
+      <div class="arrow-down red">↓</div>
+      <div class="agents">
+        <div class="agent-box agent-err">
+          <div class="agent-name">Azman's Agent</div>
+          VTO = <code>AgentUmc</code> → match<br>executes instruction ✗
+        </div>
+        <div class="agent-box agent-err">
+          <div class="agent-name">Ram's Agent</div>
+          VTO = <code>AgentUmc</code> → match<br>executes same instruction ✗
+        </div>
+      </div>
+
+      <div class="outcome outcome-err">
+        ✗ Same instruction executed <strong>twice</strong> — once by each agent.<br>
+        ✗ Duplicate runs waste resources and can corrupt results.
+      </div>
+    </div>
+
+  </div><!-- end columns -->
+
+  <div class="rule">
+    <strong>Rule:</strong> VTO name must be unique per person — never use a shared/team name.<br>
+    ✓ &nbsp;<code>AgentAzman</code> &nbsp;·&nbsp; <code>AgentRam</code> &nbsp;·&nbsp; <code>AgentWarren</code> &nbsp; — one per person<br>
+    ✗ &nbsp;<code>AgentUmc</code> — shared name causes every agent with that name to run the same instruction twice
+  </div>
+
+</div>
+</body>
+</html>
