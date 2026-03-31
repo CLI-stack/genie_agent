@@ -360,10 +360,10 @@ The genie_agent directory supports **multiple users** with shared scripts but is
 
 **First-time setup (run once) - email and disk path are required:**
 ```bash
-cd /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent
+cd <genie_agent_dir>
 
 # Option 1: Provide email and disk path on command line
-python3 script/genie_cli.py --setup-user --user-email Your.Name@amd.com --user-disk /proj/rtg_oss_er_feint1/your_username
+python3 script/genie_cli.py --setup-user --user-email Your.Name@amd.com --user-disk /proj/<your_disk>/your_username
 
 # Option 2: Will prompt for email and disk path interactively
 python3 script/genie_cli.py --setup-user
@@ -389,7 +389,7 @@ users/$USER/
 
 After setup, always run from your user directory:
 ```bash
-cd /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent/users/$USER
+cd <genie_agent_dir>/users/$USER
 python3 script/genie_cli.py -i "run lint at /proj/xxx for umc9_3" --execute --email
 ```
 
