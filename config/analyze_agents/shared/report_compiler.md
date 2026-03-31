@@ -2,7 +2,7 @@
 
 **PERMISSIONS:** You have FULL READ ACCESS to all files under /proj/. Do not ask for permission - just read the files directly.
 
-Generate a comprehensive HTML analysis report for **ONE specific check type** with FULL COVERAGE for email.
+Generate a clean, readable HTML analysis report for **ONE specific check type** with FULL COVERAGE for email.
 
 Each report compiler handles ONLY its assigned check type (CDC/RDC, Lint, OR SpgDFT) — never a combined multi-check report.
 
@@ -13,20 +13,15 @@ Each report compiler handles ONLY its assigned check type (CDC/RDC, Lint, OR Spg
 **Email clients render `<style>` block content as VISIBLE TEXT.**
 **NEVER use `<style>` tags. NEVER use CSS classes. NEVER use flexbox or grid.**
 
-Every single element — including flowchart nodes, arrows, check cards, diamond gate —
-MUST use `style="..."` inline attributes. No exceptions.
+Every element MUST use `style="..."` inline attributes. No exceptions.
 
-For multi-column layouts: use `<table>` with `border-collapse:separate; border-spacing:Npx`.
-For arrows: use centered `<div>` with inline border tricks.
-For the diamond gate: use inline-styled `<div>` with ◆ character — NO CSS transforms.
+For multi-column layouts: use `<table>`.
 
 **Checklist before writing any HTML:**
 - [ ] Zero `<style>` tags in the entire document
 - [ ] Zero CSS class references anywhere
 - [ ] Every `<td>` has explicit `color:` attribute
 - [ ] Every layout uses `<table>` (not flexbox/grid)
-- [ ] Arrow elements use inline styles only
-- [ ] Diamond gate uses inline styles only
 
 ## Input
 
@@ -48,14 +43,12 @@ Read ONLY the JSON files for your assigned `check_type` (skip missing files grac
 | `lint`     | `data/<tag>_extractor_lint.json`, `data/<tag>_rtl_lint_*.json` |
 | `spg_dft`  | `data/<tag>_precondition_spgdft.json`, `data/<tag>_extractor_spgdft.json`, `data/<tag>_rtl_spgdft_*.json`, `data/<tag>_library_finder.json` |
 
-Use Glob to find all RTL analyzer files for your check type, e.g.:
+Use Glob to find all RTL analyzer files for your check type:
 - CDC/RDC: `data/<tag>_rtl_cdc_*.json` and `data/<tag>_rtl_rdc_*.json`
 - Lint: `data/<tag>_rtl_lint_*.json`
 - SpgDFT: `data/<tag>_rtl_spgdft_*.json`
 
 ## Output
-
-Output filename depends on `check_type`:
 
 | check_type | Output File |
 |------------|-------------|
@@ -67,32 +60,40 @@ Write HTML using the Write tool to the appropriate file above.
 
 ## Report Sections
 
-Generate sections for your assigned check type ONLY:
-
 **For `cdc_rdc`:**
 1. Header (IP, tag, ref_dir, check type = CDC/RDC)
-2. CDC/RDC status card (counts, focus)
-3. CDC/RDC section — preconditions, clock pairs, violation types, top violations
-4. Recommendations (High / Medium / Low)
-5. Configuration files reference
+2. Summary table (CDC + RDC counts, focus, status)
+3. Preconditions table (inferred clocks/resets, unresolved modules)
+4. Library finder results (if any)
+5. Violations by clock domain pair
+6. Violations by type (bucket)
+7. Violation cards (up to 10, covering all buckets)
+8. Recommendations (High / Medium / Low)
+9. Configuration files reference
 
 **For `lint`:**
 1. Header (IP, tag, ref_dir, check type = Lint)
-2. Lint status card (counts, focus)
-3. Lint section — violation types, top violations with RTL analysis
-4. Recommendations (High / Medium / Low)
-5. Configuration files reference
+2. Summary table (counts, focus, status)
+3. Violations by code/type
+4. Violation cards (up to 10)
+5. Recommendations
+6. Configuration files reference
 
 **For `spg_dft`:**
 1. Header (IP, tag, ref_dir, check type = SpgDFT)
-2. SpgDFT status card (counts, focus)
-3. SpgDFT section — blackbox modules, violation types, top violations
-4. Recommendations (High / Medium / Low)
-5. Configuration files reference
+2. Summary table (counts, focus, status)
+3. Blackbox modules table (if any)
+4. Library finder results (if any)
+5. Violations by rule
+6. Violation cards (up to 10)
+7. Recommendations
+8. Configuration files reference
 
-## HTML Template Structure
+---
 
-**ALL inline styles. Tables for layout. No exceptions.**
+## HTML Template — Light / Clean Style
+
+**White background, 15px font, minimal decoration. No flowchart, no arrows, no gates.**
 
 ```html
 <!DOCTYPE html>
@@ -101,305 +102,307 @@ Generate sections for your assigned check type ONLY:
 <meta charset="UTF-8">
 <title>{check_type_label} Analysis - {ip} @ {dir_name}</title>
 </head>
-<body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif; font-size:14px; color:#e0e0e0; background:#16213e; margin:0; padding:20px;">
-<div style="max-width:1100px; margin:0 auto;">
+<body style="font-family:Arial,Helvetica,sans-serif; font-size:15px; color:#1a1a1a; background:#ffffff; margin:0; padding:28px;">
+<div style="max-width:960px; margin:0 auto;">
 
-<!-- ══════════════════════════════════════════════════════
-     FLOWCHART HEADER — inline styles + table layout only
-     ══════════════════════════════════════════════════════ -->
-
-<!-- Header Node -->
-<div style="text-align:center; margin-bottom:0;">
-  <div style="display:inline-block; background:#1e2d4a; border:2px solid #00d4ff; border-radius:8px; padding:14px 24px; text-align:center; min-width:480px;">
-    <div style="font-size:18px; font-weight:700; color:#00d4ff; letter-spacing:1px;">{check_type_label} Analysis Report</div>
-    <div style="font-size:12px; color:#c0cfe0; margin-top:6px;">{ip} &nbsp;@&nbsp; {dir_name} &nbsp;|&nbsp; Tag: {tag}</div>
-    <div style="font-size:10px; color:#445566; margin-top:3px;">{ref_dir}</div>
+<!-- ══════════════════════════════════════════
+     HEADER
+     ══════════════════════════════════════════ -->
+<div style="border-left:5px solid {accent_color}; padding:14px 20px; background:{accent_light_bg}; border-radius:0 6px 6px 0; margin-bottom:28px;">
+  <div style="font-size:22px; font-weight:700; color:{accent_dark};">{check_type_label} Analysis Report</div>
+  <div style="font-size:14px; color:#555; margin-top:6px;">
+    <b>IP:</b> {ip} &nbsp;&nbsp;|&nbsp;&nbsp; <b>Tag:</b> {tag} &nbsp;&nbsp;|&nbsp;&nbsp; <b>Tree:</b> {dir_name}
   </div>
+  <div style="font-size:12px; color:#888; margin-top:3px;">{ref_dir}</div>
 </div>
 
-<!-- Arrow down -->
-<div style="text-align:center; line-height:0; margin:0;">
-  <div style="display:inline-block; width:2px; height:18px; background:#2a3f5f; vertical-align:top;"></div>
-</div>
-<div style="text-align:center; margin:0 0 0 0;">
-  <div style="display:inline-block; width:0; height:0; border-left:6px solid transparent; border-right:6px solid transparent; border-top:8px solid #2a3f5f;"></div>
-</div>
-
-<!-- Bracket top -->
-<div style="border-top:1px solid #2a3f5f; border-left:1px solid #2a3f5f; border-right:1px solid #2a3f5f; height:12px; width:88%; margin:0 auto;"></div>
-
-<!-- 4-column Check Status — TABLE layout -->
-<div style="background:rgba(0,0,0,0.18); border-left:1px solid #2a3f5f; border-right:1px solid #2a3f5f; padding:14px 18px; width:88%; margin:0 auto; box-sizing:border-box;">
-  <div style="text-align:center; font-size:10px; color:#667788; text-transform:uppercase; letter-spacing:2px; margin-bottom:10px;">check status</div>
-  <table style="width:100%; border-collapse:separate; border-spacing:10px;">
-    <tr>
-      <!-- CDC card -->
-      <td style="background:#1f1020; border:1px solid #ff6b6b; border-radius:8px; padding:14px 8px; text-align:center; width:25%;">
-        <div style="font-size:13px; font-weight:700; color:#ff6b6b; margin-bottom:6px;">CDC</div>
-        <div style="font-size:28px; font-weight:700; color:#ff6b6b; font-family:monospace; line-height:1;">{cdc_total}</div>
-        <div style="font-size:9px; text-transform:uppercase; letter-spacing:1px; color:#667788; margin-top:3px;">total errors</div>
-        <div style="font-size:10px; color:#8899aa; margin-top:6px;">{cdc_filtered} filtered</div>
-        <div style="font-size:14px; font-family:monospace; color:#00d4ff;">{cdc_focus} focus</div>
-        <!-- badge: #ff6b6b if NEEDS ACTION, #6bcb77 if CLEAN -->
-        <div style="display:inline-block; padding:3px 8px; border-radius:3px; font-size:10px; font-weight:700; margin-top:8px; background:{cdc_badge_bg}; color:#1a1a2e;">{cdc_status}</div>
-      </td>
-      <!-- RDC card -->
-      <td style="background:#1f1020; border:1px solid #ff8e8e; border-radius:8px; padding:14px 8px; text-align:center; width:25%;">
-        <div style="font-size:13px; font-weight:700; color:#ff8e8e; margin-bottom:6px;">RDC</div>
-        <div style="font-size:28px; font-weight:700; color:#ff8e8e; font-family:monospace; line-height:1;">{rdc_total}</div>
-        <div style="font-size:9px; text-transform:uppercase; letter-spacing:1px; color:#667788; margin-top:3px;">total errors</div>
-        <div style="font-size:10px; color:#8899aa; margin-top:6px;">{rdc_filtered} filtered</div>
-        <div style="font-size:14px; font-family:monospace; color:#00d4ff;">{rdc_focus} focus</div>
-        <div style="display:inline-block; padding:3px 8px; border-radius:3px; font-size:10px; font-weight:700; margin-top:8px; background:{rdc_badge_bg}; color:#1a1a2e;">{rdc_status}</div>
-      </td>
-      <!-- Lint card -->
-      <td style="background:#0e1f18; border:1px solid #6bcb77; border-radius:8px; padding:14px 8px; text-align:center; width:25%;">
-        <div style="font-size:13px; font-weight:700; color:#6bcb77; margin-bottom:6px;">LINT</div>
-        <div style="font-size:28px; font-weight:700; color:#6bcb77; font-family:monospace; line-height:1;">{lint_total}</div>
-        <div style="font-size:9px; text-transform:uppercase; letter-spacing:1px; color:#667788; margin-top:3px;">total errors</div>
-        <div style="font-size:10px; color:#8899aa; margin-top:6px;">{lint_filtered} filtered</div>
-        <div style="font-size:14px; font-family:monospace; color:#00d4ff;">{lint_focus} focus</div>
-        <div style="display:inline-block; padding:3px 8px; border-radius:3px; font-size:10px; font-weight:700; margin-top:8px; background:{lint_badge_bg}; color:#1a1a2e;">{lint_status}</div>
-      </td>
-      <!-- SpgDFT card -->
-      <td style="background:#1f1020; border:1px solid #ff6b6b; border-radius:8px; padding:14px 8px; text-align:center; width:25%;">
-        <div style="font-size:13px; font-weight:700; color:#ff6b6b; margin-bottom:6px;">SpgDFT</div>
-        <div style="font-size:28px; font-weight:700; color:#ff6b6b; font-family:monospace; line-height:1;">{spg_total}</div>
-        <div style="font-size:9px; text-transform:uppercase; letter-spacing:1px; color:#667788; margin-top:3px;">total errors</div>
-        <div style="font-size:10px; color:#8899aa; margin-top:6px;">{spg_filtered} filtered</div>
-        <div style="font-size:14px; font-family:monospace; color:#00d4ff;">{spg_focus} focus</div>
-        <div style="display:inline-block; padding:3px 8px; border-radius:3px; font-size:10px; font-weight:700; margin-top:8px; background:{spg_badge_bg}; color:#1a1a2e;">{spg_status}</div>
-      </td>
-    </tr>
+<!-- ══════════════════════════════════════════
+     SUMMARY TABLE
+     ══════════════════════════════════════════ -->
+<div style="margin-bottom:32px;">
+  <div style="font-size:17px; font-weight:700; color:#1a1a1a; border-left:4px solid {accent_color}; padding-left:12px; margin-bottom:14px;">Summary</div>
+  <table style="width:100%; border-collapse:collapse; font-size:15px;">
+    <thead>
+      <tr style="background:#f5f7fa; border-bottom:2px solid #dde1e7;">
+        <th style="padding:11px 14px; text-align:left; color:#444; font-weight:600;">Check</th>
+        <th style="padding:11px 14px; text-align:center; color:#444; font-weight:600;">Total</th>
+        <th style="padding:11px 14px; text-align:center; color:#444; font-weight:600;">Filtered (DFT/RSMU)</th>
+        <th style="padding:11px 14px; text-align:center; color:#444; font-weight:600;">Focus</th>
+        <th style="padding:11px 14px; text-align:center; color:#444; font-weight:600;">Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- CDC row — only for cdc_rdc check_type -->
+      <tr style="border-bottom:1px solid #eee;">
+        <td style="padding:11px 14px; color:#c0392b; font-weight:600;">CDC</td>
+        <td style="padding:11px 14px; text-align:center; color:#1a1a1a;">{cdc_total}</td>
+        <td style="padding:11px 14px; text-align:center; color:#666;">{cdc_filtered}</td>
+        <td style="padding:11px 14px; text-align:center; color:#2563eb; font-weight:700;">{cdc_focus}</td>
+        <td style="padding:11px 14px; text-align:center;">
+          <!-- NEEDS ACTION badge: bg #fee2e2 color #b91c1c | CLEAN badge: bg #d1fae5 color #065f46 -->
+          <span style="background:{cdc_badge_bg}; color:{cdc_badge_color}; padding:3px 11px; border-radius:4px; font-size:13px; font-weight:600;">{cdc_status}</span>
+        </td>
+      </tr>
+      <!-- RDC row — only for cdc_rdc check_type -->
+      <tr style="border-bottom:1px solid #eee; background:#fafafa;">
+        <td style="padding:11px 14px; color:#c0392b; font-weight:600;">RDC</td>
+        <td style="padding:11px 14px; text-align:center; color:#1a1a1a;">{rdc_total}</td>
+        <td style="padding:11px 14px; text-align:center; color:#666;">{rdc_filtered}</td>
+        <td style="padding:11px 14px; text-align:center; color:#2563eb; font-weight:700;">{rdc_focus}</td>
+        <td style="padding:11px 14px; text-align:center;">
+          <span style="background:{rdc_badge_bg}; color:{rdc_badge_color}; padding:3px 11px; border-radius:4px; font-size:13px; font-weight:600;">{rdc_status}</span>
+        </td>
+      </tr>
+      <!-- Lint row — only for lint check_type -->
+      <tr style="border-bottom:1px solid #eee;">
+        <td style="padding:11px 14px; color:#d97706; font-weight:600;">Lint</td>
+        <td style="padding:11px 14px; text-align:center; color:#1a1a1a;">{lint_total}</td>
+        <td style="padding:11px 14px; text-align:center; color:#666;">{lint_filtered}</td>
+        <td style="padding:11px 14px; text-align:center; color:#2563eb; font-weight:700;">{lint_focus}</td>
+        <td style="padding:11px 14px; text-align:center;">
+          <span style="background:{lint_badge_bg}; color:{lint_badge_color}; padding:3px 11px; border-radius:4px; font-size:13px; font-weight:600;">{lint_status}</span>
+        </td>
+      </tr>
+      <!-- SpgDFT row — only for spg_dft check_type -->
+      <tr style="border-bottom:1px solid #eee; background:#fafafa;">
+        <td style="padding:11px 14px; color:#059669; font-weight:600;">SpgDFT</td>
+        <td style="padding:11px 14px; text-align:center; color:#1a1a1a;">{spg_total}</td>
+        <td style="padding:11px 14px; text-align:center; color:#666;">{spg_filtered}</td>
+        <td style="padding:11px 14px; text-align:center; color:#2563eb; font-weight:700;">{spg_focus}</td>
+        <td style="padding:11px 14px; text-align:center;">
+          <span style="background:{spg_badge_bg}; color:{spg_badge_color}; padding:3px 11px; border-radius:4px; font-size:13px; font-weight:600;">{spg_status}</span>
+        </td>
+      </tr>
+    </tbody>
   </table>
 </div>
 
-<!-- Bracket bottom -->
-<div style="border-bottom:1px solid #2a3f5f; border-left:1px solid #2a3f5f; border-right:1px solid #2a3f5f; height:12px; width:88%; margin:0 auto;"></div>
-
-<!-- Arrow down -->
-<div style="text-align:center; line-height:0; margin:0;">
-  <div style="display:inline-block; width:2px; height:18px; background:#2a3f5f; vertical-align:top;"></div>
+<!-- ══════════════════════════════════════════
+     PRECONDITIONS (CDC/RDC only)
+     ══════════════════════════════════════════ -->
+<div style="margin-bottom:32px;">
+  <div style="font-size:17px; font-weight:700; color:#1a1a1a; border-left:4px solid #c0392b; padding-left:12px; margin-bottom:14px;">Preconditions</div>
+  <table style="width:100%; border-collapse:collapse; font-size:14px;">
+    <thead>
+      <tr style="background:#f5f7fa; border-bottom:2px solid #dde1e7;">
+        <th style="padding:10px 14px; text-align:left; color:#444; font-weight:600;">Type</th>
+        <th style="padding:10px 14px; text-align:center; color:#444; font-weight:600;">Count</th>
+        <th style="padding:10px 14px; text-align:left; color:#444; font-weight:600;">Signals / Modules</th>
+        <th style="padding:10px 14px; text-align:left; color:#444; font-weight:600;">Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- One row per precondition type; alternate background #fff / #fafafa -->
+      <tr style="border-bottom:1px solid #eee;">
+        <td style="padding:10px 14px; color:#555;">Inferred Clocks</td>
+        <td style="padding:10px 14px; text-align:center; color:#1a1a1a; font-family:monospace;">{inferred_clk_count}</td>
+        <td style="padding:10px 14px; color:#333; font-family:monospace; font-size:13px;">{inferred_clk_signals}</td>
+        <td style="padding:10px 14px; color:#555; font-size:13px;">{inferred_clk_action}</td>
+      </tr>
+      <tr style="border-bottom:1px solid #eee; background:#fafafa;">
+        <td style="padding:10px 14px; color:#555;">Inferred Resets</td>
+        <td style="padding:10px 14px; text-align:center; color:#1a1a1a; font-family:monospace;">{inferred_rst_count}</td>
+        <td style="padding:10px 14px; color:#333; font-family:monospace; font-size:13px;">{inferred_rst_signals}</td>
+        <td style="padding:10px 14px; color:#555; font-size:13px;">{inferred_rst_action}</td>
+      </tr>
+      <tr style="border-bottom:1px solid #eee;">
+        <td style="padding:10px 14px; color:#c0392b;">Unresolved Modules</td>
+        <td style="padding:10px 14px; text-align:center; color:#1a1a1a; font-family:monospace;">{unresolved_count}</td>
+        <td style="padding:10px 14px; color:#333; font-family:monospace; font-size:13px;">{unresolved_modules}</td>
+        <td style="padding:10px 14px; color:#555; font-size:13px;">{unresolved_action}</td>
+      </tr>
+    </tbody>
+  </table>
 </div>
-<div style="text-align:center; margin:0;">
-  <div style="display:inline-block; width:0; height:0; border-left:6px solid transparent; border-right:6px solid transparent; border-top:8px solid #2a3f5f;"></div>
+
+<!-- ══════════════════════════════════════════
+     LIBRARY FINDER (if blackbox/unresolved > 0)
+     ══════════════════════════════════════════ -->
+<div style="margin-bottom:32px;">
+  <div style="font-size:17px; font-weight:700; color:#1a1a1a; border-left:4px solid #2563eb; padding-left:12px; margin-bottom:14px;">Library Additions Required</div>
+  <table style="width:100%; border-collapse:collapse; font-size:14px;">
+    <thead>
+      <tr style="background:#f5f7fa; border-bottom:2px solid #dde1e7;">
+        <th style="padding:10px 14px; text-align:left; color:#444; font-weight:600;">Module</th>
+        <th style="padding:10px 14px; text-align:left; color:#444; font-weight:600;">Library Path</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- One row per module found -->
+      <tr style="border-bottom:1px solid #eee;">
+        <td style="padding:10px 14px; color:#333; font-family:monospace; font-size:13px;">{module_name}</td>
+        <td style="padding:10px 14px; color:#2563eb; font-family:monospace; font-size:13px;">{library_path}</td>
+      </tr>
+    </tbody>
+  </table>
 </div>
 
-<!-- Overall Status Gate — NO CSS transforms, just inline styled div -->
-<!-- overall_status_text: "NEEDS ACTION" if any focus > 0, else "ALL CLEAN" -->
-<!-- gate_border_color: #ff6b6b if NEEDS ACTION, #6bcb77 if ALL CLEAN -->
-<div style="text-align:center; padding:10px 0;">
-  <div style="display:inline-block; padding:12px 28px; background:#1a1510; border:2px solid {gate_border_color}; border-radius:6px; text-align:center;">
-    <div style="font-size:14px; font-weight:700; color:{gate_text_color};">◆ &nbsp; {overall_status_text}</div>
-    <div style="font-size:10px; color:#667788; margin-top:3px;">overall result</div>
+<!-- ══════════════════════════════════════════
+     VIOLATIONS BY TYPE / BUCKET
+     ══════════════════════════════════════════ -->
+<div style="margin-bottom:32px;">
+  <div style="font-size:17px; font-weight:700; color:#1a1a1a; border-left:4px solid {accent_color}; padding-left:12px; margin-bottom:14px;">Violations by Type</div>
+  <table style="width:100%; border-collapse:collapse; font-size:14px;">
+    <thead>
+      <tr style="background:#f5f7fa; border-bottom:2px solid #dde1e7;">
+        <th style="padding:10px 14px; text-align:left; color:#444; font-weight:600;">Type</th>
+        <th style="padding:10px 14px; text-align:center; color:#444; font-weight:600;">Total</th>
+        <th style="padding:10px 14px; text-align:center; color:#444; font-weight:600;">Filtered</th>
+        <th style="padding:10px 14px; text-align:center; color:#444; font-weight:600;">Focus</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- One row per violation type; alternate #fff / #fafafa -->
+      <tr style="border-bottom:1px solid #eee;">
+        <td style="padding:10px 14px; color:#333; font-family:monospace;">{viol_type}</td>
+        <td style="padding:10px 14px; text-align:center; color:#1a1a1a;">{viol_total}</td>
+        <td style="padding:10px 14px; text-align:center; color:#666;">{viol_filtered}</td>
+        <td style="padding:10px 14px; text-align:center; color:#2563eb; font-weight:600;">{viol_focus}</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ══════════════════════════════════════════
+     VIOLATION CARDS — repeat for each violation
+     ══════════════════════════════════════════ -->
+<div style="margin-bottom:32px;">
+  <div style="font-size:17px; font-weight:700; color:#1a1a1a; border-left:4px solid {accent_color}; padding-left:12px; margin-bottom:16px;">
+    Top Violations ({shown} of {total} focus)
   </div>
-</div>
 
-<!-- Arrow down -->
-<div style="text-align:center; line-height:0; margin:0;">
-  <div style="display:inline-block; width:2px; height:18px; background:#2a3f5f; vertical-align:top;"></div>
-</div>
-<div style="text-align:center; margin:0 0 20px 0;">
-  <div style="display:inline-block; width:0; height:0; border-left:6px solid transparent; border-right:6px solid transparent; border-top:8px solid #2a3f5f;"></div>
-</div>
+  <!-- Violation card — repeat this block for each violation -->
+  <div style="border:1px solid #e5e7eb; border-left:4px solid {accent_color}; border-radius:6px; padding:18px; margin-bottom:14px; background:#ffffff;">
 
-<!-- Detail pointer node -->
-<div style="text-align:center; margin-bottom:28px;">
-  <div style="display:inline-block; background:#162030; border:2px solid #00d4ff; border-radius:8px; padding:12px 28px; text-align:center; min-width:400px;">
-    <div style="font-size:13px; font-weight:600; color:#00d4ff;">Detailed Violation Analysis ↓</div>
-    <div style="font-size:11px; color:#8899aa; margin-top:4px;">CDC / RDC · Lint · SpgDFT sections below</div>
-  </div>
-</div>
-
-<!-- ══════════════════════════════════════════════════════
-     ALL DATA SECTIONS BELOW — inline styles throughout
-     Every <td> MUST have explicit color: attribute
-     ══════════════════════════════════════════════════════ -->
-
-<!-- Per-Check Summary Table -->
-<div style="background:#1e2d4a; border:1px solid #2a3f5f; border-radius:8px; padding:18px; margin-bottom:18px;">
-  <h2 style="margin:0 0 14px 0; font-size:15px; color:#00d4ff; border-bottom:1px solid #2a3f5f; padding-bottom:8px;">Summary</h2>
-  <table style="width:100%; border-collapse:collapse; font-size:13px;">
-    <tr style="background:#0d1b2a;">
-      <th style="padding:10px 12px; text-align:left; color:#c0cfe0; font-size:11px; text-transform:uppercase; letter-spacing:1px; width:25%;">Check</th>
-      <th style="padding:10px 12px; text-align:center; color:#c0cfe0; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Total</th>
-      <th style="padding:10px 12px; text-align:center; color:#c0cfe0; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Filtered</th>
-      <th style="padding:10px 12px; text-align:center; color:#c0cfe0; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Focus</th>
-      <th style="padding:10px 12px; text-align:center; color:#c0cfe0; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Status</th>
-    </tr>
-    <tr style="border-bottom:1px solid #4a6080; background:#192840;">
-      <td style="padding:10px 12px; color:#ff6b6b; font-weight:600;">CDC / RDC</td>
-      <td style="padding:10px 12px; text-align:center; color:#e0e0e0; font-family:monospace;">{cdc_rdc_total}</td>
-      <td style="padding:10px 12px; text-align:center; color:#ffd93d; font-family:monospace;">{cdc_rdc_filtered}</td>
-      <td style="padding:10px 12px; text-align:center; color:#00d4ff; font-family:monospace;">{cdc_rdc_focus}</td>
-      <td style="padding:10px 12px; text-align:center; color:{cdc_rdc_status_color}; font-weight:600;">{cdc_rdc_status}</td>
-    </tr>
-    <tr style="border-bottom:1px solid #4a6080; background:#1e2d4a;">
-      <td style="padding:10px 12px; color:#ffd93d; font-weight:600;">Lint</td>
-      <td style="padding:10px 12px; text-align:center; color:#e0e0e0; font-family:monospace;">{lint_total}</td>
-      <td style="padding:10px 12px; text-align:center; color:#ffd93d; font-family:monospace;">{lint_filtered}</td>
-      <td style="padding:10px 12px; text-align:center; color:#00d4ff; font-family:monospace;">{lint_focus}</td>
-      <td style="padding:10px 12px; text-align:center; color:{lint_status_color}; font-weight:600;">{lint_status}</td>
-    </tr>
-    <tr style="border-bottom:1px solid #4a6080; background:#192840;">
-      <td style="padding:10px 12px; color:#6bcb77; font-weight:600;">SpgDFT</td>
-      <td style="padding:10px 12px; text-align:center; color:#e0e0e0; font-family:monospace;">{spg_total}</td>
-      <td style="padding:10px 12px; text-align:center; color:#ffd93d; font-family:monospace;">{spg_filtered}</td>
-      <td style="padding:10px 12px; text-align:center; color:#00d4ff; font-family:monospace;">{spg_focus}</td>
-      <td style="padding:10px 12px; text-align:center; color:{spg_status_color}; font-weight:600;">{spg_status}</td>
-    </tr>
-  </table>
-</div>
-
-<!-- ═══════════════════ CDC/RDC SECTION ═══════════════════ -->
-<div style="background:#1e2d4a; border:1px solid #2a3f5f; border-radius:8px; padding:20px; margin-bottom:18px;">
-  <h2 style="margin:0 0 16px 0; font-size:17px; color:#ff6b6b; border-bottom:2px solid #ff6b6b; padding-bottom:10px;">CDC / RDC Analysis</h2>
-
-  <h3 style="font-size:13px; color:#c0cfe0; text-transform:uppercase; letter-spacing:1px; margin:0 0 10px 0;">Preconditions</h3>
-  <table style="width:100%; border-collapse:collapse; font-size:13px; margin-bottom:18px;">
-    <tr style="background:#0d1b2a;">
-      <th style="padding:8px 12px; text-align:left; color:#c0cfe0; font-size:11px; text-transform:uppercase;">Type</th>
-      <th style="padding:8px 12px; text-align:center; color:#c0cfe0; font-size:11px; text-transform:uppercase;">Count</th>
-      <th style="padding:8px 12px; text-align:left; color:#c0cfe0; font-size:11px; text-transform:uppercase;">Signals / Modules</th>
-    </tr>
-    <!-- Rows: alternate background #192840 / #1e2d4a, every <td> needs color: -->
-    <tr style="border-bottom:1px solid #4a6080; background:#192840;">
-      <td style="padding:8px 12px; color:#ffd93d;">Inferred Clocks</td>
-      <td style="padding:8px 12px; text-align:center; color:#e0e0e0; font-family:monospace;">{inferred_clk_count}</td>
-      <td style="padding:8px 12px; color:#c0cfe0; font-family:monospace; font-size:11px;">{inferred_clk_signals}</td>
-    </tr>
-    <tr style="border-bottom:1px solid #4a6080; background:#192840;">
-      <td style="padding:8px 12px; color:#ffd93d;">Inferred Resets</td>
-      <td style="padding:8px 12px; text-align:center; color:#e0e0e0; font-family:monospace;">{inferred_rst_count}</td>
-      <td style="padding:8px 12px; color:#c0cfe0; font-family:monospace; font-size:11px;">{inferred_rst_signals}</td>
-    </tr>
-    <tr style="border-bottom:1px solid #4a6080; background:#192840;">
-      <td style="padding:8px 12px; color:#ff6b6b;">Unresolved Modules</td>
-      <td style="padding:8px 12px; text-align:center; color:#e0e0e0; font-family:monospace;">{unresolved_count}</td>
-      <td style="padding:8px 12px; color:#c0cfe0; font-family:monospace; font-size:11px;">{unresolved_modules}</td>
-    </tr>
-  </table>
-
-  <h3 style="font-size:13px; color:#c0cfe0; text-transform:uppercase; letter-spacing:1px; margin:0 0 10px 0;">Violations by Clock Domain Pair</h3>
-  <table style="width:100%; border-collapse:collapse; font-size:13px; margin-bottom:18px;">
-    <tr style="background:#0d1b2a;">
-      <th style="padding:8px 12px; text-align:left; color:#c0cfe0; font-size:11px; text-transform:uppercase;">Source Clock</th>
-      <th style="padding:8px 12px; text-align:center; color:#00d4ff; font-size:13px;">→</th>
-      <th style="padding:8px 12px; text-align:left; color:#c0cfe0; font-size:11px; text-transform:uppercase;">Dest Clock</th>
-      <th style="padding:8px 12px; text-align:center; color:#c0cfe0; font-size:11px; text-transform:uppercase;">Count</th>
-    </tr>
-    <!-- Rows for each clock pair — every <td> needs color: -->
-  </table>
-
-  <h3 style="font-size:13px; color:#c0cfe0; text-transform:uppercase; letter-spacing:1px; margin:0 0 10px 0;">Violations by Type</h3>
-  <table style="width:100%; border-collapse:collapse; font-size:13px; margin-bottom:18px;">
-    <tr style="background:#0d1b2a;">
-      <th style="padding:8px 12px; text-align:left; color:#c0cfe0; font-size:11px; text-transform:uppercase;">Type</th>
-      <th style="padding:8px 12px; text-align:center; color:#c0cfe0; font-size:11px; text-transform:uppercase;">Total</th>
-      <th style="padding:8px 12px; text-align:center; color:#c0cfe0; font-size:11px; text-transform:uppercase;">Filtered</th>
-      <th style="padding:8px 12px; text-align:center; color:#c0cfe0; font-size:11px; text-transform:uppercase;">Focus</th>
-    </tr>
-    <!-- Rows for each type -->
-  </table>
-
-  <h3 style="font-size:13px; color:#c0cfe0; text-transform:uppercase; letter-spacing:1px; margin:0 0 12px 0;">Top Violations (showing {shown} of {total} focus)</h3>
-
-  <!-- Violation card — repeat for each violation -->
-  <div style="background:#162030; border:1px solid #ff6b6b; border-left:4px solid #ff6b6b; border-radius:6px; padding:14px; margin:10px 0;">
-    <div style="margin-bottom:10px;">
-      <span style="font-weight:bold; font-size:13px; color:#ff8e8e;">{violation_id}</span>
-      <span style="background:#ff6b6b; color:#16213e; padding:2px 7px; border-radius:3px; font-size:10px; font-weight:bold; margin-left:8px; text-transform:uppercase;">{risk_level}</span>
-      <span style="background:#2a3f5f; color:#c0cfe0; padding:2px 7px; border-radius:3px; font-size:10px; margin-left:4px;">{type}</span>
+    <!-- Title row -->
+    <div style="font-size:15px; font-weight:700; color:#1a1a1a; margin-bottom:10px;">
+      {violation_id}
+      <!-- Risk badge: HIGH=#fee2e2/#b91c1c  MEDIUM=#fef3c7/#92400e  LOW=#d1fae5/#065f46 -->
+      <span style="background:{risk_bg}; color:{risk_color}; padding:2px 9px; border-radius:4px; font-size:12px; font-weight:700; margin-left:8px;">{risk_level}</span>
+      <span style="background:#f1f5f9; color:#475569; padding:2px 9px; border-radius:4px; font-size:12px; margin-left:4px;">{viol_type}</span>
     </div>
-    <table style="width:100%; font-size:12px; border-collapse:collapse;">
+
+    <!-- Signal/location details -->
+    <table style="font-size:14px; border-collapse:collapse; width:100%; margin-bottom:12px;">
       <tr>
-        <td style="padding:4px 0; color:#c0cfe0; width:130px;"><b>Source:</b></td>
-        <td style="padding:4px 0; color:#e0e0e0;"><code style="background:#0d1b2a; color:#c0cfe0; padding:2px 6px; border-radius:3px;">{source}</code></td>
+        <td style="padding:4px 0; color:#666; width:150px; vertical-align:top;"><b>Signal:</b></td>
+        <td style="padding:4px 0; color:#1a1a1a; font-family:monospace; font-size:13px;">{signal_name}</td>
       </tr>
       <tr>
-        <td style="padding:4px 0; color:#c0cfe0;"><b>Destination:</b></td>
-        <td style="padding:4px 0; color:#e0e0e0;"><code style="background:#0d1b2a; color:#c0cfe0; padding:2px 6px; border-radius:3px;">{dest}</code></td>
+        <td style="padding:4px 0; color:#666; vertical-align:top;"><b>Clock Crossing:</b></td>
+        <td style="padding:4px 0; color:#2563eb; font-family:monospace; font-size:13px;">{src_clock} → {dst_clock}</td>
       </tr>
       <tr>
-        <td style="padding:4px 0; color:#c0cfe0;"><b>Clock Crossing:</b></td>
-        <td style="padding:4px 0; color:#e0e0e0;"><code style="background:#0d1b2a; color:#00d4ff; padding:2px 6px; border-radius:3px;">{source_clock} → {dest_clock}</code></td>
+        <td style="padding:4px 0; color:#666; vertical-align:top;"><b>RTL Location:</b></td>
+        <td style="padding:4px 0; color:#059669; font-family:monospace; font-size:13px;">{rtl_file}:{line}</td>
       </tr>
       <tr>
-        <td style="padding:4px 0; color:#c0cfe0;"><b>Module:</b></td>
-        <td style="padding:4px 0; color:#e0e0e0;"><code style="background:#0d1b2a; color:#c0cfe0; padding:2px 6px; border-radius:3px;">{module}</code></td>
-      </tr>
-      <tr>
-        <td style="padding:4px 0; color:#c0cfe0;"><b>RTL Location:</b></td>
-        <td style="padding:4px 0; color:#e0e0e0;"><code style="background:#0d1b2a; color:#6bcb77; padding:2px 6px; border-radius:3px;">{rtl_file}:{line}</code></td>
+        <td style="padding:4px 0; color:#666; vertical-align:top;"><b>Signal Purpose:</b></td>
+        <td style="padding:4px 0; color:#333; font-size:14px;">{signal_purpose}</td>
       </tr>
     </table>
-    <div style="margin-top:10px; padding:10px 12px; background:#1a2010; border-left:3px solid #ffd93d; border-radius:4px; font-size:12px;">
-      <b style="color:#ffd93d;">Root Cause:</b> <span style="color:#c0cfe0;">{root_cause}</span>
+
+    <!-- Root cause -->
+    <div style="padding:11px 14px; background:#fffbeb; border-left:3px solid #d97706; border-radius:4px; font-size:14px; color:#333; margin-bottom:8px;">
+      <b style="color:#b45309;">Root Cause:</b> {why_no_sync}
     </div>
-    <div style="margin-top:8px; padding:10px 12px; background:#0e1f18; border-left:3px solid #6bcb77; border-radius:4px; font-size:12px;">
-      <b style="color:#6bcb77;">Recommendation:</b> <span style="color:#c0cfe0;">{recommendation}</span>
+
+    <!-- Recommendation -->
+    <div style="padding:11px 14px; background:#f0fdf4; border-left:3px solid #059669; border-radius:4px; font-size:14px; color:#333; margin-bottom:8px;">
+      <b style="color:#059669;">Fix ({fix_type}):</b> {fix_justification}
     </div>
-    <div style="background:#0d1b2a; color:#c0cfe0; padding:12px 14px; border-radius:4px; font-family:'Monaco','Consolas',monospace; font-size:11px; white-space:pre; overflow-x:auto; margin-top:8px; border:1px solid #2a3f5f;">{code_snippet}</div>
+
+    <!-- Code snippet -->
+    <pre style="background:#f5f5f5; color:#1a1a1a; padding:12px 14px; border-radius:4px; font-size:13px; font-family:'Courier New',Courier,monospace; overflow-x:auto; margin:0; border:1px solid #e5e7eb; white-space:pre;">{fix_action}</pre>
+
   </div>
+  <!-- end violation card -->
 
 </div>
 
-<!-- ═══════════════════ LINT SECTION ═══════════════════ -->
-<!-- Same structure — yellow accent #ffd93d -->
-<div style="background:#1e2d4a; border:1px solid #2a3f5f; border-radius:8px; padding:20px; margin-bottom:18px;">
-  <h2 style="margin:0 0 16px 0; font-size:17px; color:#ffd93d; border-bottom:2px solid #ffd93d; padding-bottom:10px;">Lint Analysis</h2>
-  <!-- violation cards: border-left:4px solid #ffd93d; violation_id color:#ffe566; badge bg:#ffd93d -->
+<!-- ══════════════════════════════════════════
+     BLACKBOX MODULES (SpgDFT only)
+     ══════════════════════════════════════════ -->
+<div style="margin-bottom:32px;">
+  <div style="font-size:17px; font-weight:700; color:#1a1a1a; border-left:4px solid #059669; padding-left:12px; margin-bottom:14px;">Blackbox Modules</div>
+  <table style="width:100%; border-collapse:collapse; font-size:14px;">
+    <thead>
+      <tr style="background:#f5f7fa; border-bottom:2px solid #dde1e7;">
+        <th style="padding:10px 14px; text-align:left; color:#444; font-weight:600;">Module</th>
+        <th style="padding:10px 14px; text-align:left; color:#444; font-weight:600;">Message</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #eee;">
+        <td style="padding:10px 14px; color:#333; font-family:monospace; font-size:13px;">{module_name}</td>
+        <td style="padding:10px 14px; color:#555; font-size:14px;">{message}</td>
+      </tr>
+    </tbody>
+  </table>
 </div>
 
-<!-- ═══════════════════ SPGDFT SECTION ═══════════════════ -->
-<!-- Same structure — green accent #6bcb77 -->
-<div style="background:#1e2d4a; border:1px solid #2a3f5f; border-radius:8px; padding:20px; margin-bottom:18px;">
-  <h2 style="margin:0 0 16px 0; font-size:17px; color:#6bcb77; border-bottom:2px solid #6bcb77; padding-bottom:10px;">SpgDFT Analysis</h2>
-  <!-- violation cards: border-left:4px solid #6bcb77; violation_id color:#8ed99a; badge bg:#6bcb77 -->
+<!-- ══════════════════════════════════════════
+     RECOMMENDATIONS
+     ══════════════════════════════════════════ -->
+<div style="margin-bottom:32px;">
+  <div style="font-size:17px; font-weight:700; color:#1a1a1a; border-left:4px solid #2563eb; padding-left:12px; margin-bottom:16px;">Recommendations</div>
+
+  <!-- High priority -->
+  <div style="padding:14px 18px; background:#fff5f5; border-left:4px solid #c0392b; border-radius:4px; margin-bottom:10px;">
+    <div style="font-size:13px; font-weight:700; color:#c0392b; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">High Priority ({high_count})</div>
+    <ul style="margin:0; padding-left:20px; font-size:14px; color:#333; line-height:1.7;">
+      <li style="color:#333;">{high_item_1}</li>
+    </ul>
+  </div>
+
+  <!-- Medium priority -->
+  <div style="padding:14px 18px; background:#fffbeb; border-left:4px solid #d97706; border-radius:4px; margin-bottom:10px;">
+    <div style="font-size:13px; font-weight:700; color:#d97706; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">Medium Priority ({med_count})</div>
+    <ul style="margin:0; padding-left:20px; font-size:14px; color:#333; line-height:1.7;">
+      <li style="color:#333;">{med_item_1}</li>
+    </ul>
+  </div>
+
+  <!-- Low priority -->
+  <div style="padding:14px 18px; background:#f0fdf4; border-left:4px solid #059669; border-radius:4px; margin-bottom:10px;">
+    <div style="font-size:13px; font-weight:700; color:#059669; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">Low Priority ({low_count})</div>
+    <ul style="margin:0; padding-left:20px; font-size:14px; color:#333; line-height:1.7;">
+      <li style="color:#333;">{low_item_1}</li>
+    </ul>
+  </div>
 </div>
 
-<!-- ═══════════════════ RECOMMENDATIONS ═══════════════════ -->
-<div style="background:#1e2d4a; border:1px solid #2a3f5f; border-radius:8px; padding:20px; margin-bottom:18px;">
-  <h2 style="margin:0 0 16px 0; font-size:17px; color:#00d4ff; border-bottom:2px solid #00d4ff; padding-bottom:10px;">Recommendations Summary</h2>
-  <div style="background:#1f1020; border-left:4px solid #ff6b6b; padding:12px 16px; margin:10px 0; border-radius:4px;">
-    <b style="font-size:11px; color:#ff6b6b; text-transform:uppercase; letter-spacing:1px;">High Priority ({count})</b>
-    <ul style="margin:8px 0 0 0; padding-left:20px; font-size:13px; color:#c0cfe0;"><!-- items --></ul>
-  </div>
-  <div style="background:#1a1a10; border-left:4px solid #ffd93d; padding:12px 16px; margin:10px 0; border-radius:4px;">
-    <b style="font-size:11px; color:#ffd93d; text-transform:uppercase; letter-spacing:1px;">Medium Priority ({count})</b>
-    <ul style="margin:8px 0 0 0; padding-left:20px; font-size:13px; color:#c0cfe0;"><!-- items --></ul>
-  </div>
-  <div style="background:#0e1f18; border-left:4px solid #6bcb77; padding:12px 16px; margin:10px 0; border-radius:4px;">
-    <b style="font-size:11px; color:#6bcb77; text-transform:uppercase; letter-spacing:1px;">Low Priority ({count})</b>
-    <ul style="margin:8px 0 0 0; padding-left:20px; font-size:13px; color:#c0cfe0;"><!-- items --></ul>
-  </div>
-</div>
-
-<!-- ═══════════════════ CONFIG FILES ═══════════════════ -->
-<div style="background:#162030; border:1px solid #00d4ff; border-radius:8px; padding:18px; margin-bottom:18px;">
-  <h2 style="margin:0 0 14px 0; font-size:15px; color:#00d4ff;">Configuration Files</h2>
-  <table style="width:100%; border-collapse:collapse; font-size:12px;">
-    <tr style="background:#0d1b2a;">
-      <th style="padding:8px 12px; text-align:left; color:#c0cfe0; font-size:11px; text-transform:uppercase;">Check</th>
-      <th style="padding:8px 12px; text-align:left; color:#c0cfe0; font-size:11px; text-transform:uppercase;">Config File</th>
-    </tr>
-    <tr style="border-bottom:1px solid #4a6080; background:#192840;">
-      <td style="padding:8px 12px; color:#ff6b6b; font-weight:600;">CDC / RDC</td>
-      <td style="padding:8px 12px; color:#e0e0e0;"><code style="color:#c0cfe0; font-size:11px;">{cdc_config}</code></td>
-    </tr>
-    <tr style="border-bottom:1px solid #4a6080; background:#192840;">
-      <td style="padding:8px 12px; color:#6bcb77; font-weight:600;">SpgDFT</td>
-      <td style="padding:8px 12px; color:#e0e0e0;"><code style="color:#c0cfe0; font-size:11px;">{spgdft_config}</code></td>
-    </tr>
-    <tr>
-      <td style="padding:8px 12px; color:#ffd93d; font-weight:600;">Lint</td>
-      <td style="padding:8px 12px; color:#e0e0e0;"><code style="color:#c0cfe0; font-size:11px;">{lint_config}</code></td>
-    </tr>
+<!-- ══════════════════════════════════════════
+     CONFIGURATION FILES
+     ══════════════════════════════════════════ -->
+<div style="margin-bottom:32px;">
+  <div style="font-size:17px; font-weight:700; color:#1a1a1a; border-left:4px solid #2563eb; padding-left:12px; margin-bottom:14px;">Configuration Files</div>
+  <table style="width:100%; border-collapse:collapse; font-size:14px;">
+    <thead>
+      <tr style="background:#f5f7fa; border-bottom:2px solid #dde1e7;">
+        <th style="padding:10px 14px; text-align:left; color:#444; font-weight:600;">Check</th>
+        <th style="padding:10px 14px; text-align:left; color:#444; font-weight:600;">Config File</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #eee;">
+        <td style="padding:10px 14px; color:#c0392b; font-weight:600;">CDC / RDC</td>
+        <td style="padding:10px 14px; color:#1a1a1a; font-family:monospace; font-size:13px;">{cdc_config_path}</td>
+      </tr>
+      <tr style="border-bottom:1px solid #eee; background:#fafafa;">
+        <td style="padding:10px 14px; color:#d97706; font-weight:600;">Lint</td>
+        <td style="padding:10px 14px; color:#1a1a1a; font-family:monospace; font-size:13px;">{lint_config_path}</td>
+      </tr>
+      <tr style="border-bottom:1px solid #eee;">
+        <td style="padding:10px 14px; color:#059669; font-weight:600;">SpgDFT</td>
+        <td style="padding:10px 14px; color:#1a1a1a; font-family:monospace; font-size:13px;">{spgdft_config_path}</td>
+      </tr>
+    </tbody>
   </table>
 </div>
 
 <!-- Footer -->
-<div style="text-align:center; padding:16px; font-size:11px; color:#445566; border-top:1px solid #2a3f5f; margin-top:10px;">
+<div style="text-align:center; padding:16px; font-size:12px; color:#888; border-top:1px solid #eee; margin-top:16px;">
   Generated by Claude Code Analysis &nbsp;|&nbsp; {check_type_label} &nbsp;|&nbsp; {tag} &nbsp;|&nbsp; {ip} @ {dir_name}
 </div>
 
@@ -408,49 +411,68 @@ Generate sections for your assigned check type ONLY:
 </html>
 ```
 
-## Badge / Gate Color Guide
-
-| Status | `{*_badge_bg}` | `{gate_border_color}` | `{gate_text_color}` |
-|--------|---------------|----------------------|---------------------|
-| NEEDS ACTION | `#ff6b6b` | `#ff6b6b` | `#ff6b6b` |
-| CLEAN | `#6bcb77` | `#6bcb77` | `#6bcb77` |
+---
 
 ## Color Reference
 
+### Accent colors by check type
+
+| check_type | `{accent_color}` | `{accent_dark}` | `{accent_light_bg}` |
+|------------|-----------------|-----------------|---------------------|
+| `cdc_rdc`  | `#c0392b`       | `#7f1d1d`       | `#fff5f5`           |
+| `lint`     | `#d97706`       | `#78350f`       | `#fffbeb`           |
+| `spg_dft`  | `#059669`       | `#064e3b`       | `#f0fdf4`           |
+
+### Status badges
+
+| Status | `{*_badge_bg}` | `{*_badge_color}` |
+|--------|----------------|-------------------|
+| NEEDS ACTION | `#fee2e2` | `#b91c1c` |
+| CLEAN | `#d1fae5` | `#065f46` |
+
+### Risk level badges (violation cards)
+
+| Risk | `{risk_bg}` | `{risk_color}` |
+|------|-------------|----------------|
+| HIGH | `#fee2e2` | `#b91c1c` |
+| MEDIUM | `#fef3c7` | `#92400e` |
+| LOW | `#d1fae5` | `#065f46` |
+
+### General palette
+
 | Use | Color |
 |-----|-------|
-| Page background | `#16213e` |
-| Card/panel background | `#1e2d4a` |
-| Deep background (headers, code) | `#0d1b2a` |
-| Panel border | `#2a3f5f` |
-| Row separator | `#4a6080` |
-| Accent cyan | `#00d4ff` |
-| Primary text | `#e0e0e0` |
-| Labels / secondary text | `#c0cfe0` |
-| Dim / footer | `#445566` |
-| CDC/RDC accent | `#ff6b6b` / `#ff8e8e` |
-| Lint accent | `#ffd93d` / `#ffe566` |
-| SpgDFT accent | `#6bcb77` / `#8ed99a` |
-| Alternating data row | `#192840` |
-| Root cause bg | `#1a2010` + border `#ffd93d` |
-| Recommendation bg | `#0e1f18` + border `#6bcb77` |
-| High priority bg | `#1f1020` + border `#ff6b6b` |
-| Medium priority bg | `#1a1a10` + border `#ffd93d` |
-| Low priority bg | `#0e1f18` + border `#6bcb77` |
+| Page background | `#ffffff` |
+| Body text | `#1a1a1a` |
+| Secondary text | `#555` / `#666` |
+| Dim / footer | `#888` |
+| Table header bg | `#f5f7fa` |
+| Alternating row | `#fafafa` |
+| Row separator | `#eee` |
+| Header separator | `#dde1e7` |
+| Card border | `#e5e7eb` |
+| Focus count | `#2563eb` (blue) |
+| Root cause bg | `#fffbeb` + border `#d97706` |
+| Fix/rec bg | `#f0fdf4` + border `#059669` |
+| Code block bg | `#f5f5f5` + border `#e5e7eb` |
+| Code text | `#1a1a1a` |
+
+---
 
 ## Instructions
 
 1. **Read only the JSON files for your check_type** (skip files from other check types)
-2. **Set `check_type_label`** based on check_type:
-   - `cdc_rdc` → `"CDC / RDC"`
-   - `lint`    → `"Lint"`
-   - `spg_dft` → `"SpgDFT"`
-3. **Generate HTML** — zero `<style>` tags, zero CSS classes, all inline
-4. **Show only sections for your check type** — do NOT include sections for other checks
-5. **Flowchart header:** use `<table border-spacing>` for grid; `display:inline-block` for centered nodes; simple `border-top/left/right` divs for brackets; `◆` character in inline-styled div for gate
-6. **Every `<td>`** must have explicit `color:` attribute
-7. **Include code snippets** for fixes
-8. **Write to the correct output file** (see Output section above):
+2. **Set accent colors** based on check_type (see Color Reference above)
+3. **Show only the rows for your check_type** in the summary table:
+   - `cdc_rdc` → show CDC row + RDC row only
+   - `lint` → show Lint row only
+   - `spg_dft` → show SpgDFT row only
+4. **Skip sections with zero data** gracefully (e.g., if no library finder results, omit that section)
+5. **Show only sections for your check_type** — do NOT include sections for other checks
+6. **Violation cards:** repeat the card block for each violation, up to 10
+7. **Every `<td>`** must have explicit `color:` attribute
+8. **Code snippets** go in `<pre>` blocks with `#f5f5f5` background
+9. **Write to the correct output file**:
    - `cdc_rdc`  → `data/<tag>_analysis_cdc.html`
    - `lint`     → `data/<tag>_analysis_lint.html`
    - `spg_dft`  → `data/<tag>_analysis_spgdft.html`
