@@ -66,6 +66,7 @@ config/analyze_agents/
 │   └── rtl_analyzer.md          # Analyze TDR ports, etc.
 └── shared/                      # Shared agents
     ├── library_finder.md        # Find missing libraries
+    ├── fix_consolidator.md      # Deduplicate + verify RTL analyzer fix suggestions
     └── report_compiler.md       # Generate HTML report
 ```
 
@@ -152,12 +153,17 @@ When `--analyze` mode is enabled:
                │
 6. Spawn whichever RTL analyzer agents are NOT skipped (in PARALLEL)
                │
-7. Compile HTML report from all agent outputs
+7. Spawn Fix Consolidator agent(s) — deduplicate + verify RTL analyzer fixes
+   - One per check type that had violations (cdc/rdc/lint/spgdft)
+   - Writes: data/<tag>_consolidated_<check>.json
+               │
+8. Compile HTML report from all agent outputs
+   - Report compiler reads consolidated JSON for recommendations section
    - Write to data/<tag>_analysis.html
                │
-8. Send email with HTML report
+9. Send email with HTML report
                │
-9. Say: "Analysis complete. Email sent."
+10. Say: "Analysis complete. Email sent."
 ```
 
 **IMPORTANT:** If monitoring agent returns `skip_analysis=true`, DO NOT invoke any analysis agents. Just report the failure.
@@ -412,6 +418,10 @@ The report compiler reads from these files — NOT from context.**
 | RDC RTL Analyzer (violation N) | `data/<tag>_rtl_rdc_<N>.json` |
 | Lint RTL Analyzer (violation N) | `data/<tag>_rtl_lint_<N>.json` |
 | SpgDFT RTL Analyzer (violation N) | `data/<tag>_rtl_spgdft_<N>.json` |
+| Fix Consolidator (CDC) | `data/<tag>_consolidated_cdc.json` |
+| Fix Consolidator (RDC) | `data/<tag>_consolidated_rdc.json` |
+| Fix Consolidator (Lint) | `data/<tag>_consolidated_lint.json` |
+| Fix Consolidator (SpgDFT) | `data/<tag>_consolidated_spgdft.json` |
 | Library Finder | `data/<tag>_library_finder.json` |
 
 Where `<base_dir>` is the genie_cli working directory (e.g., `/proj/rtg_oss_feint1/FEINT_AI_AGENT/abinbaba/rosenhorn_agent_flow/main_agent`).
@@ -654,6 +664,38 @@ Task(
 )
 ```
 
+**For Fix Consolidator (spawn after all RTL analyzers complete, one per non-clean check type):**
+```python
+Task(
+  description="Fix Consolidator - CDC/RDC",
+  subagent_type="general-purpose",
+  model="sonnet",
+  prompt="""**PERMISSIONS - READ THIS FIRST:**
+  You have FULL READ ACCESS to all files under /proj/.
+  Do NOT ask for permission - just read files directly using the Read tool.
+
+  **OUTPUT STORAGE:**
+  Write your JSON findings to:
+    <base_dir>/data/<tag>_consolidated_cdc.json
+    <base_dir>/data/<tag>_consolidated_rdc.json
+  Use the Write tool to save. Do NOT just return results in text.
+
+  You are the Fix Consolidator Agent.
+
+  Input:
+  - tag: <tag>
+  - base_dir: <base_dir>
+  - ref_dir: <ref_dir>
+  - ip: <ip>
+  - check_type: cdc_rdc
+
+  [contents from shared/fix_consolidator.md]
+  """
+)
+# For lint:    check_type=lint    → consolidated_lint.json
+# For spg_dft: check_type=spg_dft → consolidated_spgdft.json
+```
+
 ### Reference Documents
 
 The agent instruction files provide guidance on WHAT to look for:
@@ -669,7 +711,8 @@ The agent instruction files provide guidance on WHAT to look for:
 | SpgDFT Violations | `spgdft/violation_extractor.md` | Parse moresimple.rpt, **ERROR severity only** |
 | SpgDFT RTL | `spgdft/rtl_analyzer.md` | TDR ports, tie-offs |
 | Library Search | `shared/library_finder.md` | Find lib.list, search for modules |
-| HTML Report | `shared/report_compiler.md` | Beautiful HTML template |
+| Fix Consolidator | `shared/fix_consolidator.md` | Deduplicate fixes, detect instance name confusion, rank by coverage |
+| HTML Report | `shared/report_compiler.md` | Beautiful HTML template — reads consolidated JSON for recommendations |
 
 ### CRITICAL — Tech-Cell Constraint: Module Name vs Instance Name
 
@@ -726,10 +769,20 @@ Also read the clock port from the instantiation's port connections (`.CP(...)`, 
    - SpgDFT: up to N violations in parallel
    - Library Finder: 1 agent (if unresolved/blackbox > 0)
 
+3.5 Spawn Fix Consolidator agent(s) IN PARALLEL — one per check type with violations:
+   - Reference: shared/fix_consolidator.md
+   - Skip if that check type was CLEAN (no RTL analyzers ran for it)
+   - cdc_rdc → spawn 2 in parallel: consolidated_cdc.json + consolidated_rdc.json
+   - lint    → spawn 1: consolidated_lint.json
+   - spg_dft → spawn 1: consolidated_spgdft.json
+   - full_static_check → spawn up to 4 in parallel (all non-clean types)
+   - Input: tag, base_dir, ref_dir, ip, check_type (cdc_rdc | lint | spg_dft)
+
 4. Collect all agent results
    - DO NOT read reports yourself - use agent outputs
 
 5. Compile HTML report(s) using the report_compiler agent via Task tool:
+   - Report compiler reads data/<tag>_consolidated_<check>.json for recommendations
    - For single check types (`cdc_rdc`, `lint`, `spg_dft`):
      Spawn ONE report compiler Task for that check type.
      Output: data/<tag>_analysis_<check>.html  (cdc / lint / spgdft)
@@ -1018,6 +1071,15 @@ That's it. All details are in the email.
 7. Spawn whichever RTL analyzer agents are NOT skipped (IN PARALLEL)
    │   - One agent per violation (up to 5 CDC + 5 RDC + N Lint + N SpgDFT)
    │   - Skipped checks → mark "CLEAN" in report
+         │
+7.5 Spawn FIX CONSOLIDATOR AGENT(S) via Task tool (IN PARALLEL):
+   │   - One consolidator per check type that had RTL analyzers run
+   │   - Skip if check was CLEAN (focus_violations == 0)
+   │   - cdc_rdc → 2 in parallel: consolidated_cdc.json + consolidated_rdc.json
+   │   - lint    → 1: consolidated_lint.json
+   │   - spg_dft → 1: consolidated_spgdft.json
+   │   - full_static_check → up to 4 in parallel (all non-clean types)
+   │   - Reference: shared/fix_consolidator.md
          │
 8. SPAWN REPORT COMPILER AGENT(S) via Task tool (IN PARALLEL for full_static_check):
    │
