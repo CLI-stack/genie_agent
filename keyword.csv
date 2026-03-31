@@ -253,3 +253,5 @@ Tilebuilder,,,,,,,
 formality,fm,formal verification
 analyze,analyse
 structure,hierarchy
+full_static_check,full static check
+results,result
