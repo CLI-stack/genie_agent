@@ -216,11 +216,24 @@ Constraint — register unrecognized tech-cell synchronizer:
 ```tcl
 # <module_name>  = MODULE name from the instantiation line (first token), NOT the instance name (second token)
 # <CLK_port>     = clock port name read from the instantiation's port connections (.CP, .CLK, etc.)
-cdc custom sync <module_name> -type dff
+# <type>         = determined from the cell name (see -type selection rule below)
+cdc custom sync <module_name> -type <type>
 netlist port domain <DataIn_port>  -async -clock <CLK_port> -module <module_name>
 netlist port domain <DataOut_port> -clock <CLK_port>        -module <module_name>
 netlist port domain <SI_port>      -clock <CLK_port>        -module <module_name>
 ```
+
+**How to choose `-type`:**
+
+Look at the stage count encoded in the cell name:
+
+| Cell name pattern | Stage count | `-type` to use |
+|-------------------|-------------|----------------|
+| Name contains a digit ≥ 2 indicating stages (e.g., `SYNC3`, `SYNC4`) | 2+ flops inside — self-contained synchronizer | `two_dff` |
+| Name contains `CDC` or has separate source/dest clock ports | Dual-clock synchronizer | `idff` |
+| Single flip-flop cell (no stage count, or stage count = 1) | 1 flop — chain is formed externally | `dff` |
+
+**Rule:** If the cell itself contains 2 or more synchronizer stages (self-contained), use `-type two_dff`. If it is a single flip-flop that relies on external chaining, use `-type dff`. For dual-clock cells with both source and destination clock ports, use `-type idff`.
 
 ## Instructions
 
