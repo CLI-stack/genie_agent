@@ -274,8 +274,7 @@ When `ANALYZE_MODE_ENABLED` is detected in output:
      """
    )
    ```
-2. Say: `"Analysis running in background. I'll notify you when complete."`
-3. When the agent completes, say only: `"Analysis complete. Email sent."`
+2. When the agent completes, say only: `"Analysis complete. Email sent."`
 
 **Signal format:**
 ```
@@ -317,8 +316,7 @@ When `ANALYZE_FIXER_MODE_ENABLED` is detected in output:
      """
    )
    ```
-2. Say: `"Analyze-fixer running in background. I'll notify you when complete."`
-3. When the agent completes, say only: `"Analyze-fixer complete. <result>. Email sent."`
+2. When the agent completes, say only: `"Analyze-fixer complete. <result>. Email sent."`
 
 **Signal format:**
 ```

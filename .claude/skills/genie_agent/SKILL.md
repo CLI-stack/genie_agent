@@ -501,7 +501,7 @@ config/analyze_agents/
 
 1. **Task Execution**: genie_cli.py launches static check in background
 2. **Signal Detection**: Prints `ANALYZE_MODE_ENABLED` with task metadata
-3. **Orchestrator Agent**: Main session spawns ONE general-purpose orchestrator agent — all analysis work happens in the agent's own fresh context window, NOT the main session
+3. **Orchestrator Agent**: Main session spawns ONE general-purpose orchestrator agent (foreground) — all analysis work happens in the agent's own fresh context window, NOT the main session. Live output is visible as each step executes.
 4. The orchestrator agent reads `config/analyze_agents/ORCHESTRATOR.md` and:
    - Monitors log for task completion (unless SKIP_MONITORING=true)
    - Spawns sub-agents: precondition, violation extractor, RTL analyzers, library finder
@@ -609,7 +609,7 @@ Final:
 
 ### Orchestrator Agent
 
-The main session spawns ONE orchestrator agent (general-purpose) which handles the entire loop in its own fresh context window. The main session context is not consumed by any of this work.
+The main session spawns ONE orchestrator agent (general-purpose, foreground) which handles the entire loop in its own fresh context window. Live output is visible as each round executes. The main session context is not consumed by any of this work.
 
 ### Fix Agent
 
