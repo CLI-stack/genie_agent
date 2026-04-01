@@ -102,6 +102,7 @@ The agent runs from the current `main_agent` directory (your working directory).
 | `--user-disk PATH` | | Disk path for `--setup-user` (required, or will prompt) |
 | `--analyze` | `-a` | Claude Code monitors task and analyzes results (static checks only) |
 | `--analyze-only TAG` | | Skip running check — analyze existing results for TAG directly |
+| `--analyze-fixer` | | Analyze + auto-apply constraint fixes + rerun loop until clean (max 5 rounds) |
 
 ## Execution Modes
 
@@ -114,6 +115,7 @@ The agent supports three execution modes:
 | **Xterm Popup** | `--execute --xterm` | Opens xterm window for live monitoring |
 | **Analyze Mode** | `--execute --analyze` | Claude Code monitors and analyzes results |
 | **Analyze-Only** | `--analyze-only <tag>` | Skip run — analyze existing results directly |
+| **Analyze-Fixer** | `--execute --analyze-fixer` | Analyze → auto-fix → rerun loop until violations = 0 |
 
 **When to use xterm mode:**
 - Visual monitoring of long-running tasks
@@ -124,6 +126,12 @@ The agent supports three execution modes:
 - When you want Claude Code to automatically analyze static check results after completion
 - Only works with: `cdc_rdc`, `lint`, `spg_dft`, `full_static_check`
 - Claude monitors the task, waits for completion, then analyzes violations with priority-based approach
+
+**When to use analyze-fixer mode:**
+- When you want Claude Code to analyze violations AND automatically apply constraint/RTL fixes, then rerun the check
+- Loops up to 5 rounds until violations reach zero
+- Only works with: `cdc_rdc`, `lint`, `spg_dft`
+- Email sent after each round with violations found + fixes applied; final summary email at end
 
 ## Execution Steps
 
@@ -479,13 +487,13 @@ config/analyze_agents/
 
 1. **Task Execution**: genie_cli.py launches static check in background
 2. **Signal Detection**: Prints `ANALYZE_MODE_ENABLED` with task metadata
-3. **Background Monitoring**: Claude spawns ONE haiku agent to monitor log for completion
-4. **Live Analysis**: Upon completion, Claude runs analysis LIVE (not background):
-   - Uses `config/IP_CONFIG.yaml` for fast report path resolution
-   - Invokes only the relevant agents for the check type
-   - For `cdc_rdc`: analyzes BOTH CDC and RDC reports
-5. **HTML Report**: Compiles all results into `data/<tag>_analysis.html`
-6. **Email Results**: Full HTML analysis sent to debuggers (ALL details in email, NOT conversation)
+3. **Orchestrator Agent**: Main session spawns ONE general-purpose orchestrator agent — all analysis work happens in the agent's own fresh context window, NOT the main session
+4. The orchestrator agent reads `config/analyze_agents/ORCHESTRATOR.md` and:
+   - Monitors log for task completion (unless SKIP_MONITORING=true)
+   - Spawns sub-agents: precondition, violation extractor, RTL analyzers, library finder
+   - Compiles all results into `data/<tag>_analysis.html`
+   - Sends email with full HTML analysis
+5. **Main session stays clean** — context is not consumed by report reading or agent coordination
 
 ### IP Configuration (Fast Path Resolution)
 
@@ -533,6 +541,92 @@ For blackbox modules, the Library Finder searches lib.list files (**NOT hardcode
 ### Reference
 
 For detailed orchestration guide, see: `config/analyze_agents/ORCHESTRATOR.md`
+
+---
+
+## Analyze-Fixer Mode (`--analyze-fixer`)
+
+The `--analyze-fixer` flag extends analyze mode by **automatically applying fixes and rerunning the check** in a loop until violations reach zero (or max rounds reached).
+
+### Supported Check Types
+
+| Check Type | Auto-Fixed | Manual Review Only |
+|------------|-----------|-------------------|
+| `cdc_rdc` | Constraint fixes to `project.0in_ctrl.v.tcl` + liblist entries | `rtl_fix`, `investigate` |
+| `spg_dft` | Constraint fixes to `project.params` | `rtl_fix`, `investigate` |
+| `lint` | Direct RTL edits (original backed up as `<file>.bak_<tag>`) | None |
+
+### Usage
+
+```bash
+# Run CDC/RDC with analyze-fixer mode
+python3 script/genie_cli.py -i "run cdc_rdc at /proj/xxx for umc9_3" --execute --analyze-fixer --email
+
+# Run lint with analyze-fixer mode
+python3 script/genie_cli.py -i "run lint at /proj/xxx for umc9_3" --execute --analyze-fixer --email
+
+# Run SPG_DFT with analyze-fixer mode
+python3 script/genie_cli.py -i "run spg_dft at /proj/xxx for umc9_3" --execute --analyze-fixer --email
+```
+
+### How It Works
+
+```
+Round 1:
+  1. Run static check → tag_1
+  2. Analyze: Precondition + Extractor + RTL Analyzer + Library Finder + Fix Consolidator
+  3. Fix Implementor → applies constraints to target constraint file
+  4. Per-round email: violations found + fixes applied + remaining count
+  5. Rerun static check → tag_2
+
+Round 2:
+  6. Analyze tag_2 results
+  7. Fix Implementor → applies new constraints
+  8. Per-round email: Round 2 violations + fixes applied
+  9. Rerun → tag_3
+
+...repeat up to 5 rounds until violations = 0...
+
+Final:
+  - Summary email: all rounds, violation trend (e.g. 153→42→0), full fix history
+```
+
+### Orchestrator Agent
+
+The main session spawns ONE orchestrator agent (general-purpose) which handles the entire loop in its own fresh context window. The main session context is not consumed by any of this work.
+
+### Fix Agent
+
+The Fix Implementor agent (`config/analyze_agents/shared/fix_implementor.md`) handles:
+1. Reading consolidated fixes JSON from analyze agents
+2. Checking for duplicates before appending
+3. `p4 edit <file>` checkout before modification
+4. Backup creation: `<file>.bak_<tag>`
+5. Applying fixes and writing `data/<tag>_fix_applied_<type>.json`
+
+### Key Rules
+
+- **Zero waivers** — all violations resolved via RTL fix or constraint
+- **Backup first** — `<file>.bak_<tag>` created before any edit
+- **p4 edit first** — Perforce checkout before modifying
+- **Max 5 rounds** — prevents infinite loops
+- **Email every round** — not just at end
+- **New tag per rerun** — each round has independent history
+
+### Output Files (per round)
+
+| File | Purpose |
+|------|---------|
+| `data/<tag>_fixer_state` | Round number, original args, parent tag |
+| `data/<tag>_fix_applied_cdc.json` | Applied fixes + pending manual fixes (CDC/RDC) |
+| `data/<tag>_fix_applied_lint.json` | Applied RTL fixes (Lint) |
+| `data/<tag>_fix_applied_spgdft.json` | Applied fixes (SPG_DFT) |
+| `data/<tag>_analysis_fixer.html` | Per-round report (violations + fixes applied) |
+| `data/<tag>_fixer_summary.html` | Final summary across all rounds |
+
+### Reference
+
+For full orchestration details, see: `config/analyze_agents/ORCHESTRATOR.md`
 
 ---
 
@@ -584,10 +678,11 @@ python3 script/rtg_oss_feint/clock_reset_analyzer.py <vf_file> --top <top_module
 
 ---
 
-**Version:** 2.1
-**Last Updated:** 2026-03-17
+**Version:** 2.3
+**Last Updated:** 2026-04-01
 
 **Changelog:**
+- v2.3: Added `--analyze-fixer` mode — analyze + auto-apply constraint/RTL fixes + rerun loop until violations = 0 (max 5 rounds); Fix Implementor agent applies fixes with p4 edit + backup; email sent every round; new tag per rerun
 - v2.2: Added `--analyze-only <tag>` flag and analyze instruction variants — skip re-running static check, go straight to analysis on existing results; emits `SKIP_MONITORING=true` so orchestrator skips monitoring step
 - v2.1: Enhanced `--analyze` mode with Agent Teams architecture - specialized agents per check type, IP_CONFIG.yaml for fast path resolution, dynamic library discovery from lib.list files, improved HTML report colors, analyzes BOTH CDC and RDC reports for `cdc_rdc` check type
 - v2.0: Added `--analyze` mode - Claude Code monitors and analyzes static check results with priority-based approach

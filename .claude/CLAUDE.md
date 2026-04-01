@@ -46,6 +46,7 @@ This directory provides Claude Code with skills, agents, and templates for UVM-b
 | `--to EMAIL` | | Override email recipients |
 | `--analyze` | `-a` | Claude monitors and analyzes results (static checks) |
 | `--analyze-only TAG` | | Skip running check — analyze existing results for TAG directly |
+| `--analyze-fixer` | | Analyze + auto-apply constraint fixes + rerun loop until clean (max 5 rounds) |
 | `--list` | `-l` | List all available instructions |
 | `--status TAG` | `-s` | Check task status by tag |
 | `--tasks` | `-t` | List tasks: `running`, `today`, `yesterday`, `YYYY-MM-DD` |
@@ -61,6 +62,7 @@ This directory provides Claude Code with skills, agents, and templates for UVM-b
 | **Xterm** | `--execute --xterm` | Opens popup window with live output |
 | **Analyze** | `--execute --analyze` | Claude monitors + analyzes results |
 | **Analyze-Only** | `--analyze-only <tag>` | Skip run — analyze existing results directly |
+| **Analyze-Fixer** | `--execute --analyze-fixer` | Analyze → auto-fix → rerun loop until violations = 0 |
 
 ### Examples
 
@@ -72,6 +74,10 @@ python3 script/genie_cli.py -i "run full_static_check for umc9_3" --execute --xt
 
 # With analysis
 python3 script/genie_cli.py -i "run cdc_rdc at /proj/xxx for umc9_3" --execute --analyze --email
+
+# With analyze-fixer (analyze + auto-apply fixes + rerun loop)
+python3 script/genie_cli.py -i "run cdc_rdc at /proj/xxx for umc9_3" --execute --analyze-fixer --email
+python3 script/genie_cli.py -i "run lint at /proj/xxx for umc9_3" --execute --analyze-fixer --email
 
 # Analyze existing results (skip re-running the check)
 python3 script/genie_cli.py --analyze-only <tag>
@@ -150,6 +156,12 @@ PARAM2 = value2 :>
 | `data/<tag>_email` | Email flag |
 | `data/<tag>_analyze` | Analyze mode metadata |
 | `data/<tag>_analysis.html` | Analysis report |
+| `data/<tag>_fixer_state` | Fixer round state (round, ref_dir, ip, check_type) |
+| `data/<tag>_fix_applied_cdc.json` | Applied constraint fixes per round (CDC/RDC) |
+| `data/<tag>_fix_applied_lint.json` | Applied RTL fixes per round (Lint) |
+| `data/<tag>_fix_applied_spgdft.json` | Applied constraint fixes per round (SPG_DFT) |
+| `data/<tag>_analysis_fixer.html` | Per-round report (violations + fixes applied) |
+| `data/<tag>_fixer_summary.html` | Final summary across all rounds |
 
 ### Email Notification
 
@@ -233,15 +245,30 @@ python3 script/genie_cli.py -i "run lint at /proj/xxx for umc9_3" --execute --em
 
 ## Analyze Mode (--analyze)
 
-When `ANALYZE_MODE_ENABLED` is detected in output, you MUST:
+When `ANALYZE_MODE_ENABLED` is detected in output:
 
-1. **Read the orchestrator**: `config/analyze_agents/ORCHESTRATOR.md`
-2. **If `SKIP_MONITORING=true`**: Skip monitoring — go straight to analysis agents
-3. **Otherwise**: Spawn background monitor to watch for task completion
-4. **On completion**: Spawn analysis agents per check_type
-5. **Compile HTML report**: Write to `data/<tag>_analysis.html`
-6. **Send email** with full analysis
-7. **Say only**: "Analysis complete. Email sent."
+1. **Spawn ONE orchestrator agent** (general-purpose) — do NOT do the analysis yourself:
+   ```
+   Agent(
+     description="Analyze <check_type> for <ip>",
+     subagent_type="general-purpose",
+     prompt="""
+     You are the analyze orchestrator. Read config/analyze_agents/ORCHESTRATOR.md and
+     execute the full analyze flow for the following inputs:
+
+     TAG=<tag>
+     CHECK_TYPE=<check_type>
+     REF_DIR=<ref_dir>
+     IP=<ip>
+     LOG_FILE=<log_file>
+     SPEC_FILE=<spec_file>
+     BASE_DIR=<parent of the 'runs/' folder in LOG_FILE>
+     SKIP_MONITORING=<true if present in signal, otherwise false>
+     """
+   )
+   ```
+2. Say: `"Analysis running in background. I'll notify you when complete."`
+3. When the agent completes, say only: `"Analysis complete. Email sent."`
 
 **Signal format:**
 ```
@@ -255,14 +282,52 @@ SPEC_FILE=<spec_file>
 SKIP_MONITORING=true   ← only present when using --analyze-only or analyze instructions
 ```
 
-**Agent Teams** (in `config/analyze_agents/`):
-- CDC/RDC: precondition, violation_extractor, rtl_analyzer
-- Lint: violation_extractor, rtl_analyzer
-- SpgDFT: precondition, violation_extractor, rtl_analyzer
-- Shared: library_finder, report_compiler
+---
+
+## Analyze-Fixer Mode (--analyze-fixer)
+
+When `ANALYZE_FIXER_MODE_ENABLED` is detected in output:
+
+1. **Spawn ONE orchestrator agent** (general-purpose) — do NOT do the analysis or fixing yourself:
+   ```
+   Agent(
+     description="Analyze-fixer <check_type> for <ip> round <N>",
+     subagent_type="general-purpose",
+     prompt="""
+     You are the analyze-fixer orchestrator. Read config/analyze_agents/ORCHESTRATOR.md and
+     execute the full analyze-fixer flow for the following inputs:
+
+     TAG=<tag>
+     CHECK_TYPE=<check_type>
+     REF_DIR=<ref_dir>
+     IP=<ip>
+     LOG_FILE=<log_file>
+     SPEC_FILE=<spec_file>
+     BASE_DIR=<parent of the 'runs/' folder in LOG_FILE>
+     MAX_ROUNDS=<max_rounds>
+     FIXER_ROUND=<N>
+     SKIP_MONITORING=<true if present in signal, otherwise false>
+     """
+   )
+   ```
+2. Say: `"Analyze-fixer running in background. I'll notify you when complete."`
+3. When the agent completes, say only: `"Analyze-fixer complete. <result>. Email sent."`
+
+**Signal format:**
+```
+ANALYZE_FIXER_MODE_ENABLED
+TAG=<tag>
+CHECK_TYPE=<check_type>
+REF_DIR=<ref_dir>
+IP=<ip>
+LOG_FILE=<log_file>
+SPEC_FILE=<spec_file>
+MAX_ROUNDS=5
+FIXER_ROUND=<N>
+```
 
 ---
 
-**Version:** 2.3 | **Last Updated:** 2026-03-30
+**Version:** 2.4 | **Last Updated:** 2026-04-01
 
 **Note:** Detailed documentation loads on-demand from `.claude/rules/` when working with relevant files.

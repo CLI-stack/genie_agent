@@ -1542,7 +1542,7 @@ class GenieCLI:
         """Generate a unique tag for this task"""
         return datetime.datetime.now().strftime('%Y%m%d%H%M%S')
 
-    def execute(self, instruction_text, dry_run=False, send_email=False, use_xterm=False, analyze_mode=False):
+    def execute(self, instruction_text, dry_run=False, send_email=False, use_xterm=False, analyze_mode=False, fixer_mode=False):
         """Parse instruction and execute the corresponding script"""
         print(f"=" * 70)
         print(f"Genie CLI - Processing Instruction")
@@ -1887,6 +1887,20 @@ class GenieCLI:
                 f.write(f"ip={ip}\n")
                 f.write(f"log_file={self.base_dir}/runs/{tag}.log\n")
                 f.write(f"spec_file={self.base_dir}/data/{tag}_spec\n")
+                if fixer_mode:
+                    f.write(f"fixer_mode=true\n")
+
+            # Write fixer state file if in fixer mode
+            if fixer_mode:
+                fixer_state_file = os.path.join(self.base_dir, 'data', f'{tag}_fixer_state')
+                with open(fixer_state_file, 'w') as f:
+                    f.write(f"original_ref_dir={ref_dir}\n")
+                    f.write(f"original_ip={ip}\n")
+                    f.write(f"original_check_type={check_type or 'full_static_check'}\n")
+                    f.write(f"original_instruction={instruction_text}\n")
+                    f.write(f"round=1\n")
+                    f.write(f"max_rounds=5\n")
+                    f.write(f"parent_tag=\n")
             print(f"Analyze mode enabled: Claude Code will monitor and analyze results")
 
         print(f"Created run script: {run_script}")
@@ -3783,6 +3797,8 @@ Examples:
                         help='Analyze mode: Claude Code monitors and analyzes results (only for cdc_rdc, lint, spg_dft, full_static_check)')
     parser.add_argument('--analyze-only', type=str, metavar='TAG',
                         help='Skip running static check — analyze existing results for TAG directly (no monitoring step)')
+    parser.add_argument('--analyze-fixer', action='store_true',
+                        help='Analyze-fixer mode: analyze violations, auto-apply constraint fixes, rerun check — loops until clean (max 5 rounds)')
     parser.add_argument('--setup-user', action='store_true',
                         help='Setup user-specific directory for multi-user environment')
     parser.add_argument('--user-email', type=str, metavar='EMAIL',
@@ -4337,20 +4353,25 @@ Examples:
             print(output)
         return
 
-    # Validate --analyze flag: only valid for static check commands
+    # Validate --analyze and --analyze-fixer flags: only valid for static check commands
     ANALYZE_VALID_CHECKS = ['cdc_rdc', 'cdc', 'rdc', 'lint', 'spg_dft', 'full_static_check']
     analyze_mode = args.analyze
-    if analyze_mode:
+    fixer_mode = args.analyze_fixer
+    if analyze_mode or fixer_mode:
         # Quick check if instruction contains a valid check type
         instruction_lower = args.instruction.lower()
         is_valid_analyze = any(check in instruction_lower for check in ANALYZE_VALID_CHECKS)
         if not is_valid_analyze:
-            print("WARNING: --analyze flag is only valid for static checks (cdc_rdc, lint, spg_dft, full_static_check)")
-            print("         Disabling analyze mode for this command.")
+            print("WARNING: --analyze/--analyze-fixer flag is only valid for static checks (cdc_rdc, lint, spg_dft, full_static_check)")
+            print("         Disabling analyze/fixer mode for this command.")
             analyze_mode = False
+            fixer_mode = False
+    # fixer_mode implies analyze_mode
+    if fixer_mode:
+        analyze_mode = True
 
     # Execute instruction (with optional email on completion)
-    result = cli.execute(args.instruction, dry_run=not args.execute, send_email=args.email, use_xterm=args.xterm, analyze_mode=analyze_mode)
+    result = cli.execute(args.instruction, dry_run=not args.execute, send_email=args.email, use_xterm=args.xterm, analyze_mode=analyze_mode, fixer_mode=fixer_mode)
 
     if result:
         print()
@@ -4392,13 +4413,19 @@ Examples:
                         check_type = 'full_static_check'
                 print()
                 print("=" * 70)
-                print("ANALYZE_MODE_ENABLED")
+                if fixer_mode:
+                    print("ANALYZE_FIXER_MODE_ENABLED")
+                else:
+                    print("ANALYZE_MODE_ENABLED")
                 print(f"TAG={tag}")
                 print(f"CHECK_TYPE={check_type}")
                 print(f"REF_DIR={ref_dir}")
                 print(f"IP={ip}")
                 print(f"LOG_FILE={cli.base_dir}/runs/{tag}.log")
                 print(f"SPEC_FILE={cli.base_dir}/data/{tag}_spec")
+                if fixer_mode:
+                    print("MAX_ROUNDS=5")
+                    print("FIXER_ROUND=1")
                 print("=" * 70)
         else:
             print("Dry run complete. Add --execute to run the command.")

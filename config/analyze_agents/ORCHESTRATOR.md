@@ -1,12 +1,12 @@
 # Analyze Mode Orchestrator Guide
 
-This guide tells the main Claude session how to orchestrate the agent teams for static check analysis.
+**You are the orchestrator agent.** The main Claude session has spawned you with a fresh context window to handle the full analysis or analyze-fixer flow. Your inputs (TAG, CHECK_TYPE, REF_DIR, IP, BASE_DIR, etc.) were passed in your prompt. Execute the flow below and notify the main session when done.
 
 ---
 
-## CRITICAL: MUST USE TASK TOOL TO INVOKE AGENTS
+## CRITICAL: MUST USE TASK TOOL TO INVOKE SUB-AGENTS
 
-**DO NOT analyze reports directly in the main session.** You MUST use the Task tool to spawn specialized agents.
+**DO NOT analyze reports directly.** You MUST use the Task tool to spawn specialized sub-agents.
 
 ### Why Invoke Agents (Not Do It Yourself)?
 
@@ -1157,3 +1157,179 @@ umc:
 | Liblist | `<ref_dir>/out/linux_*/<ip>/config/*_drop2cad/.../publish_rtl/manifest/umc_top_lib.list` |
 | RTL | `<ref_dir>/src/` |
 | Library List | `<ref_dir>/out/linux_*/.../publish_rtl/manifest/{tile}_lib.list` |
+
+---
+
+## ANALYZE_FIXER_MODE_ENABLED — Fixer Mode Orchestration
+
+When you detect `ANALYZE_FIXER_MODE_ENABLED` in the output (instead of `ANALYZE_MODE_ENABLED`), follow this extended flow. The fixer mode runs the full analyze pipeline, applies fixes automatically, reruns the check, and loops until violations are zero.
+
+### Signal Format
+```
+ANALYZE_FIXER_MODE_ENABLED
+TAG=<tag>
+CHECK_TYPE=<check_type>
+REF_DIR=<ref_dir>
+IP=<ip>
+LOG_FILE=<log_file>
+SPEC_FILE=<spec_file>
+MAX_ROUNDS=5
+FIXER_ROUND=<N>
+[SKIP_MONITORING=true]   ← present on rerun rounds only
+```
+
+### Fixer Mode Flow (per round)
+
+```
+Round N:
+  ├── STEP 1: Run analyze pipeline (same as ANALYZE_MODE_ENABLED)
+  │     ├── If SKIP_MONITORING not set: spawn background monitor, wait for task completion
+  │     ├── Precondition agent (CDC/RDC, SPG_DFT only)
+  │     ├── Violation extractor agent
+  │     ├── RTL analyzer agents (parallel, by module)
+  │     ├── Library finder agent (if unresolved modules > 0)
+  │     └── Fix consolidator agent
+  │
+  ├── STEP 2: Spawn Fix Implementor agent
+  │     Read: config/analyze_agents/shared/fix_implementor.md
+  │     Inputs: tag, check_type, ref_dir, ip, base_dir, round=N
+  │     Applies: constraints to project.0in_ctrl.v.tcl (CDC/RDC)
+  │              constraints to project.params (SPG_DFT)
+  │              RTL fixes to src/rtl/**/*.sv (Lint)
+  │              library entries to umc_top_lib.list (if needed)
+  │     Output: data/<tag>_fix_applied_<check_type>.json
+  │
+  ├── STEP 3: Compile round report
+  │     Read: all agent JSON outputs + fix_applied JSON
+  │     Generate: data/<tag>_analysis_fixer_round<N>.html
+  │     Contents:
+  │       - Round N summary: total violations, focus violations, fixes applied
+  │       - Violation cards (same as analyze mode)
+  │       - Fixes applied section: list of constraints/RTL changes made
+  │       - Pending manual fixes: rtl_fix items not auto-applied
+  │
+  ├── STEP 4: Send round email
+  │     Subject: "[Fixer Round N/MAX] <check_type> - <ip> @ <ref_dir> (<tag>)"
+  │     Body: round report HTML
+  │     Recipients: from data/<tag>_analysis_email
+  │
+  └── STEP 5: Check if done
+        Read: data/<tag>_fix_applied_<check_type>.json
+          → constraints_applied   (how many constraints were written this round)
+          → rtl_fixes_applied     (how many RTL edits were made this round)
+        Read: data/<tag>_extractor_<check_type>.json
+          → focus_violations count (violations selected for analysis, excludes LOW_RISK)
+
+        TERMINATION CONDITIONS (check in order):
+
+        1. CLEAN: focus_violations == 0
+           → Go to FINAL SUMMARY with result=CLEAN
+
+        2. STALLED: constraints_applied == 0 AND rtl_fixes_applied == 0
+           → No new fixes were applied this round — remaining violations are not
+             auto-fixable (all rtl_fix or investigate type)
+           → Do NOT rerun — it would produce the same result
+           → Go to FINAL SUMMARY with result=STALLED
+
+        3. MAX ROUNDS: round >= MAX_ROUNDS
+           → Go to FINAL SUMMARY with result=MAX_ROUNDS_REACHED
+
+        4. Otherwise (fixes were applied AND violations remain AND rounds left):
+           → Rerun static check (see Rerun below)
+           → Loop to Round N+1
+```
+
+### Triggering a Rerun
+
+After applying fixes, trigger the next round by running the static check again:
+
+```bash
+cd <base_dir>
+python3 script/genie_cli.py -i "<original_instruction>" --execute --analyze-fixer
+```
+
+But since `--analyze-fixer` would create a new independent run, instead use the stored state:
+
+1. Read `data/<tag>_fixer_state` to get `original_instruction`, `original_ref_dir`, `original_ip`, `original_check_type`
+2. Run the static check script directly for the next round:
+```bash
+python3 script/genie_cli.py -i "<original_instruction>" --execute
+```
+3. Note the new tag from the output
+4. Write updated fixer state to `data/<new_tag>_fixer_state`:
+```
+original_ref_dir=<ref_dir>
+original_ip=<ip>
+original_check_type=<check_type>
+original_instruction=<instruction>
+round=<N+1>
+max_rounds=5
+parent_tag=<previous_tag>
+```
+5. Once the new check completes, emit internally:
+```
+ANALYZE_FIXER_MODE_ENABLED
+TAG=<new_tag>
+CHECK_TYPE=<check_type>
+REF_DIR=<ref_dir>
+IP=<ip>
+LOG_FILE=<base_dir>/runs/<new_tag>.log
+SPEC_FILE=<base_dir>/data/<new_tag>_spec
+MAX_ROUNDS=5
+FIXER_ROUND=<N+1>
+SKIP_MONITORING=true
+```
+6. Continue the fixer flow for Round N+1
+
+### Final Summary (when done)
+
+When any termination condition is met (CLEAN, STALLED, or MAX_ROUNDS_REACHED):
+
+1. Collect data from all rounds (read each round's `_fix_applied_*.json` and `_extractor_*.json`)
+2. Generate final summary HTML `data/<first_tag>_fixer_summary.html`:
+   ```
+   Header: Analyze-Fixer Summary — <check_type> — <ip>
+
+   Rounds Table:
+   | Round | Tag | Total Violations | Focus Violations | Constraints Applied | RTL Fixes |
+   |-------|-----|-----------------|-----------------|--------------------|-----------|
+   | 1     | ... | 153             | 10              | 3                  | 0         |
+   | 2     | ... | 42              | 8               | 2                  | 0         |
+   | 3     | ... | 0               | 0               | 0                  | 0         |
+
+   Result (one of):
+     ✅ CLEAN       — All focus violations resolved. No further action needed.
+     ⚠️ STALLED     — N focus violations remain. No new auto-fixable constraints found this
+                      round. Remaining violations require manual RTL changes or investigation.
+                      (Low-risk patterns such as rsmu/dft/scan/jtag were excluded from analysis.)
+     🔴 MAX ROUNDS  — Stopped after 5 rounds. N focus violations still remain.
+
+   All Fixes Applied (across all rounds):
+   - [Round 1] cdc custom sync SDFSYNC4... (resolves 114 violations)
+   - [Round 1] netlist constant cfg_mode -value 0 (resolves 2 violations)
+   - [Round 2] netlist clock clk_fast -group fast_clk (resolves 8 violations)
+
+   Manual Fixes Still Required (rtl_fix / investigate — NOT auto-applied):
+   - <signal>: <why> → <suggested RTL fix>
+   - <signal>: <why> → requires investigation
+
+   Violations Excluded as Low-Risk (not counted in focus violations):
+   - rsmu/dft/scan/jtag/bist/tdr patterns filtered by extractor — review separately if needed
+   ```
+
+3. Send final summary email:
+   - Subject (CLEAN):   `[Fixer ✅ CLEAN] <check_type> - <ip> — <N> rounds, violations: X→0`
+   - Subject (STALLED): `[Fixer ⚠️ STALLED] <check_type> - <ip> — <N> rounds, N violations remain (manual fix needed)`
+   - Subject (MAX):     `[Fixer 🔴 MAX ROUNDS] <check_type> - <ip> — 5 rounds, N violations remain`
+   - Body: summary HTML
+
+4. Say: `"Analyze-fixer complete. <N> rounds run. Violations: <start>→<end>. Result: <CLEAN|STALLED|MAX_ROUNDS_REACHED>. Email sent."`
+
+### Key Rules
+
+- **Zero waivers**: Fix Implementor never applies waivers — only constraints and RTL fixes
+- **Backup first**: Every file modified is backed up as `<file>.bak_<tag>` before editing
+- **p4 edit first**: Always run `p4 edit <file>` before modifying
+- **Max 5 rounds**: Stop after 5 rounds even if violations remain — log remaining as manual
+- **Email every round**: Send per-round email, not just at the end
+- **New tag per rerun**: Each static check rerun generates its own independent tag

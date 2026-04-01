@@ -69,10 +69,10 @@ grep -r "<signal_name>" <ref_dir>/src --include="*.sv" --include="*.v" -l
 | Scenario | WHY it happens | Risk Level |
 |----------|----------------|------------|
 | Designer oversight | New RTL added without CDC review | HIGH - needs RTL fix |
-| Quasi-static signal | Config set at boot, stable during operation | LOW - can waive with justification |
+| Quasi-static signal | Config set at boot, stable during operation | LOW - add netlist constant constraint |
 | Related clocks | Clocks from same PLL, synchronous relationship | MEDIUM - needs constraint |
 | Hierarchical sync | Sync exists at parent/child level, tool can't see | LOW - needs constraint |
-| Test-only path | Signal only active in test mode | LOW - can waive |
+| Test-only path | Signal only active in test mode | LOW - add netlist constant or isolate in RTL |
 | Tool confusion | Complex hierarchy confuses CDC tool | LOW - needs constraint |
 
 ### Step 4: Check for Existing Synchronizer
@@ -135,9 +135,11 @@ BAD:  "Signal crosses from clk_a to clk_b without synchronizer."
 
 ### Step 7: Recommend Fix Based on WHY
 Based on your root cause analysis:
-- **RTL fix**: If it's a real bug (frequent toggling, no valid reason for missing sync)
-- **Waiver**: If signal is quasi-static/test-only (explain WHY it's safe)
-- **Constraint**: If tool needs clock/reset hints (explain WHAT tool is missing)
+- **RTL fix**: If it's a real bug (frequent toggling, no valid reason for missing sync) — add synchronizer in RTL
+- **Constraint**: If tool needs hints (quasi-static signal → `netlist constant`, related clocks → `netlist clock`, unrecognized sync cell → `cdc custom sync`)
+- **Investigate**: If more information is needed before recommending a fix
+
+**IMPORTANT: Do NOT recommend waivers. Target is zero waivers. Every violation must be resolved with an RTL fix or a proper constraint.**
 
 ## Output Per Violation
 
@@ -156,7 +158,7 @@ Return analysis with:
 | **why_no_sync** | **CRITICAL: Clear explanation of WHY no synchronizer exists** |
 | **risk_level** | HIGH/MEDIUM/LOW with justification |
 | **sync_exists** | Yes/No - if yes, where? |
-| **fix_type** | rtl_fix / waiver / constraint / investigate |
+| **fix_type** | rtl_fix / constraint / investigate |
 | **fix_action** | Specific command or code |
 | **fix_justification** | WHY this fix is appropriate |
 
@@ -173,9 +175,9 @@ Return analysis with:
   "why_no_sync": "Designer treated this as quasi-static configuration. Signal is written during block reset sequence and never changes during normal operation. No synchronizer was added because metastability window is covered by reset timing.",
   "risk_level": "LOW - signal is stable when sampled, no functional risk",
   "sync_exists": false,
-  "fix_type": "waiver",
-  "fix_action": "cdc report crossing -id no_sync_42 -severity waived -message \"Quasi-static config signal, stable during operation\"",
-  "fix_justification": "Safe to waive because signal timing is guaranteed by reset sequence"
+  "fix_type": "constraint",
+  "fix_action": "netlist constant <signal_path> -value 0",
+  "fix_justification": "Signal is quasi-static — use netlist constant constraint to inform the CDC tool it is stable during operation. No waiver — target is zero waivers."
 }
 ```
 
@@ -193,17 +195,13 @@ Return analysis with:
 
 | Type | When |
 |------|------|
-| `rtl_fix` | Real bug, needs sync |
-| `waiver` | Safe to waive |
-| `constraint` | Tool needs hint |
-| `investigate` | Need more info |
+| `rtl_fix` | Real bug — add synchronizer or fix RTL |
+| `constraint` | Tool needs hint — quasi-static (`netlist constant`), related clocks (`netlist clock`), unrecognized sync cell (`cdc custom sync`) |
+| `investigate` | Need more info before recommending fix |
+
+**NOTE: `waiver` is NOT a valid fix type. Target is zero waivers. Do not recommend waivers under any circumstance.**
 
 ## Templates
-
-Waiver:
-```tcl
-cdc report crossing -id <id_from_report> -severity waived -message "<reason>"
-```
 
 Constraint — clock/reset hint:
 ```tcl
@@ -276,4 +274,3 @@ For CDC/RDC constraint syntax, violation types, fix patterns, and waiver format:
 - CDC violation types and fix approaches (no_sync, multi_bits, combo_logic)
 - RDC domain crossing schemes (rdc_areset, rdc_isolation_*, rdc_ordered, etc.)
 - Reset tree check types (reset_as_data, reset_unresettable_register, nrr_on_reset_path, etc.)
-- Waiver format and justification examples
