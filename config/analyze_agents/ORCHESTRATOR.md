@@ -94,8 +94,8 @@ config/analyze_agents/
 
 When `--analyze` mode is enabled:
 
-1. **Background monitoring** - Spawn ONE background agent to monitor task completion
-2. **Live analysis** - When complete, run analysis in main conversation (NOT background)
+1. **Monitoring** - Spawn ONE foreground haiku agent to poll for task completion (orchestrator blocks on this Task call — all sleep/polling happens inside the monitor, not the orchestrator)
+2. **Live analysis** - When complete, run analysis agents
 3. **Compile & email** - Generate HTML and send email
 4. **Minimal output** - Just say "Analysis complete. Email sent."
 
@@ -103,8 +103,8 @@ When `--analyze` mode is enabled:
 
 | Phase | Mode | Why |
 |-------|------|-----|
-| **Monitoring** | Background | Task can take hours, don't waste context waiting |
-| **Analysis** | Live | Quick, immediate results, easy to compile |
+| **Monitoring** | Foreground Task (blocks orchestrator) | Monitor polls/sleeps internally — orchestrator does NOT run sleep commands itself |
+| **Analysis** | Live sub-agents | Quick, parallel, each with focused context |
 
 ### Flow
 
@@ -350,16 +350,16 @@ Each recipient gets 3 emails in their inbox, one per check type.
 
 ---
 
-## Background Monitoring Agent
+## Monitoring Agent
 
-Spawn ONE background agent to monitor task completion:
+Spawn ONE foreground agent to monitor task completion. The orchestrator blocks on this Task call — all polling/sleeping happens inside the monitor agent, not in the orchestrator itself.
 
 ```python
 Task tool:
   subagent_type: "general-purpose"
   model: "haiku"
   description: "Monitor static check completion"
-  run_in_background: true
+  run_in_background: false
   prompt: |
     Monitor the static check task for completion.
 
@@ -841,7 +841,7 @@ Also read the clock port from the instantiation's port connections (`.CP(...)`, 
 
 | Task | Who Does It |
 |------|-------------|
-| Monitor task completion | Background agent (Task tool) |
+| Monitor task completion | Foreground haiku agent (Task tool) — polls/sleeps internally |
 | Read CDC/RDC reports | Agent via Task tool |
 | Read Lint reports | Agent via Task tool |
 | Read SpgDFT reports | Agent via Task tool |

@@ -1,12 +1,12 @@
 # Analyze Mode — Complete Flow Guide
 
-From `run full_static_check in analyze mode` to the final email report.
+From `run full_static_check in analyze mode` to the final email report. Covers both **analyze** (report only) and **analyze-fixer** (auto-apply fixes + rerun loop).
 
 ---
 
 ## Entry Points
 
-There are **two ways** to trigger analyze mode:
+There are **four ways** to trigger analyze or analyze-fixer mode:
 
 ### Entry Point A — Run + Analyze (`--analyze`)
 
@@ -42,21 +42,56 @@ Supported analyze instructions:
 
 **Key difference:** Entry Point B emits `SKIP_MONITORING=true` — Claude skips the background monitor and goes straight to analysis agents.
 
+### Entry Point C — Run + Analyze + Auto-Fix Loop (`--analyze-fixer`)
+
+Run the static check, analyze results, auto-apply all fixes, rerun — repeat until clean or max rounds:
+
+```bash
+python3 script/genie_cli.py \
+  -i "run cdc_rdc at /proj/rtg_oss_er_feint1/abinbaba/umc_grimlock_Mar18 for umc17_0" \
+  --execute --analyze-fixer --email
+```
+
+### Entry Point D — Analyze-Fixer on Existing Results (`--analyze-fixer-only`)
+
+Skip running the static check — start the fixer loop from an existing completed run:
+
+```bash
+python3 script/genie_cli.py --analyze-fixer-only 20260318200049
+
+# Or by natural language
+python3 script/genie_cli.py \
+  -i "fix cdc_rdc at /proj/rtg_oss_er_feint1/abinbaba/umc_grimlock_Mar18 for umc17_0" \
+  --execute
+```
+
+Supported analyze-fixer-only instructions:
+- `fix cdc_rdc at <dir> for <ip>`
+- `fix lint at <dir> for <ip>`
+- `fix spg_dft at <dir> for <ip>`
+- `analyze and fix cdc_rdc at <dir> for <ip>`
+- `analyze and fix lint at <dir> for <ip>`
+- `fix violations at <dir> for <ip>`
+
 ---
 
-## 1. The Run Command (Entry Point A)
+## 1. The Run Command (Entry Points A/C)
 
 ### What genie_cli does
 
 1. **Tokenizes the instruction** — splits into keywords, matches against `keyword.csv` (257 keywords, including `full_static_check`, `results`)
-2. **Matches instruction** — compares token pattern against `instruction.csv` (74 patterns, >50% keyword coverage required)
-3. **Extracts arguments** — pulls `ref_dir` (path detection via `os.path.isdir()`), `ip` (from `arguement.csv`), `checkType` (`full_static_check`)
+2. **Matches instruction** — compares token pattern against `instruction.csv` (74+ patterns, >50% keyword coverage required)
+3. **Extracts arguments** — pulls `ref_dir` (path detection via `os.path.isdir()`), `ip` (from `arguement.csv`), `checkType`
 4. **Resolves script** — maps matched instruction to `static_check_unified.csh $refDir $ip $checkType`
 5. **Generates a tag** — timestamp-based, e.g., `20260318200049`
 6. **Writes run script** to `runs/<tag>.csh`
 7. **Launches detached** — `nohup csh runs/<tag>.csh &`, saves PID to `data/<tag>_pid`
-8. **Prints ANALYZE_MODE_ENABLED signal:**
+8. **Prints signal** — `ANALYZE_MODE_ENABLED` (Entry A) or `ANALYZE_FIXER_MODE_ENABLED` (Entry C)
+9. **Writes** `data/<tag>_analyze` with metadata; `data/<tag>_email` with recipients
 
+### Signals emitted
+
+**Entry Point A (`--analyze`):**
 ```
 ANALYZE_MODE_ENABLED
 TAG=20260318200049
@@ -67,25 +102,38 @@ LOG_FILE=runs/20260318200049.log
 SPEC_FILE=data/20260318200049_spec
 ```
 
-9. **Writes** `data/<tag>_analyze` with the same metadata (persists for `--send-analysis-email`)
-10. **Creates** `data/<tag>_email` flag file with recipient list (from `assignment.csv`)
-
-### Entry Point B signal (analyze-only)
-
-Same signal, with one extra line:
-
+**Entry Point B (`--analyze-only`) — same + SKIP_MONITORING:**
 ```
 ANALYZE_MODE_ENABLED
 TAG=20260330202812
-CHECK_TYPE=full_static_check
-REF_DIR=/proj/rtg_oss_er_feint1/abinbaba/umc_grimlock_Mar30071651
-IP=umc17_0
-LOG_FILE=runs/20260330202812.log
-SPEC_FILE=data/20260330202812_spec
+...
 SKIP_MONITORING=true
 ```
 
-`SKIP_MONITORING=true` → Claude skips steps 2–3 entirely and jumps to step 4.
+**Entry Point C (`--analyze-fixer`):**
+```
+ANALYZE_FIXER_MODE_ENABLED
+TAG=20260318200049
+CHECK_TYPE=cdc_rdc
+REF_DIR=/proj/rtg_oss_er_feint1/abinbaba/umc_grimlock_Mar18
+IP=umc17_0
+LOG_FILE=runs/20260318200049.log
+SPEC_FILE=data/20260318200049_spec
+MAX_ROUNDS=5
+FIXER_ROUND=1
+```
+
+**Entry Point D (`--analyze-fixer-only`) — same + SKIP_MONITORING:**
+```
+ANALYZE_FIXER_MODE_ENABLED
+TAG=20260318200049
+...
+MAX_ROUNDS=5
+FIXER_ROUND=1
+SKIP_MONITORING=true
+```
+
+`SKIP_MONITORING=true` → Claude skips the background monitor and jumps straight to analysis.
 
 ---
 
@@ -263,20 +311,26 @@ For each focus violation:
 6. **Reads constraint file** — is it already waived or constrained?
 7. **Formulates WHY statement** — not just WHAT, but WHY no synchronizer exists
 8. **Assigns risk** — HIGH (real bug) / MEDIUM (needs constraint) / LOW (quasi-static/test-only)
-9. **Recommends fix:**
-   - `rtl_fix` — real CDC bug, missing synchronizer
-   - `waiver` — quasi-static/test-only signal, safe with justification
-   - `constraint` — tool needs clock/reset hint or tech-cell registration
+9. **Checks fix_history** (Round > 1) — if constraint was applied but violation persists, tries a different approach; escalates to `investigate` after 2+ failures
+10. **Recommends fix (ZERO WAIVERS):**
+    - `rtl_fix` — real CDC bug. `fix_action` = **exact RTL lines** (e.g., synchronizer instantiation block), `rtl_file`, `insert_after_line` required
+    - `constraint` — tool needs clock/reset hint or tech-cell registration; exact TCL command
+    - `investigate` — parent context needed; describes specifically what to look at
 
-### Lint RTL Analyzer (sonnet, per violation)
+### Lint RTL Analyzer (sonnet, per RTL file)
 
-For each unwaived error violation:
+One agent per **unique RTL file** — handles ALL violations in that file in one pass. Groups of violations extracted from `violations_by_file` dict in the extractor output.
 
 1. **Checks lint/LEARNING.md first**
-2. **Reads RTL at flagged line** (±20 lines context)
-3. **Asks:** Is it in a disabled `generate` block? Is it a DFT/TDR port by name? Is parent connecting it? Is it legacy/future-use?
-4. **Checks lint waivers file** for existing waivers
-5. **Fix types:** `rtl_fix` / `tie_off` / `filter`
+2. **Reads the full RTL file** — understands module purpose, port list, generate blocks, existing assigns
+3. **Checks fix_history** (Round > 1) — what was previously attempted for each signal; avoids repeating failed fixes; escalates to `investigate` after 2+ failures
+4. **Checks waiver file** `src/meta/waivers/lint/variant/<ip>/umc_waivers.xml` — context only, no new entries
+5. **Analyzes ALL violations** in the file: purpose, WHY it's flagged, risk level
+6. **Fix types (ZERO WAIVERS):**
+   - `rtl_fix` — real bug, correct driver determinable from RTL
+   - `tie_off` — DFT/debug/generate-disabled/legacy port — exact `assign signal = 0;`
+   - `investigate` — parent context needed, cannot safely determine fix
+7. **Writes:** `data/<tag>_rtl_lint_<N>.json` (N = file_index)
 
 ### SpgDFT RTL Analyzer (sonnet, per violation)
 
@@ -314,13 +368,20 @@ Each agent writes its JSON findings to disk. The report compiler reads from disk
 | `data/<tag>_extractor_spgdft.json` | SpgDFT Violation Extractor |
 | `data/<tag>_rtl_cdc_<N>.json` | CDC RTL Analyzer (one per violation, N=1,2,3…) |
 | `data/<tag>_rtl_rdc_<N>.json` | RDC RTL Analyzer (one per violation) |
-| `data/<tag>_rtl_lint_<N>.json` | Lint RTL Analyzer (one per violation) |
+| `data/<tag>_rtl_lint_<N>.json` | Lint RTL Analyzer (one per RTL file, N = file_index) |
 | `data/<tag>_rtl_spgdft_<N>.json` | SpgDFT RTL Analyzer (one per violation) |
 | `data/<tag>_library_finder.json` | Library Finder Agent |
 | `data/<tag>_consolidated_cdc.json` | Fix Consolidator — CDC |
 | `data/<tag>_consolidated_rdc.json` | Fix Consolidator — RDC |
 | `data/<tag>_consolidated_lint.json` | Fix Consolidator — Lint |
 | `data/<tag>_consolidated_spgdft.json` | Fix Consolidator — SpgDFT |
+| `data/<tag>_fixer_state` | Fixer round state (round, parent_tag, original args) |
+| `data/<tag>_fix_applied_cdc.json` | Fix Implementor output — CDC/RDC |
+| `data/<tag>_fix_applied_lint.json` | Fix Implementor output — Lint |
+| `data/<tag>_fix_applied_spgdft.json` | Fix Implementor output — SpgDFT |
+| `data/<tag>_deepdive_<N>.json` | Deep-Dive Agent output (one per investigate item) |
+| `data/<tag>_analysis_fixer_round<N>.html` | Per-round fixer report |
+| `data/<first_tag>_fixer_summary.html` | Final summary across all rounds |
 
 ### Why file-based?
 
@@ -624,6 +685,110 @@ RTL analyzer agents read the relevant LEARNING.md **before** analyzing any viola
 
 ---
 
+---
+
+## Analyze-Fixer Mode — Auto-Fix Loop
+
+Analyze-fixer extends the analyze flow by automatically applying all fixes and rerunning the static check in a loop until violations reach zero (or max rounds).
+
+### What Gets Auto-Applied
+
+| Check Type | Auto-Applied | NOT Auto-Applied |
+|------------|-------------|-----------------|
+| CDC/RDC | `constraint` fixes to `project.0in_ctrl.v.tcl` | — |
+| CDC/RDC | `rtl_fix` — exact synchronizer RTL inserted into source | — |
+| CDC/RDC | `investigate` → resolved by Deep-Dive Agent | truly unresolvable items |
+| Lint | `rtl_fix` — driver/connection fix inserted into RTL source | — |
+| Lint | `tie_off` — `assign sig = 0;` inserted after declaration | — |
+| Lint | `investigate` → resolved by Deep-Dive Agent | truly unresolvable items |
+| SPG_DFT | `constraint` fixes to `project.params` | `rtl_fix`, `investigate` |
+
+**ZERO WAIVERS** — no entries added to any waiver XML file across any check type.
+
+### Per-Round Flow
+
+Each round runs the full analysis pipeline, then applies fixes:
+
+```
+Round N:
+  STEP 0: Build fix_history (Round > 1)
+    - Read data/<tag>_fixer_state → get parent_tag chain
+    - Read all previous data/<prev_tag>_fix_applied_*.json
+    - Build fix_history: { "<signal>": [{ round, fix_type, fix_action, status }] }
+    - Pass fix_history into every RTL analyzer agent
+
+  STEP 1: Run analyze pipeline (same as analyze mode)
+    - Precondition + Extractor + RTL Analyzers + Library Finder + Fix Consolidator
+    - RTL analyzers use fix_history to avoid repeating failed fixes
+    - After 2+ failed attempts on a signal → escalate to investigate
+
+  STEP 2: Fix Implementor
+    - Applies: constraint fixes + rtl_fix to target files
+    - Logs: investigate items → requires_investigation list
+    - Backup: <file>.bak_<tag> before first edit; p4 edit before modify
+    - Writes: data/<tag>_fix_applied_<type>.json
+
+  STEP 2b: Deep-Dive Agents (parallel, one per investigate item)
+    - Reads investigation_context from fix_implementor output
+    - Does targeted research: parent hierarchy, sync cell patterns, constraints
+    - Determines concrete fix (rtl_fix or constraint) and applies it directly
+    - Writes: data/<tag>_deepdive_<N>.json
+
+  STEP 3: Compile round report
+    - data/<tag>_analysis_fixer_round<N>.html
+    - Shows: violations found, fixes applied this round, remaining count
+
+  STEP 4: Send round email
+    - Subject: "[Fixer Round N/5] <check_type> - <ip> @ <ref_dir> (<tag>)"
+
+  STEP 5: Check termination
+    1. CLEAN: focus_violations == 0 → done
+    2. STALLED: constraints_applied == 0 AND rtl_fixes_applied == 0
+               AND tie_offs_applied == 0 AND deep_dive_applied == 0
+               → no new fixes possible, stop early
+    3. MAX ROUNDS: round >= 5 → stop
+    4. Otherwise: rerun static check (new tag), loop to Round N+1
+```
+
+### fix_history — Round-to-Round Memory
+
+Each round passes all previous fix attempts to RTL analyzer agents:
+
+```
+Round 1: fix_history = {}  (no previous rounds)
+Round 2: fix_history = { "cfg_out[3:0]": [{round:1, fix_type:"rtl_fix", fix_action:"assign cfg_out = cfg_reg[3:0];", status:"applied"}] }
+Round 3: fix_history = { "cfg_out[3:0]": [{round:1, ...}, {round:2, ...}] }
+```
+
+RTL analyzer behavior with fix_history:
+- Fix applied in Round N but violation still appears in Round N+1 → **wrong fix, try different approach**
+- 2+ failed attempts on same signal → **always use `investigate`**
+- Signal not in fix_history → **analyze normally**
+
+### Deep-Dive Agent
+
+Spawned after Fix Implementor for each `investigate` item. Does targeted, focused research:
+
+1. Reads the `investigation_context` (specific task from RTL analyzer, e.g. "Check parent module umcdat_top for how cfg_enable is routed")
+2. Searches only what the context asks (parent module, nearby sync cells, existing constraints)
+3. Determines concrete fix type: `rtl_fix`, `constraint`, or `unresolved`
+4. Applies the fix directly (with backup + p4 edit)
+5. Writes `data/<tag>_deepdive_<N>.json`
+
+### Termination States
+
+| State | Condition | Email Subject |
+|-------|-----------|--------------|
+| ✅ CLEAN | focus_violations == 0 | `[Fixer ✅ CLEAN] <type> - <ip> — N rounds, violations: X→0` |
+| ⚠️ STALLED | No new fixes applied this round | `[Fixer ⚠️ STALLED] <type> - <ip> — N rounds, N violations remain (manual fix needed)` |
+| 🔴 MAX ROUNDS | round >= 5 | `[Fixer 🔴 MAX ROUNDS] <type> - <ip> — 5 rounds, N violations remain` |
+
+### Orchestrator Agent
+
+Both analyze and analyze-fixer modes delegate ALL work to a single **foreground orchestrator agent** (general-purpose). The main session spawns it and waits — live output is visible as each step executes. The orchestrator's fresh context window is not affected by the main session's history.
+
+---
+
 ## Key Design Decisions
 
 | Decision | Reason |
@@ -645,12 +810,21 @@ RTL analyzer agents read the relevant LEARNING.md **before** analyzing any viola
 | Bucket coverage in extractor | Ensures all violation types are seen, not just the dominant one |
 | Constraint file read before suggesting fix | Never suggest adding what's already there |
 | File-based intermediate storage | Agent findings on disk; report compiler reads from disk, not context |
+| fix_history passed per round | RTL analyzers know what was already tried — avoids repeating failed fixes across rounds |
+| Lint violations grouped by RTL file | One agent per file (not per violation) — 15 agents for 15 files vs 152 agents for 152 violations |
+| Deep-Dive Agent for investigate items | Focused hierarchy research resolves ambiguous cases that RTL analyzer couldn't determine safely |
+| STALLED termination | Stops loop early when no new fixes possible — avoids pointless reruns |
+| Foreground orchestrator agent | Live output visible; fresh context window; main session context not consumed |
+| Zero waivers across all check types | All violations fixed in RTL or constrained — no entries added to any waiver XML |
+| CDC/RDC rtl_fix auto-applied | Synchronizer RTL inserted directly — requires exact RTL lines + file + insert_after_line from analyzer |
+| Per-round email + final summary | Engineers see progress after each round; final email shows full violation trend |
 
 ---
 
-**Version:** 1.2 | **Created:** 2026-03-19 | **Updated:** 2026-03-30
+**Version:** 1.3 | **Created:** 2026-03-19 | **Updated:** 2026-04-01
 
 **Changelog:**
-- v1.2: Added Entry Point B (`--analyze-only`, analyze instructions, `SKIP_MONITORING=true`); added Fix Consolidator (Wave 2.5); updated SpgDFT extractor to read from spec file; updated CDC RTL analyzer `-type` selection; updated HTML report style to light/clean; updated keyword.csv count (257); updated instruction.csv count (74)
+- v1.3: Added Entry Points C/D (`--analyze-fixer`, `--analyze-fixer-only`); full analyze-fixer mode section (fix implementor, deep-dive agent, fix_history, round loop, termination conditions); updated lint RTL analyzer to file-grouped approach; updated CDC/RDC RTL analyzer to require exact RTL for rtl_fix; zero waivers policy; foreground orchestrator; updated file storage table with fixer files
+- v1.2: Added Entry Point B (`--analyze-only`, analyze instructions, `SKIP_MONITORING=true`); added Fix Consolidator (Wave 2.5); updated SpgDFT extractor to read from spec file; updated CDC RTL analyzer `-type` selection; updated HTML report style to light/clean
 - v1.1: 3-report / 3-email split for full_static_check
 - v1.0: Initial version
