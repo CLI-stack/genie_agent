@@ -934,7 +934,14 @@ class GenieCLI:
     def __init__(self, base_dir=None):
         if base_dir is None:
             # Default to the main_agent directory
-            self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            agent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            # Auto-detect user directory: if users/$USER exists, use it as base_dir
+            username = os.environ.get('USER', os.environ.get('LOGNAME', ''))
+            user_dir = os.path.join(agent_dir, 'users', username)
+            if username and os.path.isdir(user_dir):
+                self.base_dir = user_dir
+            else:
+                self.base_dir = agent_dir
         else:
             self.base_dir = base_dir
 
