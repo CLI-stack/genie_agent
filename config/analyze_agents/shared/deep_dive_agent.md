@@ -60,8 +60,8 @@ From your research, determine ONE of:
 
 If `fix_type` is `rtl_fix`:
 1. Backup: `cp <rtl_file> <rtl_file>.bak_<tag>` (skip if backup already exists)
-2. `p4 edit <rtl_file>`
-3. Check for duplicate — if `fix_action` already in file, skip
+2. Check for duplicate — if `fix_action` already in file, skip
+   (NO p4 edit for RTL files — modify directly)
 4. Insert code block after `insert_after_line` using Edit tool with comment wrapper:
 ```verilog
 // === Auto-applied by Deep-Dive Agent Round <round> [<tag>] ===

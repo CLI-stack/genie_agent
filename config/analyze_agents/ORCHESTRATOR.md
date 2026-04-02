@@ -1485,7 +1485,7 @@ When any termination condition is met (CLEAN, STALLED, or MAX_ROUNDS_REACHED):
 
 - **Zero waivers**: Fix Implementor never applies waivers — only constraints and RTL fixes
 - **Backup first**: Every file modified is backed up as `<file>.bak_<tag>` before editing
-- **p4 edit first**: Always run `p4 edit <file>` before modifying
+- **p4 edit**: ONLY for constraint/meta files (`src/meta/tools/...`) — sequence: backup → p4 edit → edit. RTL files (`src/rtl/...`) do NOT use p4 edit — sequence: backup → edit directly.
 - **Max 5 rounds**: Stop after 5 rounds even if violations remain — log remaining as manual
 - **Email every round**: Send per-round email, not just at the end
 - **New tag per rerun**: Each static check rerun generates its own independent tag

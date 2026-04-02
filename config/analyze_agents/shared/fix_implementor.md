@@ -6,6 +6,34 @@ This agent reads consolidated fix recommendations and applies them directly to t
 
 ---
 
+> ## CRITICAL: FILE MODIFICATION RULES
+>
+> **`p4 edit` applies to CONSTRAINT FILES ONLY — NOT RTL files.**
+>
+> ### Constraint / meta files (require `p4 edit`):
+> - `src/meta/tools/cdc0in/variant/<ip>/project.0in_ctrl.v.tcl`
+> - `src/meta/tools/cdc0in/variant/<ip>/umc_top_lib.list`
+> - `src/meta/tools/spgdft/variant/<ip>/project.params`
+>
+> **Mandatory sequence for constraint/meta files:**
+> ```
+> 1. cp <file> <file>.bak_<tag>    ← backup
+> 2. p4 edit <file>                ← checkout from Perforce (REQUIRED)
+> 3. Edit tool                     ← only now modify
+> ```
+> If `p4 edit` fails: log the warning, check `ls -l <file>` — proceed only if writable.
+>
+> ### RTL source files (NO `p4 edit`):
+> - `src/rtl/**/*.sv`, `src/rtl/**/*.v`
+>
+> **Mandatory sequence for RTL files:**
+> ```
+> 1. cp <file> <file>.bak_<tag>    ← backup
+> 2. Edit tool                     ← modify directly (no p4 edit)
+> ```
+
+---
+
 ## Inputs
 
 | Input | Description |
@@ -36,7 +64,7 @@ If the file does not exist, report "No consolidated fixes found for <check_type>
 | File | Path | Apply when |
 |------|------|-----------|
 | Constraint file | `<ref_dir>/src/meta/tools/cdc0in/variant/<ip>/project.0in_ctrl.v.tcl` | For `constraint` fixes |
-| RTL source files | `<ref_dir>/src/rtl/**/*.sv`, `*.v` — exact path from RTL analyzer output | For `rtl_fix` fixes |
+| RTL source files | `<ref_dir>/src/rtl/**/<filename>` — resolved from filename (see Step 2a) | For `rtl_fix` fixes |
 | Library list | `<ref_dir>/src/meta/tools/cdc0in/variant/<ip>/umc_top_lib.list` | Only if Library Finder found missing modules |
 
 ### SPG_DFT
@@ -47,25 +75,47 @@ If the file does not exist, report "No consolidated fixes found for <check_type>
 ### Lint
 | File | Path | Apply when |
 |------|------|-----------|
-| RTL source files | `<ref_dir>/src/rtl/**/*.sv`, `*.v` — exact path from RTL analyzer output | For each rtl_fix or tie_off violation |
+| RTL source files | `<ref_dir>/src/rtl/**/<filename>` — resolved from filename (see Step 2a) | For each rtl_fix or tie_off violation |
 
 ---
 
-## Step 3: Backup and P4 Edit
+## Step 2a: Resolve RTL File Paths (CDC/RDC and Lint only)
 
-**Before modifying ANY file:**
+**Why:** CDC/RDC and Lint reruns execute `rhea_build`/`rhea_drop`, which **rebuilds `publish_rtl/` from `src/rtl/` every time**. Any fix written to `publish_rtl/` or `library/` paths will be wiped on the next rerun. RTL fixes for these check types MUST target `src/rtl/`.
 
-1. Create a backup copy:
+**SPG_DFT does NOT run rhea_build** — its `publish_rtl/` is stable between rounds. RTL fix paths for SPG_DFT are used as-is (no resolution needed).
+
+**For each `rtl_fix` (or `tie_off`) entry in CDC/RDC or Lint consolidated JSON:**
+
+1. Take `rtl_file` from the entry (may point to `publish_rtl/`, `library/`, or already `src/rtl/`)
+2. Extract the filename: `basename = os.path.basename(rtl_file)` (e.g., `rtl_umcdat.v`)
+3. Check if path already starts with `<ref_dir>/src/rtl/` → use as-is
+4. Otherwise, resolve to `src/rtl/`:
+```bash
+find <ref_dir>/src/rtl -name "<basename>" 2>/dev/null
+```
+5. If exactly one match → use that path as the target RTL file
+6. If multiple matches → pick the one whose directory name best matches the module context (e.g., signal path from violation)
+7. If no match → log as `unresolvable_rtl_path`, skip this fix, add to `requires_investigation`
+
+**Note:** `insert_after_line` from the consolidated JSON was recorded from `publish_rtl/` — since `src/rtl/` is the source that generates `publish_rtl/`, the line numbers should match. If the file has already been modified, re-search for the context lines rather than using the line number blindly.
+
+---
+
+## Step 3: Backup and Checkout (file-type dependent)
+
+**For constraint/meta files** (`src/meta/tools/...`):
 ```bash
 cp <target_file> <target_file>.bak_<tag>
-```
-
-2. Check out from Perforce:
-```bash
 p4 edit <target_file>
 ```
+If `p4 edit` fails: log the warning, check `ls -l <file>`, proceed only if writable.
 
-If `p4 edit` fails (file not in depot or already open), log the warning but continue — the file may be writable without p4.
+**For RTL source files** (`src/rtl/...`):
+```bash
+cp <target_file> <target_file>.bak_<tag>
+# NO p4 edit — modify directly
+```
 
 ---
 
@@ -94,8 +144,7 @@ Use the Edit tool to append (old_string = last line of file, new_string = last l
 From the consolidated JSON, process all `fix_type: rtl_fix` entries:
 1. Read the RTL file at path specified in `rtl_file`
 2. Backup the file (once per file): `cp <rtl_file> <rtl_file>.bak_<tag>`
-3. Run `p4 edit <rtl_file>`
-4. Check if `fix_action` lines already exist in the file — skip if duplicate
+3. Check if `fix_action` lines already exist in the file — skip if duplicate
 5. **Capture the before state**: read and save the line at `insert_after_line` and 2 lines of surrounding context (this is the `diff_before`)
 6. Insert `fix_action` code block after line `insert_after_line` using the Edit tool
 7. **Capture the after state**: the `diff_after` = `diff_before` context + the inserted comment wrapper + `fix_action` lines
@@ -134,9 +183,8 @@ From the consolidated JSON, process **both** `fix_type: rtl_fix` AND `fix_type: 
 
 For each `rtl_fix` or `tie_off` entry:
 1. Read the RTL file at the path specified in the fix
-2. Backup the file (once per file): `cp <rtl_file> <rtl_file>.bak_<tag>`
-3. Run `p4 edit <rtl_file>`
-4. Check for duplicates — if the `fix_action` line already exists in the file, skip it
+2. Backup the file (once per file): `cp <rtl_file> <rtl_file>.bak_<tag>` (no p4 edit for RTL files)
+3. Check for duplicates — if the `fix_action` line already exists in the file, skip it
 5. **Capture the before state**: read and save the line at the insertion point and 2 lines of surrounding context (this is the `diff_before`)
 6. Apply the RTL change using the Edit tool:
    - **`rtl_fix`**: Insert or correct the driver/connection as specified in `fix_action`
@@ -246,6 +294,8 @@ Where `<check_type_short>`:
 - For SPG_DFT: only apply `constraint` type fixes to `project.params` — log `rtl_fix` and `investigate`
 - Always check for duplicates before applying any fix
 - Always backup before editing: `cp <file> <file>.bak_<tag>` (once per file per round)
-- Always `p4 edit <file>` before modifying
+- `p4 edit <file>` ONLY for constraint/meta files (`src/meta/tools/...`) — NOT for RTL files (`src/rtl/...`)
+- **CDC/RDC and Lint RTL fixes**: always resolve to `src/rtl/` — `publish_rtl/` is rebuilt from `src/rtl/` on every rerun and will wipe any direct edits
+- **SPG_DFT RTL fixes**: use path as-is — SPG_DFT does NOT run rhea_build, so `publish_rtl/` is stable between rounds
 - If `fix_action` is vague or ambiguous, log as `requires_investigation` — do NOT guess
 - `requires_investigation` list in output JSON is read by orchestrator to spawn Deep-Dive Agents — include full context (signal, investigation_context, ref_dir, ip, tag, base_dir)
