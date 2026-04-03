@@ -56,6 +56,18 @@ Read the relevant consolidated JSON file(s):
 
 If the file does not exist, report "No consolidated fixes found for <check_type>" and stop.
 
+### Step 1b: Load Already-Applied Fixes (cross-check-type duplicate prevention)
+
+Before applying any fix, check if other check types have already applied fixes in this round.
+Read ALL existing `_fix_applied_*.json` files for this tag:
+```bash
+ls <base_dir>/data/<tag>_fix_applied_*.json 2>/dev/null
+```
+
+For each file found, collect every `fix_action` from the `applied[]` array into a set: `already_applied_actions`.
+
+When applying any RTL fix below: if `fix_action` is in `already_applied_actions` → skip it, log as `skipped_duplicate_cross_check_type`.
+
 ---
 
 ## Step 2: Determine Target Files
@@ -299,7 +311,8 @@ Where `<check_type_short>`:
 - For CDC/RDC: apply both `constraint` AND `rtl_fix` — `investigate` items are logged for Deep-Dive Agent
 - For Lint: apply both `rtl_fix` AND `tie_off` directly to RTL source — do NOT touch `src/meta/waivers/lint/variant/<ip>/umc_waivers.xml`
 - For SPG_DFT: apply both `constraint` (to `project.params`) AND `rtl_fix` (to path as-is) — log `investigate` only
-- Always check for duplicates before applying any fix
+- Always check for duplicates before applying any fix — both within the file (read actual file content) AND across check types (read existing `<tag>_fix_applied_*.json` from Step 1b)
+- For `full_static_check`: fix implementors run sequentially (CDC → Lint → SPG_DFT) — never in parallel
 - Always backup before editing: `cp <file> <file>.bak_<tag>` (once per file per round)
 - `p4 edit <file>` ONLY for constraint/meta files (`src/meta/tools/...`) — NOT for RTL files (`src/rtl/...`)
 - **CDC/RDC and Lint RTL fixes**: always resolve to `src/rtl/` — `publish_rtl/` is rebuilt from `src/rtl/` on every rerun and will wipe any direct edits

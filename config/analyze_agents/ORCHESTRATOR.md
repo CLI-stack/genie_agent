@@ -1288,16 +1288,27 @@ Round N:
   │     ├── Library finder agent (if unresolved modules > 0)
   │     └── Fix consolidator agent
   │
-  ├── STEP 2: Spawn Fix Implementor agent
+  ├── STEP 2: Spawn Fix Implementor agent(s)
   │     Read: config/analyze_agents/shared/fix_implementor.md
   │     Inputs: tag, check_type, ref_dir, ip, base_dir, round=N
   │     Applies: constraints to project.0in_ctrl.v.tcl (CDC/RDC)
   │              rtl_fix to src/rtl/**/*.sv (CDC/RDC and Lint)
+  │              rtl_fix to path as-is (SPG_DFT)
   │              tie_off to src/rtl/**/*.sv (Lint)
   │              constraints to project.params (SPG_DFT)
   │              library entries to umc_top_lib.list (if needed)
   │     Logs:   investigate items → requires_investigation list
   │     Output: data/<tag>_fix_applied_<check_type>.json
+  │
+  │     ⚠️  FULL_STATIC_CHECK DUPLICATE PREVENTION:
+  │     For full_static_check, multiple check types may recommend the same RTL fix
+  │     for the same src/rtl/ file. To prevent duplicate insertions:
+  │     → Run Fix Implementors SEQUENTIALLY (NOT in parallel):
+  │         1. CDC/RDC Fix Implementor → wait for completion
+  │         2. Lint Fix Implementor    → wait for completion
+  │         3. SPG_DFT Fix Implementor → wait for completion
+  │     Each implementor reads the actual file state before applying,
+  │     so it naturally detects fixes already applied by the previous implementor.
   │
   ├── STEP 2b: Spawn Deep-Dive agents for investigate items
   │     Read: data/<tag>_fix_applied_<check_type>.json → get requires_investigation list
