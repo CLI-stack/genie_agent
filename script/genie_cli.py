@@ -951,6 +951,7 @@ class GenieCLI:
         self.instruction_list = []  # Store all instructions with their vectors for best-match
         self.arguement = {}
         self.arguementInfo = {}
+        self.arguement_canonical = {}  # lowercase → original-case key
         self.patterns = []
         self.oneHotDimension = 0
         self.vtoInfo = {'tile': '', 'disk': '', 'project': '', 'ip': '', 'vto': ''}
@@ -1052,6 +1053,10 @@ class GenieCLI:
                 if len(row) >= 2:
                     self.arguement[row[0]] = row[1]
                     self.arguementInfo[row[1]] = row[1]
+                    # Store lowercase → original-case for case-insensitive lookup
+                    key_lower = row[0].lower()
+                    if key_lower not in self.arguement_canonical:
+                        self.arguement_canonical[key_lower] = row[0]
 
     def _load_assignment(self):
         """Load assignment.csv for tile/project info"""
@@ -1189,6 +1194,9 @@ class GenieCLI:
             return ''.join(result)
 
         temp_text = preserve_braces(instruction_text)
+        # Preserve commas within NetName: values (e.g. "NetName: A, B, C") before comma split
+        temp_text = re.sub(r'(?i)(NetName:\s*[\w/]+)(\s*,\s*[\w/]+)+',
+                           lambda m: m.group(0).replace(',', '\x01'), temp_text)
         temp_text = temp_text.replace(',', '\n')
         temp_text = temp_text.replace('\x00', ',')  # Restore commas inside braces
         # Split on " and " or " with " when they precede a PARAM = pattern
@@ -1293,9 +1301,9 @@ class GenieCLI:
                 continue
 
             # NetName pattern: NetName: <net_suffix>
-            net_name_match = re.search(r'NetName:\s*(\S+)', line, re.I)
+            net_name_match = re.search(r'NetName:\s*([\w/]+(?:\s*[\x01,]\s*[\w/]+)*)', line, re.I)
             if net_name_match:
-                net_name = net_name_match.group(1).strip()
+                net_name = re.sub(r'\s*[\x01,]\s*', ',', net_name_match.group(1).strip())
                 print(f"# Detected NetName: {net_name}")
                 remaining = (line[:net_name_match.start()] + ' ' + line[net_name_match.end():]).strip()
                 if remaining:
@@ -1390,24 +1398,25 @@ class GenieCLI:
             # Helper function to check and set argument from arguement.csv
             def check_arguement_csv(w, w_lower):
                 # Check arguement.csv for special types (target, params, tune, etc.)
+                # Try exact lowercase, exact original, then case-insensitive via canonical
                 if w_lower in self.arguement:
-                    value = self.arguement[w_lower]
-                    if value in arguementInfo:
-                        # For 'ip' type, replace instead of accumulate (only one IP per instruction)
-                        if value == 'ip':
-                            arguementInfo[value] = value + ":" + w
-                        elif (":" + w) not in arguementInfo[value]:
-                            arguementInfo[value] = arguementInfo[value] + ":" + w
-                        return True
+                    lookup_key, entry = w_lower, w_lower
                 elif w in self.arguement:
-                    value = self.arguement[w]
-                    if value in arguementInfo:
-                        # For 'ip' type, replace instead of accumulate (only one IP per instruction)
-                        if value == 'ip':
-                            arguementInfo[value] = value + ":" + w
-                        elif (":" + w) not in arguementInfo[value]:
-                            arguementInfo[value] = arguementInfo[value] + ":" + w
-                        return True
+                    lookup_key, entry = w, w
+                elif w_lower in self.arguement_canonical:
+                    # Use canonical (correct-case) key from CSV
+                    lookup_key = self.arguement_canonical[w_lower]
+                    entry = lookup_key
+                else:
+                    return False
+                value = self.arguement[lookup_key]
+                if value in arguementInfo:
+                    # For 'ip' type, replace instead of accumulate (only one IP per instruction)
+                    if value == 'ip':
+                        arguementInfo[value] = value + ":" + entry
+                    elif (":" + entry) not in arguementInfo[value]:
+                        arguementInfo[value] = arguementInfo[value] + ":" + entry
+                    return True
                 return False
 
             # Helper function to check special type keywords
@@ -1851,6 +1860,8 @@ class GenieCLI:
                 task_type = 'p4_submit'
             elif 'clock_reset_analyzer' in script_lower or 'clock_reset' in script_lower:
                 task_type = 'clock_reset_analysis'
+            elif 'find_equivalent_nets' in script_lower:
+                task_type = 'find_equivalent_nets'
             else:
                 task_type = check_type or update_type or 'task'
 

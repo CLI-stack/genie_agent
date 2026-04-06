@@ -9,6 +9,7 @@ set target    = $3
 set netName   = $4
 set tile      = $5
 set source_dir = `pwd`
+set target_run_dir = ":"
 touch $source_dir/data/${tag}_spec
 
 # Strip "refDir:" prefix and any leading colons
@@ -17,11 +18,30 @@ set refdir_name = `echo $refDir | sed 's/refDir://' | sed 's/^://g'`
 # Strip "target:" prefix
 set target_name = `echo $target | sed 's/target://'`
 
-# Strip "netName:" prefix
-set net_name  = `echo $netName | sed 's/netName://'`
+# Strip "netName:" prefix — result is comma-separated net names
+set net_raw   = `echo $netName | sed 's/netName://'`
+
+# Count nets
+set net_count = `echo $net_raw | tr ',' '\n' | wc -l`
+
+# Build space-separated list with tile prefix for TCL: "umccmd/NET1 umccmd/NET2 ..."
+# (tile_name not yet set here — built after tile parsing below)
 
 # Strip tile prefix
 set tile_name = `echo $tile | sed 's/:/ /g' | awk '{$1="";print $0}'`
+
+# Build space-separated list for TCL foreach
+# If net already contains '/', use as-is; otherwise prepend tile_name/
+set net_full_list = ""
+foreach _net (`echo $net_raw | sed 's/,/ /g'`)
+    set _has_slash = `echo $_net | grep -c "/"`
+    if ($_has_slash > 0) then
+        set net_full_list = "$net_full_list $_net"
+    else
+        set net_full_list = "$net_full_list $tile_name/$_net"
+    endif
+end
+set net_full_list = `echo $net_full_list`
 
 # --- Phase 1: Validate inputs ---
 
@@ -57,9 +77,9 @@ if ("$target_name" == "" || "$target_name" == "target") then
     exit 1
 endif
 
-if ("$net_name" == "" || "$net_name" == "netName") then
-    echo "ERROR: NetName not specified. Use format: NetName: <module>/<net>" >> $source_dir/data/${tag}_spec
-    echo "Example: NetName: umccmd/ARB_BEQ_Cmd1Vld" >> $source_dir/data/${tag}_spec
+if ("$net_raw" == "" || "$net_raw" == "netName") then
+    echo "ERROR: NetName not specified. Use format: NetName: <net> or NetName: <net1>, <net2>, ..." >> $source_dir/data/${tag}_spec
+    echo "Example: NetName: ARB_BEQ_Cmd1Vld, ARB_BEQ_Cmd1Bank" >> $source_dir/data/${tag}_spec
     set run_status = "failed"
     source $source_dir/script/rtg_oss_feint/finishing_task.csh
     exit 1
@@ -67,7 +87,7 @@ endif
 
 echo "TileBuilder directory: $refdir_name"
 echo "FM target:             $target_name"
-echo "Net name:              $net_name"
+echo "Net name(s):           $net_raw  (count: $net_count)"
 
 # --- Phase 2: Source LSF environment ---
 source $source_dir/script/rtg_oss_feint/lsf_tilebuilder.csh
@@ -107,7 +127,7 @@ echo "FM target is $fm_status — proceeding with find_equivalent_nets"
 
 # --- Phase 4: Generate TCL append script ---
 set tcl_script = "/tmp/fm_find_equiv_${tag}.tcl"
-set output_rpt = "rpts/${target_name}/find_equivalent_nets.txt"
+set output_rpt = "rpts/${target_name}/find_equivalent_nets_${tag}.txt"
 set result_file = "${refdir_name}/${output_rpt}"
 
 cat > $tcl_script << TCLEOF
@@ -120,16 +140,17 @@ set ref_lib   [string toupper "FMWORK_REF_\${topModule}"]
 set ref_top   "\${ref_lib}/\${topModule}"
 echo "INFO: ref_top = \$ref_top"
 
-set net_suffix "${tile_name}/${net_name}"
-set full_ref_net "r:/\$ref_top/\$net_suffix"
-echo "=== find_equivalent_nets for: \$full_ref_net ==="
+set nets { ${net_full_list} }
 
 redirect ${refdir_name}/${output_rpt} {
-    echo "=========================================="
-    echo "Net: \$full_ref_net"
-    echo "=========================================="
-    find_equivalent_nets \$full_ref_net
-    echo ""
+    foreach net_suffix \$nets {
+        set full_ref_net "r:/\$ref_top/\$net_suffix"
+        echo "=========================================="
+        echo "Net: \$full_ref_net"
+        echo "=========================================="
+        find_equivalent_nets \$full_ref_net
+        echo ""
+    }
     echo "FIND_EQUIVALENT_NETS_COMPLETE"
 }
 exit
@@ -190,15 +211,17 @@ if (! -f "$result_file" || $sentinel_found == 0) then
 endif
 
 # --- Phase 7: Write results and finish ---
-cat >> $source_dir/data/${tag}_spec << EOF
-#table#
-Field,Value
-FM Target,$target_name
-Net,$tile_name/$net_name
-Output,$result_file
-#table end#
-#text#
-EOF
+echo "#table#" >> $source_dir/data/${tag}_spec
+echo "Field,Value" >> $source_dir/data/${tag}_spec
+echo "FM Target,$target_name" >> $source_dir/data/${tag}_spec
+
+# Write all nets in one row — join with " | " to avoid comma column-split
+set net_value = `echo $net_full_list | sed 's/  */ | /g'`
+echo "Net(s),$net_value" >> $source_dir/data/${tag}_spec
+
+echo "Output,$result_file" >> $source_dir/data/${tag}_spec
+echo "#table end#" >> $source_dir/data/${tag}_spec
+echo "#text#" >> $source_dir/data/${tag}_spec
 grep -v "FIND_EQUIVALENT_NETS_COMPLETE" $result_file >> $source_dir/data/${tag}_spec
 echo "#text end#" >> $source_dir/data/${tag}_spec
 
