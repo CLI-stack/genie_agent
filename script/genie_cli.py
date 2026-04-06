@@ -1969,6 +1969,46 @@ class GenieCLI:
                     f.write(f"email_to={email_to or ''}\n")
             print(f"Analyze mode enabled: Claude Code will monitor and analyze results")
 
+        # Write debug info file — records all execution parameters for diagnosis
+        debug_file = os.path.join(self.base_dir, 'data', f'{tag}_debug')
+        with open(debug_file, 'w') as f:
+            f.write(f"=== Genie CLI Debug Info ===\n")
+            f.write(f"timestamp={datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"tag={tag}\n")
+            f.write(f"\n--- Instruction ---\n")
+            instruction_oneline = instruction_text.replace('\n', ' | ')
+            f.write(f"raw_instruction={instruction_oneline}\n")
+            f.write(f"matched_instruction={matched_instruction}\n")
+            f.write(f"script={script}\n")
+            f.write(f"command={command}\n")
+            f.write(f"\n--- Execution Mode ---\n")
+            f.write(f"xterm={'true' if use_xterm else 'false'}\n")
+            f.write(f"dry_run=false\n")
+            f.write(f"\n--- Email ---\n")
+            if not send_email:
+                f.write(f"email=disabled\n")
+            elif email_to:
+                f.write(f"email=override\n")
+                f.write(f"email_to={email_to}\n")
+            else:
+                f.write(f"email=to_debuggers\n")
+                f.write(f"email_to={','.join(self.debugger_emails)}\n")
+            f.write(f"\n--- Analyze / Fixer ---\n")
+            f.write(f"analyze_mode={'true' if analyze_mode else 'false'}\n")
+            f.write(f"fixer_mode={'true' if fixer_mode else 'false'}\n")
+            f.write(f"\n--- Extracted Arguments ---\n")
+            for key, value in arguementInfo.items():
+                if value and value != key:
+                    f.write(f"{key}={value}\n")
+            if params_list:
+                f.write(f"params_count={len(params_list)}\n")
+            if waiver_list:
+                f.write(f"waiver_count={len(waiver_list)}\n")
+            if constraint_list:
+                f.write(f"constraint_count={len(constraint_list)}\n")
+            if net_name:
+                f.write(f"net_name={net_name}\n")
+
         print(f"Created run script: {run_script}")
         print(f"Created data directory: {data_dir}")
 
