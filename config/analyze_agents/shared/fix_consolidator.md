@@ -229,7 +229,7 @@ For `cdc_rdc`, write TWO files: `_consolidated_cdc.json` and `_consolidated_rdc.
       "coverage": 2,
       "source_agent": 5,
       "fix_action": "cdc report crossing -id series_redundant_95130 -severity waived -message \"Intentional dual FPM paths ...\"\ncdc report crossing -id series_redundant_6522 -severity waived -message \"...\"",
-      "target_file": "src/meta/tools/cdc0in/variant/<ip>/project.0in_ctrl.v.tcl",
+      "target_file": "src/meta/tools/cdc0in/variant/<ip>/umc.0in_waiver",
       "resolves_violations": ["series_redundant_95130", "series_redundant_6522"]
     }
   ],

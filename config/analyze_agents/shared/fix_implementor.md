@@ -11,7 +11,8 @@ This agent reads consolidated fix recommendations and applies them directly to t
 > **`p4 edit` applies to CONSTRAINT FILES ONLY — NOT RTL files.**
 >
 > ### Constraint / meta files (require `p4 edit`):
-> - `src/meta/tools/cdc0in/variant/<ip>/project.0in_ctrl.v.tcl`
+> - `src/meta/tools/cdc0in/variant/<ip>/project.0in_ctrl.v.tcl`  ← CDC/RDC **constraints** (netlist clock/reset, cdc custom sync)
+> - `src/meta/tools/cdc0in/variant/<ip>/umc.0in_waiver`           ← CDC/RDC **waivers** (cdc report crossing -severity waived)
 > - `src/meta/tools/cdc0in/variant/<ip>/umc_top_lib.list`
 > - `src/meta/tools/spgdft/variant/<ip>/project.params`
 >
@@ -75,7 +76,8 @@ When applying any RTL fix below: if `fix_action` is in `already_applied_actions`
 ### CDC/RDC
 | File | Path | Apply when |
 |------|------|-----------|
-| Constraint file | `<ref_dir>/src/meta/tools/cdc0in/variant/<ip>/project.0in_ctrl.v.tcl` | For `constraint` fixes |
+| Constraint file | `<ref_dir>/src/meta/tools/cdc0in/variant/<ip>/project.0in_ctrl.v.tcl` | For `constraint` fixes (netlist clock/reset, cdc custom sync, netlist port domain) |
+| Waiver file | `<ref_dir>/src/meta/tools/cdc0in/variant/<ip>/umc.0in_waiver` | For `waiver` fixes (cdc report crossing ... -severity waived) |
 | RTL source files | `<ref_dir>/src/rtl/**/<filename>` — resolved from filename (see Step 2a) | For `rtl_fix` fixes |
 | Library list | `<ref_dir>/src/meta/tools/cdc0in/variant/<ip>/umc_top_lib.list` | Only if Library Finder found missing modules |
 
@@ -175,6 +177,10 @@ From the consolidated JSON, process all `fix_type: rtl_fix` entries:
 
 Do NOT apply — log them in `requires_investigation` list in output JSON.
 The orchestrator will spawn a Deep-Dive Agent for each investigate item.
+
+#### 4d: Waiver entries (`fix_type: waiver`)
+
+Do NOT apply — **ZERO WAIVERS in fixer mode**. Log them in `requires_manual_waiver` list in output JSON with the correct target file path (`src/meta/tools/cdc0in/variant/<ip>/umc.0in_waiver`) so the user knows where to add them manually.
 
 ### For SPG_DFT — Constraint Fixes AND RTL Fixes
 

@@ -1010,11 +1010,12 @@ cdc report crossing -id no_sync_99 -comment "Static signal" -status waived
 
 ### Configuration File Reference
 
-| Check Type | Config File Path |
-|------------|------------------|
-| **CDC/RDC** | `src/meta/tools/cdc0in/variant/<ip>/project.0in_ctrl.v.tcl` |
-| **SpgDFT** | `src/meta/tools/spgdft/variant/<ip>/project.params` |
-| **Lint** | `src/meta/tools/lint/variant/<ip>/...` (varies by project) |
+| Check Type | Config File Path | Purpose |
+|------------|------------------|---------|
+| **CDC/RDC** | `src/meta/tools/cdc0in/variant/<ip>/project.0in_ctrl.v.tcl` | **Constraints** (netlist clock/reset, cdc custom sync, netlist port domain) |
+| **CDC/RDC** | `src/meta/tools/cdc0in/variant/<ip>/umc.0in_waiver` | **Waivers** (cdc report crossing ... -severity waived) |
+| **SpgDFT** | `src/meta/tools/spgdft/variant/<ip>/project.params` | DFT constraints |
+| **Lint** | `src/meta/tools/lint/variant/<ip>/...` (varies by project) | Lint waivers |
 ```
 
 ---
@@ -1341,7 +1342,8 @@ Round N:
   ├── STEP 2: Spawn Fix Implementor agent(s)
   │     Read: config/analyze_agents/shared/fix_implementor.md
   │     Inputs: tag, check_type, ref_dir, ip, base_dir, round=N
-  │     Applies: constraints to project.0in_ctrl.v.tcl (CDC/RDC)
+  │     Applies: constraints to project.0in_ctrl.v.tcl (CDC/RDC constraint fixes)
+  │              waivers to umc.0in_waiver (CDC/RDC waiver fixes)
   │              rtl_fix to src/rtl/**/*.sv (CDC/RDC and Lint)
   │              rtl_fix to path as-is (SPG_DFT)
   │              tie_off to src/rtl/**/*.sv (Lint)
