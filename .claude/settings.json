@@ -9,9 +9,25 @@
   "model": "Claude-Opus-4.5",
   "enabledPlugins": {
     "atlassian@claude-plugins-official": true,
+    "analysis-tools@tilebuilder-marketplace": true,
+    "calibre_drv_expert@tilebuilder-marketplace": true,
+    "eco-timing-closure-flow@tilebuilder-marketplace": true,
+    "fcfp-expert-skills@tilebuilder-marketplace": true,
+    "fcrdl-expert-skills@tilebuilder-marketplace": true,
+    "fsdb-metrics@tilebuilder-marketplace": true,
+    "gatecdc@tilebuilder-marketplace": true,
+    "ml-cac@tilebuilder-marketplace": true,
+    "pcfixeco-assistant@tilebuilder-marketplace": true,
+    "rtl-fixme-advisor@tilebuilder-marketplace": true,
     "rtl-ppa-optimizer@tilebuilder-marketplace": true,
+    "supra-doc@tilebuilder-marketplace": true,
     "tcm-lint@tilebuilder-marketplace": true,
-    "supra-doc@tilebuilder-marketplace": true
+    "tilebuilder-development@tilebuilder-marketplace": true,
+    "tilebuilder-infra@tilebuilder-marketplace": true,
+    "tilebuilder-supra-fe@tilebuilder-marketplace": true,
+    "tilebuilder-supra-funceco@tilebuilder-marketplace": true,
+    "tilebuilder-supra-pnr@tilebuilder-marketplace": true,
+    "tilebuilder-supra-pnr-jira-solver@tilebuilder-marketplace": true
   },
   "extraKnownMarketplaces": {
     "tilebuilder-marketplace": {
