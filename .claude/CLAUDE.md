@@ -14,6 +14,24 @@ This directory provides Claude Code with skills, agents, and templates for UVM-b
 ---
 
 
+## CRITICAL: Genie CLI Working Directory
+
+**ALWAYS run `genie_cli.py` from the user-specific directory (`users/$USER`), NEVER from the project root.**
+
+```bash
+# CORRECT ✓
+cd /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent/users/$USER
+python3 script/genie_cli.py -i "..." --execute
+
+# WRONG ✗ — never run from project root
+cd /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent
+python3 script/genie_cli.py -i "..." --execute
+```
+
+This ensures task data, logs, and run scripts go to the correct user-isolated directories (`users/$USER/data/`, `users/$USER/runs/`) and the correct `assignment.csv` is used.
+
+---
+
 ## Quick Start - Slash Commands
 
 ### UVM Generation

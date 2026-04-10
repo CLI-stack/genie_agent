@@ -143,32 +143,37 @@ When this skill is invoked:
    - If no instruction provided after `/agent`, ask user what they want to do
    - If `--list` is provided, show all available instructions
 
-2. **Run the CLI parser to identify the command (dry-run first)**
+2. **ALWAYS cd to `users/$USER` before running any genie_cli.py command**
    ```bash
-   python3 script/genie_cli.py -i "<user_instruction>"
+   cd /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent/users/$USER
    ```
 
-3. **Review the dry-run output**
+3. **Run the CLI parser to identify the command (dry-run first)**
+   ```bash
+   cd /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent/users/$USER && python3 script/genie_cli.py -i "<user_instruction>"
+   ```
+
+4. **Review the dry-run output**
    - Show user the matched instruction and script
    - Show extracted arguments
    - Confirm this is what they want
 
-4. **Execute if user confirms (or auto-execute for simple tasks)**
+5. **Execute if user confirms (or auto-execute for simple tasks)**
    ```bash
-   python3 script/genie_cli.py -i "<user_instruction>" --execute
+   cd /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent/users/$USER && python3 script/genie_cli.py -i "<user_instruction>" --execute
    ```
 
-5. **Execute with email notification (optional)**
+6. **Execute with email notification (optional)**
    ```bash
-   python3 script/genie_cli.py -i "<user_instruction>" --execute --email
+   cd /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent/users/$USER && python3 script/genie_cli.py -i "<user_instruction>" --execute --email
    ```
 
-6. **Execute in xterm popup (for visual monitoring)**
+7. **Execute in xterm popup (for visual monitoring)**
    ```bash
-   python3 script/genie_cli.py -i "<user_instruction>" --execute --xterm --email
+   cd /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent/users/$USER && python3 script/genie_cli.py -i "<user_instruction>" --execute --xterm --email
    ```
 
-7. **For long-running tasks (like monitor, supra regression)**
+8. **For long-running tasks (like monitor, supra regression)**
    - Task runs in background (or in xterm if `--xterm` specified)
    - PID is saved to `data/<tag>_pid`
    - Report the tag to user for tracking
