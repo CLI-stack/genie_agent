@@ -10,10 +10,9 @@
   "enabledPlugins": {
     "atlassian@claude-plugins-official": true,
     "analysis-tools@tilebuilder-marketplace": true,
-    "calibre_drv_expert@tilebuilder-marketplace": true,
+    "calibre-drv-expert@tilebuilder-marketplace": true,
     "eco-timing-closure-flow@tilebuilder-marketplace": true,
     "fcfp-expert-skills@tilebuilder-marketplace": true,
-    "fcrdl-expert-skills@tilebuilder-marketplace": true,
     "fsdb-metrics@tilebuilder-marketplace": true,
     "gatecdc@tilebuilder-marketplace": true,
     "ml-cac@tilebuilder-marketplace": true,
@@ -26,8 +25,7 @@
     "tilebuilder-infra@tilebuilder-marketplace": true,
     "tilebuilder-supra-fe@tilebuilder-marketplace": true,
     "tilebuilder-supra-funceco@tilebuilder-marketplace": true,
-    "tilebuilder-supra-pnr@tilebuilder-marketplace": true,
-    "tilebuilder-supra-pnr-jira-solver@tilebuilder-marketplace": true
+    "tilebuilder-supra-pnr@tilebuilder-marketplace": true
   },
   "extraKnownMarketplaces": {
     "tilebuilder-marketplace": {
