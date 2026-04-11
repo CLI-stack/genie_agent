@@ -69,6 +69,7 @@ Group all collected fixes into buckets:
 | `SPGDFT_PIN_CONSTRAINT` | Signal path, value (0 or 1) |
 | `sgdc_constraint` | Clock/signal name, constraint text |
 | `tie_off` | Signal name, value |
+| `pragma_suppress` | `pragma_rule`, `insert_after_line`, rtl file path — one entry per offending statement line |
 | `filter` | Module/signal to filter |
 | `investigate` | Flag for human review |
 
@@ -148,6 +149,12 @@ After filtering out instance-name confusions and shallow traces:
 ### For `tie_off`:
 - Group by **signal name**
 - Deduplicate
+
+### For `pragma_suppress`:
+- Group by **file path + pragma_rule + insert_after_line**
+- If multiple agents suggest the same rule at the same line in the same file → keep ONE
+- If agents suggest the same rule at different lines (multi-driver) → keep ALL — each line needs its own pragma
+
 
 ---
 

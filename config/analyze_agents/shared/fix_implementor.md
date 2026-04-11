@@ -90,7 +90,7 @@ When applying any RTL fix below: if `fix_action` is in `already_applied_actions`
 ### Lint
 | File | Path | Apply when |
 |------|------|-----------|
-| RTL source files | `<ref_dir>/src/rtl/**/<filename>` — resolved from filename (see Step 2a) | For each rtl_fix or tie_off violation |
+| RTL source files | `<ref_dir>/src/rtl/**/<filename>` — resolved from filename (see Step 2a); also `out/*/library/*/pub/src/rtl/` for library components | For `rtl_fix`, `tie_off`, and `pragma_suppress` violations |
 
 ---
 
@@ -164,22 +164,34 @@ Use the Edit tool to append (old_string = last line of file, new_string = last l
 
 #### 4b: RTL fixes (`fix_type: rtl_fix`)
 
-From the consolidated JSON, process all `fix_type: rtl_fix` entries:
+From the consolidated JSON, process all `fix_type: rtl_fix` entries. Check `fix_mode` to determine how to apply:
+
+**`fix_mode: "insert"` (default when `fix_mode` is absent):**
 1. Read the RTL file at path specified in `rtl_file`
 2. Backup the file (once per file): `cp <rtl_file> <rtl_file>.bak_<tag>`
 3. Check if `fix_action` lines already exist in the file — skip if duplicate
-5. **Capture the before state**: read and save the line at `insert_after_line` and 2 lines of surrounding context (this is the `diff_before`)
-6. Insert `fix_action` code block after line `insert_after_line` using the Edit tool
-7. **Capture the after state**: the `diff_after` = `diff_before` context + the inserted comment wrapper + `fix_action` lines
-8. If `fix_action` is vague/ambiguous (no exact RTL code) → log as `requires_investigation` — do NOT guess
-9. Log the full change (rtl_file full path, backup_file full path, diff_before, diff_after) in output JSON
-
-**Comment wrapper for RTL insertions:**
+4. **Capture the before state**: line at `insert_after_line` and 2 lines of surrounding context (`diff_before`)
+5. Insert `fix_action` block after line `insert_after_line` using the Edit tool with comment wrapper:
 ```verilog
 // === Auto-applied by analyze-fixer Round <round> [<tag>] ===
 <fix_action lines>
 // ============================================================
 ```
+6. **Capture the after state** (`diff_after`)
+7. Log the full change in output JSON
+
+**`fix_mode: "replace"`:**
+1. Read the RTL file at path specified in `rtl_file`
+2. Backup the file (once per file): `cp <rtl_file> <rtl_file>.bak_<tag>`
+3. Read the exact content of line `replace_line` — this is the `old_string`
+4. Check if the line already matches `fix_action` — skip if already applied
+5. **Capture the before state**: line at `replace_line` and 2 lines of surrounding context (`diff_before`)
+6. Replace the line content using the Edit tool: `old_string` = current line content, `new_string` = `fix_action`
+7. **No comment wrapper** for replace-mode fixes — the replacement line IS the fix
+8. **Capture the after state** (`diff_after`)
+9. Log the full change in output JSON
+
+If `fix_action` is vague/ambiguous → log as `requires_investigation` — do NOT guess.
 
 #### 4c: Investigate entries (`fix_type: investigate`)
 
@@ -215,27 +227,46 @@ For each `rtl_fix` entry:
 
 For `investigate` entries: log as `requires_investigation`.
 
-### For Lint — RTL Fixes and Tie-offs
+### For Lint — RTL Fixes, Tie-offs, and Pragma Suppression
 
-**ZERO WAIVERS for Lint.** Do NOT add entries to `src/meta/waivers/lint/variant/<ip>/umc_waivers.xml`. All violations must be fixed in RTL.
+**ZERO WAIVERS for Lint.** Do NOT add entries to `src/meta/waivers/lint/variant/<ip>/umc_waivers.xml`. All violations must be addressed in RTL.
 
-From the consolidated JSON, process **both** `fix_type: rtl_fix` AND `fix_type: tie_off` entries. Skip `investigate`.
+From the consolidated JSON, process `fix_type: rtl_fix`, `fix_type: tie_off`, and `fix_type: pragma_suppress` entries. Skip `investigate`.
 
-For each `rtl_fix` or `tie_off` entry:
-1. Read the RTL file at the path specified in the fix
+#### For `rtl_fix` and `tie_off` entries:
+1. Resolve RTL file path (Step 2a — prefer `out/*/library/*/pub/src/rtl/`, fallback `src/rtl/`)
 2. Backup the file (once per file): `cp <rtl_file> <rtl_file>.bak_<tag>` (no p4 edit for RTL files)
-3. Check for duplicates — if the `fix_action` line already exists in the file, skip it
-5. **Capture the before state**: read and save the line at the insertion point and 2 lines of surrounding context (this is the `diff_before`)
-6. Apply the RTL change using the Edit tool:
-   - **`rtl_fix`**: Insert or correct the driver/connection as specified in `fix_action`
-   - **`tie_off`**: Insert the `assign` statement from `fix_action` (e.g., `assign Tdr_data_out = 8'b0;`) immediately after the signal declaration line
-7. **Capture the after state**: the `diff_after` = `diff_before` context + the inserted comment wrapper + `fix_action` lines
-8. Log the full change (rtl_file full path, backup_file full path, diff_before, diff_after) in output JSON
+3. Check for duplicates — skip if already applied
+4. **Capture the before state**: 2 lines of surrounding context at the insertion/replacement point (`diff_before`)
+5. Apply using the Edit tool:
+   - **`rtl_fix` with `fix_mode: "insert"` (or no `fix_mode`)**: insert `fix_action` after `insert_after_line` with comment wrapper
+   - **`rtl_fix` with `fix_mode: "replace"`**: replace the exact content of `replace_line` with `fix_action` (no comment wrapper — see 4b above for full replace-mode steps)
+   - **`tie_off`**: insert the `assign` statement after the signal declaration line (always insert mode)
+6. **Capture the after state** (`diff_after`)
+7. Log the full change (rtl_file, backup_file, diff_before, diff_after) in output JSON
 
-**IMPORTANT:**
+#### For `pragma_suppress` entries:
+
+**iEDA SWAN inline pragma format**: `// spyglass disable <rule>  // <justification>` — do NOT use `disable_block`/`enable_block`.
+
+1. Resolve RTL file path (same Step 2a logic — `out/*/library/*/pub/src/rtl/` preferred, `src/rtl/` fallback)
+2. Backup the file (once per file): `cp <rtl_file> <rtl_file>.bak_<tag>` (no p4 edit)
+3. Read the file; check that line `insert_after_line` does not already have `// spyglass disable <pragma_rule>` on the next line — skip if already present
+4. **Capture the before state**: the line at `insert_after_line` + 1 line after (`diff_before`)
+5. Apply using the Edit tool — insert ONE pragma line immediately after `insert_after_line`:
+   ```
+   // spyglass disable <pragma_rule>  // <fix_justification summary>
+   ```
+   Use the line at `insert_after_line` as the `old_string` anchor; `new_string` = original line + `\n    // spyglass disable <pragma_rule>  // <justification>`
+6. **Capture the after state** (`diff_after`)
+7. Log as `pragma_suppress` in applied list with `pragma_rule`, `insert_after_line`, rtl_file, backup_file, diff_before, diff_after
+
+**No comment wrapper** — the pragma itself is the fix. Insert it bare.
+
+**IMPORTANT for all Lint fixes:**
 - Make MINIMAL changes only — fix exactly what the violation points to
 - Do NOT refactor or restructure surrounding code
-- If `fix_action` is ambiguous (e.g., "add connection" without specifying what to connect), log as `requires_manual_review` — do NOT guess
+- If `fix_action` is ambiguous (e.g., no exact RTL line or no exact constraint text), log as `requires_manual_review` — do NOT guess
 - Each RTL file is backed up only ONCE per round even if multiple fixes apply to it
 
 ---
@@ -271,6 +302,7 @@ Where `<check_type_short>`:
   "constraints_applied": <count>,
   "rtl_fixes_applied": <count>,
   "tie_offs_applied": <count>,
+  "pragma_suppresses_applied": <count>,
   "library_entries_added": <count>,
   "deep_dive_pending": <count>,
   "applied": [
@@ -323,8 +355,10 @@ Where `<check_type_short>`:
 
 - **ZERO WAIVERS across all check types** — no CDC waivers, no lint waivers, no SPG_DFT waivers
 - For CDC/RDC: apply both `constraint` AND `rtl_fix` — `investigate` items are logged for Deep-Dive Agent
-- For Lint: apply both `rtl_fix` AND `tie_off` directly to RTL source — do NOT touch `src/meta/waivers/lint/variant/<ip>/umc_waivers.xml`
+- For Lint: apply `rtl_fix`, `tie_off`, and `pragma_suppress` — do NOT touch `src/meta/waivers/lint/variant/<ip>/umc_waivers.xml`
 - For SPG_DFT: apply both `constraint` (to `project.params`) AND `rtl_fix` (to path as-is) — log `investigate` only
+- `pragma_suppress` inserts `// spyglass disable <rule>  // <justification>` on the line AFTER the offending statement — iEDA SWAN/LEDA inline format (NOT `disable_block`/`enable_block`); zero functional impact; one pragma per driver statement for multi-driver violations
+- `xml_suppress` and `lint_constraint` are NOT valid fix types — do NOT apply them
 - Always check for duplicates before applying any fix — both within the file (read actual file content) AND across check types (read existing `<tag>_fix_applied_*.json` from Step 1b)
 - For `full_static_check`: fix implementors run sequentially (CDC → Lint → SPG_DFT) — never in parallel
 - Always backup before editing: `cp <file> <file>.bak_<tag>` (once per file per round)

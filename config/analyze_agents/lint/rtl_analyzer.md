@@ -93,14 +93,40 @@ For each violation in the `violations` list:
 | Future use | Port reserved for future feature | MEDIUM | `tie_off` — tie to 0 until implemented |
 | Parent drives it | Signal connected at parent hierarchy | LOW | `investigate` — verify parent connection first |
 | Legacy port | Kept for backward compatibility | LOW | `tie_off` — tie to 0, or `rtl_fix` to remove port |
+| False positive — static analysis limitation | Code is confirmed correct after reading RTL; violation is a tool limitation (e.g. index bounds provably safe, signal driven at parent level) | LOW | `pragma_suppress` — `// spyglass disable <rule>  // <justification>` after each offending statement |
+| Multiple `if` blocks in same always block assigning same signal (`if/if` anti-pattern) | Two or more independent `if (condA)` … `if (condB)` blocks both assign the same signal — last assignment wins, priority is implicit/ambiguous | MEDIUM | `rtl_fix` — replace the second (and any further) `if` with `else if` to establish explicit priority; always correct: equivalent when conditions are mutually exclusive, safer when they can overlap |
 
-**IMPORTANT: NO WAIVERS. All violations resolved by `rtl_fix`, `tie_off`, or `investigate`.**
+**IMPORTANT: NO WAIVERS. No xml_suppress. Violations resolved by `rtl_fix`, `tie_off`, `pragma_suppress`, or `investigate` only.**
+
+**CRITICAL RULE — decision criteria for `pragma_suppress`:**
+
+Use `pragma_suppress` when ALL THREE are true after reading the RTL:
+1. **The code is correct** — reading the RTL confirms the flagged code is intentional and functionally sound
+2. **An RTL fix would either change behavior or there is no structural bug to fix** — the tool is wrong, not the code
+3. **The lint rule is a static analysis limitation** — the tool cannot statically prove correctness, but the designer intent is clear from the code
+
+**For multi-driver violations (e.g. same signal driven from multiple always blocks):** read the RTL, identify ALL driver statements, and output ONE `pragma_suppress` entry per driver line. The fix implementor will insert a `// spyglass disable <rule>` pragma after each one.
+
+`investigate` is ONLY appropriate when reading the RTL does not reveal whether the code is correct or what the correct fix should be.
+
+Inline pragmas use iEDA SWAN LEDA syntax: `// spyglass disable <rule>  // <justification>` — do NOT use `disable_block`/`enable_block`.
 
 ### Step 4: Formulate Fix for Each Signal
 
-- **`rtl_fix`**: `fix_action` MUST be a concrete, insertable RTL line (e.g., `assign sig = src_signal;`). If the correct driver cannot be determined from RTL alone, use `investigate` instead.
+- **`rtl_fix`**: Fix a real structural or connection issue in the RTL. Two modes:
+  - **Insert mode** (default): `fix_action` is a new RTL line to insert. Set `fix_mode: "insert"` and `insert_after_line`. Example: `assign cfg_out = cfg_reg[3:0];`
+  - **Replace mode**: `fix_action` is the replacement text for an existing line. Set `fix_mode: "replace"` and `replace_line` (line number to replace). Use this for `if` → `else if` restructuring where you change the keyword on an existing line, not insert a new one.
+  - If `fix_mode` is omitted, assume `"insert"`.
+  - If the correct fix cannot be determined from the RTL alone, use `investigate` instead.
 - **`tie_off`**: `fix_action` MUST be the exact RTL line to insert (e.g., `assign Tdr_data_out = 8'b0;`). Insert after the signal's declaration line.
-- **`investigate`**: Provide a description of what to investigate (e.g., "Check parent module for connection of port X").
+- **`pragma_suppress`**: Insert an inline iEDA SWAN/LEDA pragma immediately after the offending statement. Syntax: `// spyglass disable <rule>  // <justification>`. Do NOT use `disable_block`/`enable_block`. Set:
+  - `pragma_rule`: copy the exact violation `code` field verbatim — do NOT rename or guess
+  - `insert_after_line`: line number of the offending statement — pragma goes on the NEXT line
+  - `fix_action`: human-readable description of what is suppressed and why
+  - `fix_justification`: your reasoning from reading the RTL (e.g. "index bounded by generate parameter", "always blocks drive disjoint conditions")
+  - **For multi-driver violations spanning multiple always blocks**: output ONE `pragma_suppress` entry per driver line — each with its own `insert_after_line`. The fix implementor will insert a pragma after each one. Read the RTL to find all driver statements.
+
+- **`investigate`**: Provide a description of what to investigate (e.g., "Check parent module for connection of port X"). Use ONLY when reading the RTL does not reveal whether the code is correct or what the correct fix should be.
 
 **DO NOT recommend waivers under any circumstance.**
 
@@ -154,6 +180,66 @@ Return a JSON object with analysis for ALL violations in this file:
       "fix_type": "investigate",
       "fix_action": "Check parent module instantiation of this block for debug_obs connection",
       "fix_justification": "Cannot safely assign without knowing the intended source."
+    },
+    {
+      "violation_code": "<exact code from extractor>",
+      "signal_name": "data_arr[idx]",
+      "line": 42,
+      "signal_purpose": "Library array indexing — read RTL, confirmed index is bounded by generate parameter",
+      "why_violation": "Lint tool cannot statically prove index is in bounds; reading the code shows it is always valid",
+      "risk_level": "LOW - code is correct, single statement, static analysis limitation",
+      "in_generate": false,
+      "is_dft_port": false,
+      "fix_type": "pragma_suppress",
+      "pragma_rule": "<exact code from extractor — copy verbatim>",
+      "insert_after_line": 42,
+      "fix_action": "Insert '// spyglass disable <rule>  // index bounded by generate parameter' on line 43",
+      "fix_justification": "Single statement, code is correct. iEDA SWAN inline pragma is the appropriate fix."
+    },
+    {
+      "violation_code": "<exact code from extractor>",
+      "signal_name": "out_data",
+      "line": 88,
+      "signal_purpose": "Output driven from multiple always blocks — read RTL, confirmed each block drives under disjoint conditions",
+      "why_violation": "Lint rule flags multiple always-block drivers; reading the code confirms no actual concurrent multi-driver conflict",
+      "risk_level": "LOW - code is correct, restructuring would change simulation semantics",
+      "in_generate": false,
+      "is_dft_port": false,
+      "fix_type": "pragma_suppress",
+      "pragma_rule": "<exact code from extractor — copy verbatim>",
+      "insert_after_line": 88,
+      "fix_action": "Insert '// spyglass disable <rule>  // always blocks drive disjoint conditions' after line 88 (driver 1 of 2)",
+      "fix_justification": "Code is correct — read RTL, confirmed driver at line 88 and driver at line 102 cover mutually exclusive conditions."
+    },
+    {
+      "violation_code": "<exact code from extractor>",
+      "signal_name": "out_data",
+      "line": 102,
+      "signal_purpose": "Second always-block driver for out_data — disjoint condition from first driver",
+      "why_violation": "Same multi-driver rule, second driver statement",
+      "risk_level": "LOW - code is correct",
+      "in_generate": false,
+      "is_dft_port": false,
+      "fix_type": "pragma_suppress",
+      "pragma_rule": "<exact code from extractor — copy verbatim>",
+      "insert_after_line": 102,
+      "fix_action": "Insert '// spyglass disable <rule>  // always blocks drive disjoint conditions' after line 102 (driver 2 of 2)",
+      "fix_justification": "Code is correct — second driver at line 102 is mutually exclusive with driver at line 88."
+    },
+    {
+      "violation_code": "<exact code from extractor>",
+      "signal_name": "clk_sig",
+      "line": 120,
+      "signal_purpose": "Clock input to flop — read RTL, confirmed this is a real functional clock driven through gating logic",
+      "why_violation": "Lint tool cannot trace clock domain through gated path; the clock is real and valid",
+      "risk_level": "LOW - false positive, clock is functional",
+      "in_generate": false,
+      "is_dft_port": false,
+      "fix_type": "pragma_suppress",
+      "pragma_rule": "<exact code from extractor — copy verbatim>",
+      "insert_after_line": 120,
+      "fix_action": "Insert '// spyglass disable <rule>  // clock is real, gated path not traceable by tool' after line 120",
+      "fix_justification": "Read RTL — clock signal is real and functional; gating logic prevents static trace. Pragma suppresses the false positive."
     }
   ]
 }
@@ -165,9 +251,10 @@ Return a JSON object with analysis for ALL violations in this file:
 |------|-------------|-------------------|
 | `rtl_fix` | Real bug — signal SHOULD be driven, connection is missing | Exact RTL line to insert (e.g., `assign out = in_sig;`) |
 | `tie_off` | DFT/debug/generate-disabled/legacy port — safe to tie to constant | Exact RTL line (e.g., `assign Tdr_data_out = 8'b0;`) |
-| `investigate` | Parent drives it, or correct driver cannot be determined from RTL alone | Description of what to investigate |
+| `pragma_suppress` | Code is correct and violation is a tool static analysis limitation — one entry per offending statement line; covers all false positive types including clock detection, index bounds, multi-driver | Human-readable description; also set `pragma_rule` (verbatim from violation `code`), `insert_after_line` |
+| `investigate` | Reading the RTL does not reveal whether the code is correct or what the correct fix should be | Description of what to investigate |
 
-**NOTE: `filter` and `waiver` are NOT valid fix types. Target is zero waivers.**
+**NOTE: `filter`, `waiver`, `xml_suppress`, `lint_constraint` are NOT valid fix types. ZERO waivers.**
 
 ---
 
@@ -196,5 +283,10 @@ Before ending your turn, verify:
 1. **Did you write `data/<tag>_rtl_lint_<N>.json` using the Write tool?** → If not, do it now — do NOT finish without it
 2. **Did you propose RTL fix paths using `publish_rtl/`?** → Wrong — prefer `out/*/library/*/pub/src/rtl/` paths in your `rtl_file` field (survives reruns); fall back to `src/rtl/` only if file is not found in any library
 3. **Did you suggest adding waivers?** → Wrong — ZERO waivers for Lint. All fixes must be in RTL source.
+4. **Did you use `investigate` for a violation where reading the RTL shows the code is correct?** → Wrong — if the code is correct and cannot be fixed without functional risk, use `pragma_suppress`. It does not require library owner action.
+5. **Did you use `pragma_suppress` with `disable_block`/`enable_block` syntax?** → Wrong — use `// spyglass disable <rule>` (iEDA SWAN inline format) inserted AFTER the offending statement.
+6. **Did you use `xml_suppress`?** → Wrong — xml_suppress is not allowed (it is a waiver). Use `pragma_suppress` on each individual driver statement instead.
+7. **Did you use a single `pragma_suppress` for a multi-driver violation?** → Wrong — output one `pragma_suppress` entry per driver statement, each with its own `insert_after_line`. Read the RTL to find all driver lines.
+8. **Did you copy `pragma_rule` verbatim from the violation `code` field?** → If not, fix it — do NOT guess or rename.
 
 Do NOT finish your turn until the output JSON is written to disk.

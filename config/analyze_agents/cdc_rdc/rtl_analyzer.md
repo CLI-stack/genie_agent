@@ -166,21 +166,28 @@ BAD:  "Signal crosses from clk_a to clk_b without synchronizer."
 ```
 
 ### Step 7: Recommend Fix Based on WHY
-Based on your root cause analysis:
 
-- **RTL fix** (`rtl_fix`): If it's a real bug (frequent toggling, no valid reason for missing sync) — add synchronizer in RTL.
-  - `fix_action` MUST be **exact RTL lines** to insert (e.g., the complete synchronizer instantiation block)
-  - Also provide: `rtl_file` (exact path — prefer `out/*/library/*/pub/src/rtl/` over `src/rtl/`), `insert_after_line` (line number), `insert_description` (brief rationale)
-  - Look at existing synchronizer instantiations in the file to determine the correct tech cell to use
-  - If you cannot produce exact RTL (e.g., sync cell unknown, hierarchy unclear) → use `investigate` instead
+**HARD RULE: If you know the fix, apply it. Do NOT hedge to `investigate`.**
 
-- **Constraint** (`constraint`): If tool needs hints — quasi-static signal → `netlist constant`, related clocks → `netlist clock`, unrecognized sync cell → `cdc custom sync`
+- **Constraint** (`constraint`): Apply whenever you can identify the signal nature from RTL — do NOT wait for investigation first:
+  - Quasi-static signal (set at boot, stable during operation) → `netlist constant` — apply it
+  - Related clocks (same PLL, synchronous relationship) → `netlist clock -group` — apply it
+  - Unrecognized sync cell found in RTL (wrapper or leaf) → trace to leaf cell, apply `cdc custom sync` — apply it
+  - Hierarchical sync confirmed in RTL → apply the appropriate constraint — apply it
+  - Constraints carry no functional risk — always safe to apply when the signal nature is clear from reading RTL
 
-- **Investigate** (`investigate`): If parent module context is needed, or the correct fix cannot be safely determined from this RTL file alone.
-  - `fix_action` MUST describe **specifically what to investigate** (e.g., "Check parent module umcdat_top instantiation of umcdat_core — need to verify whether cfg_enable is gated before being passed to this module")
-  - Do NOT use vague descriptions like "investigate further" — be specific about WHAT to look at and WHY
+- **RTL fix** (`rtl_fix`): If it's a real bug (frequent toggling, no valid reason for missing sync) — insert synchronizer in RTL.
+  - `fix_action` MUST be **exact RTL lines** to insert (complete synchronizer instantiation block)
+  - Provide: `rtl_file` (exact path — prefer `out/*/library/*/pub/src/rtl/`), `insert_after_line`, `insert_description`
+  - Look at existing synchronizer instantiations in the same file to determine the correct tech cell and port names
+  - If the correct sync cell cannot be determined from reading the RTL → use `investigate` (this is the rare legitimate case)
 
-**IMPORTANT: Do NOT recommend waivers. Target is zero waivers. Every violation must be resolved with an RTL fix or a proper constraint.**
+- **Investigate** (`investigate`): ONLY when you genuinely cannot determine the fix from reading the available RTL files — e.g., sync exists at the parent level and you cannot access the parent module to confirm.
+  - `fix_action` MUST describe **specifically what to investigate** — not vague ("investigate further")
+  - **NEVER use `investigate` when the signal is clearly quasi-static, clearly has a known sync cell, or clearly has related clocks** — those are constraint fixes, apply them directly
+  - **NEVER say "coordinate with library owner"** or any equivalent — you have full write access to all files
+
+**IMPORTANT: Do NOT recommend waivers. Every violation resolved with an RTL fix or constraint.**
 
 ## Output Per Violation
 
@@ -265,11 +272,11 @@ Return analysis with:
 
 | Type | When | fix_action must be |
 |------|------|--------------------|
-| `rtl_fix` | Real bug — add synchronizer or fix RTL. Driver known and exact RTL determinable. | Exact RTL lines to insert (complete instantiation block) |
-| `constraint` | Tool needs hint — quasi-static, related clocks, unrecognized sync cell | Exact TCL command(s) |
-| `investigate` | Parent context needed, hierarchy unclear, or exact fix cannot be safely determined | Specific description of WHAT to investigate and WHY |
+| `constraint` | Signal nature is determinable from RTL: quasi-static → `netlist constant`; related clocks → `netlist clock`; unrecognized sync cell → `cdc custom sync`. **Apply directly — no investigation needed.** | Exact TCL command(s) |
+| `rtl_fix` | Real bug — synchronizer missing and signal toggles frequently. Exact sync cell determinable from RTL. | Exact RTL lines to insert (complete instantiation block) |
+| `investigate` | Genuinely cannot determine fix from available RTL — e.g., sync exists at parent level and parent is inaccessible. Must describe specifically WHAT to look at. | Specific description of WHAT to investigate and WHY — never vague |
 
-**NOTE: `waiver` is NOT a valid fix type. Target is zero waivers. Do not recommend waivers under any circumstance.**
+**NOTE: `waiver` is NOT a valid fix type. NEVER say "coordinate with library owner" — apply the fix directly.**
 
 ## Templates
 
@@ -351,8 +358,10 @@ For CDC/RDC constraint syntax, violation types, fix patterns, and waiver format:
 
 Before ending your turn, verify:
 
-1. **Did you write `data/<tag>_rtl_analysis_cdc_<N>.json` using the Write tool?** → If not, do it now — do NOT finish without it
+1. **Did you write `data/<tag>_rtl_cdc_<N>.json` (or `_rtl_rdc_<N>.json`) using the Write tool?** → If not, do it now — do NOT finish without it
 2. **Did you run `p4 edit` on any file?** → Wrong — this agent is read-only, no file modifications allowed
 3. **Did you propose RTL fix paths using `publish_rtl/`?** → Wrong — prefer `out/*/library/*/pub/src/rtl/` paths in your `rtl_file` field (survives reruns); fall back to `src/rtl/` only if file is not found in any library
+4. **Did you use `investigate` for a signal that is clearly quasi-static, has a known sync cell, or has related clocks?** → Wrong — those are `constraint` fixes; apply them directly
+5. **Did you write "coordinate with library owner" or "requires library owner" anywhere?** → Wrong — remove it; you have full write access to all files, apply the fix directly
 
 Do NOT finish your turn until the output JSON is written to disk.
