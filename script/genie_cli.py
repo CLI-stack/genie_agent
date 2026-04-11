@@ -1966,6 +1966,7 @@ class GenieCLI:
                     f.write(f"max_rounds=5\n")
                     f.write(f"parent_tag=\n")
                     f.write(f"use_xterm={'true' if use_xterm else 'false'}\n")
+                    f.write(f"use_email={'true' if send_email else 'false'}\n")
                     f.write(f"email_to={email_to or ''}\n")
             print(f"Analyze mode enabled: Claude Code will monitor and analyze results")
 
@@ -3899,8 +3900,16 @@ Examples:
                         help='Internal: Send completion email for a finished task')
     parser.add_argument('--send-analysis-email', type=str, metavar='TAG',
                         help='Internal: Send analysis HTML report email for a completed analysis')
+    parser.add_argument('--send-fixer-round-email', type=str, metavar='TAG',
+                        help='Internal: Send per-round fixer HTML report email (use with --round and --check-type)')
+    parser.add_argument('--send-fixer-summary-email', type=str, metavar='FIRST_TAG',
+                        help='Internal: Send final fixer summary email (use with --check-type and --result)')
     parser.add_argument('--check-type', type=str, metavar='CHECK_TYPE',
-                        help='Check type for --send-analysis-email (cdc_rdc, lint, spg_dft)')
+                        help='Check type for --send-analysis-email / --send-fixer-round-email / --send-fixer-summary-email (cdc_rdc, lint, spg_dft)')
+    parser.add_argument('--round', type=int, metavar='N',
+                        help='Round number for --send-fixer-round-email')
+    parser.add_argument('--result', type=str, metavar='RESULT',
+                        help='Final result for --send-fixer-summary-email (CLEAN, STALLED, MAX_ROUNDS_REACHED)')
     parser.add_argument('--kill', '-k', type=str, metavar='TAG',
                         help='Kill a running background task by tag')
     parser.add_argument('--status', '-s', type=str, metavar='TAG',
@@ -4024,10 +4033,13 @@ Examples:
             f.write(f"original_ref_dir={ref_dir}\n")
             f.write(f"original_ip={ip}\n")
             f.write(f"original_check_type={check_type}\n")
-            f.write(f"original_instruction=analyze-fixer-only {tag}\n")
+            f.write(f"original_instruction=run {check_type} at {ref_dir} for {ip}\n")
             f.write(f"round=1\n")
             f.write(f"max_rounds=5\n")
             f.write(f"parent_tag=\n")
+            f.write(f"use_email=true\n")
+            f.write(f"use_xterm=false\n")
+            f.write(f"email_to={getattr(args, 'to', '') or ''}\n")
 
         print(f"Analyze-fixer-only mode for tag: {tag}")
         print(f"  check_type : {check_type or '(unknown)'}")
@@ -4248,6 +4260,141 @@ Examples:
         if check_type_arg == 'spg_dft' or not check_type_arg:
             if os.path.exists(analysis_email_file):
                 os.remove(analysis_email_file)
+        return
+
+    # Handle --send-fixer-round-email: send per-round fixer HTML report email
+    if args.send_fixer_round_email:
+        tag = args.send_fixer_round_email
+        round_n = getattr(args, 'round', None)
+        check_type_arg = getattr(args, 'check_type', None)
+
+        if round_n is None:
+            print("Error: --send-fixer-round-email requires --round N")
+            sys.exit(1)
+        if not check_type_arg:
+            print("Error: --send-fixer-round-email requires --check-type (cdc_rdc, lint, spg_dft)")
+            sys.exit(1)
+
+        analyze_file      = os.path.join(cli.base_dir, 'data', f'{tag}_analyze')
+        fixer_state_file  = os.path.join(cli.base_dir, 'data', f'{tag}_fixer_state')
+        email_flag_file   = os.path.join(cli.base_dir, 'data', f'{tag}_email')
+        analysis_email_file = os.path.join(cli.base_dir, 'data', f'{tag}_analysis_email')
+        round_html_file   = os.path.join(cli.base_dir, 'data', f'{tag}_analysis_fixer_round{round_n}.html')
+
+        if not os.path.exists(round_html_file):
+            print(f"Error: Round {round_n} HTML report not found: {round_html_file}")
+            sys.exit(1)
+
+        # Read metadata
+        ref_dir = ip = ''
+        if os.path.exists(analyze_file):
+            with open(analyze_file) as f:
+                for line in f:
+                    if line.startswith('ref_dir='): ref_dir = line.split('=', 1)[1].strip()
+                    elif line.startswith('ip='):     ip      = line.split('=', 1)[1].strip()
+
+        max_rounds = 5
+        if os.path.exists(fixer_state_file):
+            with open(fixer_state_file) as f:
+                for line in f:
+                    if line.startswith('max_rounds='): max_rounds = int(line.split('=', 1)[1].strip())
+
+        # Get email recipients — priority: _analysis_email > _email > assignment.csv
+        emails = []
+        if os.path.exists(analysis_email_file):
+            with open(analysis_email_file) as f:
+                emails = [e.strip() for e in f.read().strip().split(',') if e.strip()]
+        elif os.path.exists(email_flag_file):
+            with open(email_flag_file) as f:
+                emails = [e.strip() for e in f.read().strip().split(',') if e.strip()]
+        elif cli.debugger_emails:
+            emails = cli.debugger_emails
+
+        if not emails:
+            print(f"Error: No email recipients found for tag {tag}")
+            sys.exit(1)
+
+        # Build subject
+        check_label = check_type_arg.upper().replace('_', '/')
+        dir_name = os.path.basename(ref_dir) if ref_dir else ''
+        if ip and dir_name:
+            subject = f"[Fixer Round {round_n}/{max_rounds}] {check_label} - {ip} @ {dir_name} ({tag})"
+        elif ip:
+            subject = f"[Fixer Round {round_n}/{max_rounds}] {check_label} - {ip} ({tag})"
+        else:
+            subject = f"[Fixer Round {round_n}/{max_rounds}] {check_label} ({tag})"
+
+        with open(round_html_file) as f:
+            html_content = f.read()
+
+        cli.send_email(emails, subject, html_content, use_html=True)
+        print(f"Fixer round {round_n} email sent to: {', '.join(emails)}")
+        print(f"Subject: {subject}")
+        return
+
+    # Handle --send-fixer-summary-email: send final fixer summary email
+    if args.send_fixer_summary_email:
+        first_tag = args.send_fixer_summary_email
+        check_type_arg = getattr(args, 'check_type', None)
+        result_arg = getattr(args, 'result', None) or 'DONE'
+
+        if not check_type_arg:
+            print("Error: --send-fixer-summary-email requires --check-type (cdc_rdc, lint, spg_dft)")
+            sys.exit(1)
+
+        analyze_file      = os.path.join(cli.base_dir, 'data', f'{first_tag}_analyze')
+        fixer_state_file  = os.path.join(cli.base_dir, 'data', f'{first_tag}_fixer_state')
+        email_flag_file   = os.path.join(cli.base_dir, 'data', f'{first_tag}_email')
+        analysis_email_file = os.path.join(cli.base_dir, 'data', f'{first_tag}_analysis_email')
+        summary_html_file = os.path.join(cli.base_dir, 'data', f'{first_tag}_fixer_summary.html')
+
+        if not os.path.exists(summary_html_file):
+            print(f"Error: Fixer summary HTML not found: {summary_html_file}")
+            sys.exit(1)
+
+        # Read metadata
+        ref_dir = ip = ''
+        if os.path.exists(analyze_file):
+            with open(analyze_file) as f:
+                for line in f:
+                    if line.startswith('ref_dir='): ref_dir = line.split('=', 1)[1].strip()
+                    elif line.startswith('ip='):     ip      = line.split('=', 1)[1].strip()
+
+        # Get email recipients
+        emails = []
+        if os.path.exists(analysis_email_file):
+            with open(analysis_email_file) as f:
+                emails = [e.strip() for e in f.read().strip().split(',') if e.strip()]
+        elif os.path.exists(email_flag_file):
+            with open(email_flag_file) as f:
+                emails = [e.strip() for e in f.read().strip().split(',') if e.strip()]
+        elif cli.debugger_emails:
+            emails = cli.debugger_emails
+
+        if not emails:
+            print(f"Error: No email recipients found for tag {first_tag}")
+            sys.exit(1)
+
+        # Build subject based on result
+        check_label = check_type_arg.upper().replace('_', '/')
+        dir_name = os.path.basename(ref_dir) if ref_dir else ''
+        base = f"{check_label} - {ip} @ {dir_name}" if (ip and dir_name) else (f"{check_label} - {ip}" if ip else check_label)
+        result_upper = result_arg.upper()
+        if 'CLEAN' in result_upper:
+            subject = f"[Fixer CLEAN] {base} ({first_tag})"
+        elif 'STALLED' in result_upper:
+            subject = f"[Fixer STALLED] {base} — violations remain, manual fix needed ({first_tag})"
+        elif 'MAX' in result_upper:
+            subject = f"[Fixer MAX ROUNDS] {base} — violations remain ({first_tag})"
+        else:
+            subject = f"[Fixer Done] {base} ({first_tag})"
+
+        with open(summary_html_file) as f:
+            html_content = f.read()
+
+        cli.send_email(emails, subject, html_content, use_html=True)
+        print(f"Fixer summary email sent to: {', '.join(emails)}")
+        print(f"Subject: {subject}")
         return
 
     # Handle kill task
@@ -4571,10 +4718,13 @@ Examples:
                     f.write(f"original_ref_dir={ref_dir}\n")
                     f.write(f"original_ip={ip}\n")
                     f.write(f"original_check_type={check_type}\n")
-                    f.write(f"original_instruction=fix {check_type} at {ref_dir} for {ip}\n")
+                    f.write(f"original_instruction=run {check_type} at {ref_dir} for {ip}\n")
                     f.write(f"round=1\n")
                     f.write(f"max_rounds=5\n")
                     f.write(f"parent_tag=\n")
+                    f.write(f"use_email={'true' if args.email else 'false'}\n")
+                    f.write(f"use_xterm={'true' if args.xterm else 'false'}\n")
+                    f.write(f"email_to={getattr(args, 'to', '') or ''}\n")
                 print("ANALYZE_FIXER_MODE_ENABLED")
                 print(f"TAG={tag}")
                 print(f"CHECK_TYPE={check_type}")

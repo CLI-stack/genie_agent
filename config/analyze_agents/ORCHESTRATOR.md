@@ -1374,6 +1374,8 @@ Round N:
   │       Sum deep_dive_applied = count of deepdive JSONs where fix_applied=true
   │     Else: deep_dive_applied = 0
   │
+  ├── ⚠️ CHECKPOINT: Re-read `config/analyze_agents/FIXER_CHECKLIST.md` now before continuing
+  │
   ├── STEP 3: Compile round report
   │     Read: all agent JSON outputs + fix_applied JSON
   │     Generate: data/<tag>_analysis_fixer_round<N>.html
@@ -1383,12 +1385,23 @@ Round N:
   │       - Fixes applied section: list of constraints/RTL changes made
   │       - Pending manual fixes: rtl_fix items not auto-applied
   │
-  ├── STEP 4: Send round email
-  │     Subject: "[Fixer Round N/MAX] <check_type> - <ip> @ <ref_dir> (<tag>)"
-  │     Body: round report HTML
-  │     Recipients: from data/<tag>_analysis_email
+  ├── ⚠️ CHECKPOINT: Re-read `config/analyze_agents/FIXER_CHECKLIST.md` now before sending email
   │
-  └── STEP 5: Check if done
+  ├── STEP 4: Send round email
+  │     Run this command (always — every round, no exceptions):
+  │     ```bash
+  │     python3 script/genie_cli.py --send-fixer-round-email <tag> --round <N> --check-type <check_type>
+  │     ```
+  │     Reads:   data/<tag>_analysis_fixer_round<N>.html
+  │     Subject: "[Fixer Round N/MAX] <CHECK_TYPE> - <ip> @ <tree_name> (<tag>)"
+  │     To:      recipients from data/<tag>_analysis_email → data/<tag>_email → assignment.csv
+  │
+  │     ⚠️  MANDATORY — do NOT skip this step. Every round must produce an email so the
+  │     user can track progress and verify that each round's fixes are correct.
+  │
+  └── ⚠️ CHECKPOINT: Re-read `config/analyze_agents/FIXER_CHECKLIST.md` now before termination check
+      │
+      STEP 5: Check if done
 
         ## VIOLATION COUNT RULES — READ THIS CAREFULLY
 
@@ -1433,6 +1446,8 @@ Round N:
         4. Otherwise (fixes were applied AND violations remain AND rounds left):
            → Rerun static check (see Rerun below)
            → Loop to Round N+1
+           **❌ NEVER output "MANUAL LINT/CDC/SPG RERUN NEEDED" and stop.**
+           **✅ ALWAYS trigger the rerun autonomously using the normalized instruction.**
 ```
 
 ### Triggering a Rerun
@@ -1449,14 +1464,31 @@ use_xterm=true/false
 email_to=<email or empty>
 ```
 
+**⚠️ NORMALIZE the instruction before using it for rerun:**
+The stored `original_instruction` may have been set incorrectly (e.g., `fix lint at ...` or `analyze and fix lint at ...`).
+These phrases map to `analyze_fixer_only` (no actual tool run) — using them for rerun would loop without executing lint/cdc/spg_dft.
+
+**Rule:** If `original_instruction` starts with `fix `, `analyze and fix `, or `analyze-fixer-only`, replace it with:
+```
+run <original_check_type> at <original_ref_dir> for <original_ip>
+```
+
+Example:
+```
+original_instruction=fix lint at /proj/... for umc9_3
+→ normalize to: run lint at /proj/... for umc9_3
+```
+
+Only use the stored `original_instruction` as-is if it starts with `run `.
+
 2. Build the rerun command — **MUST restore original flags exactly**:
 ```bash
 cd <base_dir>
 
 # Build flags from fixer_state:
-XTERM_FLAG=""      # if use_xterm=true → "--xterm"
-EMAIL_FLAG=""      # always "--email"
-TO_FLAG=""         # if email_to is set → "--to <email_to>"
+XTERM_FLAG=""                              # if use_xterm=true  → XTERM_FLAG="--xterm"
+EMAIL_FLAG="--email"                       # if use_email=true  → EMAIL_FLAG="--email" (default true)
+TO_FLAG=""                                 # if email_to is set → TO_FLAG="--to <email_to>"
 
 python3 script/genie_cli.py \
   -i "<original_instruction>" \
@@ -1465,6 +1497,8 @@ python3 script/genie_cli.py \
   $EMAIL_FLAG \
   $TO_FLAG
 ```
+
+**`--email` MUST always be included on every rerun** — this sends the lint/cdc/spg completion email when the tool finishes, AND enables the `_analysis_email` file so the per-round analysis email recipients are resolved correctly.
 
 **Example** — if original run had `--xterm --email --to user@amd.com`:
 ```bash
@@ -1482,6 +1516,7 @@ round=<N+1>
 max_rounds=5
 parent_tag=<previous_tag>
 use_xterm=<same as before>
+use_email=<same as before>
 email_to=<same as before>
 ```
 5. Once the new check completes, emit internally:
@@ -1537,10 +1572,14 @@ When any termination condition is met (CLEAN, STALLED, or MAX_ROUNDS_REACHED):
    ```
 
 3. Send final summary email:
-   - Subject (CLEAN):   `[Fixer ✅ CLEAN] <check_type> - <ip> — <N> rounds, violations: X→0`
-   - Subject (STALLED): `[Fixer ⚠️ STALLED] <check_type> - <ip> — <N> rounds, N violations remain (manual fix needed)`
-   - Subject (MAX):     `[Fixer 🔴 MAX ROUNDS] <check_type> - <ip> — 5 rounds, N violations remain`
-   - Body: summary HTML
+   ```bash
+   python3 script/genie_cli.py --send-fixer-summary-email <first_tag> \
+     --check-type <check_type> \
+     --result <CLEAN|STALLED|MAX_ROUNDS_REACHED>
+   ```
+   Reads:   `data/<first_tag>_fixer_summary.html`
+   Subject: `[Fixer CLEAN|STALLED|MAX ROUNDS] <check_type> - <ip> @ <tree> (<tag>)`
+   To:      recipients from `data/<first_tag>_analysis_email` → `_email` → assignment.csv
 
 4. Say: `"Analyze-fixer complete. <N> rounds run. Violations: <start>→<end>. Result: <CLEAN|STALLED|MAX_ROUNDS_REACHED>. Email sent."`
 
