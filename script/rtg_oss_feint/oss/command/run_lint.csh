@@ -17,6 +17,18 @@ else
 endif
 echo "Using RHEL type: $RHEL_TYPE"
 
+# Remove stale rhea_lint session.lock before launching LSF to prevent incremental
+# analysis from restoring a stale compiled DB (e.g. after fixer-applied RTL edits)
+if (-d out) then
+    set lock_files = (`find out -name "session.lock" -path "*/rhea_lint/vcst_rtdb*"`)
+    if ($#lock_files > 0) then
+        foreach lock_file ($lock_files)
+            echo "Removing stale rhea_lint session.lock: $lock_file"
+            rm -f $lock_file
+        end
+    endif
+endif
+
 # Lint uses different bootenv per tile
 if ($tile_name == "ih_top" || $tile_name == "osssys") then
     echo "Running Lint checks for ih_top..."

@@ -13,6 +13,18 @@ endif
 echo "GMC Lint execution started at `date`"
 echo "Using RHEL type: $RHEL_TYPE"
 
+# Remove stale rhea_lint session.lock before launching LSF to prevent incremental
+# analysis from restoring a stale compiled DB (e.g. after fixer-applied RTL edits)
+if (-d out) then
+    set lock_files = (`find out -name "session.lock" -path "*/rhea_lint/vcst_rtdb*"`)
+    if ($#lock_files > 0) then
+        foreach lock_file ($lock_files)
+            echo "Removing stale rhea_lint session.lock: $lock_file"
+            rm -f $lock_file
+        end
+    endif
+endif
+
 # GMC uses be_dj with bootenv_v and gmc_leda dropflow
 # -J lsf handles LSF submission internally
 # Tiles: gmc_gmcctrl_t, gmc_gmcch_t
