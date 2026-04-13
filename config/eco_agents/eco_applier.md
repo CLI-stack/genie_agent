@@ -41,7 +41,11 @@ Before editing, verify:
    grep -c "\.<pin>(<old_net>)" /tmp/eco_apply_<TAG>_<Stage>.v
    ```
 3. **Occurrence count = 1** — if count > 1, status=SKIPPED, reason=AMBIGUOUS. Do NOT edit.
-4. **new_net is present in PostEco** — `grep -c "<new_net>" /tmp/eco_apply_<TAG>_<Stage>.v` — should be ≥ 1
+4. **new_net is present in PostEco** — use word-boundary grep to avoid false positives from signals that contain new_net as a substring:
+   ```bash
+   grep -cw "<new_net>" /tmp/eco_apply_<TAG>_<Stage>.v
+   ```
+   Should be ≥ 1. `-w` matches whole words only.
 
 ### Step 5 — Apply replacement
 
@@ -66,9 +70,7 @@ gzip -c /tmp/eco_apply_<TAG>_<Stage>.v > <REF_DIR>/data/PostEco/<Stage>.v.gz
 ### Step 7 — Verify
 
 ```bash
-# Should be 0 occurrences of old connection on that pin
-grep -c "\.<pin>(<old_net>)" <REF_DIR>/data/PostEco/<Stage>.v.gz
-# zcat and grep for compressed
+# Always use zcat — the file is compressed and grep cannot read .v.gz directly
 zcat <REF_DIR>/data/PostEco/<Stage>.v.gz | grep -c "\.<pin>(<old_net>)"
 ```
 

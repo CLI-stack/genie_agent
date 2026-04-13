@@ -46,32 +46,55 @@ Wait for the sub-agent to complete and read `data/<TAG>_eco_rtl_diff.json`.
 Using the `nets_to_query` list from Step 1:
 
 1. Build the comma-separated net list from all `net_path` entries in `nets_to_query`
-2. Call the existing script directly:
+2. Submit via `genie_cli.py` with `--xterm` (live output in popup window, correct TileBuilder/LSF environment):
    ```bash
    cd <BASE_DIR>
-   tcsh -f script/rtg_oss_feint/supra/find_equivalent_nets.csh \
-     "refDir:<REF_DIR>" \
-     "<TAG>_fenets" \
-     "target:" \
-     "netName:<net1>,<net2>,..." \
-     "tile:<TILE>"
+   python3 script/genie_cli.py \
+     -i "find equivalent nets at <REF_DIR> for <TILE> netName:<net1>,<net2>,..." \
+     --execute --xterm
    ```
-   - `target:` (empty) defaults to all 3 PreEco FM targets
-   - Poll `data/<TAG>_fenets_spec` every 2 minutes until `FIND_EQUIVALENT_NETS_COMPLETE` appears or 60-min timeout
-3. Read all results from `data/<TAG>_fenets_spec`
+   This matches the `find_equivalent_nets.csh` instruction in `instruction.csv`. Note the tag generated will be different from `<TAG>` — read it from the CLI output (`Tag: <fenets_tag>`).
+3. Poll `data/<fenets_tag>_spec` every 2 minutes until `FIND_EQUIVALENT_NETS_COMPLETE` appears or 60-min timeout
+4. Read all results from `data/<fenets_tag>_spec`
+
+**For FM-036 retries**, submit a new genie_cli.py call with the stripped net path — each retry gets its own tag, read from CLI output:
+   ```bash
+   python3 script/genie_cli.py \
+     -i "find equivalent nets at <REF_DIR> for <TILE> netName:<stripped_net_path>" \
+     --execute --xterm
+   ```
 
 ### FM-036 Fallback Strategy
 
 If any net returns `Error: Unknown name ... (FM-036)`:
 
-1. **Try bus variant**: retry with `_0_` suffix (e.g., `SignalName` → `SignalName_0_`)
-2. **Try parent hierarchy**: strip one level of hierarchy (e.g., `ARB/TIM/signal` → `ARB/signal`)
-3. **Direct netlist grep**:
+1. **Bus variant already pre-queried** — the rtl_diff_analyzer sends both `X` and `X_0_` upfront, so the result is already in the same run. Check the other variant's result before doing anything else.
+
+2. **Retry find_equivalent_nets with parent hierarchy** — strip one level from the failing net path and submit a new genie_cli.py call:
    ```bash
-   zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -n "SignalName"
+   # Original failed: <PARENT_INST>/<CHILD_INST>/<net>
+   # Retry with:      <PARENT_INST>/<net>
+   python3 script/genie_cli.py \
+     -i "find equivalent nets at <REF_DIR> for <TILE> netName:<stripped_net_path>" \
+     --execute --xterm
    ```
-4. **Use RTL diff context**: search PreEco netlist by structural proximity from surrounding code
-5. **Mark as fm_failed** and rely on Step 3 direct netlist study — do NOT abort the flow
+   Read the new tag from CLI output. Poll `data/<retry_tag>_spec` until `FIND_EQUIVALENT_NETS_COMPLETE` appears or 60-min timeout.
+
+   **Retry loop rules:**
+   - Max **3 retries** (`_retry1`, `_retry2`, `_retry3`)
+   - Stop early if the net path has no more `/` — there is no parent level left to try
+   - Each retry strips one more hierarchy level from the previous attempt's path
+   - If any retry returns a valid impl cell+pin → use it and stop retrying. FM gives the exact gate-level cell name and pin, which is more reliable than grep.
+
+3. **Direct netlist grep** — only if FM retry also fails or times out:
+   ```bash
+   zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -n "<net_token>"
+   ```
+   `<net_token>` is the signal name extracted from the failing net path. This finds what it is called in gate-level (may have `_reg` suffix or synthesis renaming).
+
+4. **Use RTL diff context** — if grep finds no match, search by structural proximity (surrounding expression from the diff hunk) to identify the relevant cell.
+
+5. **Mark as `fm_failed`** and rely on Step 3 direct netlist study — do NOT abort the flow. A single failed net does not stop the whole ECO.
 
 ---
 
@@ -79,7 +102,8 @@ If any net returns `Error: Unknown name ... (FM-036)`:
 
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_netlist_studier.md` prepended. Pass:
 - `REF_DIR`, `TAG`, `BASE_DIR`
-- The find_equivalent_nets results (impl cell+pin names per stage)
+- The exact path to the find_equivalent_nets results: `<BASE_DIR>/data/<fenets_tag>_spec` (use the `<fenets_tag>` read from the genie_cli.py output in Step 2, NOT the main `<TAG>`)
+- The RTL diff JSON at `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json` (provides old_net/new_net per change)
 - Task: For each impl cell in FM output, find instantiation in PreEco netlist, extract port connections, confirm old_net on expected pin
 - Output: `data/<TAG>_eco_preeco_study.json`
 
@@ -127,31 +151,28 @@ Format of output:
 
 ## STEP 5 — PostEco Formality Verification
 
-After PostEco netlists are updated, run the 3 PostEco FM targets:
+**Guard:** Read `data/<TAG>_eco_applied.json`. Count APPLIED entries across ALL stages (Synthesize + PrePlace + Route). If total APPLIED == 0, skip this step and Step 6 entirely — go directly to Step 7. Write `data/<TAG>_eco_fm_verify.json` with `"skipped": true, "reason": "no changes applied"` and note this in the HTML report.
 
-```tcsh
-cd <REF_DIR>
-set curr_dir = `pwd | sed 's/\// /g' | awk '{print $NF}'`
+Run via `genie_cli.py` (handles TileBuilder/LSF environment automatically, same as `report_formality.csh`):
 
-foreach tgt (FmEqvEcoSynthesizeVsSynRtl FmEqvEcoPrePlaceVsEcoSynthesize FmEqvEcoRouteVsEcoPrePlace)
-    TileBuilderTerm -x "serascmd -find_jobs 'name=~${tgt} dir=~${curr_dir}' --action reset"
-    sleep 20
-    TileBuilderTerm -x "serascmd -find_jobs 'name=~${tgt} dir=~${curr_dir}' --action run"
-end
+```bash
+cd <BASE_DIR>
+python3 script/genie_cli.py \
+  -i "run post eco formality at <REF_DIR> for <TILE>" \
+  --execute --xterm
 ```
 
-Poll status (180-min timeout, 15-min intervals):
-```tcsh
-TileBuilderTerm -x "TileBuilderShow >& /tmp/tb_eco_status_<TAG>.log"
-grep "FmEqvEco" /tmp/tb_eco_status_<TAG>.log | awk '{print $1, $NF}'
-```
+This invokes `script/rtg_oss_feint/supra/post_eco_formality.csh`, which:
+1. Sources `lsf_tilebuilder.csh` for the TileBuilder/LSF environment
+2. Resets all 3 PostEco FM targets via `serascmd --action reset`
+3. Runs all 3 via `serascmd --action run`
+4. Polls `TileBuilderShow` every 15 min (180-min timeout) until all complete
+5. Reads `.dat` and `__failing_points.rpt.gz` per target
+6. Writes results to `data/<fenets_tag>_spec`
 
-Check results via `.dat` files in `rpts/<target>/`:
-- `lecResult: SUCCEEDED` + `exitVal: 0` → PASS
-- `lecResult: FAILED` or `numberOfNonEqPoints: > 0` → FAIL
-- If FAIL: read `rpts/<target>/__failing_points.rpt.gz` for details
+Read the tag from the CLI output (`Tag: <eco_fm_tag>`). Poll `data/<eco_fm_tag>_spec` until the script completes.
 
-Write `data/<TAG>_eco_fm_verify.json`:
+Parse results from `data/<eco_fm_tag>_spec` and write `data/<TAG>_eco_fm_verify.json`:
 ```json
 {
   "FmEqvEcoSynthesizeVsSynRtl": "PASS",
@@ -160,6 +181,8 @@ Write `data/<TAG>_eco_fm_verify.json`:
   "failing_points": []
 }
 ```
+
+If FAIL: failing point details are already in `data/<eco_fm_tag>_spec` — extract and include in the JSON `failing_points` array.
 
 ---
 
@@ -176,11 +199,34 @@ Write `data/<TAG>_eco_report.html` with sections:
 
 ## STEP 7 — Send Email
 
-Read email recipients from `data/<TAG>_analysis_email` if it exists, otherwise use `assignment.csv` debugger field.
+Send email using genie_cli.py's email function directly:
 
-Send email with:
-- Subject: `[ECO Analysis Complete] <TILE> @ <REF_DIR> (<TAG>)`
-- Body: Summary of changes applied, FM verification results, link to HTML report path
+```bash
+cd <BASE_DIR>
+python3 -c "
+import sys, json
+sys.path.insert(0, 'script')
+from genie_cli import GenieCLI
+cli = GenieCLI()
+recipients = cli.get_email_recipients()
+
+# Build summary from applied JSON
+with open('data/<TAG>_eco_applied.json') as f:
+    applied = json.load(f)
+summary = applied.get('summary', {})
+
+subject = '[ECO Analysis Complete] <TILE> @ <REF_DIR> (<TAG>)'
+body = open('data/<TAG>_eco_report.html').read()
+cli.send_email(recipients, subject, body)
+print('Email sent to:', recipients)
+"
+```
+
+If `get_email_recipients()` is unavailable, fall back to reading `assignment.csv` directly:
+```bash
+grep "^debugger" <BASE_DIR>/assignment.csv | cut -d',' -f2
+```
+Then use `sendmail` or the AMD internal relay as appropriate for the environment.
 
 ---
 
@@ -189,7 +235,7 @@ Send email with:
 | File | Content |
 |------|---------|
 | `data/<TAG>_eco_rtl_diff.json` | RTL diff analysis + nets to query |
-| `data/<TAG>_fenets_spec` | find_equivalent_nets results |
+| `data/<fenets_tag>_spec` | find_equivalent_nets results (fenets_tag ≠ TAG — read from genie_cli.py output) |
 | `data/<TAG>_eco_preeco_study.json` | PreEco netlist confirmation |
 | `data/<TAG>_eco_applied.json` | ECO changes applied/skipped |
 | `data/<TAG>_eco_fm_verify.json` | PostEco FM verification |

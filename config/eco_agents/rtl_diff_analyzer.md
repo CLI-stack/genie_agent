@@ -45,12 +45,12 @@ For each diff hunk, classify as ONE of:
 For each change record:
 ```json
 {
-  "file": "rtl_umcarb.v",
-  "module_name": "umcarb",
-  "change_type": "wire_swap",
-  "old_token": "ArbBypassWckIsInSync",
-  "new_token": "ArbBypassWckIsInSyncFixed",
-  "context_line": "assign ArbBypCmd1Vld = ctl_bypass & ArbBypassWckIsInSync;"
+  "file": "<rtl_file.v>",
+  "module_name": "<declaring_module>",
+  "change_type": "<wire_swap|new_port|new_logic|port_connection>",
+  "old_token": "<old_signal_name>",
+  "new_token": "<new_signal_name>",
+  "context_line": "<full RTL line containing the change>"
 }
 ```
 
