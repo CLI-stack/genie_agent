@@ -86,10 +86,10 @@ grep -n "<parent_module_name>" <REF_DIR>/data/PreEco/SynRtl/rtl_<grandparent>.v
 
 **5. Self-verify:**
 ```bash
-# Confirm instance name is correct
-grep -n "^umctim TIM\|umctim.*TIM " <REF_DIR>/data/PreEco/SynRtl/rtl_umcarb.v
+# Confirm instance name is correct (replace placeholders with actual values)
+grep -n "^<module_name> <instance_name>\|<module_name>.*<instance_name> " <REF_DIR>/data/PreEco/SynRtl/rtl_<parent_module>.v
 # Confirm signal is in that module
-grep -n "<signal_name>" <REF_DIR>/data/PreEco/SynRtl/rtl_umctim.v
+grep -n "<signal_name>" <REF_DIR>/data/PreEco/SynRtl/rtl_<module_name>.v
 ```
 
 ---
@@ -121,30 +121,30 @@ Write to `data/<TAG>_eco_rtl_diff.json`:
 {
   "changes": [
     {
-      "file": "rtl_umcarb.v",
-      "module_name": "umcarb",
-      "change_type": "wire_swap",
-      "old_token": "ArbBypassWckIsInSync",
-      "new_token": "ArbBypassWckIsInSyncFixed",
-      "context_line": "assign ArbBypCmd1Vld = ctl_bypass & ArbBypassWckIsInSync;"
+      "file": "<rtl_file.v>",
+      "module_name": "<declaring_module>",
+      "change_type": "<wire_swap|new_port|new_logic|port_connection>",
+      "old_token": "<old_signal_name>",
+      "new_token": "<new_signal_name>",
+      "context_line": "<full RTL line containing the change>"
     }
   ],
   "nets_to_query": [
     {
-      "net_path": "ARB/TIM/ArbBypassWckIsInSync",
-      "hierarchy": ["ARB", "TIM"],
+      "net_path": "<INST_A>/<INST_B>/<old_signal_name>",
+      "hierarchy": ["<INST_A>", "<INST_B>"],
       "reason": "wire_swap: find current gate-level driver of old signal",
       "is_bus_variant": false
     },
     {
-      "net_path": "ARB/TIM/ArbBypassWckIsInSync_0_",
-      "hierarchy": ["ARB", "TIM"],
-      "reason": "wire_swap: bus variant of ArbBypassWckIsInSync (bit 0)",
+      "net_path": "<INST_A>/<INST_B>/<old_signal_name>_0_",
+      "hierarchy": ["<INST_A>", "<INST_B>"],
+      "reason": "wire_swap: bus variant of <old_signal_name> (bit 0)",
       "is_bus_variant": true
     },
     {
-      "net_path": "ARB/TIM/ArbBypassWckIsInSyncFixed",
-      "hierarchy": ["ARB", "TIM"],
+      "net_path": "<INST_A>/<INST_B>/<new_signal_name>",
+      "hierarchy": ["<INST_A>", "<INST_B>"],
       "reason": "wire_swap: confirm new signal exists at gate level",
       "is_bus_variant": false
     }

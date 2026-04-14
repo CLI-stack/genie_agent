@@ -1,5 +1,5 @@
 #!/bin/tcsh
-# eco_formality.csh - Reset, run and report PostEco Formality verification
+# post_eco_formality.csh - Reset, run and report PostEco Formality verification
 # Usage: eco_formality.csh <tile> <refDir> <tag>
 #
 # Runs all 3 PostEco FM targets:

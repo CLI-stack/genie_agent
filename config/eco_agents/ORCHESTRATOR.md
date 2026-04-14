@@ -54,8 +54,15 @@ Using the `nets_to_query` list from Step 1:
      --execute --xterm
    ```
    This matches the `find_equivalent_nets.csh` instruction in `instruction.csv`. Note the tag generated will be different from `<TAG>` — read it from the CLI output (`Tag: <fenets_tag>`).
-3. Poll `data/<fenets_tag>_spec` every 2 minutes until `FIND_EQUIVALENT_NETS_COMPLETE` appears or 60-min timeout
-4. Read all results from `data/<fenets_tag>_spec`
+3. Poll the actual rpt files every 2 minutes until `FIND_EQUIVALENT_NETS_COMPLETE` appears in all 3, or 60-min timeout:
+   ```bash
+   grep -c "FIND_EQUIVALENT_NETS_COMPLETE" \
+     <REF_DIR>/rpts/FmEqvPreEcoSynthesizeVsPreEcoSynRtl/find_equivalent_nets_<fenets_tag>.txt \
+     <REF_DIR>/rpts/FmEqvPreEcoPrePlaceVsPreEcoSynthesize/find_equivalent_nets_<fenets_tag>.txt \
+     <REF_DIR>/rpts/FmEqvPreEcoRouteVsPreEcoPrePlace/find_equivalent_nets_<fenets_tag>.txt
+   ```
+   **Note:** Do NOT poll `data/<fenets_tag>_spec` for this sentinel — `find_equivalent_nets.csh` strips it before writing to the spec file. The rpt files are the authoritative source.
+4. Once all 3 rpt files have the sentinel, read all results from `data/<fenets_tag>_spec` (the spec file has the formatted results written at task completion)
 
 **For FM-036 retries**, submit a new genie_cli.py call with the stripped net path — each retry gets its own tag, read from CLI output:
    ```bash
@@ -151,7 +158,7 @@ Format of output:
 
 ## STEP 5 — PostEco Formality Verification
 
-**Guard:** Read `data/<TAG>_eco_applied.json`. Count APPLIED entries across ALL stages (Synthesize + PrePlace + Route). If total APPLIED == 0, skip this step and Step 6 entirely — go directly to Step 7. Write `data/<TAG>_eco_fm_verify.json` with `"skipped": true, "reason": "no changes applied"` and note this in the HTML report.
+**Guard:** Read `data/<TAG>_eco_applied.json` and check `summary.applied`. If `summary.applied == 0`, skip this step and Step 6 entirely — go directly to Step 7. Write `data/<TAG>_eco_fm_verify.json` with `"skipped": true, "reason": "no changes applied"` and note this in the HTML report.
 
 Run via `genie_cli.py` (handles TileBuilder/LSF environment automatically, same as `report_formality.csh`):
 
@@ -168,9 +175,9 @@ This invokes `script/rtg_oss_feint/supra/post_eco_formality.csh`, which:
 3. Runs all 3 via `serascmd --action run`
 4. Polls `TileBuilderShow` every 15 min (180-min timeout) until all complete
 5. Reads `.dat` and `__failing_points.rpt.gz` per target
-6. Writes results to `data/<fenets_tag>_spec`
+6. Writes results to `data/<eco_fm_tag>_spec`
 
-Read the tag from the CLI output (`Tag: <eco_fm_tag>`). Poll `data/<eco_fm_tag>_spec` until the script completes.
+Read the tag from the CLI output (`Tag: <eco_fm_tag>`). Poll `data/<eco_fm_tag>_spec` every 5 minutes until it contains `OVERALL ECO FM RESULT:` — that is the last line written by the script before it exits.
 
 Parse results from `data/<eco_fm_tag>_spec` and write `data/<TAG>_eco_fm_verify.json`:
 ```json

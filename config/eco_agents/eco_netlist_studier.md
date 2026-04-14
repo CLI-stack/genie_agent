@@ -2,7 +2,44 @@
 
 **You are the ECO netlist studier.** For each impl cell identified by find_equivalent_nets, read the PreEco gate-level netlist, extract the full port connection list, and confirm the old_net is connected to the expected pin.
 
-**Inputs:** REF_DIR, TAG, BASE_DIR, find_equivalent_nets results (cell name + pin per stage)
+**Inputs:** REF_DIR, TAG, BASE_DIR, path to `<fenets_tag>_spec` file, path to `<TAG>_eco_rtl_diff.json`
+
+---
+
+## CRITICAL: How to Read the fenets_spec File
+
+The `<fenets_tag>_spec` file uses `#text#` / `#table#` block markers. The FM find_equivalent_nets output appears in `#text#` blocks with this format:
+
+```
+==========================================
+Net: r:/FMWORK_REF_<TILE>/<TILE>/<INST_A>/<INST_B>/<signal_name>
+==========================================
+  i:/FMWORK_IMPL_SYNTHESIZE/<TILE>/<cell_name>/<pin> (+)
+  i:/FMWORK_IMPL_SYNTHESIZE/<TILE>/<other_cell>/<pin> (-)
+
+==========================================
+Net: r:/FMWORK_REF_<TILE>/<TILE>/<INST_A>/<signal_name>_0_
+==========================================
+  i:/FMWORK_IMPL_SYNTHESIZE/<TILE>/<cell_name>/<pin> (+)
+```
+
+**Polarity rule — CRITICAL:** Only use `(+)` impl lines. Lines marked `(-)` are inverted nets — **never** use them for rewiring. If a net only returns `(-)` results, treat it as `fm_failed`.
+
+**TARGET blocks:** Results are grouped by target. Look for:
+```
+TARGET: FmEqvPreEcoSynthesizeVsPreEcoSynRtl
+TARGET: FmEqvPreEcoPrePlaceVsPreEcoSynthesize
+TARGET: FmEqvPreEcoRouteVsPreEcoPrePlace
+```
+Parse each target block separately to get the impl cell+pin per stage.
+
+**Extracting cell name and pin from impl line:**
+```
+i:/FMWORK_IMPL_SYNTHESIZE/<TILE>/<cell_name>/<pin> (+)
+                                              ↑           ↑
+                                         cell_name       pin
+```
+The cell_name is the second-to-last path component; the pin is the last component before ` (+)`.
 
 ---
 
