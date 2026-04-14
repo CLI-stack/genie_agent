@@ -2022,34 +2022,6 @@ class GenieCLI:
             print()
             print("Or with xterm:")
             print(f"  xterm -e 'cd {self.base_dir} && source {run_script}' &")
-        elif use_xterm:
-            # Execute in xterm popup window
-            log_file = os.path.join(self.base_dir, 'runs', f'{tag}.log')
-            pid_file = os.path.join(self.base_dir, 'data', f'{tag}_pid')
-
-            # Make script executable
-            os.chmod(run_script, 0o755)
-
-            # Launch xterm with script logging
-            # Use tcsh explicitly to run the script since default shell might be zsh
-            xterm_cmd = f"xterm -title 'Genie Task: {tag}' -e \"script -a -q {log_file} -c 'tcsh -f {run_script}'\""
-            process = subprocess.Popen(
-                xterm_cmd,
-                shell=True,
-                start_new_session=True
-            )
-
-            # Save PID to file
-            with open(pid_file, 'w') as f:
-                f.write(str(process.pid))
-
-            print()
-            print(f"Task launched in xterm popup...")
-            print(f"PID: {process.pid}")
-            print(f"Log file: {log_file}")
-            print()
-            print("To kill:")
-            print(f"  python3 script/genie_cli.py --kill {tag}")
         elif 'eco_analyze' in script.lower() and not dry_run:
             # eco_analyze runs synchronously (thin wrapper, seconds) to capture the signal
             log_file = os.path.join(self.base_dir, 'runs', f'{tag}.log')
@@ -2081,6 +2053,35 @@ class GenieCLI:
                 'eco_mode': eco_signal_found,
                 'eco_signal_params': eco_signal_params,
             }
+
+        elif use_xterm:
+            # Execute in xterm popup window
+            log_file = os.path.join(self.base_dir, 'runs', f'{tag}.log')
+            pid_file = os.path.join(self.base_dir, 'data', f'{tag}_pid')
+
+            # Make script executable
+            os.chmod(run_script, 0o755)
+
+            # Launch xterm with script logging
+            # Use tcsh explicitly to run the script since default shell might be zsh
+            xterm_cmd = f"xterm -title 'Genie Task: {tag}' -e \"script -a -q {log_file} -c 'tcsh -f {run_script}'\""
+            process = subprocess.Popen(
+                xterm_cmd,
+                shell=True,
+                start_new_session=True
+            )
+
+            # Save PID to file
+            with open(pid_file, 'w') as f:
+                f.write(str(process.pid))
+
+            print()
+            print(f"Task launched in xterm popup...")
+            print(f"PID: {process.pid}")
+            print(f"Log file: {log_file}")
+            print()
+            print("To kill:")
+            print(f"  python3 script/genie_cli.py --kill {tag}")
 
         else:
             # Execute the script in background and capture PID
