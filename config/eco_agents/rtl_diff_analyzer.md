@@ -10,10 +10,10 @@
 
 **ALWAYS use instance names in hierarchy paths, NEVER module names.**
 
-- Module name: what appears after `module` keyword in RTL (e.g., `umctim`)
-- Instance name: what appears on instantiation line (e.g., `TIM` in `umctim TIM (...)`)
-- Hierarchy path uses instance names: `ARB/TIM/signal_name` ✓
-- WRONG: `umcarb/umctim/signal_name` ✗
+- Module name: what appears after `module` keyword in RTL (e.g., `module_b`)
+- Instance name: what appears on instantiation line (e.g., `INST_B` in `module_b INST_B (...)`)
+- Hierarchy path uses instance names: `<INST_A>/<INST_B>/signal_name` ✓
+- WRONG: `<module_name_A>/<module_name_B>/signal_name` ✗
 
 ---
 
@@ -72,7 +72,7 @@ grep -n "<module_name>" <REF_DIR>/data/PreEco/SynRtl/rtl_<parent_module>.v
 ```
 Extract the instance name from the instantiation line:
 ```
-umctim TIM (   ← module_name=umctim, instance_name=TIM
+<module_b> <INST_B> (   ← module_name=<module_b>, instance_name=<INST_B>
 ```
 
 **3. Repeat up the hierarchy until you reach the tile level:**
@@ -81,8 +81,8 @@ grep -n "<parent_module_name>" <REF_DIR>/data/PreEco/SynRtl/rtl_<grandparent>.v
 ```
 
 **4. Build full path using INSTANCE NAMES:**
-- If tile=`umccmd` and hierarchy is: tile → ARB (instance of umcarb) → TIM (instance of umctim)
-- Path = `ARB/TIM/signal_name`
+- If tile=`<TILE>` and hierarchy is: tile → `<INST_A>` (instance of `<module_A>`) → `<INST_B>` (instance of `<module_B>`)
+- Path = `<INST_A>/<INST_B>/signal_name`
 
 **5. Self-verify:**
 ```bash
@@ -106,8 +106,8 @@ For EACH change, determine which gate-level nets will reveal WHERE to make the E
 - **Avoid querying flip-flop Q outputs** — focus on driving nets and inputs
 
 **Bus signals:** If declared as `reg [N:0] SignalName`, generate BOTH:
-- `ARB/TIM/SignalName` (may work in some FM targets)
-- `ARB/TIM/SignalName_0_` (gate-level bit-indexed form for bit 0)
+- `<INST_A>/<INST_B>/SignalName` (may work in some FM targets)
+- `<INST_A>/<INST_B>/SignalName_0_` (gate-level bit-indexed form for bit 0)
 
 Pass BOTH to find_equivalent_nets — FM-036 on one, the other may succeed.
 
@@ -115,7 +115,7 @@ Pass BOTH to find_equivalent_nets — FM-036 on one, the other may succeed.
 
 ## Output JSON
 
-Write to `data/<TAG>_eco_rtl_diff.json`:
+Write to `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json` (always use the full absolute path — the agent may be cd'd to REF_DIR for diffs, but output always goes to BASE_DIR/data/):
 
 ```json
 {

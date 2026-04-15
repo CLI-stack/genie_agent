@@ -2041,7 +2041,7 @@ class GenieCLI:
             # Extract signal params from output
             eco_signal_params = {}
             for _line in run_output.stdout.splitlines():
-                if '=' in _line and any(_line.startswith(k) for k in ['TAG=', 'REF_DIR=', 'TILE=', 'LOG_FILE=', 'SPEC_FILE=']):
+                if '=' in _line and any(_line.startswith(k) for k in ['TAG=', 'REF_DIR=', 'TILE=', 'JIRA=', 'LOG_FILE=', 'SPEC_FILE=']):
                     _k, _, _v = _line.partition('=')
                     eco_signal_params[_k] = _v
             print()
@@ -4820,6 +4820,7 @@ Examples:
             eco_params = result.get('eco_signal_params', {})
             ref_dir = eco_params.get('REF_DIR', result.get('args', {}).get('refDir', '').replace('refDir:', '').strip(':'))
             tile = eco_params.get('TILE', result.get('args', {}).get('tile', '').replace('tile:', '').strip(':'))
+            jira = eco_params.get('JIRA', result.get('args', {}).get('integer', '').replace('integer:', '').strip(':'))
             log_file = eco_params.get('LOG_FILE', os.path.join(cli.base_dir, 'runs', f'{tag}.log'))
             spec_file = eco_params.get('SPEC_FILE', os.path.join(cli.base_dir, 'data', f'{tag}_spec'))
             print()
@@ -4828,6 +4829,7 @@ Examples:
             print(f"TAG={tag}")
             print(f"REF_DIR={ref_dir}")
             print(f"TILE={tile}")
+            print(f"JIRA={jira}")
             print(f"LOG_FILE={log_file}")
             print(f"SPEC_FILE={spec_file}")
             print("=" * 70)

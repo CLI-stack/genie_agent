@@ -65,8 +65,10 @@ set out           = "$source_dir/data/${tag}_spec"
 
 #------------------------------------------------------------------------------
 # READ CONFIG FILE (if exists)
+# Config is written by ORCHESTRATOR at <refDir>/data/eco_fm_config
+# (fixed name per refDir — not tag-based, since post_eco_formality gets its own tag from genie_cli)
 #------------------------------------------------------------------------------
-set config_file = "$source_dir/data/${tag}_eco_fm_config"
+set config_file = "$refdir_name/data/eco_fm_config"
 
 # Defaults
 set all_eco_targets = (FmEqvEcoSynthesizeVsSynRtl FmEqvEcoPrePlaceVsEcoSynthesize FmEqvEcoRouteVsEcoPrePlace)
@@ -148,12 +150,26 @@ if ($run_svf_gen == 1 && $synth_in_targets == 1) then
 
         echo "FmEcoSvfGen status: $svfgen_status (${elapsed}s elapsed)"
 
-        if ("$svfgen_status" == "PASSED" || "$svfgen_status" == "WARNING" || \
-            "$svfgen_status" == "FAILED" || "$svfgen_status" == "DONE") then
+        if ("$svfgen_status" == "PASSED" || "$svfgen_status" == "WARNING" || "$svfgen_status" == "DONE") then
             set svfgen_done = 1
             echo "#text#" >> $out
             echo "FmEcoSvfGen completed: $svfgen_status" >> $out
             echo "#text end#" >> $out
+        else if ("$svfgen_status" == "FAILED") then
+            echo "#text#" >> $out
+            echo "ERROR: FmEcoSvfGen FAILED — aborting ECO FM run. EcoChange.svf may be incomplete." >> $out
+            echo "#text end#" >> $out
+            echo "OVERALL ECO FM RESULT: FAIL" >> $out
+            echo "#table#" >> $out
+            echo "Target,Status" >> $out
+            foreach tgt ($eco_targets)
+                echo "$tgt,ABORTED (FmEcoSvfGen failed)" >> $out
+            end
+            echo "#table end#" >> $out
+            rm -f $svfgen_log
+            set run_status = "failed"
+            source $source_dir/script/rtg_oss_feint/finishing_task.csh
+            exit 1
         else if ($elapsed >= $max_elapsed) then
             echo "#text#" >> $out
             echo "ERROR: FmEcoSvfGen timeout after 60 min" >> $out

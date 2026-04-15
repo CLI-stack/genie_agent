@@ -146,7 +146,7 @@ rm -f /tmp/eco_study_<TAG>_<Stage>.v
 
 When find_equivalent_nets returns no qualifying cells for **any stage** (Synthesize, PrePlace, or Route) — due to PreEco FM failures, high not-compared count, or FM-036 errors — use confirmed cells from **another stage** as a starting point and grep those cell names directly in the missing stage's PreEco netlist.
 
-**Why this works:** P&R tools preserve instance names across all stages. The same cell `A2134345` exists with the same name in Synthesize, PrePlace, and Route — only its physical attributes differ. So if FM found it in any one stage, it can be found by grep in all other stages.
+**Why this works:** P&R tools preserve instance names across all stages. The same cell `<cell_name>` exists with the same name in Synthesize, PrePlace, and Route — only its physical attributes differ. So if FM found it in any one stage, it can be found by grep in all other stages.
 
 ### Fallback Steps
 
@@ -176,7 +176,7 @@ Extract the instantiation block and check the same pin from Synthesize:
 
 ```bash
 # Verify: .<pin>(<old_net>) exists in this stage
-grep -c "\.<pin>(<old_net>)" /tmp/eco_study_<TAG>_<Stage>.v
+grep -c "\.<pin>(<old_net>)" /tmp/eco_study_<TAG>_<MissingStage>.v
 ```
 
 - If found (count = 1): `"confirmed": true`, `"source": "synthesize_fallback"`
@@ -185,7 +185,7 @@ grep -c "\.<pin>(<old_net>)" /tmp/eco_study_<TAG>_<Stage>.v
 
 #### Step F4 — Handle net name differences between stages
 
-In some cases, the net name in PrePlace/Route may differ from Synthesize due to P&R renaming (e.g., `SendWckSyncOffCs2` may become `SendWckSyncOffCs2_bar` or similar). If old_net is not found:
+In some cases, the net name in PrePlace/Route may differ from Synthesize due to P&R renaming (e.g., `<old_net>` may become `<old_net>_bar` or `<old_net>_n` or similar). If old_net is not found:
 
 1. Try partial match — grep for the signal root name without suffix: `grep -n "<root_signal>" /tmp/...`
 2. Check surrounding lines for the expected pin to identify the actual net name
@@ -229,7 +229,7 @@ Where `source` is e.g. `"synthesize_fallback"`, `"preplace_fallback"`, or `"rout
 
 ## Output JSON
 
-Write `data/<TAG>_eco_preeco_study.json`. Each stage is an array — one entry per qualifying cell:
+Write `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` (always use the full absolute path). Each stage is an array — one entry per qualifying cell:
 
 ```json
 {

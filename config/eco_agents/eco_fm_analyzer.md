@@ -8,7 +8,7 @@
 
 ## STEP 1 — Read FM Failing Points
 
-Read `data/<eco_fm_tag>_spec` and extract all failing points per target:
+Read `<BASE_DIR>/data/<eco_fm_tag>_spec` (full absolute path) and extract all failing points per target:
 - `FmEqvEcoSynthesizeVsSynRtl` — failing_points list
 - `FmEqvEcoPrePlaceVsEcoSynthesize` — failing_points list
 - `FmEqvEcoRouteVsEcoPrePlace` — failing_points list
@@ -22,7 +22,7 @@ For each failing point, note:
 
 ## STEP 2 — Classify Failure Mode
 
-Compare failing points against the previous round's `data/<TAG>_eco_applied.json`:
+Compare failing points against the previous round's `<BASE_DIR>/data/<TAG>_eco_applied.json`:
 
 ### Mode A — Same failing points as before ECO (all 3 targets)
 **Diagnosis:** ECO was not applied correctly OR the new_net was wrong.
@@ -104,7 +104,7 @@ Based on the failure mode, produce a concrete revised strategy:
 
 ## STEP 5 — Write Output
 
-Write `data/<TAG>_eco_fm_analysis_round<N>.json` with the full analysis and revised strategy.
+Write `<BASE_DIR>/data/<TAG>_eco_fm_analysis_round<N>.json` (full absolute path) with the full analysis and revised strategy.
 
 Also append a human-readable summary to the per-round HTML report section if it exists.
 

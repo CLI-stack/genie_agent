@@ -12,6 +12,17 @@ set source_dir = `pwd`
 # Extract JIRA number (strip integer: prefix if present)
 set jira_num = `echo $jira_raw | sed 's/integer://' | sed 's/^://g' | xargs`
 
+# Validate JIRA number
+if ("$jira_num" == "" || "$jira_num" == " ") then
+    echo "#text#" >> $source_dir/data/${tag}_spec
+    echo "ERROR: JIRA ticket number is required. Usage: run eco analysis at <dir> for <tile> <jira_number>" >> $source_dir/data/${tag}_spec
+    echo "Example: run eco analysis at /proj/xxx/tiles/... for umccmd 9874" >> $source_dir/data/${tag}_spec
+    echo "#text end#" >> $source_dir/data/${tag}_spec
+    set run_status = "failed"
+    source $source_dir/script/rtg_oss_feint/finishing_task.csh
+    exit 1
+endif
+
 touch $source_dir/data/${tag}_spec
 
 # Strip prefixes
