@@ -361,8 +361,10 @@ When `ECO_ANALYZE_MODE_ENABLED` is detected in output:
      description="ECO analyze <tile> at <ref_dir>",
      subagent_type="general-purpose",
      prompt="""
-     You are the ECO orchestrator. Read config/eco_agents/ORCHESTRATOR.md and
-     execute the full ECO analyze flow for the following inputs:
+     You are the ECO setup orchestrator. Read config/eco_agents/ORCHESTRATOR.md and
+     execute Steps 1-5 of the ECO analyze flow. After Step 5, write ROUND_HANDOFF.json
+     and spawn either ROUND_ORCHESTRATOR (if FM fails) or FINAL_ORCHESTRATOR (if FM passes),
+     then EXIT. Do NOT run Steps 6-8 yourself.
 
      TAG=<tag>
      REF_DIR=<ref_dir>
@@ -371,6 +373,7 @@ When `ECO_ANALYZE_MODE_ENABLED` is detected in output:
      LOG_FILE=<log_file>
      SPEC_FILE=<spec_file>
      BASE_DIR=<parent of the 'runs/' folder in LOG_FILE>
+     ROUND_HANDOFF_PATH=<BASE_DIR>/data/<tag>_round_handoff.json
      """
    )
    ```

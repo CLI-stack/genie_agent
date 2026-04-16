@@ -213,14 +213,14 @@ end
 cd $source_dir
 
 #------------------------------------------------------------------------------
-# POLL UNTIL ALL SPECIFIED TARGETS COMPLETE (180 min timeout, 15 min intervals)
+# POLL UNTIL ALL SPECIFIED TARGETS COMPLETE (6 hour timeout, 5 min intervals)
 #------------------------------------------------------------------------------
-echo "Monitoring ECO FM targets (max 180 min, checking every 15 min)..."
+echo "Monitoring ECO FM targets (max 6 hours, checking every 5 min)..."
 
 set tb_status_log = "/tmp/tb_eco_fm_status_${tag}.log"
 set elapsed       = 0
-set max_elapsed   = 10800
-set poll_interval = 900
+set max_elapsed   = 21600
+set poll_interval = 300
 set all_done      = 0
 
 while ($all_done == 0)
@@ -254,7 +254,7 @@ while ($all_done == 0)
         echo "All ${total_count} ECO FM targets complete after ${elapsed}s"
         set all_done = 1
     else if ($elapsed >= $max_elapsed) then
-        echo "ERROR: ECO FM timeout after 180 min — only ${done_count}/${total_count} targets complete" >> $out
+        echo "ERROR: ECO FM timeout after 6 hours — only ${done_count}/${total_count} targets complete" >> $out
         rm -f $tb_status_log
         set run_status = "failed"
         source $source_dir/script/rtg_oss_feint/finishing_task.csh
