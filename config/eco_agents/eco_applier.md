@@ -292,7 +292,7 @@ rm -f /tmp/eco_apply_<TAG>_<Stage>.v
 
 ## Output JSON
 
-Write `data/<TAG>_eco_applied.json`. Each stage is an array — one entry per cell from the PreEco study:
+Write `data/<TAG>_eco_applied_round<ROUND>.json`. Each stage is an array — one entry per cell from the PreEco study:
 
 ```json
 {
@@ -353,7 +353,7 @@ Write `data/<TAG>_eco_applied.json`. Each stage is an array — one entry per ce
 
 ## Output RPT
 
-After writing the JSON, write `<BASE_DIR>/data/<TAG>_eco_step4_eco_applied.rpt`.
+After writing the JSON, write `<BASE_DIR>/data/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt`.
 
 **Key requirement:** For every cell entry, the RPT must clearly state:
 1. **Which RTL block this ECO targets** — the declaring module and instance hierarchy

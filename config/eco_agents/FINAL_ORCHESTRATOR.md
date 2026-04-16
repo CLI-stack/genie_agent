@@ -27,7 +27,7 @@ Read `<ROUND_HANDOFF_PATH>` (passed in your prompt) to get:
 
 ## STEP 7a — Write Summary RPT
 
-Read all `data/<TAG>_eco_applied_round<N>.json` files (N = 1 to TOTAL_ROUNDS) and combine statistics.
+Read all `data/<TAG>_eco_applied_round<ROUND>.json` files (ROUND = 1 to TOTAL_ROUNDS) and combine statistics.
 
 **Statistics calculation:**
 - **Cells Added**: count unique `inv_inst` values where `change_type=new_logic` AND `status=INSERTED`, deduplicated across stages (same logical cell appears in 3 stages — count once)
@@ -55,7 +55,7 @@ FINAL STATUS : <PASS / FAIL — MANUAL FIX NEEDED / MAX ROUNDS REACHED>
 <If MAX:>   5 rounds attempted. See per-round step5 RPTs for details.
 
 --------------------------------------------------------------------------------
-ECO STATISTICS  (from eco_applied_round<N>.json — all rounds combined)
+ECO STATISTICS  (from eco_applied_round<ROUND>.json — all rounds combined)
 --------------------------------------------------------------------------------
 
   Cells Added      : <N>  (new inverter cells inserted for new_logic changes)
@@ -91,9 +91,9 @@ Per-Step Reports
   <BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt
   <BASE_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt
   <BASE_DIR>/data/<TAG>_eco_step3_netlist_study.rpt
-  <BASE_DIR>/data/<TAG>_eco_step4_eco_applied_round<N>.rpt  <- one line per round
+  <BASE_DIR>/data/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt  <- one line per round
   <BASE_DIR>/data/<TAG>_eco_step4b_svf.rpt          <- omit if no new_logic
-  <BASE_DIR>/data/<TAG>_eco_step5_fm_verify_round<N>.rpt  <- one line per round
+  <BASE_DIR>/data/<TAG>_eco_step5_fm_verify_round<ROUND>.rpt  <- one line per round
   <BASE_DIR>/data/<TAG>_eco_summary.rpt
 
 ================================================================================
@@ -111,10 +111,10 @@ Write `<BASE_DIR>/data/<TAG>_eco_report.html` with these sections:
 2. **RTL Diff Summary** — read from `data/<TAG>_eco_rtl_diff.json`
 3. **Net Analysis** — read from `data/<TAG>_eco_step2_fenets.rpt`
 4. **PreEco Netlist Study** — read from `data/<TAG>_eco_preeco_study.json`
-5. **ECO Actions Applied** — read from `data/<TAG>_eco_applied_round<N>.json` for each round
+5. **ECO Actions Applied** — read from `data/<TAG>_eco_applied_round<ROUND>.json` for each round
 6. **Timing & LOL Impact** — from `timing_lol_analysis` in `_eco_preeco_study.json`
 7. **PostEco FM Verification** — read from `data/<TAG>_eco_fm_verify.json` and per-round step5 RPTs
-8. **Fix Loop History** (if TOTAL_ROUNDS > 1) — read from `data/<TAG>_eco_fm_analysis_round<N>.json`
+8. **Fix Loop History** (if TOTAL_ROUNDS > 1) — read from `data/<TAG>_eco_fm_analysis_round<ROUND>.json`
 9. **Final Status** — PASS / MANUAL FIX NEEDED / MAX ROUNDS with guidance
 10. **Step Reports** — file paths only:
 
@@ -127,12 +127,12 @@ Write `<BASE_DIR>/data/<TAG>_eco_report.html` with these sections:
 <p><code><BASE_DIR>/data/<retry_tag>_find_equivalent_nets_raw.rpt</code></p>
 <p><code><BASE_DIR>/data/<TAG>_eco_step3_netlist_study.rpt</code></p>
 <!-- One line per round: -->
-<p><code><BASE_DIR>/data/<TAG>_eco_step4_eco_applied_round<N>.rpt</code></p>
+<p><code><BASE_DIR>/data/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt</code></p>
 <!-- Include only if new_logic insertions exist: -->
 <p><code><BASE_DIR>/data/<TAG>_eco_step4b_svf.rpt</code></p>
 <p><code><BASE_DIR>/data/<TAG>_eco_svf_entries.tcl</code></p>
 <!-- One line per round: -->
-<p><code><BASE_DIR>/data/<TAG>_eco_step5_fm_verify_round<N>.rpt</code></p>
+<p><code><BASE_DIR>/data/<TAG>_eco_step5_fm_verify_round<ROUND>.rpt</code></p>
 <p><code><BASE_DIR>/data/<TAG>_eco_summary.rpt</code></p>
 ```
 

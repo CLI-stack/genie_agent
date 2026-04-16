@@ -206,7 +206,7 @@ Wait for eco_applier sub-agent to complete.
 Read `data/<TAG>_eco_applied_round<ROUND>.json`. Check if any entry has `"change_type": "new_logic"` and `"status": "INSERTED"`.
 
 If yes — **spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_svf_updater.md` prepended. Pass:
-- `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`
+- `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `ROUND` (current round number)
 - Task: Write `eco_change -type insert_cell` entries to `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl` (do NOT append to EcoChange.svf yet — FmEcoSvfGen will regenerate it and must run first)
 - Output: `<BASE_DIR>/data/<TAG>_eco_svf_update.json` + `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl`
 
@@ -289,7 +289,7 @@ Write merged results to `<BASE_DIR>/data/<TAG>_eco_fm_verify.json`:
 
 **OVERALL PASS** = all 3 targets show PASS in the merged JSON.
 
-**CHECKPOINT:** Verify both `data/<TAG>_eco_fm_verify.json` and `data/<TAG>_eco_step5_fm_verify_round<N>.rpt` exist and are non-empty. Verify `eco_fm_tag` is saved in `eco_fixer_state.fm_results_per_round`. Do NOT enter Step 6 without these files in place.
+**CHECKPOINT:** Verify both `data/<TAG>_eco_fm_verify.json` and `data/<TAG>_eco_step5_fm_verify_round<ROUND>.rpt` exist and are non-empty. Verify `eco_fm_tag` is saved in `eco_fixer_state.fm_results_per_round`. Do NOT enter Step 6 without these files in place.
 
 ---
 

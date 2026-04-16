@@ -32,16 +32,16 @@ Read `<BASE_DIR>/data/<TAG>_eco_fixer_state` to confirm current round and get `s
 
 ## STEP 6a — Write Per-Round HTML and Send Email
 
-Write `<BASE_DIR>/data/<TAG>_eco_report_round<N>.html` covering:
+Write `<BASE_DIR>/data/<TAG>_eco_report_round<ROUND>.html` covering:
 - Round N summary: which targets failed, failing point count per target
-- ECO changes attempted: cell name, pin, old_net → new_net, status (APPLIED/INSERTED/SKIPPED) — read from `data/<TAG>_eco_applied_round<N>.json`
+- ECO changes attempted: cell name, pin, old_net → new_net, status (APPLIED/INSERTED/SKIPPED) — read from `data/<TAG>_eco_applied_round<ROUND>.json`
 - FM failing points detail: hierarchy paths of failing DFFs — read from `data/<eco_fm_tag>_spec`
 - What will be tried next round (from eco_fm_analyzer — written in Step 6d)
 
 Then send:
 ```bash
 cd <BASE_DIR>
-python3 script/genie_cli.py --send-eco-email <TAG> --eco-round <N>
+python3 script/genie_cli.py --send-eco-email <TAG> --eco-round <ROUND>
 ```
 
 **MANDATORY CHECKPOINT — Do NOT proceed to Step 6b until this command succeeds.**
@@ -55,11 +55,11 @@ If it fails, retry once. If still fails, log the error — but never skip the at
 Restore from round-specific backup:
 ```bash
 for stage in Synthesize PrePlace Route:
-    bak = <REF_DIR>/data/PostEco/<Stage>.v.gz.bak_<TAG>_round<N>
+    bak = <REF_DIR>/data/PostEco/<Stage>.v.gz.bak_<TAG>_round<ROUND>
     if bak exists:
         cp bak <REF_DIR>/data/PostEco/<Stage>.v.gz
     else:
-        print("No backup for <Stage> round <N> — skipping revert")
+        print("No backup for <Stage> round <ROUND> — skipping revert")
 ```
 
 **CHECKPOINT:** For each stage that had a backup, verify the restore succeeded — gz file is non-zero. Do NOT proceed to Step 6c if any restore failed.
@@ -77,21 +77,27 @@ rm -f <BASE_DIR>/data/<TAG>_eco_svf_entries.tcl
 ## STEP 6d — Analyze FM Failure
 
 **Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_fm_analyzer.md` prepended. Pass:
-- `REF_DIR`, `TAG`, `BASE_DIR`, `ROUND=<N>`
+- `REF_DIR`, `TAG`, `BASE_DIR`, `ROUND=<ROUND>`
 - `eco_fm_tag` — from ROUND_HANDOFF or fixer_state
 - Path to FM spec: `<BASE_DIR>/data/<eco_fm_tag>_spec`
-- Path to applied JSON: `<BASE_DIR>/data/<TAG>_eco_applied_round<N>.json`
+- Path to applied JSON: `<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`
 - Path to RTL diff: `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json`
 - Previous strategies from `eco_fixer_state.strategies_tried`
-- Output: `<BASE_DIR>/data/<TAG>_eco_fm_analysis_round<N>.json`
+- Output: `<BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json`
 
-**CHECKPOINT:** Verify `data/<TAG>_eco_fm_analysis_round<N>.json` exists and contains `revised_changes[]` before proceeding.
+**CHECKPOINT:** Verify `data/<TAG>_eco_fm_analysis_round<ROUND>.json` exists and contains `revised_changes[]` before proceeding.
+
+**CRITICAL — Never exit the loop early based on eco_fm_analyzer output:**
+- `failure_mode: UNKNOWN` is NOT a reason to spawn FINAL_ORCHESTRATOR — continue to the next round
+- `failure_mode: E` (pre-existing) is NOT a reason to stop — the revised_changes will contain `set_dont_verify` entries; apply them and continue
+- The ONLY valid reasons to spawn FINAL_ORCHESTRATOR here are: (a) FM PASSED, or (b) NEXT_ROUND = 5
+- If `revised_changes` is empty (eco_fm_analyzer failed to produce any entries), do NOT proceed to eco_applier — treat as NEXT_ROUND = 5 and spawn FINAL_ORCHESTRATOR with status MAX_ROUNDS
 
 ---
 
 ## STEP 6e — Update PreEco Study and Increment Round
 
-Read `data/<TAG>_eco_fm_analysis_round<N>.json`. For each entry in `revised_changes`:
+Read `data/<TAG>_eco_fm_analysis_round<ROUND>.json`. For each entry in `revised_changes`:
 
 ```python
 study = load("<BASE_DIR>/data/<TAG>_eco_preeco_study.json")
@@ -103,7 +109,7 @@ for change in fm_analysis["revised_changes"]:
         entry["old_net"]   = change["old_net"]
         entry["new_net"]   = change["new_net"]
         entry["confirmed"] = True
-        entry["source"]    = f"fm_analyzer_round{N}"
+        entry["source"]    = f"fm_analyzer_round{ROUND}"
 
 save("<BASE_DIR>/data/<TAG>_eco_preeco_study.json", study)
 ```
@@ -134,7 +140,7 @@ Then update `eco_fixer_state`:
 Read `data/<TAG>_eco_applied_round<NEXT_ROUND>.json`. If any entry has `change_type=new_logic` and `status=INSERTED`:
 
 **Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_svf_updater.md` prepended. Pass:
-- `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`
+- `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `ROUND=<NEXT_ROUND>`
 - Output: `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl`
 
 Set `svf_update_needed = true`.
@@ -254,8 +260,8 @@ Update handoff: `"status": "MAX_ROUNDS"`
 
 | File | Content |
 |------|---------|
-| `data/<TAG>_eco_report_round<N>.html` | Per-round HTML (before revert) |
-| `data/<TAG>_eco_fm_analysis_round<N>.json` | FM failure analysis (written by eco_fm_analyzer) |
+| `data/<TAG>_eco_report_round<ROUND>.html` | Per-round HTML (before revert) |
+| `data/<TAG>_eco_fm_analysis_round<ROUND>.json` | FM failure analysis (written by eco_fm_analyzer) |
 | `data/<TAG>_eco_preeco_study.json` | Updated with revised changes |
 | `data/<TAG>_eco_fixer_state` | Updated with incremented round |
 | `data/<TAG>_eco_applied_round<NEXT_ROUND>.json` | ECO changes for next round (written by eco_applier) |
