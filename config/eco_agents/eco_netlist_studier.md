@@ -148,30 +148,40 @@ Check that the pin identified by find_equivalent_nets has old_net connected:
 
 ### 4b. Verify new_net is reachable in the same scope
 
-After confirming old_net, check that new_net exists within the same stage netlist:
+**CRITICAL RULE — Always prefer the direct signal name over HFS aliases:**
 
+HFS (High Fanout Signal) aliases (`FxPrePlace_HFSNET_*`, `FxOptCts_HFSNET_*`, etc.) are P&R-inserted buffer tree branches. They represent a specific buffered copy of the original signal, scoped to a particular region or sub-module. Using an HFS alias as `new_net` can cause FM stage-to-stage comparison failures because:
+- The HFS alias may belong to the **parent scope**, while the target cell is **inside a sub-module**
+- FM compares stage-to-stage using logical signal names — an HFS alias in one stage may not match the direct signal name used in another stage
+
+**Always use the direct signal name (e.g., `SendWckSyncOffCs0`) when it exists in the netlist. Only fall back to an HFS alias as a last resort when the direct name is truly absent.**
+
+After confirming old_net, check for new_net in this priority order:
+
+**Priority 1 — Direct signal name (ALWAYS try first):**
 ```bash
 grep -cw "<new_net>" /tmp/eco_study_<TAG>_<Stage>.v
 ```
 
-- If count ≥ 1 → `"new_net_reachable": true` — safe to rewire directly
-- If count = 0 → `"new_net_reachable": false` — new_net not present in this stage's netlist
+- If count ≥ 1 → `"new_net_reachable": true`, `"new_net_alias": null` — use direct name, do NOT search for HFS alias
+- If count = 0 → direct name not present, proceed to Priority 2
 
-**If new_net not reachable — try HFS alias search:**
+**Priority 2 — HFS alias search (ONLY if direct name not found):**
 
-P&R tools may rename signals to internal net names (e.g., `FxPrePlace_HFSNET_XXXX`). Search by partial root name:
+P&R tools may rename signals inside sub-modules. Search for an alias only after confirming the direct name is absent:
 
 ```bash
-grep -n "<new_net_root>" /tmp/eco_study_<TAG>_<Stage>.v | head -10
+grep -n "FxPrePlace_HFSNET\|FxOptCts_HFSNET\|FxPlace_HFSNET" /tmp/eco_study_<TAG>_<Stage>.v | grep "<new_net_root>" | head -10
 ```
 
-Where `<new_net_root>` is the signal name without suffixes. If an alias is found, record it:
-- `"new_net_alias": "<FxPrePlace_HFSNET_XXXX>"` — the applier will use this alias instead of the bare new_net name
+Where `<new_net_root>` is the root of the signal name. If an alias is found, record it:
+- `"new_net_alias": "<FxPrePlace_HFSNET_XXXX>"` — applier will use this alias
 - `"new_net_reachable": true`
+- Add note: `"new_net_alias_reason": "direct signal <new_net> not found in <Stage> — using HFS alias"`
 
 If no alias found either:
 - `"new_net_reachable": false`
-- `"confirmed": false` — do NOT apply this change; rewiring to a non-existent net would break the netlist
+- `"confirmed": false` — do NOT apply this change
 - `"reason": "new_net <new_net> not found in <Stage> PreEco netlist and no HFS alias found"`
 
 ### 4c. Backward Cone Verification (MANDATORY for wire_swap)
