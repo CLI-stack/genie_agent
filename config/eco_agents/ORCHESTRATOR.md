@@ -95,50 +95,115 @@ valid_nets = [n for n in rtl_diff["nets_to_query"]
 
 If any `nets_to_query` entry does not correspond to `old_token` or `new_token` from the change list, **drop it silently** — do NOT submit it to FM. Only `old_token` and `new_token` nets are valid queries. This validation catches bugs from reused Step 1 results that predate the current md rules.
 
-1. Build the comma-separated net list from all `net_path` entries in the **validated** `nets_to_query`
-2. Submit via `genie_cli.py` with `--xterm` (live output in popup window, correct TileBuilder/LSF environment):
-   ```bash
-   cd <BASE_DIR>
-   python3 script/genie_cli.py \
-     -i "find equivalent nets at <REF_DIR> for <TILE> netName:<net1>,<net2>,..." \
-     --execute --xterm
-   ```
-   This matches the `find_equivalent_nets.csh` instruction in `instruction.csv`. Note the tag generated will be different from `<TAG>` — read it from the CLI output (`Tag: <fenets_tag>`).
-3. Poll the actual rpt files every 2 minutes until `FIND_EQUIVALENT_NETS_COMPLETE` appears in all 3, or 60-min timeout:
-   ```bash
-   grep -c "FIND_EQUIVALENT_NETS_COMPLETE" \
-     <REF_DIR>/rpts/FmEqvPreEcoSynthesizeVsPreEcoSynRtl/find_equivalent_nets_<fenets_tag>.txt \
-     <REF_DIR>/rpts/FmEqvPreEcoPrePlaceVsPreEcoSynthesize/find_equivalent_nets_<fenets_tag>.txt \
-     <REF_DIR>/rpts/FmEqvPreEcoRouteVsPreEcoPrePlace/find_equivalent_nets_<fenets_tag>.txt
-   ```
-   **Note:** Do NOT poll `data/<fenets_tag>_spec` for this sentinel — `find_equivalent_nets.csh` strips it before writing to the spec file. The rpt files are the authoritative source.
-4. Once all 3 rpt files have the sentinel, read all results from `data/<fenets_tag>_spec` (the spec file has the formatted results written at task completion)
-5. Consolidate raw FM output into a single file `<BASE_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt` by concatenating all 3 rpt files with clear stage headers:
-   ```bash
-   {
-     echo "================================================================================"
-     echo "FIND EQUIVALENT NETS — RAW FM OUTPUT"
-     echo "fenets_tag: <fenets_tag>  |  TAG: <TAG>  |  Tile: <TILE>"
-     echo "================================================================================"
-     echo ""
-     echo "================================================================================"
-     echo "TARGET: FmEqvPreEcoSynthesizeVsPreEcoSynRtl"
-     echo "================================================================================"
-     cat <REF_DIR>/rpts/FmEqvPreEcoSynthesizeVsPreEcoSynRtl/find_equivalent_nets_<fenets_tag>.txt
-     echo ""
-     echo "================================================================================"
-     echo "TARGET: FmEqvPreEcoPrePlaceVsPreEcoSynthesize"
-     echo "================================================================================"
-     cat <REF_DIR>/rpts/FmEqvPreEcoPrePlaceVsPreEcoSynthesize/find_equivalent_nets_<fenets_tag>.txt
-     echo ""
-     echo "================================================================================"
-     echo "TARGET: FmEqvPreEcoRouteVsPreEcoPrePlace"
-     echo "================================================================================"
-     cat <REF_DIR>/rpts/FmEqvPreEcoRouteVsPreEcoPrePlace/find_equivalent_nets_<fenets_tag>.txt
-   } > <BASE_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt
-   cp <BASE_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt <AI_ECO_FLOW_DIR>/
-   ```
-   Do the same for each FM-036 retry tag — write `<BASE_DIR>/data/<retry_tag>_find_equivalent_nets_raw_fm036_retry<N>.rpt` (where N=1,2,3) using the same pattern and copy to `<AI_ECO_FLOW_DIR>/`. The `_fm036_retry<N>` suffix distinguishes FM-036 retries from No-Equiv-Nets retries (`_noequiv_retry<N>`) — both can exist in the same run without ambiguity.
+**MANDATORY: Do NOT reuse a previous fenets run if its queried scope differs from Step 1 `net_path` values.**
+
+When considering reusing a previous tag's fenets results, compare the net paths that tag actually queried against the `net_path` values in `nets_to_query` from the Step 1 JSON. If they differ (e.g., previous run used a deeper or shallower hierarchy than Step 1 specifies), do NOT reuse it as the initial fenets — they are different scopes. Submit a fresh fenets using the Step 1 paths. A previous run at a different hierarchy level may only be used as a **retry result** (see retry strategy below), not as the initial run.
+
+**MANDATORY: All retry rpt files MUST be copied to `AI_ECO_FLOW_DIR` before proceeding to Step 3.** If a retry was submitted but its raw rpt is not yet in `AI_ECO_FLOW_DIR`, wait for it and copy it. Do not proceed with an incomplete retry.
+
+**MANDATORY: No-Equiv-Nets retry direction is always DEEPER (add sub-instance level), never shallower.**
+- Initial query: `<net_path>` from Step 1 (declaring module scope)
+- Retry 1: add one sub-instance level deeper than the initial path
+- Retry 2: add one more sub-instance level deeper than retry 1
+Going shallower (removing a hierarchy level from the initial path) is NOT a valid No-Equiv-Nets retry. If a previous run's query is already at a deeper level than Step 1's `net_path`, treat that previous run as a retry result — NOT as the initial run.
+
+The sequence below is strictly sequential — each step BLOCKS on the previous. Do NOT submit a retry before the current run is complete and its raw rpt is written and copied.
+
+### Phase A — Initial Run (BLOCKING)
+
+**A1. Submit:**
+```bash
+cd <BASE_DIR>
+python3 script/genie_cli.py \
+  -i "find equivalent nets at <REF_DIR> for <TILE> netName:<net1>,<net2>,..." \
+  --execute --xterm
+```
+Read `<fenets_tag>` from CLI output (`Tag: <fenets_tag>`).
+
+**A2. Wait — poll every 2 minutes until `FIND_EQUIVALENT_NETS_COMPLETE` appears in ALL 3 rpt files (60-min timeout):**
+```bash
+grep -c "FIND_EQUIVALENT_NETS_COMPLETE" \
+  <REF_DIR>/rpts/FmEqvPreEcoSynthesizeVsPreEcoSynRtl/find_equivalent_nets_<fenets_tag>.txt \
+  <REF_DIR>/rpts/FmEqvPreEcoPrePlaceVsPreEcoSynthesize/find_equivalent_nets_<fenets_tag>.txt \
+  <REF_DIR>/rpts/FmEqvPreEcoRouteVsPreEcoPrePlace/find_equivalent_nets_<fenets_tag>.txt
+```
+**Do NOT proceed until all 3 show count=1.** Do NOT poll `data/<fenets_tag>_spec` — the rpt files are authoritative.
+
+**A3. Read — once all 3 sentinel counts = 1:**
+```bash
+cat <BASE_DIR>/data/<fenets_tag>_spec
+```
+
+**A4. Write and copy raw rpt immediately:**
+```bash
+{
+  echo "FIND EQUIVALENT NETS — RAW FM OUTPUT"
+  echo "fenets_tag: <fenets_tag>  |  TAG: <TAG>  |  Tile: <TILE>"
+  echo "TARGET: FmEqvPreEcoSynthesizeVsPreEcoSynRtl"
+  cat <REF_DIR>/rpts/FmEqvPreEcoSynthesizeVsPreEcoSynRtl/find_equivalent_nets_<fenets_tag>.txt
+  echo "TARGET: FmEqvPreEcoPrePlaceVsPreEcoSynthesize"
+  cat <REF_DIR>/rpts/FmEqvPreEcoPrePlaceVsPreEcoSynthesize/find_equivalent_nets_<fenets_tag>.txt
+  echo "TARGET: FmEqvPreEcoRouteVsPreEcoPrePlace"
+  cat <REF_DIR>/rpts/FmEqvPreEcoRouteVsPreEcoPrePlace/find_equivalent_nets_<fenets_tag>.txt
+} > <BASE_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt
+cp <BASE_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt <AI_ECO_FLOW_DIR>/
+```
+
+**A5. Verify copy succeeded:**
+```bash
+ls <AI_ECO_FLOW_DIR>/<fenets_tag>_find_equivalent_nets_raw.rpt
+```
+If missing — re-run the cp before continuing.
+
+**A6. NOW analyze the raw rpt** — only after A1–A5 are complete:
+- For each stage, check the results: FM found cells / No Equivalent Nets / FM-036
+- Identify which stages and nets need retries (No-Equiv-Nets or FM-036)
+- **Do NOT submit any retry until this analysis is done**
+
+---
+
+### Phase B — Retries (each retry is its own BLOCKING cycle)
+
+For each stage/net that requires a retry (No-Equiv-Nets or FM-036), repeat this pattern — **one retry at a time, sequentially**:
+
+**B1. Submit retry:**
+```bash
+python3 script/genie_cli.py \
+  -i "find equivalent nets at <REF_DIR> for <TILE> netName:<retry_net_path>" \
+  --execute --xterm
+```
+Read `<retry_tag>` from CLI output.
+
+**B2. Wait — same polling pattern as A2, using `<retry_tag>`:**
+```bash
+grep -c "FIND_EQUIVALENT_NETS_COMPLETE" \
+  <REF_DIR>/rpts/FmEqvPreEcoSynthesizeVsPreEcoSynRtl/find_equivalent_nets_<retry_tag>.txt \
+  <REF_DIR>/rpts/FmEqvPreEcoPrePlaceVsPreEcoSynthesize/find_equivalent_nets_<retry_tag>.txt \
+  <REF_DIR>/rpts/FmEqvPreEcoRouteVsPreEcoPrePlace/find_equivalent_nets_<retry_tag>.txt
+```
+**Do NOT proceed until all 3 = 1.**
+
+**B3. Read:** `cat <BASE_DIR>/data/<retry_tag>_spec`
+
+**B4. Write and copy retry raw rpt immediately (with type suffix):**
+```bash
+{
+  echo "TARGET: FmEqvPreEcoSynthesizeVsPreEcoSynRtl"
+  cat <REF_DIR>/rpts/FmEqvPreEcoSynthesizeVsPreEcoSynRtl/find_equivalent_nets_<retry_tag>.txt
+  echo "TARGET: FmEqvPreEcoPrePlaceVsPreEcoSynthesize"
+  cat <REF_DIR>/rpts/FmEqvPreEcoPrePlaceVsPreEcoSynthesize/find_equivalent_nets_<retry_tag>.txt
+  echo "TARGET: FmEqvPreEcoRouteVsPreEcoPrePlace"
+  cat <REF_DIR>/rpts/FmEqvPreEcoRouteVsPreEcoPrePlace/find_equivalent_nets_<retry_tag>.txt
+} > <BASE_DIR>/data/<retry_tag>_find_equivalent_nets_raw_<type>_retry<N>.rpt
+cp <BASE_DIR>/data/<retry_tag>_find_equivalent_nets_raw_<type>_retry<N>.rpt <AI_ECO_FLOW_DIR>/
+```
+Where `<type>` = `noequiv` or `fm036`, `<N>` = retry number.
+
+**B5. Verify copy:** `ls <AI_ECO_FLOW_DIR>/<retry_tag>_find_equivalent_nets_raw_<type>_retry<N>.rpt`
+
+**B6. Analyze retry results** — only then decide if another retry is needed.
+
+**Repeat B1–B6 for each additional retry, one at a time.**
 
    Write `<BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt` using this format:
 
@@ -180,7 +245,33 @@ If any `nets_to_query` entry does not correspond to `old_token` or `new_token` f
    cp <BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt <AI_ECO_FLOW_DIR>/
    ```
 
-**CHECKPOINT:** Verify both `data/<fenets_tag>_find_equivalent_nets_raw.rpt` and `data/<TAG>_eco_step2_fenets.rpt` exist and are non-empty before proceeding to Step 3.
+**CHECKPOINT — STRICT FILE VERIFICATION before proceeding to Step 3:**
+
+Every raw rpt file that was written to `data/` MUST also exist in `AI_ECO_FLOW_DIR/`. Verify each one individually:
+
+```bash
+# Initial run — MUST exist
+ls <AI_ECO_FLOW_DIR>/<fenets_tag>_find_equivalent_nets_raw.rpt
+
+# Each No-Equiv-Nets retry submitted — MUST exist (if retry was run)
+ls <AI_ECO_FLOW_DIR>/<noequiv_retry1_tag>_find_equivalent_nets_raw_noequiv_retry1.rpt
+ls <AI_ECO_FLOW_DIR>/<noequiv_retry2_tag>_find_equivalent_nets_raw_noequiv_retry2.rpt
+
+# Each FM-036 retry submitted — MUST exist (if retry was run)
+ls <AI_ECO_FLOW_DIR>/<fm036_retry1_tag>_find_equivalent_nets_raw_fm036_retry1.rpt
+ls <AI_ECO_FLOW_DIR>/<fm036_retry2_tag>_find_equivalent_nets_raw_fm036_retry2.rpt
+ls <AI_ECO_FLOW_DIR>/<fm036_retry3_tag>_find_equivalent_nets_raw_fm036_retry3.rpt
+
+# Step 2 summary RPT — MUST exist
+ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step2_fenets.rpt
+```
+
+If ANY submitted run's raw rpt is missing from `AI_ECO_FLOW_DIR`, **copy it before proceeding**:
+```bash
+cp <BASE_DIR>/data/<tag>_find_equivalent_nets_raw*.rpt <AI_ECO_FLOW_DIR>/
+```
+
+**Do NOT proceed to Step 3 if any submitted run's raw rpt is absent from `AI_ECO_FLOW_DIR`.** A missing file means either the copy was skipped or the run did not complete — investigate before continuing.
 
 **MANDATORY: Retries MUST be attempted before fallback.** Do NOT skip straight to Stage Fallback or grep fallback when FM returns No Equivalent Nets or FM-036. The retry strategies below are NOT optional — they must be executed in order. Only after all retries are exhausted may fallback be applied.
 
