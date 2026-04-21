@@ -46,23 +46,19 @@ python3 script/genie_cli.py \
 ```
 Read `<fenets_tag>` from CLI output.
 
-**B2. Block — single Bash call that waits in-shell (no repeated tool calls):**
+**B2. Poll every 5 minutes with individual Bash tool calls** (keeps main session responsive and showing progress):
 ```bash
-# ONE tool call — shell loops internally, zero Claude tool calls consumed while waiting
-timeout 3600 bash -c '
-  F1="<REF_DIR>/rpts/FmEqvPreEcoSynthesizeVsPreEcoSynRtl/find_equivalent_nets_<fenets_tag>.txt"
-  F2="<REF_DIR>/rpts/FmEqvPreEcoPrePlaceVsPreEcoSynthesize/find_equivalent_nets_<fenets_tag>.txt"
-  F3="<REF_DIR>/rpts/FmEqvPreEcoRouteVsPreEcoPrePlace/find_equivalent_nets_<fenets_tag>.txt"
-  while true; do
-    c1=$(grep -c "FIND_EQUIVALENT_NETS_COMPLETE" "$F1" 2>/dev/null || echo 0)
-    c2=$(grep -c "FIND_EQUIVALENT_NETS_COMPLETE" "$F2" 2>/dev/null || echo 0)
-    c3=$(grep -c "FIND_EQUIVALENT_NETS_COMPLETE" "$F3" 2>/dev/null || echo 0)
-    [ "$c1" -ge 1 ] && [ "$c2" -ge 1 ] && [ "$c3" -ge 1 ] && echo "ALL_COMPLETE" && break
-    sleep 120
-  done
-' && echo "FENETS_DONE" || echo "FENETS_TIMEOUT"
+# Each poll = one tool call = one "Running..." update visible in the session
+grep -c "FIND_EQUIVALENT_NETS_COMPLETE" \
+  <REF_DIR>/rpts/FmEqvPreEcoSynthesizeVsPreEcoSynRtl/find_equivalent_nets_<fenets_tag>.txt \
+  <REF_DIR>/rpts/FmEqvPreEcoPrePlaceVsPreEcoSynthesize/find_equivalent_nets_<fenets_tag>.txt \
+  <REF_DIR>/rpts/FmEqvPreEcoRouteVsPreEcoPrePlace/find_equivalent_nets_<fenets_tag>.txt \
+  2>/dev/null || echo "0 0 0"
 ```
-If output is `FENETS_TIMEOUT` — exit and report timeout. Do NOT poll `data/<fenets_tag>_spec`.
+- If all 3 counts = 1 → proceed to B3
+- If not → wait 5 minutes (`sleep 300` in one Bash call) then repeat
+- Max 12 retries (60 min total timeout)
+- Do NOT poll `data/<fenets_tag>_spec` — rpt files are authoritative
 
 **B3. Read:** `cat <BASE_DIR>/data/<fenets_tag>_spec`
 
@@ -90,7 +86,7 @@ ls <AI_ECO_FLOW_DIR>/<fenets_tag>_find_equivalent_nets_raw.rpt
 
 **MANDATORY: Retries MUST be attempted before fallback.** For each failing stage/net:
 
-**Retry submit → block using the same single-Bash-call pattern as B2 (substitute `<retry_tag>`) → read → write and copy retry rpt → analyze → decide next retry**
+**Retry submit → poll using the same 5-min periodic pattern as B2 (substitute `<retry_tag>`) → read → write and copy retry rpt → analyze → decide next retry**
 
 Retry file naming:
 - No-Equiv-Nets retry N: `<retry_tag>_find_equivalent_nets_raw_noequiv_retry<N>.rpt`

@@ -52,17 +52,15 @@ echo "<eco_fm_tag>" > <BASE_DIR>/data/<TAG>_eco_fm_tag_round<ROUND>.tmp
 
 ## STEP D — Block Until Complete
 
-**Single Bash call — shell loops internally, zero Claude tool calls consumed while waiting:**
+**Poll every 5 minutes with individual Bash tool calls** (keeps main session responsive):
 ```bash
-# ONE tool call — waits up to 3 hours (180 min) for FM to complete
-timeout 21600 bash -c '
-  SPEC="<BASE_DIR>/data/<eco_fm_tag>_spec"
-  while true; do
-    grep -q "OVERALL ECO FM RESULT:" "$SPEC" 2>/dev/null && echo "FM_COMPLETE" && break
-    sleep 300
-  done
-' && echo "FM_DONE" || echo "FM_TIMEOUT"
-# timeout = 21600s = 6 hours. PostEco FM with new_logic cells and SVF can take 4-6 hours.
+# Each poll = one tool call = one "Running..." update visible in the session
+grep -c "OVERALL ECO FM RESULT:" <BASE_DIR>/data/<eco_fm_tag>_spec 2>/dev/null || echo 0
+```
+- If count ≥ 1 → FM complete, proceed to STEP E
+- If count = 0 → wait 5 minutes (`sleep 300` in one Bash call) then repeat
+- Max 72 retries (6 hours total timeout)
+- If timeout reached → write `eco_fm_verify.json` with `"status": "TIMEOUT"` and exit
 ```
 
 If output is `FM_TIMEOUT` → write `data/<TAG>_eco_fm_verify.json` with `"status": "TIMEOUT"` and exit. The calling orchestrator handles timeout.

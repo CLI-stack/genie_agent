@@ -152,29 +152,23 @@ If any stage's md5 matches its backup — the ECO was not applied to that stage.
 
 ---
 
-## RULE 13 — Use Single Bash Call for All Blocking Waits
+## RULE 13 — Poll with 5-Minute Bash Tool Calls for Long Waits
 
-**Never poll with repeated Claude tool calls.** Polling inside Claude (grep → sleep → grep → sleep...) consumes 10-30 tool calls per wait cycle, burning context budget. Use a single Bash tool call with an in-shell while loop instead:
+**Use individual Bash tool calls every 5 minutes** for fenets and FM polling. Each tool call = one "Running..." update visible in the main session — this keeps the session responsive and showing progress instead of showing "Sublimating..." for hours.
 
 ```bash
-# CORRECT — ONE tool call, shell loops internally
-timeout <seconds> bash -c '
-  while true; do
-    <check condition> && echo "DONE" && break
-    sleep <interval>
-  done
-' && echo "SUCCESS" || echo "TIMEOUT"
+# CORRECT — one tool call per poll interval (every 5 min)
+grep -c "SENTINEL" <file> 2>/dev/null || echo 0
+# If not complete: sleep 300 (one Bash call), then poll again
 ```
 
 ```bash
-# WRONG — repeated tool calls, each one consumes context
-grep -c "sentinel" file   # tool call 1
-# ... sleep ...
-grep -c "sentinel" file   # tool call 2
-# ... etc. for 20+ calls
+# WRONG — single blocking bash call that runs for 2+ hours
+timeout 7200 bash -c 'while true; do check && break; sleep 300; done'
+# This makes the session show "Sublimating... (2h 7m)" with no visible progress
 ```
 
-Apply this pattern everywhere a wait is needed: fenets completion, FM completion, any job polling.
+**Maximum poll counts:** fenets = 12 polls × 5 min = 60 min max; FM = 72 polls × 5 min = 6 hours max.
 
 ---
 
