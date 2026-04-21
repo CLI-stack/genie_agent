@@ -263,7 +263,7 @@ lines[endmodule_idx:endmodule_idx] = new_lines
 ```python
 rtl_diff = load("<BASE_DIR>/data/<TAG>_eco_rtl_diff.json")
 # Use instance_scope from study JSON entry
-instance_scope = entry["instance_scope"]   # e.g., "ARB/CTRLSW"
+instance_scope = entry["instance_scope"]   # e.g., "<INST_A>/<INST_B>"
 inv_inst_full_path = f"{TILE}/{instance_scope}/{instance_name}"
 ```
 
@@ -623,3 +623,4 @@ TIMING & LOL ESTIMATION  (Synthesize stage structural analysis)
 8. **Polarity rule** — only use Step 4c (inverter) when new_net is an inverted signal (`~source_net`); for DFF or gate new_logic, use 4c-DFF or 4c-GATE respectively — never SKIPPED simply because it is not a simple inversion
 9. **Dependency order** — always insert new_logic cells (Pass 1) before attempting rewires that depend on their output nets (Pass 2); never attempt rewire when new_net is a `n_eco_<jira>_<seq>` that hasn't been inserted yet
 10. **Consistent instance naming across stages** — `eco_<jira>_<seq>` must be the same name in Synthesize, PrePlace, and Route for the same logical change — FM stage-to-stage matching requires identical instance names
+11. **D-input chain naming convention** — DFF D-input intermediate gates use `eco_<jira>_d<seq>` (with `d` prefix) and nets `n_eco_<jira>_d<seq>`. These are distinct from the main ECO cells (`eco_<jira>_001`, `eco_<jira>_002`, etc.) and are always processed in Pass 1 before the DFF itself. The dependency ordering within the chain is guaranteed by `input_from_change` fields set by eco_netlist_studier.

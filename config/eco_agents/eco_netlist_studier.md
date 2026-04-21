@@ -160,6 +160,52 @@ grep -cw "<input_signal>" /tmp/eco_study_<TAG>_Synthesize.v
 ```
 If count = 0 — this input signal is itself a new_logic output from another change. Record the dependency: `input_from_change: <N>`. The applier must insert changes in dependency order.
 
+### 0b-DFF — Process `d_input_gate_chain` for new_logic DFFs (MANDATORY when present)
+
+When a `new_logic` change has `d_input_gate_chain` populated (Step E of rtl_diff_analyzer), process the gate chain BEFORE creating the DFF entry. Each gate in the chain becomes a `new_logic_gate` entry in the study JSON.
+
+**For each gate in `d_input_gate_chain` (in order d001 → d00N):**
+
+1. **Find cell type from PreEco Synthesize netlist:**
+```bash
+zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -E "^[[:space:]]*(NOR3|NOR4|AND2|AND3|AND4|OR2|OR3|INV|MUX2)[A-Z0-9]* [a-z]" | grep "<gate_function>" | head -3
+```
+Use the cell type matching `gate_function` (e.g., `NOR3` → find `NOR3*` cell, `AND4` → `AND4*` cell). If a specific input count is unavailable (e.g., no AND4), nest AND2s instead.
+
+2. **Resolve bit-select signal names:** For inputs like `A[i]`, check if the flat PreEco netlist uses `A_i_` or `A[i]` notation:
+```bash
+grep -cw "A_i_" /tmp/eco_study_<TAG>_Synthesize.v
+```
+Use whichever form exists. Record the resolved flat name.
+
+3. **Verify all input signals exist in PreEco Synthesize:**
+```bash
+grep -cw "<input_signal>" /tmp/eco_study_<TAG>_Synthesize.v
+```
+If any input is `n_eco_<jira>_d<prev>` (output of a previous chain gate) → set `input_from_change: <prev_gate_id>`. If an actual signal is not found → set `d_input_decompose_failed: true` and skip the rest of the chain.
+
+4. **Record as `new_logic_gate` entry** with:
+```json
+{
+  "change_type": "new_logic_gate",
+  "target_register": "<dff_signal>_d<seq>",
+  "instance_scope": "<same_scope_as_DFF>",
+  "cell_type": "<found_cell_type>",
+  "instance_name": "eco_<jira>_d<seq>",
+  "output_net": "n_eco_<jira>_d<seq>",
+  "gate_function": "<NOR3|AND4|OR2|INV|...>",
+  "port_connections": {"<A1>": "<input1>", "<B1>": "<input2>", ..., "<ZN>": "n_eco_<jira>_d<seq>"},
+  "input_from_change": <prev_gate_id_or_null>,
+  "confirmed": true
+}
+```
+
+**After all chain gates are processed**, create the DFF entry with:
+- `port_connections.D = "<d_input_net>"` (from `d_input_gate_chain` last gate output, i.e., `n_eco_<jira>_d<last>`)
+- NOT the placeholder `n_eco_<jira>_001_d`
+
+**If `d_input_decompose_failed: true`:** Still create the DFF entry but set `d_input_net = "SKIPPED_DECOMPOSE_FAILED"` and `confirmed: false` with reason "D-input expression decomposition failed — manual synthesis required". The DFF SKIPPED entry gets flagged in eco_applier for manual attention.
+
 ### 0c — Find suitable cell type from PreEco netlist
 
 **For DFF:**
@@ -183,8 +229,8 @@ zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -E "^[[:space:]]*<CELL_PATTERN
 
 Use the same JIRA-based naming convention as inverter insertions:
 ```
-eco_inst  = eco_<jira>_<seq>      (e.g., eco_9868_001)
-eco_out   = n_eco_<jira>_<seq>    (e.g., n_eco_9868_001)
+eco_inst  = eco_<jira>_<seq>      (e.g., eco_<jira>_001)
+eco_out   = n_eco_<jira>_<seq>    (e.g., n_eco_<jira>_001)
 ```
 Seq counter is per `change_type + target_register` pair — same seq used across all 3 stages for the same logical change.
 
