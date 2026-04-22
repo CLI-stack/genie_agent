@@ -36,6 +36,21 @@ The PreEco study JSON contains an **array** of cells per stage. You MUST process
 
 For each stage key in the PreEco study JSON:
 
+### Step 0 — Detect netlist type (MANDATORY, once per stage before any edits)
+
+After decompressing the stage to a temp file, count the number of module definitions:
+
+```bash
+grep -c "^module " /tmp/eco_apply_<TAG>_<Stage>.v
+```
+
+- Count > 1 → **hierarchical netlist**. Record `netlist_type = hierarchical` for this stage.
+  - `port_declaration` and `port_connection` entries are **MANDATORY** — NEVER skip them.
+  - `no_gate_needed: true` or `flat_net_confirmed: true` flags from the study JSON are **ignored** for hierarchical netlists.
+- Count = 1 → **flat netlist**. `port_promotion` path applies; `port_declaration`/`port_connection` entries may use the flat-net shortcut.
+
+> **Confirmed bug pattern:** eco_applier skipped `port_declaration` and `port_connection` entries with reason "flat netlist" even though the PostEco netlist was hierarchical (many module definitions). Always detect netlist type first, decide after.
+
 ### Step 1 — Check for confirmed entries
 
 Before doing any file I/O, scan the stage array for entries where `"confirmed": true`.
@@ -52,7 +67,7 @@ cp <REF_DIR>/data/PostEco/<Stage>.v.gz \
    <REF_DIR>/data/PostEco/<Stage>.v.gz.bak_<TAG>_round<ROUND>
 ```
 
-Example: `Synthesize.v.gz.bak_20260414021834_round1`, `Synthesize.v.gz.bak_20260414021834_round2`
+Example: `Synthesize.v.gz.bak_<TAG>_round1`, `Synthesize.v.gz.bak_<TAG>_round2`
 
 ### Step 3 — Decompress (once per stage)
 
@@ -231,26 +246,61 @@ inv_inst_full_path = f"{TILE}/{hierarchy_path}/{inv_inst}"
 
 For entries with `change_type: "new_logic_dff"` from the PreEco study JSON:
 
-**Step 1 — Verify all input signals exist in PostEco temp file:**
-```bash
-grep -cw "<clock_net>"  /tmp/eco_apply_<TAG>_<Stage>.v   # must be ≥ 1
-grep -cw "<reset_net>"  /tmp/eco_apply_<TAG>_<Stage>.v   # must be ≥ 1
-grep -cw "<data_net>"   /tmp/eco_apply_<TAG>_<Stage>.v   # must be ≥ 1
-```
-If any input is missing AND it is produced by another `new_logic` entry → process that entry first (respect `input_from_change` dependency). If missing with no dependency → SKIPPED, reason="input signal not found in PostEco".
+**Step 1 — Resolve stage-specific port connections (MANDATORY):**
 
-**Step 2 — Find DFF cell type from PreEco netlist (if not already found in this stage):**
-```bash
-zcat <REF_DIR>/data/PreEco/<Stage>.v.gz | grep -E "^[[:space:]]*(DFF|DFQD|SDFQD)[A-Z0-9]* [a-z]" | head -3
+Check if the study JSON entry has `port_connections_per_stage`:
+```python
+if "port_connections_per_stage" in entry and stage in entry["port_connections_per_stage"]:
+    port_map = entry["port_connections_per_stage"][stage]
+else:
+    # Fallback: use flat port_connections (Synthesize-derived)
+    port_map = entry["port_connections"]
 ```
-Use the cell type recorded in the study JSON (`port_connections` provides the correct port names).
 
-**Step 3 — Build port connection string from study JSON `port_connections`:**
+`port_map` now contains the correct net names for this specific stage (e.g., the clock net may be different in PrePlace vs Synthesize).
+
+**Step 2 — Classify pins and verify nets in PostEco temp file:**
+
+Pins in `port_map` fall into two categories — verify each differently:
+
+**Functional pins** (clock, data, and D-input chain nets — all except output and auxiliary):
+```bash
+grep -cw "<net_from_port_map>" /tmp/eco_apply_<TAG>_<Stage>.v   # must be ≥ 1
+```
+If a net is not found AND it is produced by another `new_logic` entry → process that entry first (`input_from_change` dependency).
+If a net is not found with no dependency → try a P&R alias search:
+```bash
+grep -n "HFSNET\|wrp_\|_buf\b" /tmp/eco_apply_<TAG>_<Stage>.v | grep "<net_root>" | head -5
+```
+If alias found: use it, record `"alias_used": "<found_alias>"` in the applied JSON.
+If no alias found: SKIPPED, reason="functional pin net not found in <Stage> PostEco — manual fix required".
+
+**Auxiliary pins** (scan input, scan enable, and any other non-functional pins):
+The net names in `port_map` were derived from a neighbour DFF in the same scope by eco_netlist_studier. Verify they exist:
+```bash
+grep -cw "<aux_net_from_port_map>" /tmp/eco_apply_<TAG>_<Stage>.v   # must be ≥ 1
+```
+If not found → find an existing DFF of the same cell type in the same module scope in the **PostEco** temp file and read its auxiliary pin values:
+```bash
+grep -A6 "<dff_cell_type>" /tmp/eco_apply_<TAG>_<Stage>.v | grep "\.<aux_pin>" | head -3
+```
+Use that neighbour's net for this auxiliary pin. Record `"aux_pin_from_neighbour": true`.
+If no neighbour DFF found → use the value from the Synthesize entry of `port_connections_per_stage` as a fallback (e.g., a constant). Record the fallback reason.
+
+**Step 3 — Find DFF cell type from PreEco netlist (confirm it exists in this stage):**
+```bash
+zcat <REF_DIR>/data/PreEco/<Stage>.v.gz | grep -m1 "<dff_cell_type>" | head -1
+```
+Confirm the cell type from the study JSON exists in this stage. If a different variant was used in this stage (e.g., lower drive strength), update accordingly.
+
+**Step 4 — Build complete port connection string from `port_map`:**
 ```verilog
   // ECO new_logic_dff insert — TAG=<TAG> JIRA=<JIRA>
-  <cell_type> <instance_name> (.<CK>(<clock_net>), .<D>(<data_net>), .<RN>(<reset_net>), .<Q>(<output_net>));
+  <cell_type> <instance_name> (.<pin1>(<net1>), .<pin2>(<net2>), ...);
 ```
-Use the exact port names from the study JSON `port_connections` map.
+Include **every pin** from `port_map` — functional and auxiliary. Do NOT hardcode any pin name or net name. Do NOT omit auxiliary pins — omitting scan pins leaves them undriven, causing DRC and LEC failures.
+
+> **Confirmed bug pattern:** eco_applier used the Synthesize-derived `port_connections` for all 3 stages. In PrePlace/Route, clock and reset nets had been renamed by P&R. The inserted DFF had wrong net names, causing FM stage-to-stage comparison failure (inserted cell appeared as unmatched in the next-stage comparison).
 
 **Step 4 — Find correct module scope and insert** (same as Step 4c-4 for inverters):
 ```python
@@ -317,6 +367,9 @@ Record: `status=INSERTED`, `change_type=new_logic_gate`, `instance_name`, `inv_i
 
 For entries with `change_type: "port_declaration"` (new input or output port, NOT previously in port list):
 
+> **MANDATORY pre-check:** Confirm `netlist_type` from Step 0. If hierarchical — always apply, regardless of any `flat_net_confirmed` or `no_gate_needed` flags. If flat — use `port_promotion` path (step 4c-PORT_PROMO) instead.
+
+
 **Step 1 — Find module definition line:**
 ```bash
 grep -n "^module <module_name> \|^module <module_name>(" /tmp/eco_apply_<TAG>_<Stage>.v | head -3
@@ -378,11 +431,11 @@ For entries with `change_type: "port_connection"`:
 
 **Read from study JSON entry:**
 ```python
-parent_module    = entry["parent_module"]     # e.g., "ddrss_umccmd_t_umcarb"
-submodule_pattern= entry["submodule_pattern"] # e.g., "ddrss_umccmd_t_umcarbctrlsw"
-instance_name    = entry["instance_name"]     # e.g., "CTRLSW"
-port_name        = entry["port_name"]         # e.g., "NeedFreqAdj"
-net_name         = entry["net_name"]          # e.g., "ARB_FEI_NeedFreqAdj"
+parent_module    = entry["parent_module"]     # full module name of the parent
+submodule_pattern= entry["submodule_pattern"] # grep pattern for the submodule type
+instance_name    = entry["instance_name"]     # instance name inside parent module
+port_name        = entry["port_name"]         # new port being connected
+net_name         = entry["net_name"]          # net to connect to the port
 ```
 
 **Step 1 — Find the instance block in the parent module:**
@@ -552,7 +605,7 @@ Write `data/<TAG>_eco_applied_round<ROUND>.json`. Each stage is an array — one
       "instance_name": "eco_<jira>_<seq>",
       "inv_inst_full_path": "<TILE>/<INST_A>/<INST_B>/eco_<jira>_<seq>",
       "output_net": "n_eco_<jira>_<seq>",
-      "port_connections": {"CK": "<clk>", "D": "<data>", "RN": "<reset>", "Q": "n_eco_<jira>_<seq>"},
+      "port_connections": {"<clk_pin>": "<clk_net>", "<data_pin>": "<data_net>", "<reset_pin>": "<reset_net>", "<q_pin>": "n_eco_<jira>_<seq>"},
       "status": "INSERTED",
       "backup": "<REF_DIR>/data/PostEco/Synthesize.v.gz.bak_<TAG>_round<ROUND>",
       "verified": true
@@ -626,7 +679,7 @@ cp <BASE_DIR>/data/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt <AI_ECO_FLOW_DIR
 ```
 ================================================================================
 STEP 4 — ECO APPLIED  (Round <ROUND>)
-Tag: <TAG>  |  JIRA: DEUMCIPRTL-<JIRA>
+Tag: <TAG>  |  JIRA: <JIRA>
 ================================================================================
 
 ECO Intent (from Step 1 RTL diff):
@@ -745,3 +798,5 @@ TIMING & LOL ESTIMATION  (Synthesize stage structural analysis)
 9. **Dependency order** — always insert new_logic cells (Pass 1) before attempting rewires that depend on their output nets (Pass 2); never attempt rewire when new_net is a `n_eco_<jira>_<seq>` that hasn't been inserted yet
 10. **Consistent instance naming across stages** — `eco_<jira>_<seq>` must be the same name in Synthesize, PrePlace, and Route for the same logical change — FM stage-to-stage matching requires identical instance names
 11. **D-input chain naming convention** — DFF D-input intermediate gates use `eco_<jira>_d<seq>` (with `d` prefix) and nets `n_eco_<jira>_d<seq>`. These are distinct from the main ECO cells (`eco_<jira>_001`, `eco_<jira>_002`, etc.) and are always processed in Pass 1 before the DFF itself. The dependency ordering within the chain is guaranteed by `input_from_change` fields set by eco_netlist_studier.
+12. **Detect netlist type before every stage** — always run `grep -c "^module " <temp_file>` before processing each stage. If count > 1 (hierarchical): `port_declaration` and `port_connection` entries are mandatory and must never be skipped. The `flat_net_confirmed` and `no_gate_needed` flags from the study JSON are only valid for flat netlists.
+13. **Use per-stage port_connections for DFF** — always read `port_connections_per_stage[<Stage>]` from the study JSON when inserting a DFF. Fall back to the flat `port_connections` only if `port_connections_per_stage` is absent. Never assume signal names valid in Synthesize are also present in PrePlace or Route — P&R tools may rename clock, reset, and data nets.

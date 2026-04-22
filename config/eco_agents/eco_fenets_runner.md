@@ -135,9 +135,9 @@ SPEC_SOURCES:
 Example:
 ```
 SPEC_SOURCES:
-  Synthesize: /proj/.../data/20260420201910_spec
+  Synthesize: /proj/.../data/<fenets_tag>_spec
   PrePlace:   FALLBACK
-  Route:      /proj/.../data/20260420202741_spec
+  Route:      /proj/.../data/<fm036_retry1_tag>_spec
 ```
 
 Where `FALLBACK` means no FM results — eco_netlist_studier will use the Stage Fallback method for that stage.

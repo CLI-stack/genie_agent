@@ -97,7 +97,8 @@ If any file is missing — eco_fenets_runner failed. Do NOT continue.
 Full implementation is in `eco_fenets_runner.md`. Key rules for the sub-agent:
 - Validate nets (filter port_promotion/new_port/port_connection types)
 - Do NOT reuse previous run scope — submit fresh if paths differ
-- Retry direction always DEEPER (not shallower)
+- No-Equiv-Nets retry: always DEEPER (not shallower)
+- FM-036 retry: classify first — port-level → strip shallower; internal wire → pivot to target register query
 - Use single Bash blocking call for all polls (no repeated tool calls)
 - Copy all rpts to AI_ECO_FLOW_DIR before exiting
 
@@ -260,6 +261,13 @@ Where `<type>` = `noequiv` or `fm036`, `<N>` = retry number.
      Retry 2 (<noequiv_retry2_tag>): <retry2_net_path> → <FOUND <N> cells / All retries exhausted>
      Outcome        : <Used retry <N> results for <Stage> / Stage fallback applied>
 
+   <If FM-036 pivot to target register was performed:>
+   FM-036 Internal Wire Pivot:
+     Failing net    : <original_net_path> → FM-036 at all hierarchy levels (internal wire)
+     Classification : Internal wire — not a module port, invisible to FM at any depth
+     Pivot query    : <target_register_path> → <FOUND <N> cells / FM-036 again>
+     Outcome        : <Used pivot results — backward cone trace identifies MUX/cell to rewire>
+
    FM Results per Stage:
      [Synthesize] : <N> qualifying cells  (or: No Equiv Nets → retry<N> used / fallback)
      [PrePlace]   : <N> qualifying cells  (or: No Equiv Nets → retry<N> used / fallback)
@@ -381,7 +389,40 @@ If any net returns `Error: Unknown name ... (FM-036)`:
 
 1. **Bus variant already pre-queried** — the rtl_diff_analyzer sends both `X` and `X_0_` upfront, so the result is already in the same run. Check the other variant's result before doing anything else.
 
-2. **Retry find_equivalent_nets with parent hierarchy** — strip one level from the failing net path and submit a new genie_cli.py call:
+1b. **Classify the FM-036 cause BEFORE stripping hierarchy levels:**
+
+   FM-036 has two distinct root causes that require different strategies:
+
+   | Cause | Symptom | Correct Action |
+   |-------|---------|----------------|
+   | **Wrong hierarchy level** — net IS a module port, just queried at wrong depth | FM-036 fires at this level but net exists as a port at another level | Strip/add levels (step 2 below) |
+   | **Internal wire** — net is a submodule-internal wire, NOT a module port | FM-036 fires at ALL hierarchy levels — the net is never exposed in FM's reference namespace | Skip level-stripping; **PIVOT to target register query** (step 2b below) |
+
+   **How to classify — check the RTL diff JSON:**
+   - Read `eco_rtl_diff.json` for this net's `change_type` and `context_line`
+   - If `change_type = "wire_swap"` and the `old_token` is an internal combinational net (not declared as `input`/`output` in any module port list in the RTL) → it is an **internal wire** — pivot to step 2b
+   - Confirm by checking if stripping one level from the net path gives FM-036 too (if so, it's an internal wire, not a hierarchy problem)
+
+2b. **Pivot to target register query (when net is an internal wire):**
+
+   When the failing net is an internal wire inside a submodule (not a port at any hierarchy level), FM will return FM-036 at every depth. Do NOT waste retries stripping levels. Instead:
+
+   - Read `target_register` from `eco_rtl_diff.json` for this `wire_swap` change
+   - Query the **output signal of the target register** — this IS visible to FM as a named RTL signal:
+   ```bash
+   python3 script/genie_cli.py \
+     -i "find equivalent nets at <REF_DIR> for <TILE> netName:<hierarchy_path>/<target_register>" \
+     --execute --xterm
+   ```
+   Where `<hierarchy_path>` is the instance path of the module containing `target_register` (from `hierarchy` field in `eco_rtl_diff.json`).
+
+   **Why this works:** FM's reference namespace exposes the register's output signal (the Q net). The eco_netlist_studier will then trace backward from `<target_register>.D` through the gate-level backward cone to find the actual cell and pin that drives the D input — which is where the internal wire (`old_net`) connects. The backward cone trace (Step 4c in eco_netlist_studier.md) identifies the exact cell to rewire without needing FM to directly name the internal wire.
+
+   Write and copy the raw rpt with the `_fm036_retry<N>` suffix as normal.
+
+   **If the target register pivot also returns FM-036:** try the register name with `_reg` suffix appended, then with a `_0_` bus notation, then apply direct netlist grep (step 3).
+
+2. **Retry find_equivalent_nets with parent hierarchy (for port-level signals only)** — strip one level from the failing net path and submit a new genie_cli.py call:
    ```bash
    # Original failed: <PARENT_INST>/<CHILD_INST>/<net>
    # Retry with:      <PARENT_INST>/<net>
@@ -412,10 +453,11 @@ If any net returns `Error: Unknown name ... (FM-036)`:
    Where N=1 for first retry, N=2 for second, N=3 for third. The `_fm036_retry<N>` suffix distinguishes these from No-Equiv-Nets retries — both can coexist in the same run without ambiguity.
 
    **Retry loop rules:**
-   - Max **3 retries** (`_retry1`, `_retry2`, `_retry3`)
+   - Max **3 retries** (`_retry1`, `_retry2`, `_retry3`) — but only for **port-level signals** (step 2 above). For **internal wires**, use the target register pivot (step 2b) instead — do NOT waste retries stripping levels.
    - Stop early if the net path has no more `/` — there is no parent level left to try
    - Each retry strips one more hierarchy level from the previous attempt's path
    - If any retry returns a valid impl cell+pin → use it and stop retrying. FM gives the exact gate-level cell name and pin, which is more reliable than grep.
+   - **If FM-036 fires at EVERY level after 2 retries:** stop stripping. The net is likely an internal wire — apply step 2b (target register pivot) even if you initially treated it as a port-level signal.
 
 3. **Direct netlist grep** — only if FM retry also fails or times out:
    ```bash

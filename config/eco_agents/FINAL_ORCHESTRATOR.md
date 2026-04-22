@@ -48,7 +48,7 @@ ECO ANALYSIS SUMMARY
 ================================================================================
 Tag         : <TAG>
 Tile        : <TILE>
-JIRA        : DEUMCIPRTL-<JIRA>
+JIRA        : <JIRA>
 TileBuilder : <REF_DIR>
 AI_ECO_DIR  : <AI_ECO_FLOW_DIR>
 Generated   : <YYYY-MM-DD HH:MM:SS>

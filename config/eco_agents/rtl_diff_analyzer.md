@@ -401,7 +401,7 @@ cp <BASE_DIR>/data/<TAG>_eco_step1_rtl_diff.rpt <AI_ECO_FLOW_DIR>/
 ```
 ================================================================================
 STEP 1 — RTL DIFF ANALYSIS
-Tag: <TAG>  |  Tile: <TILE>  |  JIRA: DEUMCIPRTL-<JIRA>
+Tag: <TAG>  |  Tile: <TILE>  |  JIRA: <JIRA>
 ================================================================================
 
 <For each entry in changes[]:>

@@ -119,15 +119,17 @@ Read all entries in `changes[]` and process by type:
 
 **CRITICAL: For hierarchical PostEco netlists, `new_port` and `port_connection` changes are NOT automatically handled by inserting cells. They require explicit port list updates and instance connection additions in the PostEco netlist. Skipping them causes FM elaboration failures.**
 
-**`port_promotion` handling:** When `flat_net_exists: true`, simply verify the net exists in PreEco Synthesize netlist:
+**`port_promotion` handling — FLAT NETLIST ONLY:** Only use `port_promotion` (with `no_gate_needed: true`) when the PostEco netlist is **flat** (single `module` definition — `grep -c "^module " Synthesize.v` = 1). In this case, verify the net exists as a local wire:
 ```bash
 grep -cw "<old_token>" /tmp/eco_study_<TAG>_Synthesize.v
 ```
 If count ≥ 1 → net confirmed in flat netlist. Record in study JSON as:
 ```json
-{"change_type": "port_promotion", "signal": "<old_token>", "flat_net_confirmed": true, "no_gate_needed": true}
+{"change_type": "port_promotion", "signal": "<old_token>", "flat_net_confirmed": true, "no_gate_needed": true, "netlist_type": "flat"}
 ```
-No further processing needed — the net is already accessible in the flat netlist.
+No further processing needed — the net is already accessible in the flat module.
+
+**If the netlist is hierarchical:** Do NOT use `port_promotion`. The net lives inside a submodule — it is NOT directly accessible at the top-level. Use `port_declaration` (step 0g) to add it to the submodule's port list, and `port_connection` (step 0h) to connect it at each level of the hierarchy.
 
 **`and_term` → `new_logic_gate` + `rewire` pair:** An `and_term` change produces TWO entries:
 
@@ -182,6 +184,93 @@ Verify each input signal exists in the PreEco Synthesize netlist:
 grep -cw "<input_signal>" /tmp/eco_study_<TAG>_Synthesize.v
 ```
 If count = 0 — this input signal is itself a new_logic output from another change. Record the dependency: `input_from_change: <N>`. The applier must insert changes in dependency order.
+
+### 0b-STAGE-NETS — Per-Stage Pin Verification for DFF (MANDATORY)
+
+**After identifying the DFF cell type and functional pins from Synthesize**, verify and record the actual net name for **every pin** in **every stage** independently. P&R tools rename clock, reset, data, and scan chain nets between stages — names valid in Synthesize may not exist in PrePlace or Route.
+
+#### Step A — Read the full DFF port map from PreEco Synthesize
+
+Find any existing instance of the chosen DFF cell type in the same module scope in the Synthesize PreEco netlist and read its complete port connection block:
+
+```bash
+awk '/^module <module_name>/{found=1} found && /<dff_cell_type>/{print; for(i=0;i<8;i++){getline;print}; exit}' \
+    /tmp/eco_study_<TAG>_Synthesize.v
+```
+
+Record every pin name and its net value — functional pins (clock, data, output) and auxiliary pins (scan input, scan enable, any others). Do NOT assume which pins exist — read them from the actual instance block.
+
+Classify each pin by type from the port map:
+- **Functional** — clock, data, output-Q: values come from RTL context
+- **Auxiliary** — all other pins (scan input, scan enable, etc.): values come from an existing neighbour DFF in the same scope (see Step C)
+
+#### Step B — For each stage, resolve functional pin net names
+
+For each stage (Synthesize, PrePlace, Route) and for each **functional pin** (clock, data, and any D-input chain output nets):
+
+**Priority 1 — direct name:**
+```bash
+grep -cw "<net_name>" /tmp/eco_study_<TAG>_<Stage>.v
+```
+If count ≥ 1 → use direct name for this stage.
+
+**Priority 2 — P&R alias (only if direct not found):**
+```bash
+grep -n "HFSNET\|wrp_\|_buf\b" /tmp/eco_study_<TAG>_<Stage>.v | grep "<net_root>" | head -5
+```
+If alias found → use alias, record `"alias_reason": "direct net not found — P&R alias used"`.
+
+**If neither found** → `"net_found": false`, record SKIPPED with reason "functional pin net not found in <Stage>".
+
+#### Step C — For each stage, resolve auxiliary pin net names by copying from a neighbour DFF
+
+Auxiliary pins (scan input, scan enable, etc.) connect the ECO DFF into the existing scan chain. The correct values are found by looking at an **existing DFF of the same cell type in the same module scope** in the PreEco netlist for that stage:
+
+```bash
+# Find an existing DFF of the same cell type in the same module scope
+awk '/^module <module_name>/{found=1} found && /<dff_cell_type>/{print; for(i=0;i<6;i++){getline;print}; exit}' \
+    /tmp/eco_study_<TAG>_<Stage>.v
+```
+
+Read the auxiliary pin values from that neighbour DFF instance and use them for the new ECO DFF. This ensures the inserted DFF is wired into the scan chain consistently with its neighbours.
+
+**Special case — Synthesize stage:** In the Synthesize netlist (before scan insertion), auxiliary pins are typically tied to constants (e.g., `1'b0`). Read the neighbour DFF to confirm — do not assume the constant.
+
+**If no neighbour DFF found in the same module scope:** search the parent module scope, then fall back to constants as last resort. Record the fallback reason.
+
+#### Step D — Write `port_connections_per_stage`
+
+Combine functional pins (Step B) and auxiliary pins (Step C) into one map per stage. Use the exact pin names read from the cell's port map — do NOT hardcode any pin name:
+
+```json
+"port_connections_per_stage": {
+  "Synthesize": {
+    "<clk_pin>":  "<clk_net_in_synthesize>",
+    "<data_pin>": "<data_net_in_synthesize>",
+    "<q_pin>":    "<output_net>",
+    "<aux_pin1>": "<aux_net_in_synthesize>",
+    "<aux_pin2>": "<aux_net_in_synthesize>"
+  },
+  "PrePlace": {
+    "<clk_pin>":  "<clk_net_in_preplace>",
+    "<data_pin>": "<data_net_in_preplace>",
+    "<q_pin>":    "<output_net>",
+    "<aux_pin1>": "<neighbour_aux_net_in_preplace>",
+    "<aux_pin2>": "<neighbour_aux_net_in_preplace>"
+  },
+  "Route": {
+    "<clk_pin>":  "<clk_net_in_route>",
+    "<data_pin>": "<data_net_in_route>",
+    "<q_pin>":    "<output_net>",
+    "<aux_pin1>": "<neighbour_aux_net_in_route>",
+    "<aux_pin2>": "<neighbour_aux_net_in_route>"
+  }
+}
+```
+
+**Keep the flat `port_connections` field** (Synthesize values) for backward compatibility — eco_applier reads `port_connections_per_stage[<Stage>]` first and falls back to `port_connections` only if absent.
+
+> **Confirmed pattern from passing ECO:** In Synthesize, auxiliary scan pins were `1'b0` constants. In PrePlace and Route, they connected to actual scan chain nets local to the module. The inserted DFF used neighbour DFF scan pin values in each stage. No hardcoded values were used.
 
 ### 0b-DFF — Process `d_input_gate_chain` for new_logic DFFs (MANDATORY when present)
 
@@ -268,10 +357,10 @@ Seq counter is per `change_type + target_register` pair — same seq used across
   "instance_name": "eco_<jira>_<seq>",
   "output_net": "n_eco_<jira>_<seq>",
   "port_connections": {
-    "CK":  "<clock_net>",
-    "D":   "<data_net_or_expression_output>",
-    "RN":  "<reset_net>",
-    "Q":   "n_eco_<jira>_<seq>"
+    "<clk_pin>":   "<clock_net>",
+    "<data_pin>":  "<data_net_or_expression_output>",
+    "<reset_pin>": "<reset_net>",
+    "<q_pin>":     "n_eco_<jira>_<seq>"
   },
   "input_from_change": <N_or_null>,     // if data input comes from another new_logic change
   "confirmed": true
@@ -303,18 +392,28 @@ For combinational gate:
 For each `new_port` change (new input or output port added to a module):
 
 1. Identify:
-   - `module_name`: the module getting the new port (e.g., `umcsdpintf`)
+   - `module_name`: the module getting the new port (from `module_name` field in change)
    - `signal_name`: the new port signal (`new_token`)
    - `declaration_type`: `"input"` or `"output"` from `context_line`
    - `flat_net_name`: from RTL diff JSON (the net connected to this port in the flat netlist)
-   - `instance_scope`: hierarchy path of this module from tile root (e.g., `FEI/SDPINTF`)
+   - `instance_scope`: hierarchy path of this module from tile root (from `hierarchy` field in RTL diff JSON)
 
-2. Verify in PreEco Synthesize: find `module ddrss_umccmd_t_<module_name>` to confirm module exists:
+2. **Detect PostEco netlist type (MANDATORY — do once, reuse for all port entries):**
    ```bash
-   grep -n "module ddrss_umccmd_t_<module_name>" /tmp/eco_study_<TAG>_Synthesize.v | head -3
+   grep -c "^module " /tmp/eco_study_<TAG>_Synthesize.v
    ```
+   - Count > 1 → **hierarchical netlist** — port_declaration and port_connection entries are ALWAYS `confirmed: true` and MUST be applied. `flat_net_confirmed` and `no_gate_needed` do NOT apply.
+   - Count = 1 → **flat netlist** — use `port_promotion` path (net exists as a wire in the flat module; no explicit port declaration needed in submodule).
 
-3. Record in study JSON:
+3. **If hierarchical (count > 1):** Verify the module exists in the PreEco Synthesize netlist:
+   ```bash
+   grep -n "^module <full_module_name>" /tmp/eco_study_<TAG>_Synthesize.v | head -3
+   ```
+   Set `confirmed: true` regardless of whether the net already exists as a wire. The port list and declaration must be explicitly added.
+
+4. **If flat (count = 1):** The net exists as a wire in the flat module — use `port_promotion` path instead (step 0i). Do NOT create a `port_declaration` entry for a flat netlist.
+
+5. Record in study JSON:
    ```json
    {
      "change_type": "port_declaration",
@@ -323,9 +422,12 @@ For each `new_port` change (new input or output port added to a module):
      "declaration_type": "input|output",
      "flat_net_name": "<from rtl_diff_analyzer flat_net_name>",
      "instance_scope": "<INST_A>/<INST_B>",
+     "netlist_type": "hierarchical",
      "confirmed": true
    }
    ```
+
+> **CRITICAL — confirmed bug pattern:** A hierarchical PostEco netlist (many modules) was mistakenly treated as flat. The studier ran `port_promotion` on Synthesize, found the new signal as a wire, and set `flat_net_confirmed: true, no_gate_needed: true`. The eco_applier then skipped `port_declaration` and `port_connection` entries. This left the new signal unconnected through the module hierarchy → FM "globally unmatched" failure. **Always detect netlist type before deciding how to handle new_port changes.**
 
 ### 0h — Process `port_connection` changes → `port_connection` study entries
 
@@ -333,17 +435,20 @@ For each `port_connection` change (new `.port(net)` added to a module instance):
 
 1. Identify:
    - `parent_module`: the module containing the instance (from `module_name` field in change)
-   - `instance_name`: the instance being connected (from `context_line`, e.g., `CTRLSW`)
-   - `port_name`: the port being connected (from `context_line`, e.g., `NeedFreqAdj`)
-   - `net_name`: the net connected to it (from `context_line`, e.g., `ARB_FEI_NeedFreqAdj`)
+   - `instance_name`: the instance being connected (from `context_line`)
+   - `port_name`: the port being connected (from `context_line`)
+   - `net_name`: the net connected to it (from `context_line`)
    - `submodule_type`: look up what module type `instance_name` is in the parent (grep parent RTL)
 
-2. Verify in PreEco Synthesize: find the instance block:
+2. **Re-use the netlist type detected in step 0g.** If hierarchical: `confirmed: true` always — the instance connection MUST be added explicitly. If flat: not applicable (no submodule instances to connect).
+
+3. Verify in PreEco Synthesize: find the instance block:
    ```bash
    grep -n "<submodule_type_pattern> <instance_name>" /tmp/eco_study_<TAG>_Synthesize.v | head -3
    ```
+   If the instance block is found: `confirmed: true`. If not found: `confirmed: false`, reason="instance block not found in PreEco Synthesize".
 
-3. Record in study JSON:
+4. Record in study JSON:
    ```json
    {
      "change_type": "port_connection",
@@ -352,9 +457,12 @@ For each `port_connection` change (new `.port(net)` added to a module instance):
      "instance_name": "<INST_NAME>",
      "port_name": "<port_being_connected>",
      "net_name": "<net_to_connect>",
+     "netlist_type": "hierarchical",
      "confirmed": true
    }
    ```
+
+> **CRITICAL:** `port_connection` entries in a hierarchical netlist are NEVER optional. Skipping them leaves a signal unconnected through the module port boundary — FM will report it as "globally unmatched".
 
 ### 0i — Process `port_promotion` changes → `port_promotion` study entries
 
@@ -598,6 +706,76 @@ Read the receiving cell's instantiation, find its output net, and repeat forward
 
 **Why this matters:** A cell excluded by backward cone but actually feeding the target register (through a path the backward trace missed) would leave the ECO incomplete — FM would fail. This second pass catches that case before applying the ECO.
 
+### 4c-POLARITY — MUX Select Pin Polarity Check (MANDATORY when confirmed pin is a select pin)
+
+**Purpose:** When a confirmed cell is a MUX and the pin being rewired is the select pin, the gate inserted to drive the new select value must have the correct output polarity. Using the wrong polarity (e.g., AND2 vs NAND2) produces functionally inverted logic — the MUX selects the opposite branch, causing the target register to receive wrong data. FM will fail on the target register in every round regardless of other fixes.
+
+**When to run:** Apply this step after `in_backward_cone: true` is confirmed, when:
+- The cell type is a multiplexer (cell name or type contains `MUX`, or the pin connects to a control/select port — typically a non-data, non-clock, non-enable signal feeding a MUX function)
+- The `change_type` is `wire_swap` and the new_net does not exist in the netlist (so a new gate will be inserted to generate it)
+
+**Step 1 — Read the MUX cell's full port connection block from PreEco Synthesize:**
+```bash
+grep -n "<mux_cell_name>" /tmp/eco_study_<TAG>_Synthesize.v | head -3
+# Read from that line through closing ');'
+```
+Record:
+- Which net is on the data-input pin that maps to "selected when .S=0" → call it `I0_net`
+- Which net is on the data-input pin that maps to "selected when .S=1" → call it `I1_net`
+- The output net
+- The current select net (the `old_net` being replaced)
+
+The truth table for a standard 2-input MUX: `.S=0 → output=I0`, `.S=1 → output=I1`. Confirm by reading the cell type name — naming convention usually implies this (MUX2, CMUX2, etc.). If uncertain, find another instance of the same cell type elsewhere in the netlist and trace I0/I1/S/Z.
+
+**Step 2 — Read the RTL expression for the target register from `eco_rtl_diff.json`:**
+
+The RTL diff JSON has a `context_line` field for the `wire_swap` change. Parse it:
+```
+<register> <= (<condition>) ? <branch_true> : <branch_false>
+```
+- `branch_true` — value selected when condition is logically true (1)
+- `branch_false` — value selected when condition is logically false (0)
+
+**Step 3 — Match RTL branches to MUX inputs:**
+
+Determine which PreEco net (`I0_net` or `I1_net`) drives `branch_true` and which drives `branch_false`. This is done by tracing the driver of each:
+```bash
+# Find what drives I0_net
+grep -n "( <I0_net> )" /tmp/eco_study_<TAG>_Synthesize.v | head -5
+# Find what drives I1_net
+grep -n "( <I1_net> )" /tmp/eco_study_<TAG>_Synthesize.v | head -5
+```
+Match the signal semantics from the RTL expression to the PreEco nets.
+
+**Step 4 — Determine required select polarity:**
+
+| RTL branch_true maps to | Required .S to select branch_true | Gate function for new select |
+|------------------------|----------------------------------|------------------------------|
+| `I1_net` | `.S = 1` when condition is true | **Non-inverting**: AND2, OR2, etc. (implements `condition`) |
+| `I0_net` | `.S = 0` when condition is true | **Inverting**: NAND2, NOR2, INV, etc. (implements `~condition`) |
+
+**Why:** `.S=1 → I1`, so if branch_true should come from I1, the select must be 1 (true) when the condition is true — non-inverting gate. If branch_true comes from I0, select must be 0 (false) when condition is true — inverting gate.
+
+**Step 5 — Record polarity decision in study JSON:**
+
+Add to the `wire_swap` entry:
+```json
+"mux_select_polarity": {
+  "i0_net": "<net_on_I0_pin>",
+  "i1_net": "<net_on_I1_pin>",
+  "branch_true_maps_to": "I0|I1",
+  "required_select_polarity": "inverting|non-inverting",
+  "gate_function_for_new_select": "<AND2|NAND2|OR2|NOR2|...>",
+  "reasoning": "<one sentence: e.g. 'branch_true maps to I1 → .S must be 1 when condition is true → non-inverting AND2'>"
+}
+```
+
+Also update the associated `new_logic_gate` entry's `gate_function` field to match `gate_function_for_new_select`.
+
+> **Confirmed bug pattern:** A MUX select was rewired using an inverting gate when a non-inverting gate was required (or vice versa). The RTL condition was read literally to determine the gate function, without checking which MUX input (I0 or I1) carried the true-branch value. The resulting select polarity was inverted — the MUX selected the wrong input in every cycle, and the target register failed FM in every round regardless of other fixes.
+
+---
+
 ### 4d. Structural Analysis — Timing & LOL Estimation
 
 **Only on Synthesize stage** (most logical, pre-P&R transformations). For each confirmed cell, compare the driver structure of `old_net` vs `new_net` in the PreEco netlist and make an engineering estimation of timing and LOL impact.
@@ -827,7 +1005,12 @@ Write `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` (always use the full absolut
       "cell_type": "<DFF_cell_type>",
       "instance_name": "eco_<jira>_<seq>",
       "output_net": "n_eco_<jira>_<seq>",
-      "port_connections": {"CK": "<clk_net>", "D": "<data_net>", "RN": "<reset_net>", "Q": "n_eco_<jira>_<seq>"},
+      "port_connections": {"<clk_pin>": "<clk_net_synthesize>", "<data_pin>": "<data_net_synthesize>", "<q_pin>": "n_eco_<jira>_<seq>", "<aux_pin1>": "<aux_net_synthesize>", "<aux_pin2>": "<aux_net_synthesize>"},
+      "port_connections_per_stage": {
+        "Synthesize": {"<clk_pin>": "<clk_net_synthesize>", "<data_pin>": "<data_net_synthesize>", "<q_pin>": "n_eco_<jira>_<seq>", "<aux_pin1>": "<aux_net_synthesize>",    "<aux_pin2>": "<aux_net_synthesize>"},
+        "PrePlace":   {"<clk_pin>": "<clk_net_preplace>",   "<data_pin>": "<data_net_preplace>",   "<q_pin>": "n_eco_<jira>_<seq>", "<aux_pin1>": "<neighbour_aux_preplace>","<aux_pin2>": "<neighbour_aux_preplace>"},
+        "Route":      {"<clk_pin>": "<clk_net_route>",      "<data_pin>": "<data_net_route>",      "<q_pin>": "n_eco_<jira>_<seq>", "<aux_pin1>": "<neighbour_aux_route>",   "<aux_pin2>": "<neighbour_aux_route>"}
+      },
       "input_from_change": null,
       "confirmed": true
     },
@@ -961,6 +1144,14 @@ ECO Context (from Step 1 RTL diff):
                  CONFIRMED EXCLUDED — terminates at <actual_destination>, not target>
     Decision  : <"Cell upgraded to CONFIRMED — added to ECO qualifying list" /
                  "Exclusion verified by 2nd iteration — cell correctly excluded">
+
+  <If cell is a MUX and pin is the select pin (wire_swap with new_logic_gate):>
+  MUX Polarity Check (Step 4c-POLARITY):
+    I0 net    : <net_on_I0_pin>  → selects when .S=0
+    I1 net    : <net_on_I1_pin>  → selects when .S=1
+    RTL true branch → <I0|I1>
+    Required gate : <AND2|NAND2|OR2|NOR2|...>  (<inverting|non-inverting>)
+    Reasoning : <one sentence explanation>
 
   Notes     : <any additional notes, e.g. HFS mapping explanation>
 
