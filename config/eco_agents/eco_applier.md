@@ -15,26 +15,13 @@ The PreEco study JSON may contain entries of multiple change types. Process in t
 3. **Pass 3 — port_connection** (`port_connection`): add `.port(net)` connections to module instance blocks
 4. **Pass 4 — rewire** (`rewire`): change pin connections on existing cells
 
-**Why this order:**
-- Port declarations must exist before connections reference them
-- New_logic cells must exist before rewires reference their output nets
-- Rewires come last — they may depend on both new cells AND new port connections
+**Why this order:** Port declarations must exist before connections reference them. New_logic cells must exist before rewires reference their output nets. Rewires come last — they may depend on both new cells AND new port connections.
 
----
-
-## CRITICAL: One Decompress/Recompress Per Stage
-
-The PreEco study JSON contains an **array** of cells per stage. You MUST process ALL entries for a stage within a single decompress/recompress cycle — do NOT decompress, edit, and recompress per cell. The correct flow is:
-
-1. **Once per stage**: backup → decompress to temp file
-2. **For each confirmed cell**: find cell → verify → apply (all in the same temp file)
-3. **Once per stage**: recompress from temp → verify all → cleanup
+**ONE decompress per stage** — decompress once, apply ALL confirmed cells to the same temp file, then recompress once. Do NOT decompress/recompress per cell.
 
 ---
 
 ## Process Per Stage (Synthesize, PrePlace, Route)
-
-For each stage key in the PreEco study JSON:
 
 ### Step 0 — Detect netlist type (MANDATORY, once per stage before any edits)
 
@@ -49,7 +36,7 @@ grep -c "^module " /tmp/eco_apply_<TAG>_<Stage>.v
   - `no_gate_needed: true` or `flat_net_confirmed: true` flags from the study JSON are **ignored** for hierarchical netlists.
 - Count = 1 → **flat netlist**. `port_promotion` path applies; `port_declaration`/`port_connection` entries may use the flat-net shortcut.
 
-> **Confirmed bug pattern:** eco_applier skipped `port_declaration` and `port_connection` entries with reason "flat netlist" even though the PostEco netlist was hierarchical (many module definitions). Always detect netlist type first, decide after.
+> **This rule prevents:** skipping `port_declaration` and `port_connection` entries with reason "flat netlist" when the PostEco netlist is actually hierarchical. Always detect netlist type first, decide after.
 
 ### Step 1 — Check for confirmed entries
 
@@ -60,7 +47,7 @@ Before doing any file I/O, scan the stage array for entries where `"confirmed": 
 
 ### Step 2 — Backup (once per stage)
 
-Include the round number in the backup name so each round has its own backup. This allows reverting to the correct pre-round state when the fixer loop retries:
+Include the round number in the backup name so each round has its own backup:
 
 ```bash
 cp <REF_DIR>/data/PostEco/<Stage>.v.gz \
@@ -82,12 +69,10 @@ For each entry in the stage array where `"confirmed": true`, perform steps 4a–
 #### 4a — Detect change type
 
 **CRITICAL — Which `new_net` value to use:**
-- If `new_net_alias` is **null** in the study JSON → use `new_net` (direct signal name) for all checks and rewires
-- If `new_net_alias` is **non-null** in the study JSON → use `new_net_alias` (HFS alias) for all checks and rewires instead of `new_net`
+- If `new_net_alias` is **null** → use `new_net` (direct signal name) for all checks and rewires
+- If `new_net_alias` is **non-null** → use `new_net_alias` (HFS alias) instead of `new_net`
 
-In practice: if the netlist studier followed Priority 1 correctly, `new_net_alias` will always be null and you use the direct `new_net`. `new_net_alias` is only set when Priority 1 failed (direct name absent) and Priority 2 found an HFS alias.
-
-Check if the effective `new_net` (direct or alias per above) exists in the PostEco temp file:
+Check if the effective `new_net` exists in the PostEco temp file:
 
 ```bash
 grep -cw "<effective_new_net>" /tmp/eco_apply_<TAG>_<Stage>.v
@@ -129,10 +114,9 @@ zcat <REF_DIR>/data/PreEco/<Stage>.v.gz | grep -m 5 "INV" | grep -v "//" | grep 
 
 Pattern explanation:
 - `^[[:space:]]*INV[A-Z0-9]+` — line starts with optional whitespace then `INV` followed by uppercase/digits (cell type name)
-- ` [a-z]` — followed by a space then lowercase letter (start of instance name, which is typically lowercase in synthesis netlists)
+- ` [a-z]` — followed by a space then lowercase letter (start of instance name)
 - `grep -v "//"` — exclude comments
 
-Extract the cell type from the first field of the matching line:
 ```bash
 cell_type=$(echo "<matched_line>" | awk '{print $1}')
 ```
@@ -169,33 +153,11 @@ PrePlace:   old=<old_signal_A>, new=~<new_signal_A> → eco_<jira>_001  ← same
 Route:      old=<old_signal_A>, new=~<new_signal_A> → eco_<jira>_001  ← same!
 ```
 
-**Example — two distinct changes:**
-```
-Change A: old=<old_signal_A>, new=~<new_signal_A> → eco_<jira>_001 (all stages)
-Change B: old=<old_signal_B>, new=~<new_signal_B> → eco_<jira>_002 (all stages)
-```
-
 This ensures consistent naming across stages for FM stage-to-stage matching.
 
 **Step 4c-4: Insert inverter instantiation**
 
-Find the correct module scope — the inverter must go inside the **same module that contains the target cell**, not the last `endmodule` in the file (which may belong to a different module).
-
-```bash
-# Step 1: Find the target cell's line number
-cell_line=$(grep -n "<cell_name>" /tmp/eco_apply_<TAG>_<Stage>.v | head -1 | cut -d: -f1)
-
-# Step 2: Find the next endmodule AFTER the target cell's line
-endmodule_line=$(awk -v start=$cell_line 'NR > start && /endmodule/ {print NR; exit}' \
-                 /tmp/eco_apply_<TAG>_<Stage>.v)
-```
-
-Insert the new cell instantiation **one line before** that `endmodule`:
-
-```verilog
-  // ECO new_logic insert — TAG=<TAG>
-  <CellType> <inv_inst> (.I(<source_net>), .ZN(<inv_out>));
-```
+Find the correct module scope — the inverter must go inside the **same module that contains the target cell**, not the last `endmodule` in the file.
 
 Use Python to insert at the correct line number:
 ```python
@@ -226,16 +188,13 @@ To:   .<pin>(<inv_out>)
 
 Record: status=INSERTED, change_type=new_logic, inv_inst=`<inv_inst>`, inv_out=`<inv_out>`, source_net=`<source_net>`, cell_type=`<CellType>`.
 
-Also record `inv_inst_full_path` — the full hierarchy path needed for the SVF `-instance` entry.
-
-Read the hierarchy from `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json` — the `nets_to_query` array has a `hierarchy` field (list of instance names from tile root to declaring module):
+Also record `inv_inst_full_path` — the full hierarchy path needed for the SVF `-instance` entry:
 
 ```python
 rtl_diff = load("<BASE_DIR>/data/<TAG>_eco_rtl_diff.json")
 # Find the entry matching old_net
 hierarchy = next(n['hierarchy'] for n in rtl_diff['nets_to_query']
                  if n['net_path'].endswith(old_net) or old_net in n['net_path'])
-# hierarchy = ["<INST_A>", "<INST_B>"]
 hierarchy_path = "/".join(hierarchy)   # "<INST_A>/<INST_B>"
 
 inv_inst_full_path = f"{TILE}/{hierarchy_path}/{inv_inst}"
@@ -248,7 +207,6 @@ For entries with `change_type: "new_logic_dff"` from the PreEco study JSON:
 
 **Step 1 — Resolve stage-specific port connections (MANDATORY):**
 
-Check if the study JSON entry has `port_connections_per_stage`:
 ```python
 if "port_connections_per_stage" in entry and stage in entry["port_connections_per_stage"]:
     port_map = entry["port_connections_per_stage"][stage]
@@ -259,9 +217,9 @@ else:
 
 `port_map` now contains the correct net names for this specific stage (e.g., the clock net may be different in PrePlace vs Synthesize).
 
-**Step 2 — Classify pins and verify nets in PostEco temp file:**
+> **This rule prevents:** using the Synthesize-derived `port_connections` for all 3 stages. In PrePlace/Route, clock and reset nets may be renamed by P&R tools, causing the inserted DFF to appear unmatched in FM stage-to-stage comparison.
 
-Pins in `port_map` fall into two categories — verify each differently:
+**Step 2 — Classify pins and verify nets in PostEco temp file:**
 
 **Functional pins** (clock, data, and D-input chain nets — all except output and auxiliary):
 ```bash
@@ -270,39 +228,38 @@ grep -cw "<net_from_port_map>" /tmp/eco_apply_<TAG>_<Stage>.v   # must be ≥ 1
 If a net is not found AND it is produced by another `new_logic` entry → process that entry first (`input_from_change` dependency).
 If a net is not found with no dependency → try a P&R alias search:
 ```bash
-grep -n "HFSNET\|wrp_\|_buf\b" /tmp/eco_apply_<TAG>_<Stage>.v | grep "<net_root>" | head -5
+grep -n "<net_root>" /tmp/eco_apply_<TAG>_<Stage>.v | \
+  grep -v "^\s*\(wire\|input\|output\|reg\)" | head -5
 ```
 If alias found: use it, record `"alias_used": "<found_alias>"` in the applied JSON.
 If no alias found: SKIPPED, reason="functional pin net not found in <Stage> PostEco — manual fix required".
 
 **Auxiliary pins** (scan input, scan enable, and any other non-functional pins):
-The net names in `port_map` were derived from a neighbour DFF in the same scope by eco_netlist_studier. Verify they exist:
+The net names in `port_map` were derived from a neighbour DFF in the same scope. Verify they exist:
 ```bash
 grep -cw "<aux_net_from_port_map>" /tmp/eco_apply_<TAG>_<Stage>.v   # must be ≥ 1
 ```
-If not found → find an existing DFF of the same cell type in the same module scope in the **PostEco** temp file and read its auxiliary pin values:
+If not found → find an existing DFF of the same cell type in the same module scope in the **PostEco** temp file:
 ```bash
 grep -A6 "<dff_cell_type>" /tmp/eco_apply_<TAG>_<Stage>.v | grep "\.<aux_pin>" | head -3
 ```
 Use that neighbour's net for this auxiliary pin. Record `"aux_pin_from_neighbour": true`.
-If no neighbour DFF found → use the value from the Synthesize entry of `port_connections_per_stage` as a fallback (e.g., a constant). Record the fallback reason.
+If no neighbour DFF found → use the value from the Synthesize entry of `port_connections_per_stage` as a fallback. Record the fallback reason.
 
 **Step 3 — Find DFF cell type from PreEco netlist (confirm it exists in this stage):**
 ```bash
 zcat <REF_DIR>/data/PreEco/<Stage>.v.gz | grep -m1 "<dff_cell_type>" | head -1
 ```
-Confirm the cell type from the study JSON exists in this stage. If a different variant was used in this stage (e.g., lower drive strength), update accordingly.
+Confirm the cell type from the study JSON exists in this stage. If a different variant was used (e.g., lower drive strength), update accordingly.
 
-**Step 4 — Build complete port connection string from `port_map`:**
+**Step 4 — Build complete port connection string from `port_map` and insert:**
 ```verilog
   // ECO new_logic_dff insert — TAG=<TAG> JIRA=<JIRA>
   <cell_type> <instance_name> (.<pin1>(<net1>), .<pin2>(<net2>), ...);
 ```
 Include **every pin** from `port_map` — functional and auxiliary. Do NOT hardcode any pin name or net name. Do NOT omit auxiliary pins — omitting scan pins leaves them undriven, causing DRC and LEC failures.
 
-> **Confirmed bug pattern:** eco_applier used the Synthesize-derived `port_connections` for all 3 stages. In PrePlace/Route, clock and reset nets had been renamed by P&R. The inserted DFF had wrong net names, causing FM stage-to-stage comparison failure (inserted cell appeared as unmatched in the next-stage comparison).
-
-**Step 4 — Find correct module scope and insert** (same as Step 4c-4 for inverters):
+Find correct module scope and insert (same pattern as Step 4c-4 for inverters):
 ```python
 cell_line_idx = next(i for i, l in enumerate(lines) if '<any_existing_cell_in_same_scope>' in l)
 endmodule_idx = next(i for i in range(cell_line_idx, len(lines)) if 'endmodule' in lines[i])
@@ -313,8 +270,6 @@ lines[endmodule_idx:endmodule_idx] = new_lines
 
 **Step 5 — Compute `inv_inst_full_path`** (same formula as inverter — needed by SVF updater):
 ```python
-rtl_diff = load("<BASE_DIR>/data/<TAG>_eco_rtl_diff.json")
-# Use instance_scope from study JSON entry
 instance_scope = entry["instance_scope"]   # e.g., "<INST_A>/<INST_B>"
 inv_inst_full_path = f"{TILE}/{instance_scope}/{instance_name}"
 ```
@@ -338,7 +293,6 @@ If any input is a new_logic output (`n_eco_<jira>_<seq>`) — verify that new_lo
 
 **Step 2 — Find gate cell type from PreEco netlist matching `gate_function`:**
 ```bash
-# For NAND2: grep for ND2 or NAND2
 zcat <REF_DIR>/data/PreEco/<Stage>.v.gz | grep -E "^[[:space:]]*(NAND2|ND2|NR2|NOR2|AND2|OR2)[A-Z0-9]* [a-z]" | head -3
 ```
 Use the `cell_type` from the study JSON `port_connections`.
@@ -367,8 +321,7 @@ Record: `status=INSERTED`, `change_type=new_logic_gate`, `instance_name`, `inv_i
 
 For entries with `change_type: "port_declaration"` (new input or output port, NOT previously in port list):
 
-> **MANDATORY pre-check:** Confirm `netlist_type` from Step 0. If hierarchical — always apply, regardless of any `flat_net_confirmed` or `no_gate_needed` flags. If flat — use `port_promotion` path (step 4c-PORT_PROMO) instead.
-
+> **MANDATORY pre-check:** Confirm `netlist_type` from Step 0. If hierarchical — always apply, regardless of any `flat_net_confirmed` or `no_gate_needed` flags. If flat — use `port_promotion` path instead.
 
 **Step 1 — Find module definition line:**
 ```bash
@@ -380,7 +333,6 @@ grep -n "^module <module_name> \|^module <module_name>(" /tmp/eco_apply_<TAG>_<S
 ```python
 mod_idx = next(i for i, l in enumerate(lines) if 'module <module_name>' in l)
 # Find the closing ');' of the port list — may be many lines after 'module' line
-# The port list ends at the FIRST standalone ');' after the module declaration
 close_idx = next(
     i for i in range(mod_idx + 1, len(lines))
     if lines[i].strip() in (');', ') ;', ');  // end of port list')
@@ -400,28 +352,59 @@ Record: `status=APPLIED`, `change_type=port_declaration`.
 
 ---
 
+#### Shared — Find Module Boundary
+
+The following procedure is used identically by PORT_PROMO and PORT_CONN. Apply it as Step 1 in each:
+
+```python
+# Find start: exact module name match (full line, not substring)
+mod_idx = next(
+    i for i, l in enumerate(lines)
+    if re.match(rf'^module\s+{re.escape(module_name)}\s*[(\s]', l)
+)
+
+# Find end: first 'endmodule' AFTER mod_idx
+endmodule_idx = next(
+    i for i in range(mod_idx + 1, len(lines))
+    if lines[i].strip() == 'endmodule'
+)
+```
+
+**CRITICAL — exact module name match:** Use `^module\s+<name>\s*[(\s]` — anchored at start of line, requiring whitespace or `(` after the module name. This prevents `<module_name>` from matching `<module_name>_submodule` or `<module_name>_variant`.
+
+**CRITICAL — endmodule boundary:** All subsequent steps MUST only search and replace within `lines[mod_idx:endmodule_idx]`. Never search the entire file — sibling modules may have identical wire names in completely different contexts, causing mass failures across unrelated module variants.
+
+---
+
 #### 4c-PORT_PROMO — port_promotion path (Pass 2)
 
 For entries with `change_type: "port_promotion"` (signal was `reg`, now promoted to `output reg`):
 
 **The signal is ALREADY in the module port list — do NOT add it again.**
 
-**Step 1 — Find and change the declaration keyword only:**
+**Step 1 — Apply the Find Module Boundary procedure above.**
+
+**Step 2 — Change the declaration keyword within the module boundary only:**
 ```python
-# Find 'wire <signal_name>' in module body and change to 'output'
-for i, line in enumerate(lines[mod_idx:], mod_idx):
-    if f'wire {signal_name}' in line and ';' in line:
-        lines[i] = line.replace('wire ', 'output ')
+for i in range(mod_idx, endmodule_idx):
+    line = lines[i]
+    if re.search(rf'\b(wire|reg)\s+{re.escape(signal_name)}\s*;', line):
+        lines[i] = re.sub(rf'\b(wire|reg)\b', 'output', line, count=1)
         break
 ```
 
-**Step 2 — Verify:** `grep -c "output.*<signal_name>"` in module scope — must ≥ 1.
+Use `re.sub` with word-boundary `\b` — do NOT use plain `str.replace('wire ', 'output ')` which would match any occurrence of "wire" in the line, including within net names.
 
-Record: `status=APPLIED`, `change_type=port_promotion`.
+**Step 3 — Verify within module boundary:**
+```python
+scope = lines[mod_idx:endmodule_idx]
+assert any(f'output' in l and signal_name in l for l in scope), \
+    f"port_promotion failed: 'output {signal_name}' not found in {module_name}"
+```
 
-**Step 4 — Verify:** `grep -c "<signal_name>" /tmp/eco_apply_<TAG>_<Stage>.v` in the module scope — must be ≥ 1 in port list AND ≥ 1 as declaration.
+Record: `status=APPLIED`, `change_type=port_promotion`, `signal_name`, `module_name`.
 
-Record: `status=APPLIED`, `change_type=port_declaration|port_promotion`, `signal_name`, `module_name`.
+> **This rule prevents:** applying `replace('wire ', 'output ')` across the entire file without stopping at `endmodule`. In a netlist with many module variants sharing the same internal wire name, this corrupts every matching module.
 
 ---
 
@@ -438,29 +421,60 @@ port_name        = entry["port_name"]         # new port being connected
 net_name         = entry["net_name"]          # net to connect to the port
 ```
 
-**Step 1 — Find the instance block in the parent module:**
+**Step 1 — Apply the Find Module Boundary procedure above** (using `parent_module` as `module_name`). Variables become `parent_mod_idx` and `parent_endmodule_idx`.
+
+**Step 2 — Find the instance declaration line within the parent module:**
+```python
+inst_line = next(
+    (i for i in range(parent_mod_idx, parent_endmodule_idx)
+     if re.search(rf'\b{re.escape(submodule_pattern)}\s+{re.escape(instance_name)}\b', lines[i])),
+    None
+)
+if inst_line is None:
+    # SKIPPED: instance not found in parent module scope
+```
+
+**Step 3 — Find the TRUE closing `);` using parenthesis depth tracking:**
+
+Do NOT use simple string pattern matching on `);` — a module instance block may span many lines and contain nested expressions with their own parentheses. Track depth:
+
+```python
+depth = 0
+close_idx = None
+for i in range(inst_line, parent_endmodule_idx):
+    for ch in lines[i]:
+        if ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+            if depth == 0:
+                close_idx = i
+                break
+    if close_idx is not None:
+        break
+
+if close_idx is None:
+    # SKIPPED: could not find matching closing ')' — malformed instance block
+```
+
+> **This rule prevents:** a simple `);` pattern matching a mid-block line like `.last_port( <net> ) ) ;` (which has `))` closing both the port value and the instance) and inserting the new connection at the wrong position, corrupting the port list.
+
+**Step 4 — Insert new port connection at the close line:**
+
+```python
+close_line = lines[close_idx]
+last_paren = close_line.rfind(')')
+new_conn = f', .{port_name}( {net_name} )'
+lines[close_idx] = close_line[:last_paren] + new_conn + close_line[last_paren:]
+```
+
+**Step 5 — Verify within parent module boundary:**
 ```bash
-grep -n "<submodule_pattern> <instance_name>" /tmp/eco_apply_<TAG>_<Stage>.v | head -5
+grep -c ".{port_name}( {net_name} )" /tmp/eco_apply_<TAG>_<Stage>.v
+# Must = 1
 ```
 
-**Step 2 — Find the closing `);` of the instance:**
-```python
-inst_line = grep result line number
-# Read forward from inst_line until first standalone ');'
-close_idx = next(i for i in range(inst_line, len(lines))
-                 if lines[i].strip() in (');', ') ;'))
-```
-
-**Step 3 — Insert the new port connection before the closing `);`:**
-```python
-# Replace ');' with ', .<port_name>( <net_name> ) );'
-lines[close_idx] = lines[close_idx].replace(');',
-    f', .<port_name>( <net_name> ) );')
-```
-
-**Step 4 — Verify:** `grep -c ".<port_name>( <net_name> )"` in the instance block — must = 1.
-
-**Step 5 — If `net_name` doesn't exist in the stage as a wire/signal** (not yet declared), add a wire declaration in the parent module scope before the instance:
+**Step 6 — If `net_name` doesn't exist as a wire/signal in the parent module**, add a wire declaration inside the parent module scope (after the module header, before the first instance):
 ```verilog
   wire  <net_name> ;
 ```
@@ -468,14 +482,6 @@ lines[close_idx] = lines[close_idx].replace(');',
 Record: `status=APPLIED`, `change_type=port_connection`, `port_name`, `net_name`, `instance_name`.
 
 ---
-
-#### 4d — Find the cell in PostEco (rewire path only)
-
-Already done in 4b. For new_logic, cell finding is part of 4c-5.
-
-#### 4e — Move to next confirmed cell
-
-Repeat 4a–4c/4d for every remaining confirmed cell in this stage array.
 
 ### Step 5 — Recompress (once per stage, after ALL cells processed)
 
@@ -485,11 +491,10 @@ gzip -c /tmp/eco_apply_<TAG>_<Stage>.v > <REF_DIR>/data/PostEco/<Stage>.v.gz
 
 ### Step 6 — Verify all applied/inserted cells (once per stage)
 
-**IMPORTANT:** Verification must be **scoped to the specific cell instance block**, not a global file-wide grep. `old_net` may legitimately appear on other cells' pins — a global count would give false VERIFY_FAILED.
+**IMPORTANT:** Verification must be **scoped to the specific cell instance block**, not a global file-wide grep. `old_net` may legitimately appear on other cells' pins.
 
 For each APPLIED cell — verify the specific cell's pin no longer has old_net:
 ```python
-# Decompress and find the specific cell instance block
 zcat <REF_DIR>/data/PostEco/<Stage>.v.gz > /tmp/eco_verify_<TAG>_<Stage>.v
 cell_start = grep -n "<cell_name>" /tmp/eco_verify file → get line number
 # Read from cell_start to next ");" → extract instance block
@@ -509,28 +514,9 @@ Cleanup temp verify file:
 rm -f /tmp/eco_verify_<TAG>_<Stage>.v
 ```
 
-### Step 6b — Structural Comparison: PostEco vs PreEco Netlist
+### Step 6b — Structural comparison (Synthesize only)
 
-After verifying the ECO was applied, compare the **PostEco** cell structure against **PreEco** to confirm the structural change matches the timing/LOL estimation made in Step 3 (eco_netlist_studier).
-
-This is only needed for **Synthesize** stage (most logical representation).
-
-**What to compare:**
-
-1. **Old net driver** (from PreEco) — what drove `old_net` before the ECO
-2. **New net driver** (from PostEco) — what now drives the rewired pin
-
-```bash
-# In PreEco: find old_net driver
-zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -n "( <old_net> )" | head -10
-
-# In PostEco: find new_net driver
-zcat <REF_DIR>/data/PostEco/Synthesize.v.gz | grep -n "( <new_net> )" | head -10
-```
-
-Confirm the driver structures match the estimation from Step 3. If the PostEco structure reveals something unexpected (e.g., new_net is driven by a deeper combinational chain than estimated), **revise the timing estimate** accordingly.
-
-Record the structural comparison result — this feeds into the final RPT and HTML timing/LOL section.
+Compare PreEco vs PostEco driver of old_net vs new_net. Record old driver cell type, fanout, new driver cell type, fanout. Estimate timing impact as BETTER/LIKELY_BETTER/NEUTRAL/RISK/LOAD_RISK/UNCERTAIN with 1-sentence reasoning.
 
 ### Step 7 — Cleanup (once per stage)
 
@@ -550,7 +536,7 @@ rm -f /tmp/eco_apply_<TAG>_<Stage>.v
 | `change_type=new_logic_dff` | DFF insertion path (4c-DFF) — Pass 1 |
 | `change_type=new_logic_gate` | Gate insertion path (4c-GATE) — Pass 1 |
 | `change_type=port_declaration` | Port list + declaration update (4c-PORT_DECL) — Pass 2 |
-| `change_type=port_promotion` | Wire → output promotion (4c-PORT_DECL) — Pass 2 |
+| `change_type=port_promotion` | Wire → output promotion (4c-PORT_PROMO) — Pass 2 |
 | `change_type=port_connection` | Instance port connection addition (4c-PORT_CONN) — Pass 3 |
 | `change_type=rewire` with `new_logic_dependency` | Must be in Pass 4 — after Pass 1 new_logic insertions |
 | Input signal missing in PostEco, `input_from_change` set | Process the dependency change first, then retry |
@@ -582,22 +568,6 @@ Write `data/<TAG>_eco_applied_round<ROUND>.json`. Each stage is an array — one
       "verified": true
     },
     {
-      "cell_name": "<cell_name>",
-      "cell_type": "<CellType>",
-      "pin": "<pin>",
-      "old_net": "<old_signal>",
-      "new_net": "<inv_out>",
-      "change_type": "new_logic",
-      "status": "INSERTED",
-      "instance_name": "eco_<jira>_<seq>",
-      "inv_inst_full_path": "<TILE>/<INST_A>/<INST_B>/eco_<jira>_<seq>",
-      "output_net": "n_eco_<jira>_<seq>",
-      "source_net": "<source_net>",
-      "cell_type": "<CellType>",
-      "backup": "<REF_DIR>/data/PostEco/Synthesize.v.gz.bak_<TAG>_round<ROUND>",
-      "verified": true
-    },
-    {
       "change_type": "new_logic_dff",
       "target_register": "<signal_name>",
       "instance_scope": "<INST_A>/<INST_B>",
@@ -609,29 +579,6 @@ Write `data/<TAG>_eco_applied_round<ROUND>.json`. Each stage is an array — one
       "status": "INSERTED",
       "backup": "<REF_DIR>/data/PostEco/Synthesize.v.gz.bak_<TAG>_round<ROUND>",
       "verified": true
-    },
-    {
-      "change_type": "new_logic_gate",
-      "target_register": "<output_signal>",
-      "instance_scope": "<INST_A>/<INST_B>",
-      "cell_type": "<gate_cell_type>",
-      "instance_name": "eco_<jira>_<seq>",
-      "inv_inst_full_path": "<TILE>/<INST_A>/<INST_B>/eco_<jira>_<seq>",
-      "output_net": "n_eco_<jira>_<seq>",
-      "gate_function": "<NAND2|NOR2|AND2|...>",
-      "port_connections": {"A": "<input1>", "B": "<input2>", "ZN": "n_eco_<jira>_<seq>"},
-      "status": "INSERTED",
-      "backup": "<REF_DIR>/data/PostEco/Synthesize.v.gz.bak_<TAG>_round<ROUND>",
-      "verified": true
-    },
-    {
-      "cell_name": "<cell_name>",
-      "pin": "<pin>",
-      "old_net": "<old_signal>",
-      "new_net": "<new_signal>",
-      "change_type": "rewire",
-      "status": "SKIPPED",
-      "reason": "AMBIGUOUS — 2 occurrences of .<pin>(<old_signal>) found"
     }
   ],
   "PrePlace": [...],
@@ -646,157 +593,19 @@ Write `data/<TAG>_eco_applied_round<ROUND>.json`. Each stage is an array — one
 }
 ```
 
----
-
-## Critical Safety Rules
-
-## Output RPT
-
-**IMPORTANT — RPT is generated by ORCHESTRATOR/ROUND_ORCHESTRATOR, NOT by this agent.**
-
-Your job ends after writing and verifying the JSON. Do NOT attempt to write the RPT — it wastes context budget that should be reserved for netlist editing. The calling orchestrator reads the JSON and generates the RPT.
-
-Your final output is `<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`. After writing it, verify it is non-empty and contains a `summary` field, then exit.
-
----
-
-## RPT Format (for reference — written by ORCHESTRATOR from the JSON)
-
-The calling orchestrator writes `<BASE_DIR>/data/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt` then copies to `AI_ECO_FLOW_DIR`:
-```bash
-cp <BASE_DIR>/data/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt <AI_ECO_FLOW_DIR>/
-```
-```bash
-cp <BASE_DIR>/data/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt <AI_ECO_FLOW_DIR>/
-```
-
-**Key requirement:** For every cell entry, the RPT must clearly state:
-1. **Which RTL block this ECO targets** — the declaring module and instance hierarchy
-2. **Why this ECO fix is being applied** — what RTL change drove it, what the functional intent is
-3. **What was done exactly** — the specific net substitution or cell insertion, with the actual Verilog evidence
-4. **What was decided for SKIPPED entries** — the exact reason, so engineers know what needs manual attention
-
-```
-================================================================================
-STEP 4 — ECO APPLIED  (Round <ROUND>)
-Tag: <TAG>  |  JIRA: <JIRA>
-================================================================================
-
-ECO Intent (from Step 1 RTL diff):
-  RTL Change : <change_type> in <module_name> (<file>)
-  Signal Swap: <old_token>  →  <new_token>
-  Functional : The RTL engineer changed which signal drives <expression_context>.
-               Gate-level netlists must be updated to reflect this — wherever
-               <old_token> feeds the relevant logic in module <module_name>,
-               it must be rewired to <new_token> instead.
-
-Summary: <applied> applied / <inserted> inserted / <skipped> skipped / <verify_failed> verify failed
-Backup : <Stage>.v.gz.bak_<TAG>_round<ROUND>  (created before any edit)
-
-<For each stage (Synthesize, PrePlace, Route):>
-────────────────────────────────────────────────────────────────────────────────
-[<Stage>]
-  RTL Block : <module_name>  (instance path: <TILE>/<INST_A>/.../<INST_B>)
-────────────────────────────────────────────────────────────────────────────────
-
-  Cell [<n>/<total>]  —  <APPLIED / INSERTED / SKIPPED / VERIFY_FAILED>
-  ──────────────────────────────────────────────────────────────────────
-  Cell Name : <cell_name>  (<cell_type>)
-  Block     : <TILE>/<INST_A>/.../<INST_B>/<cell_name>
-  Pin       : <pin>
-
-  Why This Fix:
-    This cell is the gate-level implementation of the <old_token> →
-    <new_token> RTL change in <module_name>. PreEco study (Step 3)
-    confirmed <old_net> on pin <pin>. The ECO rewires this pin so the
-    downstream logic (<output_net> → ...) now receives <new_net> instead,
-    matching the updated RTL intent.
-
-  <If rewire (APPLIED):>
-  Action    : Rewire  .<pin>(<old_net>)  →  .<pin>(<new_net>)
-  Scope     : Changed only within the <cell_name> instance block (line-range
-              scoped — no global substitution performed)
-  Occurrence: <N> occurrence(s) of .<pin>(<old_net>) in PostEco — must be 1
-  Verified  : YES — post-edit grep confirms .<pin>(<old_net>) no longer present
-              in the <cell_name> instance block
-  Backup    : <backup_path>
-
-  <If new_logic (INSERTED):>
-  Action    : Insert new inverter — <old_net> must be inverted to produce
-              <new_net>. Since <new_net> does not exist in this stage's
-              PostEco netlist, a new inverter cell is auto-inserted.
-  Inverter  : <inv_cell_type>  <inv_inst>
-              Input  : <source_net>  (the non-inverted form of <new_net>)
-              Output : <inv_out>  (used as new_net substitute)
-  Full Path : <inv_inst_full_path>
-  Then      : Rewired  .<pin>(<old_net>)  →  .<pin>(<inv_out>)
-  Placement : Inserted inside <module_name> scope (before its endmodule),
-              not at file-level endmodule
-  Verified  : YES — grep confirms <inv_inst> present in recompressed PostEco
-
-  <If SKIPPED:>
-  Action    : No change made to this cell in <Stage>
-  Reason    : <specific reason — e.g.:
-               "AMBIGUOUS — 3 occurrences of .<pin>(<old_net>) found in PostEco;
-                cannot safely scope the replacement without risk of modifying
-                unrelated logic. Manual review required."
-               OR
-               "cell not found in PostEco — may have been optimized away
-                during P&R. No ECO needed for this instance."
-               OR
-               "new_net <new_net> absent from PostEco and source_net
-                <source_net> also not found — cannot insert inverter.
-                Manual fix required.">
-  Engineer  : <what the engineer should do about this, if anything>
-
-  ···  (repeat Cell block for each cell)
-
-<If stage had no confirmed cells from Step 3:>
-  [<Stage>] — SKIPPED (no confirmed cells from PreEco study)
-  Reason    : Step 3 found no qualifying cells for this stage. No PostEco
-              edits were made. Backup was not created.
-
---------------------------------------------------------------------------------
-TIMING & LOL ESTIMATION  (Synthesize stage structural analysis)
---------------------------------------------------------------------------------
-
-  Old Net Driver : <driver_cell_name>  (<driver_cell_type>)  pin=<Z/ZN/Q>
-                   Structure: <e.g. "combinational NAND2, inputs from FF outputs"
-                               OR "FF Q output — direct register launch point">
-  Old Net Fanout : <N> connections in Synthesize PreEco netlist
-
-  New Net Driver : <driver_cell_name>  (<driver_cell_type>)  pin=<Z/ZN/Q>
-                   Structure: <e.g. "FF Q output — direct register launch point"
-                               OR "combinational INV, input from FF Q">
-  New Net Fanout : <N> connections in Synthesize PreEco netlist
-
-  LOL Impact     : <e.g. "new_net is driven directly by FF Q — shallower than
-                           old_net which passes through a combinational chain.
-                           Replacing old_net reduces logic depth at this pin.">
-  Timing Estimate: <BETTER / LIKELY_BETTER / NEUTRAL / RISK / LOAD_RISK / UNCERTAIN>
-  Reasoning      : <1-2 sentences — plain English explanation why timing will
-                    improve, worsen, or stay the same based on the structure>
-
-  PostEco Confirm: <"Structural match confirmed — estimate stands" /
-                    "Revised — PostEco reveals <difference>, estimate updated to <new>">
-
-================================================================================
-```
+**Your final output is `<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`.** After writing it, verify it is non-empty and contains a `summary` field, then exit. Do NOT write the RPT — the calling orchestrator reads the JSON and generates the RPT.
 
 ---
 
 ## Critical Safety Rules
 
-1. **NEVER edit if occurrence count > 1** — ambiguity means you cannot be sure which instance to change
-2. **NEVER do global search-replace** — scope all changes to the specific cell instance block
-3. **ALWAYS backup before decompressing** — one backup per stage, before any edits
-4. **For new_logic: use same instance name across all stages** — consistent naming is required for FM stage-to-stage matching
-5. **ALWAYS verify after recompressing** — confirm old_net count drops to 0 and new cell is present
-6. **ONE decompress per stage** — decompress once, apply ALL confirmed cells, then recompress once
-7. **Keep processing remaining cells if one is SKIPPED** — a SKIPPED cell does not abort the stage
-8. **Polarity rule** — only use Step 4c (inverter) when new_net is an inverted signal (`~source_net`); for DFF or gate new_logic, use 4c-DFF or 4c-GATE respectively — never SKIPPED simply because it is not a simple inversion
-9. **Dependency order** — always insert new_logic cells (Pass 1) before attempting rewires that depend on their output nets (Pass 2); never attempt rewire when new_net is a `n_eco_<jira>_<seq>` that hasn't been inserted yet
-10. **Consistent instance naming across stages** — `eco_<jira>_<seq>` must be the same name in Synthesize, PrePlace, and Route for the same logical change — FM stage-to-stage matching requires identical instance names
-11. **D-input chain naming convention** — DFF D-input intermediate gates use `eco_<jira>_d<seq>` (with `d` prefix) and nets `n_eco_<jira>_d<seq>`. These are distinct from the main ECO cells (`eco_<jira>_001`, `eco_<jira>_002`, etc.) and are always processed in Pass 1 before the DFF itself. The dependency ordering within the chain is guaranteed by `input_from_change` fields set by eco_netlist_studier.
-12. **Detect netlist type before every stage** — always run `grep -c "^module " <temp_file>` before processing each stage. If count > 1 (hierarchical): `port_declaration` and `port_connection` entries are mandatory and must never be skipped. The `flat_net_confirmed` and `no_gate_needed` flags from the study JSON are only valid for flat netlists.
-13. **Use per-stage port_connections for DFF** — always read `port_connections_per_stage[<Stage>]` from the study JSON when inserting a DFF. Fall back to the flat `port_connections` only if `port_connections_per_stage` is absent. Never assume signal names valid in Synthesize are also present in PrePlace or Route — P&R tools may rename clock, reset, and data nets.
+1. **NEVER edit if occurrence count > 1** — ambiguity means you cannot be sure which instance to change; mark SKIPPED + AMBIGUOUS instead
+2. **NEVER do global search-replace** — scope all changes to the specific cell instance block; `old_net` may legitimately appear on other pins
+3. **ALWAYS backup before decompressing** — one backup per stage per round, before any edits; include round number in the backup name
+4. **Consistent instance naming across stages** — `eco_<jira>_<seq>` must be the same name in Synthesize, PrePlace, and Route for the same logical change; FM stage-to-stage matching requires identical instance names; D-input chain gates use `eco_<jira>_d<seq>` (with `d` prefix) and nets `n_eco_<jira>_d<seq>`
+5. **ALWAYS verify after recompressing** — confirm old_net count drops to 0 in the scoped block and new cell is present; global grep gives false results
+6. **Keep processing remaining cells if one is SKIPPED** — a SKIPPED cell does not abort the stage; continue with all remaining confirmed entries
+7. **Polarity rule** — only use Step 4c (inverter) when new_net is an inverted signal (`~source_net`); for DFF or gate new_logic, use 4c-DFF or 4c-GATE respectively — never SKIPPED simply because it is not a simple inversion
+8. **Dependency order** — always insert new_logic cells (Pass 1) before rewires that depend on their output nets (Pass 4); never attempt rewire when new_net is a `n_eco_<jira>_<seq>` that hasn't been inserted yet; `input_from_change` dependencies within D-input chains are guaranteed by eco_netlist_studier
+9. **Use per-stage port_connections for DFF** — always read `port_connections_per_stage[<Stage>]` from the study JSON; fall back to flat `port_connections` only if absent; never assume signal names valid in Synthesize are also present in PrePlace or Route
+10. **Detect netlist type before every stage** — run `grep -c "^module " <temp_file>` before processing; if count > 1 (hierarchical), `port_declaration` and `port_connection` entries are mandatory and `flat_net_confirmed`/`no_gate_needed` flags are ignored

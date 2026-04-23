@@ -75,7 +75,7 @@ For each change record:
 }
 ```
 
-**`instances` field (Gap 2):** If the declaring module has multiple instances in the parent (e.g., two `umcdcqarb` instances `DCQARB0` and `DCQARB1`), list ALL instance names. Step C detects this and Step D generates separate `nets_to_query` entries for each instance. Leave as `null` if only one instance.
+**`instances` field (Gap 2):** If the declaring module has multiple instances in the parent (e.g., two `<child_module>` instances `<INST_A>` and `<INST_B>`), list ALL instance names. Step C detects this and Step D generates separate `nets_to_query` entries for each instance. Leave as `null` if only one instance.
 
 **`target_register` and `target_bit` extraction (MANDATORY for wire_swap):**
 
@@ -313,13 +313,43 @@ d007: AND4(<sig_A>, n_d005, n_d004, n_d006)         → final D-input
 ```
 Record `d_input_net: "n_eco_<jira>_d007"` — this is connected to the DFF .D pin.
 
-### E4 — Flag unsupported expressions
+### E4 — Flag unsupported expressions and attempt intermediate net fallback
 
-If the expression contains arithmetic (`+`, `-`, `*`, `/`), multi-cycle logic, or complex state machine transitions → set `d_input_decompose_failed: true` and record the raw expression. The flow will SKIP the D-input insertion and flag for manual synthesis. All other parts of the ECO still proceed.
+If the expression contains arithmetic (`+`, `-`, `*`, `/`), multi-cycle logic, or a complex priority mux chain whose new conditions depend on signals that do not exist in the PreEco netlist → set `d_input_decompose_failed: true`.
+
+**Do NOT immediately mark as MANUAL_ONLY.** First attempt the intermediate net fallback strategy:
+
+#### E4a — Detect if the new conditions are PREPENDED to an existing expression
+
+When the RTL diff shows the OLD expression still present as the last/default condition in the new priority chain (e.g., `new_cond_1 ? val1 : new_cond_2 ? val2 : <old_expression>`):
+
+- The existing gate-level logic already implements `<old_expression>` as some intermediate combinational net (the "pivot net")
+- The ECO can insert the new conditions **before** the pivot net without touching the DFF D-input at all
+- The DFF D-input (`target_register.D`) remains unchanged; only the pivot net's driver changes
+
+**Set `fallback_strategy: "intermediate_net_insertion"` when this pattern is detected.**
+
+#### E4b — Identify the fallback query signal
+
+Add a fenets query on `target_register` (the DFF output Q signal) to `nets_to_query`. The eco_netlist_studier will trace backward from `target_register.D` to find the pivot net in the gate-level PreEco netlist.
+
+```json
+{
+  "net_path": "<INST_A>/<INST_B>/<target_register>",
+  "hierarchy": ["<INST_A>", "<INST_B>"],
+  "reason": "d_input_decompose_failed fallback: trace backward from target_register.D to find pivot net for intermediate insertion",
+  "is_bus_variant": false,
+  "fallback_for_decompose_failed": true
+}
+```
+
+#### E4c — When fallback is not possible
+
+If the new conditions do NOT extend an existing expression (entirely new logic with no old condition preserved), or the expression is an arithmetic/multi-cycle change → set `fallback_strategy: null`. The eco_netlist_studier will mark this as MANUAL_ONLY.
 
 ### E5 — Record in JSON
 
-Add `d_input_gate_chain` and `d_input_net` to the `new_logic` change entry. Eco_netlist_studier Phase 0 reads this to plan the gate insertions.
+Add `d_input_gate_chain`, `d_input_net`, `d_input_decompose_failed`, and `fallback_strategy` to the `new_logic` change entry. Eco_netlist_studier Phase 0 reads this to plan gate insertions (chain or intermediate net).
 
 ---
 
@@ -346,6 +376,7 @@ Write to `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json` (always use the full absolute
       "d_input_gate_chain": null,
       "d_input_net": null,
       "d_input_decompose_failed": false,
+      "fallback_strategy": null,
       "has_sync_reset": false,
       "reset_signal": null
     }

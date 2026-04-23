@@ -1,7 +1,7 @@
 # ECO Flow — CRITICAL RULES
 
 **Every orchestrator and sub-agent in the ECO flow MUST read this file first before doing any work.**
-These rules exist because each one maps to a confirmed bug that caused a real run to fail or produce wrong output.
+These rules exist because each one addresses a known failure mode that caused a real run to fail or produce wrong output.
 
 ---
 
@@ -20,7 +20,7 @@ Only read guidance files from `config/eco_agents/`. Do NOT read from `config/ana
 - REF_DIR may contain multiple older `AI_ECO_FLOW_*` directories from previous runs — treat them as **read-only historical artifacts that do not affect this run**.
 - Step 2 (find_equivalent_nets) **MUST always be submitted fresh** for a new TAG. It may never be skipped by copying from an older AI_ECO_FLOW directory.
 
-> **Confirmed bug pattern:** Agent found multiple older `AI_ECO_FLOW_*` directories in REF_DIR, copied fenets RPTs from a previous TAG's directory, and skipped Step 2 entirely.
+> **This rule prevents:** copying fenets RPTs from a previous TAG's directory and skipping Step 2 entirely when multiple older `AI_ECO_FLOW_*` directories are present in REF_DIR.
 
 ---
 
@@ -39,7 +39,7 @@ Those files and actions belong to FINAL_ORCHESTRATOR. If you produce them yourse
 
 **The presence of `eco_report.html` or `eco_summary.rpt` written by ORCHESTRATOR or ROUND_ORCHESTRATOR is a bug, not a success.**
 
-> **Root cause of confirmed bug:** ORCHESTRATOR ran Steps 7-8 itself after FM PASSED, never wrote `round_handoff.json`, and never spawned FINAL_ORCHESTRATOR.
+> **This rule prevents:** the ORCHESTRATOR running Steps 7-8 itself after FM PASSES, bypassing `round_handoff.json` and the FINAL_ORCHESTRATOR spawn entirely.
 
 ---
 
@@ -54,7 +54,7 @@ ls -la <BASE_DIR>/data/<TAG>_round_handoff.json
 
 If the file does not exist or is empty after writing — write it again. Do NOT spawn any agent until this file is confirmed on disk.
 
-> **Root cause of confirmed bug:** ORCHESTRATOR skipped writing `round_handoff.json` entirely, which also broke any retry recovery path.
+> **This rule prevents:** the ORCHESTRATOR skipping `round_handoff.json` entirely, which also breaks any retry recovery path.
 
 ---
 
@@ -126,7 +126,7 @@ When FM returns **No Equivalent Nets** or **FM-036** in Step 2, retries MUST be 
 - **Port-level signal** (net exists as a module port at some hierarchy level): retry by stripping one level at a time (going shallower). Max 3 retries.
 - **Internal wire** (net is inside a submodule, not exposed as a port at any level): DO NOT strip levels — FM-036 will fire at all depths. **Pivot immediately to query the target register's output signal.** The eco_netlist_studier backward-cone trace will identify the actual cell and pin from there.
 
-> **Confirmed bug pattern:** FM-036 retries went shallower on an internal wire net. The net was invisible to FM at every hierarchy level. Two retries were wasted before accidentally pivoting to the target register — which worked immediately. Classify first, then choose the correct strategy.
+> **This rule prevents:** wasting FM-036 retries by stripping hierarchy levels on an internal wire net that is invisible to FM at every depth. Classifying the net type first ensures the correct retry strategy is applied immediately.
 
 The retry strategies in Step 2 of ORCHESTRATOR.md are NOT optional. Only after the correct retries are exhausted may fallback be applied.
 
@@ -147,9 +147,9 @@ The **only valid SVF entries** to append (in the `setup` partition) are:
 
 For pure new_logic cell insertions with no pre-existing failures: `svf_update_needed=false` — write no TCL file and skip Step 4b file creation (RPT still written noting "not applicable").
 
-> **Confirmed bug pattern:** eco_svf_updater wrote `guide_eco_change -type insert_cell -instance -reference` entries. This command is invalid SVF. FM rejected all entries with CMD-010, aborting all 3 targets before any comparison — multiple rounds wasted.
+> **This rule prevents:** writing `guide_eco_change -type insert_cell -instance -reference` entries to the SVF. This command is invalid SVF — FM rejects all entries with CMD-010, aborting all 3 targets before any comparison.
 
-> **Secondary confirmed bug pattern:** An earlier version used `eco_change` (not `guide_eco_change`) — also invalid for FM X-2025.06-SP3-VAL-20251201, causing CMD-005 elaboration failure.
+> **Secondary known failure mode:** An earlier variant used `eco_change` (not `guide_eco_change`) — also invalid, causing CMD-005 elaboration failure.
 
 ---
 
@@ -167,7 +167,7 @@ md5sum <REF_DIR>/data/PostEco/Synthesize.v.gz.bak_<TAG>_round<ROUND>
 
 If any stage's md5 matches its backup — the ECO was not applied to that stage. Do NOT proceed to Step 5.
 
-> **Confirmed bug pattern:** eco_applier only modified Synthesize; PrePlace and Route were left unchanged. FM stage-to-stage comparison then failed because the PostEco netlists diverged from each other.
+> **This rule prevents:** applying the ECO only to Synthesize while leaving PrePlace and Route unchanged, which causes FM stage-to-stage comparison to fail because the PostEco netlists diverge from each other.
 
 ---
 
@@ -204,7 +204,7 @@ This prevents context pressure from causing sub-agents to exit before completing
 4. Verify copy succeeded
 5. Only then proceed to the next step
 
-> **Confirmed bug pattern:** eco_applier sub-agent exited after writing JSON due to context pressure. RPT was never written. ORCHESTRATOR checkpoint only verified the JSON existed — it missed the missing RPT. The step RPT never appeared in AI_ECO_FLOW_DIR.
+> **This rule prevents:** a sub-agent exiting after writing JSON due to context pressure, causing the RPT to never be written and the step RPT to never appear in AI_ECO_FLOW_DIR.
 
 ---
 
@@ -234,7 +234,7 @@ grep -c "^module " /tmp/eco_apply_<TAG>_<Stage>.v
 - **Count > 1 → hierarchical.** `port_declaration` and `port_connection` entries MUST be applied — never skipped. The flags `flat_net_confirmed: true` and `no_gate_needed: true` are only valid for flat netlists and must be ignored in hierarchical context.
 - **Count = 1 → flat.** `port_promotion` path applies — the net exists as a wire in the single module; explicit port declarations in submodules are not needed.
 
-> **Confirmed bug pattern:** eco_netlist_studier ran `port_promotion` on Synthesize, found the new signal as a flat wire, and set `no_gate_needed: true`. eco_applier skipped all `port_declaration` and `port_connection` entries. The PostEco netlist was hierarchical (many modules). The new signal was left unconnected through the module port boundary. FM reported it as "globally unmatched" — a DFF receiving the signal was a failing point.
+> **This rule prevents:** incorrectly treating a hierarchical PostEco netlist as flat. When `port_promotion` is applied on a flat-netlist assumption and `no_gate_needed: true` is set, eco_applier skips all `port_declaration` and `port_connection` entries, leaving the new signal unconnected through the module port boundary and causing FM "globally unmatched" failures.
 
 ---
 
@@ -244,7 +244,7 @@ grep -c "^module " /tmp/eco_apply_<TAG>_<Stage>.v
 
 If a signal from `port_connections_per_stage` is not found in the current stage's PostEco netlist — search for a P&R alias before skipping. Never insert a DFF with a net name that does not exist in that stage's netlist.
 
-> **Confirmed bug pattern:** eco_applier used Synthesize-derived `port_connections` for all 3 stages. PrePlace/Route had renamed clock and reset nets via P&R buffering. The inserted DFF had wrong pin-to-net connections → FM stage-to-stage mismatch → the newly inserted DFF appeared as a regression failing point in the PrePlace-vs-Synthesize comparison.
+> **This rule prevents:** using Synthesize-derived `port_connections` for all 3 stages. P&R tools rename clock and reset nets in PrePlace and Route; using the wrong net names causes the inserted DFF to have wrong pin-to-net connections, leading to FM stage-to-stage mismatch.
 
 ---
 
@@ -261,7 +261,7 @@ If a signal from `port_connections_per_stage` is not found in the current stage'
 **eco_netlist_studier** records all pins (functional + auxiliary) in `port_connections_per_stage` per stage.
 **eco_applier** uses the full `port_connections_per_stage[<Stage>]` map when building the DFF instantiation string — every pin, every stage.
 
-> **Confirmed pattern from a passing ECO:** In Synthesize, auxiliary scan pins were `1'b0`. In PrePlace and Route, they were connected to module-local scan chain nets taken from a neighbour DFF in the same scope. The ECO DFF used neighbour values — not constants — in P&R stages.
+> **Principle:** Auxiliary scan pin values change between design stages. In Synthesize, they are typically constants. In P&R stages, they connect to real scan chain nets. Reading a neighbour DFF of the same cell type in the same module scope — per stage — gives the correct values. Never assume constants apply in P&R stages.
 
 ---
 
@@ -282,7 +282,90 @@ The RTL condition (e.g., `condition ? val_A : val_B`) describes the select seman
 
 **Never assume the gate function from the RTL condition alone.** The same RTL ternary expression may require an inverting or non-inverting gate depending on which MUX input carries the true-branch value — this can only be determined by reading the PreEco netlist.
 
-> **Confirmed bug pattern:** A wire_swap targeting a MUX select pin used an inverting gate when a non-inverting gate was required. The gate function was derived from the RTL condition text without checking whether the true-branch mapped to I0 or I1 in the netlist. The inverted select caused the MUX to pick the wrong input every cycle. FM failed on the target register across all rounds even after all other issues were resolved.
+> **This rule prevents:** deriving the gate function for a MUX select pin from RTL condition text alone, without checking whether the true-branch maps to I0 or I1 in the netlist. Using the wrong polarity (inverting vs non-inverting) causes the MUX to select the wrong input every cycle, and FM fails on the target register across all rounds.
+
+---
+
+## RULE 19 — Port Promotion Must Be Scoped to the Exact Module Boundary
+
+**When applying `port_promotion` (or any wire-to-output rename), always restrict the search to the exact target module — from its `module` line to its `endmodule` line.**
+
+Steps:
+1. Find `mod_idx` using an anchored regex: `^module\s+<exact_name>\s*[(\s]` — never substring match
+2. Find `endmodule_idx` as the first `endmodule` after `mod_idx`
+3. ALL searches and replacements MUST stay within `lines[mod_idx:endmodule_idx]`
+4. Use `re.sub` with word-boundary `\b` — do NOT use `str.replace('wire ', 'output ')` which matches any substring
+
+**Why:** A hierarchical netlist contains many module definitions. Multiple modules may share the same internal wire name in completely different functional contexts. Applying the rename beyond `endmodule` corrupts every other module variant with the same wire name — potentially thousands of unintended changes.
+
+> **This rule prevents:** applying a port promotion rename across the entire file without `endmodule` boundary restriction. A hierarchical netlist may contain many module variants sharing the same internal wire name — an unbounded rename corrupts all of them and introduces large numbers of FM failing points in unrelated modules.
+
+---
+
+## RULE 20 — Port Connection Insertion Must Use Parenthesis Depth Tracking
+
+**When inserting a new `.port(net)` connection into a module instance block, find the closing `)` using parenthesis depth tracking — NOT simple string pattern matching.**
+
+The correct algorithm:
+1. Start at the instance declaration line (where `(` opens the port list)
+2. Count `(` as depth +1, `)` as depth -1; start from depth 0 before the opening `(`
+3. When depth returns to 0, that `)` closes the instance — this is where to insert
+4. Insert before the final `)` on that line using `close_line[:last_paren] + new_conn + close_line[last_paren:]`
+
+**Never use** `lines[i].strip() in (');', ') ;')` — this pattern fails on lines like `.last_port( net ) ) ;` where the first `)` closes the port value and the second `)` closes the instance. The pattern match may fire on the wrong `)`, inserting the new connection mid-block and corrupting the port list.
+
+> **This rule prevents:** a simple `);` pattern search incorrectly matching a line ending with double `))` (e.g., `.last_port( <net> ) ) ;`) and inserting the new port connection inside an existing port's value expression, corrupting the netlist syntax.
+
+---
+
+## RULE 21 — `d_input_decompose_failed` — Try Intermediate Net Strategy Before MANUAL_ONLY
+
+**When a `new_logic` change has `d_input_decompose_failed: true`, do NOT immediately mark as MANUAL_ONLY. First check `fallback_strategy`.**
+
+**`fallback_strategy: "intermediate_net_insertion"` (Mode F1):**
+The new conditions are PREPENDED to an existing expression. The old expression's gate-level output (the "pivot net") is an intermediate combinational net that can be redirected. The ECO inserts the new conditions at the pivot net — the DFF D-input is never touched.
+
+Steps:
+1. `rtl_diff_analyzer` sets `fallback_strategy: "intermediate_net_insertion"` and adds `target_register` to `nets_to_query`
+2. `eco_netlist_studier` Step 0c traces backward from `target_register.D` to find the pivot net, then builds `rewire + new_logic_gate` entries targeting the pivot net
+3. `eco_applier` applies the redirect (driver output → new wire) and inserts the new condition gates
+4. FM sees the target register D-input unchanged — matches RTL expectation for the old expression path; new conditions implemented at gate level below
+
+**`fallback_strategy: null` (Mode F2):**
+Entirely new logic with no old expression preserved. Cannot use intermediate net approach. This is truly MANUAL_ONLY — an engineer must synthesize the gates from scratch.
+
+**How ROUND_ORCHESTRATOR responds:**
+- If ALL revised_changes are `action: manual_only` (Mode F2 only) → spawn FINAL_ORCHESTRATOR with `status: MANUAL_LIMIT`
+- If Mode F1 entries exist → continue rounds with the intermediate net strategy applied
+
+> **Principle:** When new conditions are prepended to an existing priority mux chain, the DFF D-input does not need to be modified. Insert the new condition gates at the intermediate combinational net (pivot net) that drives the existing priority logic. This resolves `d_input_decompose_failed` without requiring synthesis of the full D-input expression from scratch.
+
+---
+
+## RULE 22 — Structural Stage-to-Stage Mismatches Require `set_dont_verify`, Not ECO Rewire
+
+**When `FmEqvEcoPrePlaceVsEcoSynthesize` fails with a large count (hundreds+) AND `FmEqvEcoRouteVsEcoPrePlace` passes (0 failures), this is a structural P&R divergence — NOT a functional ECO error.**
+
+Root cause: P&R tools insert HFS buffer trees for high-fanout signals. After new gating logic is added to a high-fanout net, the structural representation of that net differs between Synthesize (simple gate) and PrePlace (buffer tree). FM stage-to-stage comparison fails structurally even though the logic is functionally equivalent.
+
+**eco_fm_analyzer classification (Mode G):**
+- Detect: Route-vs-PrePlace PASS (0), PrePlace-vs-Synthesize FAIL (large count)
+- Verify: failing DFFs are downstream consumers of the rewired net, not the ECO target registers
+- Action: `set_dont_verify -type { register } /<common_scope>/*` in SVF setup partition
+
+**NEVER apply Mode G suppression when Route-vs-PrePlace also fails** — that indicates a real ECO error, not a structural mismatch.
+
+---
+
+## RULE 23 — New Condition Signals May Be New Ports From the Same ECO
+
+**When building an intermediate net gate chain (Step 0c), new condition signals may not exist in the PreEco netlist because they are simultaneously being added as new input ports by `new_port` / `port_declaration` changes in the same ECO.**
+
+Do NOT fail or skip a gate entry simply because its input signal is absent from the PreEco netlist. First check whether the signal appears in the RTL diff JSON as a `new_port` or `port_declaration` change:
+- If yes → set `input_from_change` referencing the port_declaration entry and mark `new_port_dependency: true`. The signal will exist after eco_applier Pass 2 (port_declaration) runs, within the same decompress/recompress cycle.
+- If no → apply Priority 1/2 alias lookup; if still not found, flag as SKIPPED.
+
+This ordering works because eco_applier processes: Pass 1 (new_logic gate insertion) → Pass 2 (port_declaration adds the signal) → all passes operate on the same temp file before recompression. The gate inserted in Pass 1 references a net that is declared in Pass 2 — the final recompressed netlist is consistent.
 
 ---
 

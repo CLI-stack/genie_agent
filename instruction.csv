@@ -89,3 +89,7 @@ could you make eco at following directory ,rtg_oss_feint/supra/eco_analyze.csh $
 could you make eco,rtg_oss_feint/supra/eco_analyze.csh $refDir $tag $tile $integer,134,start run,,,abinbaba@amd.com
 could you run post eco formality at following directory ,rtg_oss_feint/supra/post_eco_formality.csh $tile $refDir $tag,134,start run,,,abinbaba@amd.com
 could you run post eco formality,rtg_oss_feint/supra/post_eco_formality.csh $tile $refDir $tag,134,start run,,,abinbaba@amd.com
+could you analyze eco at following directory ,rtg_oss_feint/supra/eco_analyze.csh $refDir $tag $tile $integer,134,start run,,,abinbaba@amd.com
+could you analyze eco,rtg_oss_feint/supra/eco_analyze.csh $refDir $tag $tile $integer,134,start run,,,abinbaba@amd.com
+could you run eco analysis at following directory ,rtg_oss_feint/supra/eco_analyze.csh $refDir $tag $tile $integer,134,start run,,,abinbaba@amd.com
+could you run eco analysis,rtg_oss_feint/supra/eco_analyze.csh $refDir $tag $tile $integer,134,start run,,,abinbaba@amd.com

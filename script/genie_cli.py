@@ -4463,12 +4463,13 @@ Examples:
             sys.exit(1)
 
         # Read metadata from _eco_analyze file
-        tile = ref_dir = ''
+        tile = ref_dir = jira = ''
         if os.path.exists(eco_analyze_file):
             with open(eco_analyze_file) as f:
                 for line in f:
-                    if line.startswith('tile='):    tile    = line.split('=', 1)[1].strip()
+                    if line.startswith('tile='):     tile    = line.split('=', 1)[1].strip()
                     elif line.startswith('ref_dir='): ref_dir = line.split('=', 1)[1].strip()
+                    elif line.startswith('jira='):    jira    = line.split('=', 1)[1].strip()
 
         # Get email recipients: priority --to > _email > assignment.csv
         emails = []
@@ -4484,22 +4485,25 @@ Examples:
             print(f"Error: No email recipients found for ECO tag {tag}")
             sys.exit(1)
 
-        dir_name = os.path.basename(ref_dir) if ref_dir else ''
-        base = f"{tile} @ {dir_name}" if (tile and dir_name) else (tile or dir_name or tag)
+        # Build subject: [ECO <JIRA> ...] <tile> (<tag>) — no directory name
+        jira_prefix = f" {jira}" if jira else ""
+        base = tile or tag
 
         # Build subject based on context
         if eco_round is not None and eco_result is None:
-            subject = f"[ECO Round {eco_round}] {base} ({tag})"
+            subject = f"[ECO{jira_prefix} Round {eco_round}] {base} ({tag})"
         elif eco_result:
             result_upper = eco_result.upper()
             if 'PASS' in result_upper:
-                subject = f"[ECO PASS] {base} — PostEco FM clean ({tag})"
+                subject = f"[ECO{jira_prefix} PASS] {base} — PostEco FM clean ({tag})"
             elif 'MAX' in result_upper:
-                subject = f"[ECO MAX ROUNDS] {base} — manual fix needed ({tag})"
+                subject = f"[ECO{jira_prefix} MAX ROUNDS] {base} — manual fix needed ({tag})"
+            elif 'MANUAL' in result_upper:
+                subject = f"[ECO{jira_prefix} MANUAL LIMIT] {base} — engineer synthesis required ({tag})"
             else:
-                subject = f"[ECO FAIL] {base} — manual fix needed ({tag})"
+                subject = f"[ECO{jira_prefix} FAIL] {base} — manual fix needed ({tag})"
         else:
-            subject = f"[ECO Analysis] {base} ({tag})"
+            subject = f"[ECO{jira_prefix} Analysis] {base} ({tag})"
 
         with open(html_file) as f:
             html_content = f.read()

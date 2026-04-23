@@ -2,7 +2,7 @@
 
 **You are the ROUND_ORCHESTRATOR agent.** You handle exactly ONE fix loop round then spawn the next agent and EXIT. Your context stays small because you start fresh every round.
 
-> **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` in full before doing anything else. Every rule in that file maps to a confirmed bug. Acknowledge each rule before proceeding.
+> **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` in full before doing anything else. Every rule in that file addresses a known failure mode. Acknowledge each rule before proceeding.
 
 **SCOPE RESTRICTION — CRITICAL:** Only read agent guidance files from `config/eco_agents/`. Do NOT read from `config/analyze_agents/` — those files govern static check analysis and contain rules that are wrong for ECO gate-level netlist editing. `config/analyze_agents/shared/CRITICAL_RULES.md` does NOT apply to this flow.
 
@@ -93,11 +93,17 @@ rm -f <BASE_DIR>/data/<TAG>_eco_svf_entries.tcl
 
 **CHECKPOINT:** Verify `data/<TAG>_eco_fm_analysis_round<ROUND>.json` exists and contains `revised_changes[]` before proceeding.
 
-**CRITICAL — Never exit the loop early based on eco_fm_analyzer output:**
-- `failure_mode: UNKNOWN` is NOT a reason to spawn FINAL_ORCHESTRATOR — continue to the next round
-- `failure_mode: E` (pre-existing) is NOT a reason to stop — the revised_changes will contain `set_dont_verify` entries; apply them and continue
-- The ONLY valid reasons to spawn FINAL_ORCHESTRATOR here are: (a) FM PASSED, or (b) NEXT_ROUND = 5
-- If `revised_changes` is empty (eco_fm_analyzer failed to produce any entries), do NOT proceed to eco_applier — treat as NEXT_ROUND = 5 and spawn FINAL_ORCHESTRATOR with status MAX_ROUNDS
+**CRITICAL — When to exit the loop early based on eco_fm_analyzer output:**
+
+- `failure_mode: UNKNOWN` → NOT a reason to stop — continue to next round
+- `failure_mode: E` (pre-existing) → NOT a reason to stop — revised_changes contains `set_dont_verify`; apply and continue
+- `failure_mode: G` (structural stage mismatch) → NOT a reason to stop — revised_changes contains `set_dont_verify` for the affected scope; apply via eco_svf_updater and continue
+- `failure_mode: F` (manual_only — `d_input_decompose_failed`) → **check if ALL remaining failing points are `action: manual_only`**:
+  - If YES (every failing point is manual_only) → spawn FINAL_ORCHESTRATOR with `status: MANUAL_LIMIT`. These points cannot be fixed by any number of rounds. Report them to the engineer.
+  - If NO (some are manual_only, others have fixable actions) → continue to next round; apply the fixable changes, leave manual_only points for engineer report
+- If `revised_changes` is empty → treat as NEXT_ROUND = 5, spawn FINAL_ORCHESTRATOR with status MAX_ROUNDS
+
+**RULE: Only spawn FINAL_ORCHESTRATOR early for (a) FM PASSED, (b) NEXT_ROUND = 5, or (c) ALL remaining points are `action: manual_only`.**
 
 ---
 
@@ -292,6 +298,19 @@ Update `<BASE_DIR>/data/<TAG>_round_handoff.json`:
 - `TOTAL_ROUNDS`: `<NEXT_ROUND>`
 
 **Then EXIT — your work is done.**
+
+### If FM RESULT = FAIL and ALL remaining points are `action: manual_only` (Mode F)
+
+Read `data/<TAG>_eco_fm_analysis_round<ROUND>.json`. Check if every entry in `revised_changes` has `action: manual_only`. If yes:
+
+Update handoff: `"status": "MANUAL_LIMIT"`
+
+**Spawn FINAL_ORCHESTRATOR agent** with `config/eco_agents/FINAL_ORCHESTRATOR.md` prepended. Pass:
+- `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`
+- `ROUND_HANDOFF_PATH`: `<BASE_DIR>/data/<TAG>_round_handoff.json`
+- `TOTAL_ROUNDS`: `<NEXT_ROUND - 1>`
+
+**Then EXIT — retrying would waste rounds on changes the AI cannot make.**
 
 ### If FM RESULT = FAIL and NEXT_ROUND < 5
 
