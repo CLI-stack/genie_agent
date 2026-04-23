@@ -617,20 +617,46 @@ Wait for eco_applier sub-agent to complete.
 
 **Generate Step 4 RPT from JSON (ORCHESTRATOR responsibility — NOT eco_applier):**
 
+The RPT must be human-readable and self-explanatory — every entry shows WHY it has that status. Do NOT produce one-liners with no context.
+
 ```python
 applied = load("data/<TAG>_eco_applied_round<ROUND>.json")
 s = applied["summary"]
 with open("data/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt", "w") as f:
     f.write(f"STEP 4 — ECO APPLIED (Round <ROUND>)\nTag: <TAG>  |  JIRA: <JIRA>\n{'='*80}\n")
     f.write(f"Summary: {s['applied']} applied / {s['inserted']} inserted / "
+            f"{s.get('already_applied', 0)} already_applied / "
             f"{s['skipped']} skipped / {s['verify_failed']} verify_failed\n\n")
     for stage in ["Synthesize", "PrePlace", "Route"]:
         f.write(f"[{stage}]\n")
         for e in applied[stage]:
-            f.write(f"  {e['status']:10s} {e.get('cell_name','?'):40s} "
-                    f"pin={e.get('pin','?')} type={e.get('change_type','?')}\n")
-            if e['status'] == 'SKIPPED':
-                f.write(f"             Reason: {e.get('reason','?')}\n")
+            ct = e.get('change_type', '?')
+            status = e['status']
+            # Build display name from whatever identifier exists
+            name = (e.get('instance_name') or e.get('cell_name') or
+                    e.get('signal_name') or e.get('port_name') or '?')
+            f.write(f"  {status:15s} {name:40s} type={ct}\n")
+            # Detail line — always shown, content varies by change_type and status
+            if status == 'INSERTED':
+                f.write(f"    → cell_type={e.get('cell_type','?')}  output={e.get('output_net','?')}  scope={e.get('instance_scope','?')}\n")
+                if e.get('reason'):
+                    f.write(f"    → {e['reason']}\n")
+            elif status == 'APPLIED':
+                if e.get('reason'):
+                    f.write(f"    → {e['reason']}\n")
+                elif ct == 'rewire':
+                    f.write(f"    → {e.get('old_net','?')} → {e.get('new_net','?')} on pin {e.get('pin','?')}\n")
+                elif ct in ('port_declaration', 'port_promotion'):
+                    f.write(f"    → module={e.get('module_name','?')}  decl_type={e.get('declaration_type','?')}\n")
+                elif ct == 'port_connection':
+                    f.write(f"    → .{e.get('port_name','?')}({e.get('net_name','?')}) on instance {e.get('instance_name','?')}\n")
+            elif status == 'ALREADY_APPLIED':
+                ar = e.get('already_applied_reason', e.get('reason', 'no reason recorded — eco_applier must provide already_applied_reason'))
+                f.write(f"    → {ar}\n")
+            elif status == 'SKIPPED':
+                f.write(f"    → REASON: {e.get('reason', 'no reason recorded')}\n")
+            elif status == 'VERIFY_FAILED':
+                f.write(f"    → VERIFY FAILED: {e.get('reason', 'no reason recorded')}\n")
         f.write("\n")
 ```
 

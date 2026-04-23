@@ -633,6 +633,41 @@ rm -f /tmp/eco_apply_<TAG>_<Stage>.v
 
 ---
 
+## ALREADY_APPLIED Detection — Per-Type Rules
+
+**CRITICAL:** `ALREADY_APPLIED` is a valid status but MUST be based on a specific, type-appropriate check — NOT a broad grep that finds the signal anywhere in the file. A signal name can exist in the file as a wire without being in the right place (e.g., `NeedFreqAdj` appears as a DFF output but is NOT in the module port list). Always record `already_applied_reason` in the JSON with exactly what check was performed and what was found.
+
+| change_type | ALREADY_APPLIED condition | What to check |
+|-------------|--------------------------|---------------|
+| `new_logic_dff` / `new_logic_gate` / `new_logic` | Instance name already in the file | `grep -c "^\s*<cell_type>\s*<instance_name>\s*(" netlist` ≥ 1 |
+| `rewire` | new_net already on the target pin | `grep -c "\.<pin>(<new_net>)" <cell_block>` = 1 (scoped to cell block) |
+| `port_declaration` (`input`\|`output`) | Signal already in the MODULE PORT LIST | Parse port list from `mod_idx` to `port_list_close_idx` — check if `<signal_name>` appears in that range. Signal present ONLY in the module body (as a wire or DFF output) does NOT count. |
+| `port_declaration` (`wire`) | Wire declaration already in module body | `grep -c "^\s*wire\s\+<signal_name>\s*;" <module_scope>` ≥ 1 |
+| `port_promotion` | Declaration already changed to `output` | `grep -c "output\s\+<signal_name>\s*;" <module_scope>` ≥ 1 |
+| `port_connection` | Port connection already in instance block | `grep -c "\.<port_name>(\s*<net_name>\s*)" <instance_block>` ≥ 1 (scoped to instance block) |
+
+**PORT_DECL ALREADY_APPLIED example (correct):**
+```python
+# Read lines in port list range (mod_idx to port_list_close_idx inclusive)
+port_list_text = ''.join(lines[mod_idx:port_list_close_idx + 1])
+if re.search(rf'\b{re.escape(signal_name)}\b', port_list_text):
+    # Signal is in the port list header — ALREADY_APPLIED
+    record(status="ALREADY_APPLIED",
+           already_applied_reason=f"signal '{signal_name}' found in port list of module '{module_name}' (lines {mod_idx}–{port_list_close_idx})")
+else:
+    # Signal is NOT in the port list — apply Steps 2–4
+    ...
+```
+
+**PORT_DECL ALREADY_APPLIED example (WRONG — do not do this):**
+```python
+count = int(run(f"grep -cw '{signal_name}' {temp_file}"))
+if count >= 1:
+    record(status="ALREADY_APPLIED")  # WRONG — finds the DFF output, not the port
+```
+
+---
+
 ## Special Cases
 
 | Case | Action |
@@ -658,7 +693,9 @@ rm -f /tmp/eco_apply_<TAG>_<Stage>.v
 
 ## Output JSON
 
-Write `data/<TAG>_eco_applied_round<ROUND>.json`. Each stage is an array — one entry per cell from the PreEco study:
+Write `data/<TAG>_eco_applied_round<ROUND>.json`. Each stage is an array — one entry per cell from the PreEco study.
+
+**Every entry MUST include a `reason` (or `already_applied_reason`) field** regardless of status. This is used by the ORCHESTRATOR to generate a human-readable RPT that explains every decision.
 
 ```json
 {
@@ -671,6 +708,7 @@ Write `data/<TAG>_eco_applied_round<ROUND>.json`. Each stage is an array — one
       "new_net": "<new_signal>",
       "change_type": "rewire",
       "status": "APPLIED",
+      "reason": "pin .<pin>(<old_signal>) found at line <N>, replaced with .<pin>(<new_signal>)",
       "occurrence_count": 1,
       "backup": "<REF_DIR>/data/PostEco/Synthesize.v.gz.bak_<TAG>_round<ROUND>",
       "verified": true
@@ -685,18 +723,50 @@ Write `data/<TAG>_eco_applied_round<ROUND>.json`. Each stage is an array — one
       "output_net": "n_eco_<jira>_<seq>",
       "port_connections": {"<clk_pin>": "<clk_net>", "<data_pin>": "<data_net>", "<reset_pin>": "<reset_net>", "<q_pin>": "n_eco_<jira>_<seq>"},
       "status": "INSERTED",
+      "reason": "DFF <cell_type> eco_<jira>_<seq> inserted at line <N> in scope <INST_A>/<INST_B>; output Q → <output_net>",
       "backup": "<REF_DIR>/data/PostEco/Synthesize.v.gz.bak_<TAG>_round<ROUND>",
       "verified": true
+    },
+    {
+      "change_type": "new_logic_dff",
+      "instance_name": "eco_<jira>_<seq>",
+      "status": "ALREADY_APPLIED",
+      "already_applied_reason": "instance 'eco_<jira>_<seq>' already present at line <N> — found by grep '^\\s*<cell_type>\\s*eco_<jira>_<seq>\\s*(' = 1"
+    },
+    {
+      "change_type": "port_declaration",
+      "signal_name": "<signal_name>",
+      "module_name": "<module_name>",
+      "declaration_type": "output",
+      "status": "ALREADY_APPLIED",
+      "already_applied_reason": "signal '<signal_name>' found in port list of module '<module_name>' (lines <mod_idx>–<port_list_close_idx>)"
+    },
+    {
+      "change_type": "port_declaration",
+      "signal_name": "<signal_name>",
+      "module_name": "<module_name>",
+      "declaration_type": "output",
+      "status": "APPLIED",
+      "reason": "added '<signal_name>' to port list at line <N>; added 'output <signal_name> ;' at line <M>"
+    },
+    {
+      "change_type": "port_connection",
+      "port_name": "<port_name>",
+      "net_name": "<net_name>",
+      "instance_name": "<instance_name>",
+      "status": "SKIPPED",
+      "reason": "instance '<instance_name>' not found in module '<parent_module>' scope (lines <mod_idx>–<endmodule_idx>)"
     }
   ],
   "PrePlace": [...],
   "Route": [...],
   "summary": {
-    "total": 6,
-    "applied": 3,
-    "inserted": 1,
-    "skipped": 2,
-    "verify_failed": 0
+    "total": <count of all entries across all stages>,
+    "applied": <count of APPLIED entries>,
+    "inserted": <count of INSERTED entries>,
+    "already_applied": <count of ALREADY_APPLIED entries>,
+    "skipped": <count of SKIPPED entries>,
+    "verify_failed": <count of VERIFY_FAILED entries>
   }
 }
 ```
