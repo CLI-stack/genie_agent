@@ -341,9 +341,43 @@ Record: `status=INSERTED`, `change_type=new_logic_gate`, `instance_name`, `inv_i
 
 #### 4c-PORT_DECL — port_declaration path (Pass 2)
 
-For entries with `change_type: "port_declaration"` (new input or output port, NOT previously in port list):
+For entries with `change_type: "port_declaration"`:
 
 > **MANDATORY pre-check:** Confirm `netlist_type` from Step 0. If hierarchical — always apply, regardless of any `flat_net_confirmed` or `no_gate_needed` flags. If flat — use `port_promotion` path instead.
+
+**CRITICAL — Distinguish wire declarations from port declarations BEFORE doing anything:**
+
+Read `declaration_type` from the study JSON entry:
+- `"input"` or `"output"` → **TRUE PORT DECLARATION** — the signal is a port of the module. Apply Steps 2–4 (port list modification + direction declaration in body).
+- `"wire"` → **WIRE DECLARATION** — the signal is a local wire inside the module connecting submodule instances. It does NOT appear in the module port list. Apply Step 4-WIRE only (add `wire <signal_name>;` to module body). Skip Steps 2 and 3 entirely.
+
+**Why this distinction matters:** Port lists in P&R stages can be thousands of lines long due to scan/test ports added by P&R. The depth-tracking port list modification (Step 2) fails silently for extremely long port lists. Wire declarations never need port list modification — they only need a single `wire` line added to the module body, which can be done reliably regardless of port list length.
+
+**Step 4-WIRE — For wire declarations only (skip Steps 2 and 3):**
+
+Find the module start and `endmodule`, then insert `wire <signal_name>;` in the module body after the last existing `wire` declaration:
+```python
+# Find existing wire declarations in module body
+wire_lines = [(i, l) for i, l in enumerate(lines[mod_idx:endmodule_idx], mod_idx)
+              if re.match(r'^\s*wire\b', l)]
+
+if wire_lines:
+    # Insert after the last existing wire declaration
+    insert_idx = wire_lines[-1][0] + 1
+else:
+    # No existing wires — insert right after port list close (port_list_close_idx + 1)
+    insert_idx = port_list_close_idx + 1
+
+lines.insert(insert_idx, f'  wire  <signal_name> ;\n')
+```
+
+**Verify:** `grep -cw "<signal_name>" /tmp/eco_apply_<TAG>_<Stage>.v` ≥ 1 after insertion.
+
+Record: `status=APPLIED`, `change_type=port_declaration`, `declaration_type=wire`.
+
+---
+
+**Steps 2–4 below apply ONLY to true port declarations (`declaration_type: "input"` or `"output"`):**
 
 **Step 1 — Find module definition line:**
 ```bash
@@ -608,7 +642,8 @@ rm -f /tmp/eco_apply_<TAG>_<Stage>.v
 | `change_type=rewire`, `new_net` absent, `old_net` also absent | SKIPPED — "source_net (old_net) not found in PostEco" |
 | `change_type=new_logic_dff` | DFF insertion path (4c-DFF) — Pass 1 |
 | `change_type=new_logic_gate` | Gate insertion path (4c-GATE) — Pass 1 |
-| `change_type=port_declaration` | Port list + declaration update (4c-PORT_DECL) — Pass 2 |
+| `change_type=port_declaration`, `declaration_type=input\|output` | Port list + direction declaration update (4c-PORT_DECL Steps 2–4) — Pass 2 |
+| `change_type=port_declaration`, `declaration_type=wire` | Wire declaration in module body only (4c-PORT_DECL Step 4-WIRE) — NO port list change — Pass 2 |
 | `change_type=port_promotion` | Wire → output promotion (4c-PORT_PROMO) — Pass 2 |
 | `change_type=port_connection` | Instance port connection addition (4c-PORT_CONN) — Pass 3 |
 | `change_type=rewire` with `new_logic_dependency` | Must be in Pass 4 — after Pass 1 new_logic insertions |

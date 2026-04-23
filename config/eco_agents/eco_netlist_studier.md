@@ -364,13 +364,21 @@ The RTL condition text gives the wrong gate function whenever the true-branch ma
 
 ### 0g — Process `new_port` changes → `port_declaration` study entries
 
-1. Identify `module_name`, `signal_name` (`new_token`), `declaration_type` (input/output), `flat_net_name`, `instance_scope`.
+**CRITICAL — Determine `declaration_type` before anything else:**
+
+Read the RTL diff `context_line` for this change:
+- If `context_line` contains `input` or `output` keyword → `declaration_type: "input"` or `"output"` — this is a **true port** of the module. The eco_applier will add it to the module port list AND add an `input`/`output` direction declaration in the module body.
+- If `context_line` contains only `wire` keyword (e.g., `wire <signal_name>;`) → `declaration_type: "wire"` — this is a **local wire inside the module** connecting submodule instances. The eco_applier adds ONLY a `wire <signal_name>;` line to the module body. **No port list modification.** This avoids the long-port-list depth-tracking failure that occurs in P&R stages.
+
+Why wire declarations must NOT modify the port list: the module's port list only contains signals that are ports (visible outside the module). A wire declared inside a module to connect two submodule instances is never a port — adding it to the port list produces invalid Verilog. The eco_applier's port list depth tracking also fails for very long P&R port lists, causing the wire to be silently skipped.
+
+1. Identify `module_name`, `signal_name` (`new_token`), `declaration_type` (input/output/**wire**), `flat_net_name`, `instance_scope`.
 2. Detect netlist type (do once, reuse): `grep -c "^module " /tmp/eco_study_<TAG>_Synthesize.v` — count > 1 = hierarchical; count = 1 = flat.
 3. If hierarchical: verify module exists, set `confirmed: true`. If flat: use `port_promotion` (0i) instead.
 4. Record:
 ```json
-{"change_type": "port_declaration", "module_name": "<module>", "signal_name": "<port>",
- "declaration_type": "input|output", "flat_net_name": "<net>", "instance_scope": "<path>",
+{"change_type": "port_declaration", "module_name": "<module>", "signal_name": "<signal>",
+ "declaration_type": "input|output|wire", "flat_net_name": "<net>", "instance_scope": "<path>",
  "netlist_type": "hierarchical", "confirmed": true}
 ```
 > **Known failure mode:** Treating hierarchical as flat → applier skips port_declaration/port_connection → signal unconnected → FM "globally unmatched".
