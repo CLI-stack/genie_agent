@@ -245,7 +245,36 @@ For each gate entry in `new_condition_gate_chain`:
 - Apply the same per-stage net verification as Step 0b-STAGE-NETS (P&R tools may rename signal nets)
 - Record with `source: "intermediate_net_fallback"`
 
-**If `new_condition_gate_chain` is null** → mark the target register change as MANUAL_ONLY (rtl_diff_analyzer could not decompose the new conditions — engineer synthesis required).
+**If `new_condition_gate_chain` is null** → mark the target register change as MANUAL_ONLY (decomposition failed due to arithmetic or unsupported RTL constructs — engineer synthesis required).
+
+**Resolving `PENDING_FM_RESOLUTION` inputs before creating study entries:**
+
+Before iterating over `new_condition_gate_chain`, check if any gate input starts with `"PENDING_FM_RESOLUTION:"`. If so, resolve each pending input using the FM fenets results from Step 2:
+
+```python
+# Build resolution map from FM results for condition inputs
+fm_resolution = {}
+for entry in fenets_spec.get("condition_input_resolutions", []):
+    original = entry["original_signal"]
+    resolved = entry.get("resolved_gate_level_net")  # FM-returned impl net name
+    if resolved:
+        fm_resolution[original] = resolved
+
+# Substitute pending inputs in the chain
+for gate in new_condition_gate_chain:
+    for idx, inp in enumerate(gate["inputs"]):
+        if inp.startswith("PENDING_FM_RESOLUTION:"):
+            original_signal = inp.split(":", 1)[1]
+            resolved = fm_resolution.get(original_signal)
+            if resolved:
+                gate["inputs"][idx] = resolved  # Use FM-resolved gate-level name
+            else:
+                # FM also could not find this signal — mark gate as SKIPPED
+                gate["confirmed"] = False
+                gate["reason"] = f"FM could not resolve gate-level name for '{original_signal}'"
+```
+
+**Why FM can resolve what text search cannot:** FM find_equivalent_nets analyzes the logical equivalence between RTL and gate-level netlists — it finds the impl net that is logically equivalent to the RTL signal, even when synthesis completely renamed it. This is the same mechanism used to find old_net equivalents for wire_swap changes.
 
 **Step 0c-5 — Per-stage net verification for each new condition signal:**
 

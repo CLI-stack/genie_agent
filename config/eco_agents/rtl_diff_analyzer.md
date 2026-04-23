@@ -333,6 +333,20 @@ The `instance` field allows Step 3 to process each instance's cells independentl
 
 Pass BOTH to find_equivalent_nets — FM-036 on one, the other may succeed.
 
+**Condition inputs pending FM resolution:** After E4d runs, check each change for `condition_inputs_to_query`. For each entry, add a `nets_to_query` entry so FM resolves the gate-level name in Step 2:
+
+```json
+{
+  "net_path": "<INST_A>/<INST_B>/<signal>",
+  "hierarchy": ["<INST_A>", "<INST_B>"],
+  "reason": "condition gate input not found by name in PreEco gate-level netlist — FM resolves synthesis-renamed net",
+  "is_condition_input_resolution": true,
+  "original_signal": "<signal>"
+}
+```
+
+The studier reads these FM results in Step 0c-5: when a chain entry has `"PENDING_FM_RESOLUTION:<signal>"` as an input, it substitutes the gate-level net name returned by FM for that signal.
+
 **CRITICAL — `target_register` is NEVER queried via find_equivalent_nets.** `target_register` (the LHS register of the changed assignment) is only recorded in the JSON for Step 3 backward cone verification. Do NOT add it or any bus variant of it to `nets_to_query`. Only `old_token` and `new_token` (and their bus variants if applicable) go into `nets_to_query`.
 
 ---
@@ -533,21 +547,34 @@ for gate in new_condition_gate_chain:
             gate["inputs"][idx] = resolved_name  # Replace RTL name with gate-level name in chain
             continue
 
-        # Step V4 — Signal genuinely unresolvable in gate-level netlist
-        # Do NOT set null immediately — mark the gate and continue.
-        # The gate is skipped during studier Step 0c-4; subsequent gates depending on its
-        # output will also be skipped (they reference n_eco_<jira>_<seq> which won't exist).
-        gate["decompose_warning"] = f"input '{inp}' not found in PreEco gate-level netlist (tried {candidates})"
-        all_inputs_resolvable = False
+        # Step V4 — Signal not found by text search; use FM find_equivalent_nets to resolve
+        # Synthesis sometimes renames signals to completely different internal net names that
+        # have no predictable relationship to the RTL name (e.g., internal tool-generated net names).
+        # Text-based name variant search (Step V3) cannot find these.
+        # FM find_equivalent_nets CAN find them — it maps RTL reference nets to impl nets.
+        # Store the signal as PENDING_FM_RESOLUTION and add it to nets_to_query.
+        # The studier will substitute the FM-returned gate-level name during Step 0c-5.
+        gate["inputs"][idx] = "PENDING_FM_RESOLUTION:" + inp  # Sentinel: resolved by studier
+        if "condition_inputs_to_query" not in change:
+            change["condition_inputs_to_query"] = []
+        if inp not in [q["signal"] for q in change["condition_inputs_to_query"]]:
+            change["condition_inputs_to_query"].append({
+                "signal": inp,
+                "scope": "<INST_A>/<INST_B>",  # hierarchy of declaring module from changes array
+                "reason": f"condition gate input not found in PreEco gate-level netlist (tried {candidates}); FM will resolve"
+            })
+        # Do NOT set all_inputs_resolvable=False — FM will resolve it in Step 2
 
+# Only set null when decomposition itself failed (arithmetic, function calls, etc.)
+# Signals marked PENDING_FM_RESOLUTION are NOT unresolvable — they will be resolved by FM
 if not all_inputs_resolvable:
     new_condition_gate_chain = null
     fallback_strategy = null
 ```
 
-**Why RTL name verification (SynRtl) is not sufficient:** A signal that exists in the RTL source (`reg signal_name`) may be stored under a different name in the synthesized gate-level netlist — synthesis may append `_reg`, change bus notation, or restructure the signal path. The gate-level PreEco netlist is the authoritative source for net names that the eco_netlist_studier will search. Always resolve to the gate-level name before storing in the chain.
+**Why use FM instead of setting null:** FM find_equivalent_nets is the authoritative way to map RTL signal names to gate-level net names — it's what Step 2 uses for all other signal resolutions. When synthesis renames a signal to an unpredictable internal name, FM can still find the gate-level equivalent by analyzing the logical cone. Using FM keeps the chain complete and avoids MANUAL_ONLY for signals that synthesis simply renamed.
 
-**Only set `new_condition_gate_chain: null` when an input signal is genuinely unresolvable** — not a new_port/signal from this ECO (RULE 23), and not found in PreEco gate-level netlist under any of the standard synthesis name variants.
+**Only set `new_condition_gate_chain: null`** when decomposition itself fails (arithmetic operators, function calls, unsupported RTL constructs) — NOT when signals are renamed by synthesis. Renamed signals are handled by FM.
 
 **If the condition decomposition fails** (arithmetic, function calls, unsupported operators) → set `new_condition_gate_chain: null` and `fallback_strategy: null`. eco_netlist_studier will mark as MANUAL_ONLY.
 

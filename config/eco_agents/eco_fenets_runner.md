@@ -105,6 +105,44 @@ After all retries exhausted for a stage (including the internal wire pivot attem
 
 ---
 
+## STEP C2 — Resolve condition inputs pending FM resolution
+
+After processing all standard nets, check the RTL diff JSON for any changes that have `condition_inputs_to_query` entries (from E4d Step V4). These are condition gate inputs that text search could not resolve — FM must find their gate-level equivalents.
+
+For each entry in `condition_inputs_to_query`:
+1. The signal was already added to `nets_to_query` in Step D of rtl_diff_analyzer — its FM results are in the same spec files as the other nets
+2. Parse the FM output for this signal from the spec file: find the `(+)` impl nets in the correct hierarchy scope
+3. Select the best matching impl net — prefer direct net names over cell/pin pairs (filter by last path component matching a net name pattern, not a pin pattern)
+4. Record the resolved gate-level net name:
+
+```python
+condition_input_resolutions = []
+for entry in condition_inputs_to_query:
+    original = entry["signal"]
+    scope = entry["scope"]  # hierarchy scope to filter by
+    # Parse spec file for this signal's FM results — same as any other net
+    impl_nets = parse_fm_results(spec_file, signal_path=f"{scope}/{original}")
+    positive_nets = [n for n in impl_nets if n["polarity"] == "(+)" and is_net_not_pin(n["path"])]
+    if positive_nets:
+        # Use the impl net name (last path component) from the best match
+        resolved_net = extract_net_name(positive_nets[0]["path"])
+        condition_input_resolutions.append({
+            "original_signal": original,
+            "resolved_gate_level_net": resolved_net
+        })
+    else:
+        condition_input_resolutions.append({
+            "original_signal": original,
+            "resolved_gate_level_net": None  # FM also could not find it
+        })
+```
+
+Write `condition_input_resolutions` to the fenets RPT and to the SPEC_SOURCES section so the studier can access them.
+
+**Why this works:** FM find_equivalent_nets does a full logical equivalence analysis between RTL and gate-level — it finds the impl net logically equivalent to the RTL signal regardless of what synthesis named it. This is the same mechanism that resolves all other wire_swap old_tokens.
+
+---
+
 ## STEP D — Build SPEC_SOURCES mapping
 
 After all initial + retry runs complete, determine which spec file resolved each stage:
