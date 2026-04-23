@@ -328,9 +328,9 @@ cp <BASE_DIR>/data/<tag>_find_equivalent_nets_raw*.rpt <AI_ECO_FLOW_DIR>/
 
 If a stage returns `--- No Equivalent Nets:` (not FM-036 — the net path was valid but FM found no gate-level equivalents):
 
-**You MUST attempt the retries below before applying Stage Fallback.** Skipping retries and going directly to fallback is a protocol violation — retries often resolve the issue (e.g., adding `TIM/` sub-hierarchy resolves PrePlace No-Equiv-Nets in many designs).
+**You MUST attempt the retries below before applying Stage Fallback.** Skipping retries and going directly to fallback is a protocol violation — retries resolve the issue when the queried hierarchy path is at the wrong level relative to where the signal is visible in FM's reference namespace.
 
-This typically happens when:
+This happens when:
 - The hierarchy path is at the wrong level (too high or too low)
 - The P&R stage restructured the signal into HFS aliases not visible at the queried scope
 
@@ -658,6 +658,73 @@ If pre-existing FM failures exist — **spawn a sub-agent (general-purpose)** wi
 Set `svf_update_needed = true` for use in Step 5 only when the TCL file was actually written with entries.
 
 **CHECKPOINT (if spawned):** Verify `data/<TAG>_eco_svf_entries.tcl` exists and contains at least one `set_dont_verify` or `set_user_match` entry (no `guide_eco_change` entries) before proceeding.
+
+---
+
+## STEP 4c — Pre-FM Netlist Integrity Verification (MANDATORY before Step 5)
+
+Before submitting FM, verify the PostEco netlists are valid. FM jobs are expensive (1–2 hours each) — catching errors here saves wasted FM time.
+
+**Check 1 — SKIPPED entries in eco_applied:**
+```bash
+python3 -c "
+import json
+data = json.load(open('<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json'))
+for stage in ['Synthesize','PrePlace','Route']:
+    for e in data.get(stage,[]):
+        if e.get('status')=='SKIPPED':
+            print(f'{stage}: SKIPPED {e.get(\"cell_name\",\"?\")} reason={e.get(\"reason\",\"?\")}')
+"
+```
+If any SKIPPED entries exist for `port_declaration` or `port_connection` changes: the ECO is incomplete. Do NOT proceed to FM. Investigate the SKIPPED reason:
+- `"Could not find port list close"` → PORT_DECL Step 2 depth tracking failed — check the stage-specific module name and endmodule detection
+- `"cell not found"` → stage-specific cell name differs — check studier for stage-specific cell names
+
+**Check 2 — Verilog syntax quick scan of all 3 PostEco stages:**
+```bash
+for stage in Synthesize PrePlace Route; do
+  # Count unbalanced parentheses in each module definition
+  # A syntax error produces an unbalanced count
+  err=$(zcat <REF_DIR>/data/PostEco/${stage}.v.gz | \
+    python3 -c "
+import sys
+depth=0; errs=[]
+for i,l in enumerate(sys.stdin,1):
+    for c in l:
+        if c=='(': depth+=1
+        elif c==')': depth-=1
+    if depth<0:
+        errs.append(f'line {i}: unbalanced ) — depth={depth}')
+        depth=0
+if errs: print('\n'.join(errs[:5]))
+else: print('OK')
+" 2>/dev/null)
+  echo "$stage: $err"
+done
+```
+If any stage shows unbalanced parentheses or syntax errors: the eco_applier corrupted that stage's netlist. Revert and investigate before submitting FM — a corrupt netlist causes FM 599 (read error) and wastes the entire FM slot.
+
+**Check 3 — Verify ECO cells exist in all 3 stages:**
+```bash
+for stage in Synthesize PrePlace Route; do
+  count=$(zcat <REF_DIR>/data/PostEco/${stage}.v.gz | grep -c "eco_<jira>_" 2>/dev/null)
+  echo "$stage: $count eco_<jira>_ cells"
+done
+```
+All 3 stages must show non-zero counts. A stage with 0 ECO cells means the eco_applier did not modify that stage — FM stage-to-stage comparison will fail.
+
+**Check 4 — Verify port declarations applied in all stages:**
+
+For each `port_declaration` change in the study JSON, verify the signal name appears in all 3 PostEco stages:
+```bash
+for stage in Synthesize PrePlace Route; do
+  count=$(zcat <REF_DIR>/data/PostEco/${stage}.v.gz | grep -cw "<signal_name>" 2>/dev/null)
+  echo "$stage: $count occurrences of <signal_name>"
+done
+```
+If count=0 in any P&R stage: the port declaration was skipped → FM will fail with "port not defined" error for that stage. Do NOT submit FM — fix the port declaration first.
+
+**If any check fails:** Do NOT submit FM. Instead, record the failure in `data/<TAG>_eco_step4c_prefm_check.json` and either fix inline (if the issue is a simple name mismatch) or mark the affected changes as SKIPPED with reasons, then re-run eco_applier for the affected stage only. Only proceed to Step 5 when all 4 checks pass.
 
 ---
 

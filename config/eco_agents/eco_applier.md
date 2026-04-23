@@ -306,7 +306,7 @@ zcat <REF_DIR>/data/PreEco/<Stage>.v.gz | grep -E "^[[:space:]]*<gate_function>[
 
 Replace `<gate_function>` with the actual value (e.g., `NAND2`, `AND2`, `OR2`, `MUX2`, `INV`, etc.). The pattern `<gate_function>[A-Z0-9]*` matches the full library cell name that starts with the gate function prefix.
 
-**For `MUX2` gate_function specifically:** The library cell will have a longer technology-specific name (e.g., `MUX2<drive_strength><tech_suffix>`). Never use the bare `MUX2` primitive — it is a generic Verilog behavioral construct not present in the technology library. FM will fail to elaborate any netlist containing bare `MUX2` instances. Always grep the PreEco netlist with the `MUX2[A-Z0-9]*` pattern to find the real cell name for this design.
+**For `MUX2` gate_function specifically:** The library cell will have a longer technology-specific name (e.g., `MUX2<drive_strength><tech_suffix>`). Never use the bare `MUX2` primitive — it is a generic Verilog behavioral construct not present in the technology library. FM will fail to elaborate any netlist containing bare `MUX2` instances. Always grep the PreEco netlist with the `MUX2[A-Z0-9]*` pattern to find the real cell name used in the current netlist.
 
 **Step 2b — Handle constant inputs (`1'b0`, `1'b1`) in gate port connections:**
 
@@ -353,15 +353,26 @@ grep -n "^module <module_name> \|^module <module_name>(" /tmp/eco_apply_<TAG>_<S
 **Step 2 — Add signal to module port list using parenthesis depth tracking:**
 
 ```python
+# Step 2a — Find module start (exact name match)
 mod_idx = next(
     i for i, l in enumerate(lines)
     if re.match(rf'^module\s+{re.escape(module_name)}\s*[(\s]', l)
 )
-# Use parenthesis depth tracking to find the TRUE closing ')' of the port list
-# Same approach as RULE 20 (PORT_CONN) — do NOT use simple string matching
+
+# Step 2b — Find endmodule boundary (handles trailing comments)
+# Strip comments before comparing — 'endmodule // note' must also match
+endmodule_idx = next(
+    i for i in range(mod_idx + 1, len(lines))
+    if lines[i].strip().split('//')[0].strip() == 'endmodule'
+)
+
+# Step 2c — Find port list close using parenthesis depth tracking
+# IMPORTANT: Port lists in P&R stages can be very long (thousands of lines) because
+# P&R adds scan and test ports that are absent in Synthesize. The depth tracking
+# MUST search the full range from mod_idx to endmodule_idx without early exit.
 depth = 0
 port_list_close_idx = None
-for i in range(mod_idx, len(lines)):
+for i in range(mod_idx, endmodule_idx):
     for ch in lines[i]:
         if ch == '(':
             depth += 1
@@ -373,13 +384,26 @@ for i in range(mod_idx, len(lines)):
     if port_list_close_idx is not None:
         break
 
+# Step 2d — MANDATORY checkpoint before proceeding
+if port_list_close_idx is None:
+    # Depth tracking failed — module structure is unexpected. Do NOT silently skip.
+    # Record as SKIPPED with reason so the issue is visible in the Step 4 RPT.
+    raise RuntimeError(
+        f"PORT_DECL: Could not find port list close for module '{module_name}' "
+        f"(searched lines {mod_idx}–{endmodule_idx}). "
+        f"Possible causes: (1) endmodule_idx found too early due to comment parsing, "
+        f"(2) mismatched parentheses in port list, "
+        f"(3) module_name mismatch between stages (check stage-specific module suffixes). "
+        f"Mark this port_declaration entry as SKIPPED."
+    )
+
 # Insert signal name before the last ')' on port_list_close_idx
 close_line = lines[port_list_close_idx]
 last_paren = close_line.rfind(')')
 lines[port_list_close_idx] = close_line[:last_paren] + f', <signal_name>\n)' + close_line[last_paren+1:]
 ```
 
-> **This rule prevents:** inserting the port NAME inside the port list before it closes, which can happen when the first standalone `);` pattern is found too early (e.g., inside a multi-line port list with comment lines). Always use depth tracking.
+> **Why P&R port lists are much longer than Synthesize:** The Synthesis stage netlist only includes functional ports. P&R stages insert scan chain ports, clock distribution ports, and test ports, making the port list potentially 5–10× longer. The depth tracking loop MUST NOT be limited to a shorter range — it must always search the full module scope (`mod_idx` to `endmodule_idx`).
 
 **Step 3 — Add declaration in module body AFTER the port list closes:**
 

@@ -135,7 +135,7 @@ Classify each pin: **Functional** (clock, data, Q) — values from RTL context; 
 awk '/^module <module_name>/{found=1} found && /<dff_cell_type>/{print; for(i=0;i<6;i++){getline;print}; exit}' \
     /tmp/eco_study_<TAG>_<Stage>.v
 ```
-In Synthesize (before scan insertion), auxiliary pins are connected to constants (e.g., `1'b0`) — confirm by reading the neighbour DFF. If no neighbour DFF of the same cell type is found in the same module scope: widen the search to the parent module scope (search the lines between the parent's `module` line and its `endmodule` line). Do NOT fall back to hardcoded constant values without finding a neighbour — the correct constant value must be read from the actual netlist for this design and stage, because some designs tie auxiliary pins to signals even in Synthesize.
+In Synthesize (before scan insertion), auxiliary pins are connected to constants (e.g., `1'b0`) — confirm by reading the neighbour DFF. If no neighbour DFF of the same cell type is found in the same module scope: widen the search to the parent module scope (search the lines between the parent's `module` line and its `endmodule` line). Do NOT fall back to hardcoded constant values without finding a neighbour — the correct constant value must be read from the actual netlist for the current stage, because auxiliary pins may be tied to signals rather than constants even in Synthesize.
 
 **Step D — Write `port_connections_per_stage`** combining functional (Step B) and auxiliary (Step C) pins. Use exact pin names from the cell's port map — do NOT hardcode:
 ```json

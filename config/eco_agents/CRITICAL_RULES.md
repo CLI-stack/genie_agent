@@ -369,4 +369,26 @@ This ordering works because eco_applier processes: Pass 1 (new_logic gate insert
 
 ---
 
+## RULE 24 — Port List Depth Tracking Must Search Full Module Scope Including Long P&R Port Lists
+
+**When finding the port list closing `)` using depth tracking in PORT_DECL Step 2, the search range must be `range(mod_idx, endmodule_idx)` — NOT `range(mod_idx, len(lines))` without an upper bound, and NOT a fixed-size window.**
+
+The `endmodule_idx` must be found by matching lines whose non-comment content equals `endmodule` (strip trailing `// comments` before comparing). P&R stage port lists are significantly longer than Synthesis stage port lists because P&R adds scan chain, test, and clock distribution ports. A port list in a Synthesis stage netlist may be significantly shorter than the same module's port list in a P&R stage netlist. The depth tracking loop must complete over the full range without artificial limits.
+
+If `port_list_close_idx` is None after the loop: do NOT silently proceed. Record as SKIPPED with a detailed reason (which module, which line range was searched) so the issue is visible in the Step 4 RPT and can be debugged without re-running the entire flow.
+
+---
+
+## RULE 25 — Run Pre-FM Integrity Checks Before Every FM Submission
+
+**Before submitting FM (Step 5), always run Step 4c — the 4 pre-FM checks:**
+1. No SKIPPED entries for port_declaration or port_connection changes
+2. No Verilog syntax errors (unbalanced parentheses) in any PostEco stage
+3. All 3 stages contain ECO cells (non-zero `eco_<jira>_` count)
+4. Port declaration signals present in all 3 stages
+
+FM jobs run for 1–2 hours. A corrupt netlist or missing port declaration causes an immediate FM 599 error (read failure) or N/A results, wasting the entire slot. The 4 pre-FM checks take seconds and catch these issues before the FM job is submitted.
+
+---
+
 *Last updated: 2026-04-21*

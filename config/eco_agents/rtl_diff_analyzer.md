@@ -251,49 +251,47 @@ grep -A8 "<mux_cell_name>" /tmp/preeco_study_rtldiff_Synthesize.v | head -10
 ```
 Record: `i0_net = <net_on_I0_pin>`, `i1_net = <net_on_I1_pin>`
 
-**Step D-MUX-3 — Determine what the old select value is when the old condition is TRUE:**
+**Step D-MUX-3 — Read old select driver and commit to gate direction BEFORE reading condition:**
 
 ```bash
 grep -n "\.Z[N]\?\s*(\s*<old_select_net>\s*)" /tmp/preeco_study_rtldiff_Synthesize.v | head -3
 ```
 
-Read the driver cell type. Now answer this question from first principles:
+Read the first word of the driver cell type name. Answer only ONE question:
 
-**Q: When the old RTL condition is TRUE, what does the old select driver output?**
+**Is this cell type INVERTING (output=LOW when inputs=HIGH) or NON-INVERTING (output=HIGH when inputs=HIGH)?**
+- Inverting: cell name starts with `NOR`, `NR`, `INR`, `INV`, `NAND`, `ND`, `IND` → output goes LOW when condition=TRUE → **old S=0 when condition TRUE**
+- Non-inverting: cell name starts with `AND`, `AN`, `OR`, `BUF` → output goes HIGH when condition=TRUE → **old S=1 when condition TRUE**
 
-- Read the old RTL condition from `context_line` (e.g., `(|signal)` = TRUE when signal has bits set)
-- A gate whose inputs are driven by the condition signal: if all input signals are HIGH (condition TRUE), does the gate output HIGH or LOW?
-  - Inverting gates (NOR, INV, NAND, NR, INR, ND): output goes LOW when inputs are HIGH → **old S=0 when condition TRUE**
-  - Non-inverting gates (AND, OR, BUF): output goes HIGH when inputs are HIGH → **old S=1 when condition TRUE**
+**STOP HERE. Record `old_S_when_condition_true`. Do NOT read the new condition expression yet.**
 
-Record: `old_S_when_condition_true = 0` (inverting) or `1` (non-inverting).
+Why stop here: The gate function depends on both the old driver behavior AND the new condition. Processing them in the wrong order causes errors — the condition expression's visual form can mislead the gate selection. Committing to the old driver result first ensures the condition is applied correctly in Step D-MUX-5.
 
-**Why this matters:** Because the MUX truth table (S=0→I0, S=1→I1) tells us which input was selected when the old condition was TRUE. That input is the true-branch. The new select must produce the same S value (0 or 1) when the new condition is TRUE — so we can derive what gate to use.
+**Step D-MUX-4 — Commit to gate direction (still without reading condition expression):**
 
-**Step D-MUX-4 — Determine which MUX input is the true-branch:**
+From Step D-MUX-3:
+- `old_S_when_condition_true = 0` → the MUX selected I0 when old condition=TRUE → I0 = true-branch → new S must also be 0 when new condition=TRUE → **new gate must output 0 when condition=TRUE → gate = NOT(condition)**
+- `old_S_when_condition_true = 1` → I1 = true-branch → **gate = condition itself**
 
-Using `old_S_when_condition_true` from Step D-MUX-3:
-- If `old_S_when_condition_true = 0` → S=0 → MUX selects I0 → **I0 = true-branch**
-- If `old_S_when_condition_true = 1` → S=1 → MUX selects I1 → **I1 = true-branch**
+**STOP HERE. Record the gate direction: "NOT(condition)" or "condition itself". Do NOT read the RTL condition text yet.**
 
-This derivation is objective: the old driver gate type is a physical property of the cell, and the MUX truth table is fixed. There is exactly one correct answer.
+Why stop here: This commitment is based solely on the old driver type — a physical property of the netlist. It must be made before the condition expression is visible so the direction cannot be influenced by the condition's visual form.
 
-**Step D-MUX-5 — Derive the new gate function from first principles:**
+**Step D-MUX-5 — NOW read the condition expression and apply the committed direction:**
 
-Now answer: **what boolean expression of the new ECO input signals must produce `old_S_when_condition_true` when the new condition is TRUE?**
+Only now read the new RTL condition from `context_line`. Write it as a boolean expression of ECO signals.
 
-Step 5a — Write the new RTL condition as a boolean expression of ECO signals from `context_line`. Examples: `~E | ~A` = NAND(E,A); `E & A` = AND(E,A).
+Apply the direction committed in Step D-MUX-4:
+- If direction = "NOT(condition)": logically negate the entire expression using De Morgan's laws
+- If direction = "condition itself": implement the expression directly
 
-Step 5b — The new gate must produce S such that:
-- S = `old_S_when_condition_true` when new condition = TRUE
-- If `old_S_when_condition_true = 0`: the gate must output 0 when condition=TRUE → gate output = NOT(condition) → invert the condition expression
-- If `old_S_when_condition_true = 1`: the gate must output 1 when condition=TRUE → gate output = condition → implement the condition expression directly
+Map the resulting boolean expression to a standard gate:
+- Two inputs ANDed → AND2; negated AND → NAND2
+- Two inputs ORed → OR2; negated OR → NOR2
+- Single input negated → INV
+- More inputs → extend the gate count (AND3, NAND3, OR3, NOR3, etc.)
 
-Step 5c — Map the resulting boolean expression to a standard gate:
-- `E & A` → AND2; `~(E & A)` → NAND2; `E | A` → OR2; `~(E | A)` → NOR2; `~E` → INV
-- For 3+ inputs: AND3, NAND3, OR3, NOR3, etc.
-
-**Why this derivation is reliable:** Each step follows mechanically from the previous. Step D-MUX-3 reads a physical property (gate type) that is unambiguous. Step D-MUX-4 applies the fixed MUX truth table (S=0→I0). Step D-MUX-5 inverts or passes through the condition based on the required S value. No semantic interpretation of net names is involved at any point.
+**Why this three-step structure works:** Committing to the gate direction in Step D-MUX-4 before reading the condition expression means Step D-MUX-5 is purely mechanical — negate or not, then name the gate. The direction cannot be overridden by how the condition expression happens to look.
 
 **Step D-MUX-5 — Store result in JSON:**
 
@@ -497,30 +495,49 @@ For every input net referenced in `new_condition_gate_chain`:
 ```python
 all_inputs_resolvable = True
 for gate in new_condition_gate_chain:
-    for inp in gate["inputs"]:
-        if inp in ("1'b0", "1'b1"):
-            continue  # constants — always valid
+    for idx, inp in enumerate(gate["inputs"]):
 
-        # Check 1: exists in SynRtl (PostEco RTL) — will exist in gate-level netlist
-        if signal_exists_in_synrtl(inp):
+        # Step V1 — Constants are always valid
+        if inp in ("1'b0", "1'b1"):
             continue
 
-        # Check 2: is a new_port/new_signal being added by this same ECO (RULE 23)
-        eco_new_ports = [c["new_token"] for c in changes
-                         if c["change_type"] in ("new_port", "new_logic", "port_promotion")]
-        if inp in eco_new_ports or any(inp in str(c.get("context_line","")) for c in changes):
-            # Signal is new but will exist after this ECO is applied
+        # Step V2 — New port/signal from this same ECO (RULE 23)
+        # Check BEFORE gate-level verification — these signals don't exist in PreEco by definition
+        eco_new_tokens = [c["new_token"] for c in changes
+                          if c["change_type"] in ("new_port", "new_logic", "port_promotion")]
+        if inp in eco_new_tokens:
             change_idx = next((i for i, c in enumerate(changes)
                                if c.get("new_token") == inp), None)
-            gate["input_from_change"] = change_idx  # RULE 23
+            gate["input_from_change"] = change_idx  # RULE 23 — will exist after ECO Pass 2
             continue
 
-        # Check 3: exists in PreEco netlist directly
-        if signal_exists_in_preeco_synrtl(inp):
+        # Step V3 — Resolve to gate-level name in PreEco Synthesize netlist
+        # RTL signal names are NOT guaranteed to match gate-level net names after synthesis.
+        # Synthesis renames, merges, or restructures signals during elaboration.
+        # The chain must store the GATE-LEVEL name so the studier can find it in the PreEco netlist.
+        # Try name variants in order:
+        resolved_name = None
+        candidates = [
+            inp,                    # exact RTL name
+            f"{inp}_reg",           # synthesis appends _reg to state registers
+            f"{inp}_0_",            # bit-0 of a bus: signal[0] → signal_0_
+            f"{inp}_reg/Q",         # DFF Q output net (some synthesis tools)
+        ]
+        for candidate in candidates:
+            count = grep_count_in_preeco(candidate, stage="Synthesize")
+            if count >= 1:
+                resolved_name = candidate
+                break
+
+        if resolved_name:
+            gate["inputs"][idx] = resolved_name  # Replace RTL name with gate-level name in chain
             continue
 
-        # Signal is unresolvable — partial chain would produce wrong logic
-        gate["decompose_warning"] = f"input '{inp}' unresolvable — not in RTL, new_port list, or PreEco"
+        # Step V4 — Signal genuinely unresolvable in gate-level netlist
+        # Do NOT set null immediately — mark the gate and continue.
+        # The gate is skipped during studier Step 0c-4; subsequent gates depending on its
+        # output will also be skipped (they reference n_eco_<jira>_<seq> which won't exist).
+        gate["decompose_warning"] = f"input '{inp}' not found in PreEco gate-level netlist (tried {candidates})"
         all_inputs_resolvable = False
 
 if not all_inputs_resolvable:
@@ -528,7 +545,9 @@ if not all_inputs_resolvable:
     fallback_strategy = null
 ```
 
-**Only set `new_condition_gate_chain: null` when an input signal is genuinely unresolvable** — not found in SynRtl, not a new_port/new_signal from this ECO, and not in PreEco. Signals that are new ports from this ECO are valid via RULE 23 (`input_from_change`) and must NOT trigger null.
+**Why RTL name verification (SynRtl) is not sufficient:** A signal that exists in the RTL source (`reg signal_name`) may be stored under a different name in the synthesized gate-level netlist — synthesis may append `_reg`, change bus notation, or restructure the signal path. The gate-level PreEco netlist is the authoritative source for net names that the eco_netlist_studier will search. Always resolve to the gate-level name before storing in the chain.
+
+**Only set `new_condition_gate_chain: null` when an input signal is genuinely unresolvable** — not a new_port/signal from this ECO (RULE 23), and not found in PreEco gate-level netlist under any of the standard synthesis name variants.
 
 **If the condition decomposition fails** (arithmetic, function calls, unsupported operators) → set `new_condition_gate_chain: null` and `fallback_strategy: null`. eco_netlist_studier will mark as MANUAL_ONLY.
 
