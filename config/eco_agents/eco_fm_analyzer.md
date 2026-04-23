@@ -20,25 +20,111 @@ Check each target's `status` field:
 - `FAIL` — FM ran and found failing points
 - `N/A` or `ABORTED` — FM aborted before comparison; failing_points will be empty/missing
 
-**If ANY target shows N/A or ABORTED:**
+**If ANY target shows N/A or ABORTED — do a full abort diagnosis before anything else.**
 
-Read the FM log for tool-level errors:
+### Step 0a — Read FM log for all error codes
+
+For EACH failing target, read its log:
 ```bash
-zcat <REF_DIR>/logs/FmEqvEcoSynthesizeVsSynRtl/FmEqvEcoSynthesizeVsSynRtl.log.gz 2>/dev/null | \
-  grep -E "^Error|CMD-0[0-9]+|^Warning.*CMD" | head -20
+for target in FmEqvEcoSynthesizeVsSynRtl FmEqvEcoPrePlaceVsEcoSynthesize FmEqvEcoRouteVsEcoPrePlace; do
+    log=<REF_DIR>/logs/${target}.log.gz
+    if [ -f "$log" ]; then
+        echo "=== $target ==="
+        zcat "$log" | grep -E "^Error|FE-LINK|FM-[0-9]+|CMD-[0-9]+|Unresolved|cannot|no corresponding port" | head -30
+    fi
+done
 ```
 
-Classify the abort:
-| Error | Root Cause | Fix |
-|-------|-----------|-----|
-| `CMD-010` on `guide_eco_change` | Invalid SVF command in EcoChange.svf | Remove eco_svf_entries.tcl; set `svf_update_needed=false` |
-| `CMD-005` | SVF elaboration error | Same as CMD-010 |
-| Syntax error in netlist | eco_applier corrupted PostEco | Check eco_applied SKIPPED entries; check port_connection insertion |
-| `FM-001` design read error | PostEco netlist not readable | Netlist corruption — revert and reapply |
+### Step 0b — Classify abort type
 
-**If FM aborted due to SVF errors:** Set `failure_mode: ABORT_SVF`. The fix is NOT an ECO change — it is removing the bad SVF entries. Set `svf_update_needed: false` in the next round.
+| Error pattern | Abort Type | Root Cause |
+|---------------|-----------|------------|
+| `CMD-010` on `guide_eco_change` | `ABORT_SVF` | Invalid SVF command — remove eco_svf_entries.tcl |
+| `CMD-005` | `ABORT_SVF` | SVF elaboration error — same fix |
+| `FE-LINK-7` + `no corresponding port` | `ABORT_LINK` | Port missing from module after eco_applier |
+| `FM-234` (Unresolved references) | `ABORT_LINK` | One or more module ports unresolved — caused by FE-LINK-7 |
+| `FM-156` (Failed to set top design) | `ABORT_LINK` | Cascades from FM-234 |
+| `FM-001` design read error | `ABORT_NETLIST` | PostEco netlist not readable — corruption |
+| Syntax error | `ABORT_NETLIST` | eco_applier wrote malformed Verilog |
 
-**If FM aborted due to netlist corruption:** Set `failure_mode: ABORT_NETLIST`. Check eco_applied for SKIPPED/VERIFY_FAILED entries; identify the corrupted section.
+**ABORT_SVF:** Fix is removing bad SVF entries. Set `svf_update_needed: false`. No ECO change needed.
+
+**ABORT_LINK:** Port structure problem in PostEco netlist. Go to Step 0c immediately.
+
+**ABORT_NETLIST:** eco_applier wrote malformed Verilog. Check SKIPPED/VERIFY_FAILED entries and the specific line where FM failed to read.
+
+### Step 0c — ABORT_LINK: diagnose missing ports
+
+Extract the specific missing port(s) from the FE-LINK-7 error:
+```bash
+zcat <REF_DIR>/logs/<target>.log.gz | grep "FE-LINK-7" | head -10
+# Example output:
+# Error: The pin 'NeedFreqAdj' of '/.../umcarb/CTRLSW' has no corresponding port on 'umcarbctrlsw'
+```
+
+For each `FE-LINK-7` error, record:
+- `missing_port`: the port name (e.g., `NeedFreqAdj`)
+- `instance_path`: the instance where the pin is used (e.g., `umcarb/CTRLSW`)
+- `module_name`: the module that is missing the port (e.g., `umcarbctrlsw`)
+
+**Step 0c-1: Check if port is in PostEco netlist port list:**
+```bash
+# Find the module and check its port list header
+stage=Synthesize  # check each failing stage
+zcat <REF_DIR>/data/PostEco/${stage}.v.gz | grep -n "module.*<module_name>" | head -3
+# Then read ~30 lines from that position to see the port list closing ) ;
+# Check if <missing_port> appears between the opening ( and the closing ) ;
+```
+
+**Step 0c-2: Check if the port was incorrectly marked ALREADY_APPLIED:**
+```bash
+python3 -c "
+import json
+with open('<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json') as f:
+    data = json.load(f)
+for stage, entries in data.items():
+    if stage == 'summary': continue
+    for e in entries:
+        if (e.get('change_type') in ('port_declaration','port_connection')
+            and e.get('status') == 'ALREADY_APPLIED'
+            and '<missing_port>' in str(e)):
+            print(f'{stage}: ALREADY_APPLIED — {e}')
+            reason = e.get('already_applied_reason', 'NO REASON RECORDED')
+            print(f'  already_applied_reason: {reason}')
+"
+```
+
+**Step 0c-3: Verify what check was used for ALREADY_APPLIED**
+
+If the entry shows `ALREADY_APPLIED` with NO `already_applied_reason`, or if the reason says something like "found in file" without specifying "found in port list" — this is a **false ALREADY_APPLIED**. The eco_applier found the signal name somewhere in the file (e.g., as a DFF output wire) but did NOT verify it was in the module port list.
+
+**Step 0c-4: Confirm the port is absent from the port list**
+
+If Step 0c-1 confirms the port IS missing from the port list header, and Step 0c-2 confirms ALREADY_APPLIED was applied to this port_declaration:
+- **Root cause confirmed**: eco_applier falsely detected port_declaration as ALREADY_APPLIED
+- Set `failure_mode: ABORT_LINK`
+- The fix is to force re-apply the port_declaration in the next round (not mark ALREADY_APPLIED)
+
+**Step 0c-5: Build fix entries for ABORT_LINK**
+
+For each missing port, add to `revised_changes`:
+```json
+{
+  "stage": "ALL",
+  "action": "force_port_decl",
+  "signal_name": "<missing_port>",
+  "module_name": "<module_name>",
+  "declaration_type": "input|output",
+  "rationale": "FE-LINK-7: port '<missing_port>' missing from port list of '<module_name>'. eco_applier marked ALREADY_APPLIED incorrectly — signal exists as wire/DFF output but NOT in module port list header.",
+  "eco_preeco_study_update": {
+    "action": "force_reapply_port_decl",
+    "signal_name": "<missing_port>",
+    "module_name": "<module_name>"
+  }
+}
+```
+
+The ROUND_ORCHESTRATOR will apply this by finding the port_declaration entry in eco_preeco_study.json and adding `"force_reapply": true` so eco_applier skips the ALREADY_APPLIED check and applies unconditionally.
 
 **Only proceed to Step 1 if FM ran comparison (all targets show PASS or FAIL with actual failing counts).**
 
@@ -264,35 +350,117 @@ See detailed description in Modes section above. Apply `set_dont_verify` scoped 
 
 ---
 
+## STEP 3b — Deep Netlist Investigation (when cause is unclear after Steps 1–3)
+
+**Trigger: Run this step if after Checks A–D and Mode classification the failure is still UNKNOWN — you cannot identify which cell/net is wrong.**
+
+This is not a shortcut — it is a mandatory investigation before giving up. You have full read access to the PostEco netlists. Use it.
+
+### Investigation 3b-1 — Read failing points directly from FM rpt
+
+```bash
+# Failing points are in a compressed rpt file — read it
+zcat <REF_DIR>/rpts/<target>/<target>__failing_points.rpt.gz 2>/dev/null | head -50
+```
+
+Each failing point is a DFF path like `/<TILE>/<MODULE>/<INST>/<dff_name>`. For each:
+1. Note the DFF instance name
+2. Note which stage it's in (from which target it appears under)
+
+### Investigation 3b-2 — Trace the failing DFF in PostEco
+
+For each failing DFF that is also in `eco_rtl_diff.json` as a `target_register`:
+```bash
+stage=Synthesize  # or whichever stage is failing
+zcat <REF_DIR>/data/PostEco/${stage}.v.gz | grep -n "<dff_instance_name>" | head -5
+# Read the DFF block — check D pin, CP pin, Q pin
+zcat <REF_DIR>/data/PostEco/${stage}.v.gz | sed -n '<line_N>,<line_N+8>p'
+```
+
+What to look for:
+- **D pin net** — is it the expected `n_eco_<jira>_<seq>` (from a gate insertion)? Or still the old net?
+- **Q pin** — does it match `target_register` in the RTL diff?
+- **Is the DFF cell type correct?** — wrong DFF (e.g., DFQD instead of SDFQD) would cause FM scan mismatch
+
+### Investigation 3b-3 — Verify each ECO cell that should drive this DFF
+
+For each gate in the D-input chain that should drive this DFF:
+```bash
+zcat <REF_DIR>/data/PostEco/${stage}.v.gz | grep -n "eco_<jira>_<seq>" | head -5
+```
+
+Check:
+- Is the gate present? If not → INSERTED but missing → eco_applier verify was wrong
+- Is the gate output (`n_eco_<jira>_<seq>`) connected to the DFF D pin? If not → rewire was not applied
+
+### Investigation 3b-4 — Verify port declarations in hierarchical netlist
+
+For any change that involves a `port_declaration` or `port_connection` — check the actual PostEco netlist for both the port list header AND the declaration body:
+
+```bash
+# Check 1: Is the signal in the module port list header?
+zcat <REF_DIR>/data/PostEco/${stage}.v.gz | \
+  awk '/^module <module_name>/{found=1} found && /\) ;/{print NR": "$0; found=0; exit} found{print NR": "$0}' | head -30
+
+# Check 2: Is there an input/output declaration for this signal?
+zcat <REF_DIR>/data/PostEco/${stage}.v.gz | grep -n "input\|output" | grep "<signal_name>"
+
+# Check 3: Is there a port connection on the right instance?
+zcat <REF_DIR>/data/PostEco/${stage}.v.gz | grep -n "\.<port_name>( <net_name> )"
+```
+
+Any mismatch between what eco_applied JSON claims was done and what is actually in the netlist → the applied JSON is wrong (ALREADY_APPLIED was a false detection, or verify failed silently).
+
+### Investigation 3b-5 — Determine if re-running earlier steps is needed
+
+After the above investigation, determine if the fix requires going back:
+
+| Root cause found | Action |
+|-----------------|--------|
+| Gate missing from netlist despite INSERTED status | eco_applier failed silently → set `action: insert_cell` in revised_changes; ROUND_ORCHESTRATOR re-runs eco_applier |
+| Port missing from port list despite APPLIED status | eco_applier ALREADY_APPLIED was false → set `action: force_port_decl`; ROUND_ORCHESTRATOR sets `force_reapply: true` in study |
+| Gate present but wrong net on DFF D pin | eco_applier rewire was wrong → set `action: rewire` with correct nets |
+| Gate present, nets correct, DFF D pin correct, but FM still fails | Upstream RTL diff or FM study may be wrong → set `needs_re_study: true` in output |
+| FM result inconsistent with netlist content | FM may need re-reading netlist — set `needs_fm_resubmit: true` |
+
+If `needs_re_study: true` → ROUND_ORCHESTRATOR will re-run eco_netlist_studier for the specific affected changes before re-running eco_applier.
+
+---
+
 ## STEP 4 — Build Revised Strategy
 
 **RULE: revised_changes must be ACTIONABLE and HONEST.**
 - If you found the real cause → provide specific fix
-- If you cannot determine the cause after Steps 0-3 → say so explicitly; recommend a targeted grep or human review; do NOT invent a fix
+- If you cannot determine the cause after Steps 0-3b → say so explicitly with what was checked; do NOT invent a fix
 - Do NOT use `set_dont_verify` as a lazy fallback for unclassified failures — only use it for proven Mode E or Mode G
 
 ```json
 {
   "round": <ROUND>,
-  "failure_mode": "ABORT_SVF|ABORT_NETLIST|A|B|C|D|E|F|G|UNKNOWN",
-  "diagnosis": "<specific — which DFF, which net, which check found it>",
+  "failure_mode": "ABORT_SVF|ABORT_LINK|ABORT_NETLIST|A|B|C|D|E|F|G|UNKNOWN",
+  "diagnosis": "<specific — which DFF, which port, which net, which check found it, what was checked in investigation 3b>",
   "failing_points_count": {
     "FmEqvEcoSynthesizeVsSynRtl": <N>,
     "FmEqvEcoPrePlaceVsEcoSynthesize": <N>,
     "FmEqvEcoRouteVsEcoPrePlace": <N>
   },
   "wrong_cells": ["<cell_name_if_mode_B>"],
+  "needs_re_study": false,
+  "re_study_targets": [],
   "revised_changes": [
     {
       "stage": "Synthesize|PrePlace|Route|ALL",
-      "action": "rewire|insert_cell|new_logic_dff|new_logic_gate|revert_and_rewire|exclude|set_dont_verify|manual_only",
+      "action": "rewire|insert_cell|new_logic_dff|new_logic_gate|revert_and_rewire|exclude|set_dont_verify|force_port_decl|manual_only",
       "cell_name": "<cell>",
       "pin": "<pin>",
       "old_net": "<old>",
       "new_net": "<new>",
-      "rationale": "<which DFF this affects, why this specific change fixes it>",
+      "signal_name": "<signal_for_port_decl_actions>",
+      "module_name": "<module_for_port_decl_actions>",
+      "declaration_type": "input|output",
+      "rationale": "<which DFF/port this affects, why this specific change fixes it, what evidence was found>",
       "eco_preeco_study_update": {
-        "action": "mark_excluded|update_net|add_entry|mark_confirmed",
+        "action": "mark_excluded|update_net|add_entry|mark_confirmed|force_reapply_port_decl",
         "entry_key": "<cell_name_or_change_type>",
         "field": "<field_to_update>",
         "value": "<new_value>"
@@ -328,13 +496,17 @@ Write `<BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json`.
 
 ## Critical Rules
 
-1. **FM abort first** — if FM didn't run comparison (N/A/ABORTED), the fix is a tool error, not an ECO change. Never propose ECO rewires when FM aborted.
-2. **SKIPPED entries are the first clue** — always check eco_applied for SKIPPED before any cone tracing. A SKIPPED target change is almost always the FM failure cause.
-3. **Cross-reference failing DFF against RTL diff `target_register` immediately** — this single step classifies 90% of cases without netlist tracing.
-4. **Polarity check re-derives from PreEco netlist** — do NOT compare against the RTL diff gate function hint (it may be wrong). Always re-run Step 4c-POLARITY from the actual PreEco MUX I0/I1 connections to determine the correct gate function independently.
-5. **NEVER use `set_dont_verify` as fallback for unknown failures** — only use it for proven Mode E or Mode G. Using it for unclassified failures masks real functional errors.
-6. **eco_preeco_study_update is mandatory for Mode B, D, A** — without updating the study JSON, the next round re-applies the same wrong change.
-7. **Stage-specific analysis** — for stage-to-stage targets (PrePlace-vs-Synth, Route-vs-PrePlace), grep the CORRECT stage's PostEco netlist, not always Synthesize.
-8. **Pre-existing requires cone trace proof** — do NOT classify Mode E without tracing the failing DFF's D-input cone ≥ 5 hops and confirming no contact with ECO nets.
-9. **Honest output over forced output** — if the root cause cannot be determined after all checks, say `failure_mode: UNKNOWN` and describe what was checked. Do NOT invent a fix.
-10. **Mode F exits the loop** — if all revised_changes are `manual_only`, ROUND_ORCHESTRATOR spawns FINAL_ORCHESTRATOR immediately.
+1. **FM abort first** — if FM didn't run comparison (N/A/ABORTED), classify the abort type with Step 0a–0c before anything else. Never propose ECO rewires when FM aborted due to SVF or link errors.
+2. **ABORT_LINK means missing port** — FE-LINK-7 + FM-234 means a port declaration was not applied to a module. Check ALREADY_APPLIED entries in eco_applied JSON — the eco_applier did a false detection. Set `force_port_decl` in revised_changes.
+3. **ALREADY_APPLIED may be wrong** — always check `already_applied_reason` in eco_applied JSON. If the reason says "found in file" without specifying "in port list" — treat it as suspect and verify the actual netlist.
+4. **SKIPPED entries are the first clue** — always check eco_applied for SKIPPED before any cone tracing. A SKIPPED target change is almost always the FM failure cause.
+5. **Cross-reference failing DFF against RTL diff `target_register` immediately** — this single step classifies 90% of cases without netlist tracing.
+6. **Polarity check re-derives from PreEco netlist** — do NOT compare against the RTL diff gate function hint (it may be wrong). Always re-run Step 4c-POLARITY from the actual PreEco MUX I0/I1 connections to determine the correct gate function independently.
+7. **NEVER use `set_dont_verify` as fallback for unknown failures** — only use it for proven Mode E or Mode G. Using it for unclassified failures masks real functional errors.
+8. **eco_preeco_study_update is mandatory for Mode B, D, A, ABORT_LINK** — without updating the study JSON, the next round re-applies the same wrong change.
+9. **Stage-specific analysis** — for stage-to-stage targets (PrePlace-vs-Synth, Route-vs-PrePlace), grep the CORRECT stage's PostEco netlist, not always Synthesize.
+10. **Pre-existing requires cone trace proof** — do NOT classify Mode E without tracing the failing DFF's D-input cone ≥ 5 hops and confirming no contact with ECO nets.
+11. **Deep investigation before UNKNOWN** — never return `failure_mode: UNKNOWN` without completing Step 3b. Reading the actual PostEco netlist is mandatory when Steps 1–3 cannot classify the failure. You have full read access — use it.
+12. **Set `needs_re_study: true` when upstream data is wrong** — if deep investigation (Step 3b) shows the eco_preeco_study.json has wrong gate chains or wrong net names, flag `needs_re_study` so ROUND_ORCHESTRATOR re-runs eco_netlist_studier before eco_applier.
+13. **Honest output over forced output** — if root cause cannot be determined after Step 3b, describe every check that was done. Do NOT invent a fix. Do NOT mark UNKNOWN without 3b.
+14. **Mode F exits the loop** — if all revised_changes are `manual_only`, ROUND_ORCHESTRATOR spawns FINAL_ORCHESTRATOR immediately.

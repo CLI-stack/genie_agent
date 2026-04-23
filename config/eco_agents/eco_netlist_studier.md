@@ -72,6 +72,130 @@ i:/FMWORK_IMPL_<TILE>/<TILE>/<INST_A>/<INST_B>/<cell_name>/<pin> (+)
 
 ---
 
+## RE-STUDY MODE (Round N — triggered by ROUND_ORCHESTRATOR after FM failure)
+
+When invoked with `RE_STUDY_MODE=true`, you are running as `eco_netlist_studier_round_N`. You are NOT doing the initial full study — you are fixing specific entries in `eco_preeco_study.json` based on eco_fm_analyzer's diagnosis.
+
+**Additional inputs in re-study mode:**
+- `FM_ANALYSIS_PATH` — path to `<TAG>_eco_fm_analysis_round<ROUND>.json`
+- `ROUND` — the round that just failed
+- `RE_STUDY_MODE=true`
+
+### Re-study Step 1 — Read eco_fm_analyzer output
+
+```bash
+cat <FM_ANALYSIS_PATH>
+```
+
+Extract:
+- `failure_mode` — what type of failure was diagnosed
+- `revised_changes` — what needs to be fixed (cell/port/net details + rationale)
+- `re_study_targets` — list of `target_register` values that need re-study
+- `needs_re_study` flag
+
+### Re-study Step 2 — Load existing study JSON
+
+```bash
+cat <BASE_DIR>/data/<TAG>_eco_preeco_study.json
+```
+
+This is the study from the initial run (or previous round). You will UPDATE specific entries — do NOT wipe the whole file.
+
+### Re-study Step 2b — Graceful exit for modes that need no study changes
+
+After reading the fm_analysis, check `failure_mode`:
+
+- **Mode E** (pre-existing) or **Mode G** (structural) → no study JSON changes needed. `set_dont_verify` is handled by eco_svf_updater (Step 4b of ROUND_ORCHESTRATOR), not by the studier. Write an rpt noting "Mode E/G: no study updates required — SVF suppression handled separately." Copy to AI_ECO_FLOW_DIR. **EXIT immediately** — do NOT proceed to Re-study Step 3.
+
+- **Mode ABORT_SVF** → no study JSON changes needed. Write rpt noting "ABORT_SVF: SVF config issue, no study update required." Copy. **EXIT.**
+
+- **re_study_targets is empty AND failure_mode is not ABORT_LINK/A/B/D/UNKNOWN** → Write rpt noting "No re-study targets — study JSON unchanged." Copy. **EXIT.**
+
+Only proceed to Re-study Step 3 for: `ABORT_LINK`, `A`, `B`, `C`, `D`, `UNKNOWN`, or mixed modes with non-empty `re_study_targets`.
+
+### Re-study Step 3 — Handle each failure mode
+
+**For `ABORT_LINK` (missing port from port list):**
+
+For each `force_port_decl` entry in `revised_changes`:
+1. Find the matching `port_declaration` entry in `eco_preeco_study.json` for `signal_name` + `module_name`
+2. Verify in the PostEco netlist that the port IS missing from the port list:
+   ```bash
+   zcat <REF_DIR>/data/PostEco/Synthesize.v.gz | \
+     awk '/^module <module_name>/{p=1} p && /\) ;/{print; p=0; exit} p{print}' | \
+     grep "<signal_name>"
+   ```
+3. If missing → set `"force_reapply": true` on the study entry for ALL stages
+4. Verify the `declaration_type` is correct (`input`/`output`) by reading the RTL diff context_line
+5. Record what you verified: `"re_study_note": "port '<signal_name>' confirmed absent from '<module_name>' port list in Synthesize PostEco — force_reapply set"`
+
+**For `failure_mode: A` (ECO not applied correctly — target register still failing):**
+
+For each target register in `re_study_targets`:
+1. Find the study entries for that `target_register` across all stages
+2. Read the actual PostEco Synthesize netlist to verify the current state:
+   ```bash
+   zcat <REF_DIR>/data/PostEco/Synthesize.v.gz | grep -n "<target_register>_reg\|<target_register>\b" | head -10
+   ```
+3. Find the DFF in PostEco and read its D pin connection:
+   ```bash
+   zcat <REF_DIR>/data/PostEco/Synthesize.v.gz | grep -A6 "<dff_instance_name>" | head -8
+   ```
+4. Compare D pin against what the study says it should be (expected new_net from eco_netlist_studier):
+   - If D pin = expected → re-study is not the issue; keep existing entry, note mismatch
+   - If D pin = old_net (not updated) → the rewire entry failed silently; verify old_net and new_net in study are correct, set `"confirmed": true, "force_reapply": true`
+   - If D pin = unexpected net → trace backward to find the correct cell; update `new_net` in study entry
+
+5. For hierarchical netlists, also verify all port_declaration and port_connection entries for this change:
+   - Check each port_declaration entry: is the port in the module port list?
+   - Check each port_connection entry: is the connection on the instance?
+   - Set `force_reapply: true` on any that are missing despite being marked APPLIED or ALREADY_APPLIED
+
+**For `failure_mode: B` (regression — wrong cell rewired):**
+
+For each `exclude` action in `revised_changes`:
+1. Find the study entry for that `cell_name` + `pin`
+2. Set `"confirmed": false, "reason": "excluded by eco_fm_analyzer round <ROUND> — Mode B regression"`
+3. Note: do NOT delete the entry — set `confirmed: false` so eco_applier skips it
+
+**For `failure_mode: D` (stage mismatch — cell name differs in P&R):**
+
+For each stage-specific entry in `revised_changes`:
+1. Grep the CORRECT PostEco stage for the new cell name:
+   ```bash
+   zcat <REF_DIR>/data/PostEco/<FailingStage>.v.gz | grep -n "<new_cell_name>" | head -5
+   ```
+2. Update the study entry `cell_name` for that specific stage
+3. Re-verify old_net is on the correct pin in that stage
+
+**For `failure_mode: UNKNOWN` (deep investigation needed):**
+
+For each target_register in `re_study_targets`:
+1. Read the failing point path from eco_fm_analysis `diagnosis` field
+2. Trace the FULL forward and backward cone from the DFF in PostEco Synthesize — this is deeper than the initial study
+3. Re-run the equivalent of Phase 1 (FM result parsing) for this specific net, using existing spec files
+4. Update the study entry with corrected cell/pin/net data
+
+### Re-study Step 4 — Save updated study JSON
+
+Write back `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` with ONLY the modified entries changed. All other entries must remain exactly as they were.
+
+Verify: `wc -l <BASE_DIR>/data/<TAG>_eco_preeco_study.json` is ≥ the original line count (you should not have removed entries, only updated them).
+
+Write `<BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<ROUND>.rpt` covering:
+- What was re-studied (which registers, which modes)
+- What was found in the PostEco netlist
+- What was updated in the study JSON (field-level diff — old value vs new value)
+- Any `force_reapply: true` flags set and why
+
+```bash
+cp <BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<ROUND>.rpt <AI_ECO_FLOW_DIR>/
+```
+
+**Exit after writing and copying the RPT.** ROUND_ORCHESTRATOR reads the updated `eco_preeco_study.json` and spawns `eco_apply_fix_round_N`.
+
+---
+
 ## Phase 0 — Process new_logic and new_port Changes FIRST
 
 **Before studying any FM-returned cells, process ALL `new_logic` changes from the RTL diff JSON.**

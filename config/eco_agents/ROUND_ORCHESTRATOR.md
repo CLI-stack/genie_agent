@@ -95,112 +95,88 @@ rm -f <BASE_DIR>/data/<TAG>_eco_svf_entries.tcl
 
 **CRITICAL — When to exit the loop early based on eco_fm_analyzer output:**
 
-- `failure_mode: UNKNOWN` → NOT a reason to stop — continue to next round
+- `failure_mode: UNKNOWN` → NOT a reason to stop — eco_fm_analyzer MUST have run Step 3b deep investigation before returning UNKNOWN. If `revised_changes` is non-empty, apply them and continue. If empty, treat same as MAX_ROUNDS.
+- `failure_mode: ABORT_SVF` → NOT a reason to stop — fix SVF issue (set `svf_update_needed=false`), continue to next round
+- `failure_mode: ABORT_LINK` → NOT a reason to stop — `revised_changes` contains `force_port_decl` entries; apply them in Step 6e (`force_reapply: true` in study JSON), continue to next round
+- `failure_mode: ABORT_NETLIST` → NOT a reason to stop — eco_applier corrupted the netlist; revert is already done in 6b; revised_changes will re-apply the affected entries correctly
 - `failure_mode: E` (pre-existing) → NOT a reason to stop — revised_changes contains `set_dont_verify`; apply and continue
 - `failure_mode: G` (structural stage mismatch) → NOT a reason to stop — revised_changes contains `set_dont_verify` entries for the affected scope. Write these entries to `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl` using the eco_svf_updater sub-agent (Step 4b), then set `svf_update_needed=true` for Step 5. Do NOT modify `eco_preeco_study.json` — Mode G failures are suppressed in FM, not fixed by ECO rewiring. Continue to next round.
-- `failure_mode: F` (manual_only — `d_input_decompose_failed`) → **check if ALL remaining failing points are `action: manual_only`**:
-  - If YES (every failing point is manual_only) → spawn FINAL_ORCHESTRATOR with `status: MANUAL_LIMIT`. These points cannot be fixed by any number of rounds. Report them to the engineer.
-  - If NO (some are manual_only, others have fixable actions) → continue to next round; apply the fixable changes, leave manual_only points for engineer report
-- If `revised_changes` is empty → treat as NEXT_ROUND = 5, spawn FINAL_ORCHESTRATOR with status MAX_ROUNDS
+- `failure_mode: F` (manual_only — `d_input_decompose_failed`) → **check if ALL `revised_changes` entries have `action: manual_only`**:
+  - If YES → **exit the loop early right here** — set handoff `status: MANUAL_LIMIT`, NEXT_ROUND = ROUND + 1, spawn FINAL_ORCHESTRATOR with `TOTAL_ROUNDS: <ROUND>`. Do NOT run Steps 6e/6f/4/5 — those are wasted rounds. These points cannot be automated.
+  - If NO (mixed — some manual_only, some fixable) → continue; apply the fixable changes in Steps 6e/6f/4/5, leave manual_only points in engineer report
+- If `revised_changes` is empty → **exit the loop early** — treat same as MAX_ROUNDS; spawn FINAL_ORCHESTRATOR with `status: MAX_ROUNDS`, `TOTAL_ROUNDS: <ROUND>`
 
-**RULE: Only spawn FINAL_ORCHESTRATOR early for (a) FM PASSED, (b) NEXT_ROUND = 5, or (c) ALL remaining points are `action: manual_only`.**
+**RULE: Early-exit decisions (Mode F all-manual, empty revised_changes) happen HERE immediately after Step 6d — before Steps 6e/6f/4/5. Do NOT continue to Steps 6e/6f/4/5 if exiting early.**
+
+**RULE: "After Step 5" only handles 3 outcomes: FM PASS → FINAL_ORCHESTRATOR, FM FAIL+NEXT_ROUND<5 → new ROUND_ORCHESTRATOR, FM FAIL+NEXT_ROUND=5 → FINAL_ORCHESTRATOR(MAX_ROUNDS). Mode F all-manual is never seen in "After Step 5" because it exits at Step 6d.**
 
 ---
 
-## STEP 6e — Update PreEco Study and Increment Round
+## STEP 6e — Increment Round and Update fixer_state
 
-Read `data/<TAG>_eco_fm_analysis_round<ROUND>.json`. For each entry in `revised_changes`:
+Read `data/<TAG>_eco_fm_analysis_round<ROUND>.json`.
 
-```python
-study = load("<BASE_DIR>/data/<TAG>_eco_preeco_study.json")
+**ROUND is the round that just failed** (from ROUND_HANDOFF_PATH). `NEXT_ROUND = ROUND + 1`.
 
-action_to_change_type = {
-    "rewire":           "rewire",
-    "revert_and_rewire":"rewire",
-    "insert_cell":      "new_logic",
-    "new_logic_dff":    "new_logic_dff",
-    "new_logic_gate":   "new_logic_gate",
-    "exclude":          "rewire",
-    "set_dont_verify":  "rewire",
-}
-
-for change in fm_analysis["revised_changes"]:
-    stages = ["Synthesize","PrePlace","Route"] if change["stage"]=="ALL" else [change["stage"]]
-    action = change["action"]
-    change_type = action_to_change_type.get(action, "rewire")
-
-    for s in stages:
-        if action in ("new_logic_dff", "new_logic_gate"):
-            # These entries have no cell_name/pin — append directly as new insertion entries
-            new_entry = {
-                "change_type": change_type,
-                "target_register": change.get("target_register"),
-                "instance_scope":  change.get("instance_scope"),
-                "cell_type":       change.get("cell_type"),
-                "instance_name":   change.get("instance_name"),
-                "output_net":      change.get("output_net"),
-                "gate_function":   change.get("gate_function"),
-                "port_connections":change.get("port_connections", {}),
-                "input_from_change": change.get("input_from_change"),
-                "confirmed": True,
-                "source": f"fm_analyzer_round{ROUND}"
-            }
-            study[s].append(new_entry)
-        else:
-            # Rewire/insert_cell/exclude/set_dont_verify — find or create by cell_name + pin
-            entry = find_or_create(study[s], cell_name=change["cell_name"], pin=change["pin"])
-            entry["old_net"]     = change["old_net"]
-            entry["new_net"]     = change["new_net"]
-            entry["change_type"] = change_type
-            entry["confirmed"]   = True
-            entry["source"]      = f"fm_analyzer_round{ROUND}"
-            if action == "exclude":
-                entry["confirmed"] = False
-                entry["reason"] = change.get("rationale", "excluded by fm_analyzer")
-
-save("<BASE_DIR>/data/<TAG>_eco_preeco_study.json", study)
-```
-
-Then update `eco_fixer_state`:
-1. Append strategy description to `strategies_tried` — format:
+Update `eco_fixer_state`:
+1. Append strategy description to `strategies_tried`:
    ```python
    strategy_entry = {
        "round": ROUND,
        "failure_mode": fm_analysis["failure_mode"],
-       "cells_changed": [
-           f"{c['stage']}:{c['cell_name']}/{c['pin']}:{c['action']}"
+       "diagnosis": fm_analysis.get("diagnosis", ""),
+       "actions": [
+           f"{c['stage']}:{c.get('cell_name', c.get('signal_name','?'))}/{c.get('pin','?')}:{c['action']}"
            for c in fm_analysis["revised_changes"]
-           if c["action"] not in ("set_dont_verify", "exclude")
-       ],
-       "cells_excluded": [c["cell_name"] for c in fm_analysis["revised_changes"] if c["action"] == "exclude"]
+       ]
    }
    eco_fixer_state["strategies_tried"].append(strategy_entry)
    ```
-   This allows eco_fm_analyzer (next round) to check `strategies_tried` and avoid repeating the same cell+pin+action combination.
-2. Increment `round` by 1
-3. Save updated `eco_fixer_state`
-4. Set `NEXT_ROUND = round + 1`
+2. Set `NEXT_ROUND = ROUND + 1`
+3. Set `eco_fixer_state["round"] = NEXT_ROUND`
+4. Save updated `eco_fixer_state`
 
-**CHECKPOINT:** Verify `eco_fixer_state` saved with incremented round. Verify `_eco_preeco_study.json` modified time is current. Do NOT continue without both saved.
+**CHECKPOINT:** Verify `eco_fixer_state` saved, `eco_fixer_state["round"] == NEXT_ROUND`. This is the round number used for ALL subsequent steps (6f, 4, 4b, 5).
 
 ---
 
-## STEP 4 — Apply ECO (Next Round)
+## STEP 6f — Re-Study (eco_netlist_studier_round_N)
+
+**ALWAYS spawn eco_netlist_studier in RE_STUDY_MODE regardless of failure mode.** The studier reads the eco_fm_analyzer output, inspects the actual PostEco netlist, and updates `eco_preeco_study.json` with corrected/forced entries. This replaces the previous approach of manually patching the study JSON in ROUND_ORCHESTRATOR.
+
+**Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_netlist_studier.md` prepended. Pass:
+- `TAG`, `REF_DIR`, `TILE`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
+- `RE_STUDY_MODE=true`
+- `ROUND=<ROUND>` (the round that just failed — studier reads `<TAG>_eco_fm_analysis_round<ROUND>.json`)
+- `FM_ANALYSIS_PATH=<BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json`
+- Task: update `eco_preeco_study.json` for failing entries only; write `eco_step3_netlist_study_round<ROUND>.rpt`
+
+Wait for sub-agent to complete.
+
+**CHECKPOINT:**
+```bash
+ls <BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<ROUND>.rpt
+ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round<ROUND>.rpt
+```
+Verify `eco_preeco_study.json` modified time is after Step 6d completed. Do NOT proceed to Step 4 without both.
+
+---
+
+## STEP 4 — Apply ECO Fix (eco_apply_fix_round_N)
 
 **Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_applier.md` prepended. Pass:
 - `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `ROUND=<NEXT_ROUND>`, `AI_ECO_FLOW_DIR`
-- PreEco study JSON: `<BASE_DIR>/data/<TAG>_eco_preeco_study.json`
+- PreEco study JSON: `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` (updated by Step 6f)
 - Output: `<BASE_DIR>/data/<TAG>_eco_applied_round<NEXT_ROUND>.json`
 
-**CHECKPOINT + RPT GENERATION (ROUND_ORCHESTRATOR responsibility):**
+This agent is `eco_apply_fix_round_N` — it applies the fix strategy identified by eco_fm_analyzer and refined by eco_netlist_studier_round_N. It reads `force_reapply: true` flags and applies port declarations unconditionally when set.
 
+**CHECKPOINT:**
 ```bash
-# 1. Verify JSON exists with summary
 ls <BASE_DIR>/data/<TAG>_eco_applied_round<NEXT_ROUND>.json
-# 2. Verify backup files exist for each stage with confirmed cells
 ```
 
-**Generate Step 4 RPT from JSON — do this yourself, do NOT rely on eco_applier:**
+**Generate Step 4 RPT from JSON — do this yourself, do NOT rely on eco_applier. Use the same detailed format as ORCHESTRATOR.md Step 4 RPT (show reason/detail for every status, not just SKIPPED):**
 
 ```python
 applied = load("data/<TAG>_eco_applied_round<NEXT_ROUND>.json")
@@ -208,14 +184,31 @@ s = applied["summary"]
 with open("data/<TAG>_eco_step4_eco_applied_round<NEXT_ROUND>.rpt", "w") as f:
     f.write(f"STEP 4 — ECO APPLIED (Round <NEXT_ROUND>)\nTag: <TAG>\n{'='*80}\n")
     f.write(f"Summary: {s['applied']} applied / {s['inserted']} inserted / "
+            f"{s.get('already_applied',0)} already_applied / "
             f"{s['skipped']} skipped / {s['verify_failed']} verify_failed\n\n")
     for stage in ["Synthesize", "PrePlace", "Route"]:
         f.write(f"[{stage}]\n")
         for e in applied[stage]:
-            f.write(f"  {e['status']:10s} {e.get('cell_name','?'):40s} "
-                    f"pin={e.get('pin','?')} type={e.get('change_type','?')}\n")
-            if e['status'] == 'SKIPPED':
-                f.write(f"             Reason: {e.get('reason','?')}\n")
+            ct = e.get('change_type', '?')
+            status = e['status']
+            name = (e.get('instance_name') or e.get('cell_name') or
+                    e.get('signal_name') or e.get('port_name') or '?')
+            f.write(f"  {status:15s} {name:40s} type={ct}\n")
+            if status == 'INSERTED':
+                f.write(f"    → cell_type={e.get('cell_type','?')}  output={e.get('output_net','?')}  scope={e.get('instance_scope','?')}\n")
+                if e.get('reason'): f.write(f"    → {e['reason']}\n")
+            elif status == 'APPLIED':
+                if e.get('reason'): f.write(f"    → {e['reason']}\n")
+                elif ct == 'rewire': f.write(f"    → {e.get('old_net','?')} → {e.get('new_net','?')} on pin {e.get('pin','?')}\n")
+                elif ct in ('port_declaration','port_promotion'): f.write(f"    → module={e.get('module_name','?')}  decl_type={e.get('declaration_type','?')}\n")
+                elif ct == 'port_connection': f.write(f"    → .{e.get('port_name','?')}({e.get('net_name','?')}) on instance {e.get('instance_name','?')}\n")
+            elif status == 'ALREADY_APPLIED':
+                ar = e.get('already_applied_reason', e.get('reason', 'no reason recorded'))
+                f.write(f"    → {ar}\n")
+            elif status == 'SKIPPED':
+                f.write(f"    → REASON: {e.get('reason', 'no reason recorded')}\n")
+            elif status == 'VERIFY_FAILED':
+                f.write(f"    → VERIFY FAILED: {e.get('reason', 'no reason recorded')}\n")
         f.write("\n")
 ```
 
@@ -302,19 +295,6 @@ Update `<BASE_DIR>/data/<TAG>_round_handoff.json`:
 
 **Then EXIT — your work is done.**
 
-### If FM RESULT = FAIL and ALL remaining points are `action: manual_only` (Mode F)
-
-Read `data/<TAG>_eco_fm_analysis_round<NEXT_ROUND>.json` (the analysis file written by Step 6d for NEXT_ROUND, not for the older ROUND). Check if every entry in `revised_changes` has `action: manual_only`. If yes:
-
-Update handoff: `"status": "MANUAL_LIMIT"`
-
-**Spawn FINAL_ORCHESTRATOR agent** with `config/eco_agents/FINAL_ORCHESTRATOR.md` prepended. Pass:
-- `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`
-- `ROUND_HANDOFF_PATH`: `<BASE_DIR>/data/<TAG>_round_handoff.json`
-- `TOTAL_ROUNDS`: `<NEXT_ROUND - 1>`
-
-**Then EXIT — retrying would waste rounds on changes the AI cannot make.**
-
 ### If FM RESULT = FAIL and NEXT_ROUND < 5
 
 Update `eco_fixer_state.fm_results_per_round` with this round's result.
@@ -340,14 +320,16 @@ Update handoff: `"status": "MAX_ROUNDS"`
 
 ## Output Files (this agent produces per round)
 
-| File | Content |
-|------|---------|
-| `data/<TAG>_eco_report_round<ROUND>.html` | Per-round HTML (before revert) |
-| `data/<TAG>_eco_fm_analysis_round<ROUND>.json` | FM failure analysis (written by eco_fm_analyzer) |
-| `data/<TAG>_eco_preeco_study.json` | Updated with revised changes |
-| `data/<TAG>_eco_fixer_state` | Updated with incremented round |
-| `data/<TAG>_eco_applied_round<NEXT_ROUND>.json` | ECO changes for next round (written by eco_applier) |
-| `data/<TAG>_eco_svf_entries.tcl` | SVF entries if new_logic (written by eco_svf_updater) |
-| `data/<TAG>_eco_fm_verify.json` | Merged FM results (cumulative across rounds) |
-| `data/<TAG>_eco_step5_fm_verify_round<NEXT_ROUND>.rpt` | Step 5 RPT for this round |
-| `data/<TAG>_round_handoff.json` | Updated handoff for next agent |
+| File | Written by | Content |
+|------|-----------|---------|
+| `data/<TAG>_eco_report_round<ROUND>.html` | ROUND_ORCHESTRATOR (Step 6a) | Per-round HTML summary before revert |
+| `data/<TAG>_eco_fm_analysis_round<ROUND>.json` | eco_fm_analyzer (Step 6d) | FM failure diagnosis + revised_changes |
+| `data/<TAG>_eco_step3_netlist_study_round<ROUND>.rpt` | eco_netlist_studier_round_N (Step 6f) | What was re-studied, what was updated in study JSON |
+| `data/<TAG>_eco_preeco_study.json` | eco_netlist_studier_round_N (Step 6f) | Updated study — force_reapply flags, corrected nets |
+| `data/<TAG>_eco_fixer_state` | ROUND_ORCHESTRATOR (Step 6e) | Incremented round + strategies_tried |
+| `data/<TAG>_eco_applied_round<NEXT_ROUND>.json` | eco_apply_fix_round_N (Step 4) | ECO changes applied in fix round |
+| `data/<TAG>_eco_step4_eco_applied_round<NEXT_ROUND>.rpt` | ROUND_ORCHESTRATOR (Step 4) | Detailed application report |
+| `data/<TAG>_eco_svf_entries.tcl` | eco_svf_updater (Step 4b) | SVF entries for pre-existing failures |
+| `data/<TAG>_eco_fm_verify.json` | eco_fm_runner (Step 5) | Merged FM results cumulative across rounds |
+| `data/<TAG>_eco_step5_fm_verify_round<NEXT_ROUND>.rpt` | eco_fm_runner (Step 5) | Step 5 FM result RPT |
+| `data/<TAG>_round_handoff.json` | ROUND_ORCHESTRATOR (After Step 5) | Updated handoff for next agent |

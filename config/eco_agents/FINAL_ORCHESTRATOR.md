@@ -154,6 +154,7 @@ Per-Step Reports  (all at: <AI_ECO_FLOW_DIR>/)
   <AI_ECO_FLOW_DIR>/<fm036_retry1_tag>_find_equivalent_nets_raw_fm036_retry1.rpt      <- if FM-036 retry 1
   <AI_ECO_FLOW_DIR>/<fm036_retry2_tag>_find_equivalent_nets_raw_fm036_retry2.rpt      <- if FM-036 retry 2
   <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study.rpt
+  <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round<ROUND>.rpt  <- one line per fix round (ROUND=1..N-1)
   <AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt  <- one line per round
   <AI_ECO_FLOW_DIR>/<TAG>_eco_step4b_svf.rpt          <- omit if no new_logic
   <AI_ECO_FLOW_DIR>/<TAG>_eco_step5_fm_verify_round<ROUND>.rpt  <- one line per round
@@ -199,6 +200,8 @@ Write `<BASE_DIR>/data/<TAG>_eco_report.html` with these sections:
 <p><code><AI_ECO_FLOW_DIR>/<noequiv_retry1_tag>_find_equivalent_nets_raw.rpt</code></p>
 <p><code><AI_ECO_FLOW_DIR>/<noequiv_retry2_tag>_find_equivalent_nets_raw.rpt</code></p>
 <p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study.rpt</code></p>
+<!-- One line per fix round (if TOTAL_ROUNDS > 1): -->
+<p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round<ROUND>.rpt</code></p>
 <!-- One line per round: -->
 <p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt</code></p>
 <!-- Include only if new_logic insertions exist: -->

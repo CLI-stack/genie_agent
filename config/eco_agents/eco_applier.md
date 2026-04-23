@@ -377,6 +377,8 @@ Record: `status=APPLIED`, `change_type=port_declaration`, `declaration_type=wire
 
 ---
 
+**FORCE_REAPPLY override:** If the study JSON entry has `"force_reapply": true` — skip the ALREADY_APPLIED check entirely and apply Steps 2–4 unconditionally. This flag is set by ROUND_ORCHESTRATOR when eco_fm_analyzer diagnoses `ABORT_LINK` due to a false ALREADY_APPLIED on a port_declaration. Record status as `APPLIED` (not ALREADY_APPLIED) and note `"forced": true` in the JSON entry.
+
 **Steps 2–4 below apply ONLY to true port declarations (`declaration_type: "input"` or `"output"`):**
 
 **Step 1 — Find module definition line:**
