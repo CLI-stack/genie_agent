@@ -434,12 +434,47 @@ Record in JSON: `"named_wire_inserted": true, "named_wire": "<named_wire>", "sou
 
 > **Why this is necessary:** A net driven only through a hierarchical submodule output port bus is not directly traceable by FM in P&R stages — the submodule is treated as a black box. FM cannot look inside the black box to determine whether the output is driven or constant. Declaring an explicit named wire and replacing the original net in the port bus creates a visible, traceable connection that FM can follow even across the black-box boundary. This is a structural requirement that applies regardless of net naming conventions.
 
-**Step 1 — Verify all input signals exist:**
-```bash
-for each input_net in port_connections.values() (excluding output pin):
-    grep -cw "<input_net>" /tmp/eco_apply_<TAG>_<Stage>.v  # must be ≥ 1
+**Step 1 — Verify ALL input signals exist before any insertion:**
+
+Use `port_connections_per_stage[<Stage>]` if available; fall back to `port_connections` only if the per-stage map is absent.
+
+```python
+stage_pcs = entry.get("port_connections_per_stage", {}).get(Stage) or entry.get("port_connections", {})
+
+missing_inputs = []
+for pin, net_name in stage_pcs.items():
+    if pin == output_pin:
+        continue  # skip output
+    if net_name.startswith("NEEDS_NAMED_WIRE:"):
+        continue  # handled in Step 0 — already resolved
+    if net_name.startswith("UNRESOLVED_IN_"):
+        missing_inputs.append((pin, net_name.split(":", 1)[1]))
+        continue
+    if isinstance(net_name, str) and net_name.startswith("1'b"):
+        continue  # constant — always valid
+    count = grep_count(net_name, module_buffer)
+    if count == 0:
+        missing_inputs.append((pin, net_name))
+
+if missing_inputs:
+    # SKIP — do NOT insert gate with missing inputs
+    # A gate with a non-existent input produces a floating pin:
+    # FM sees the gate as undriven → downstream DFF classified as DFF0X or non-equivalent
+    record(status="SKIPPED", reason=(
+        f"gate input(s) not found in {Stage} PostEco: "
+        + ", ".join(f"pin={p} net={n}" for p, n in missing_inputs)
+        + " — use per-stage net resolution in eco_netlist_studier (0b-GATE-STAGE-NETS)"
+    ))
+    continue  # skip this gate, process next confirmed entry
 ```
-If any input is a new_logic output (`n_eco_<jira>_<seq>`) — verify that new_logic entry was already processed in Pass 1.
+
+**CRITICAL: NEVER insert a gate with a missing input net.** A gate with a non-existent or floating input:
+- Produces a floating input pin in the PostEco netlist
+- FM classifies any downstream DFF as `DFF0X` or non-equivalent
+- The insertion APPEARS successful (instance grep finds 1 result) but the logic is broken
+- This produces misleading INSERTED status with 0 verify_failed despite wrong netlist
+
+If any input is a `new_logic` output (`n_eco_<jira>_<seq>`) — verify that new_logic entry was already processed in Pass 1 (it should exist in the module buffer from an earlier Pass 1 step).
 
 **Step 2 — Find gate cell type from PreEco netlist matching `gate_function`:**
 ```bash

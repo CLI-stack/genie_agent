@@ -325,6 +325,45 @@ If hierarchical: do NOT use `port_promotion`. Use `port_declaration` (0g) + `por
 
 For multi-instance modules: create separate `new_logic_gate` entries per instance using `flat_net_name_per_instance`.
 
+**CRITICAL — `and_term` scope validation for hierarchical PostEco netlists:**
+
+The FM query for `and_term` returns cells that use `old_token` in the **PreEco flat netlist**. In the hierarchical PostEco netlist, those same cells may reside in a DIFFERENT module scope than the declaring module. Before creating rewire entries, verify each found cell is actually **inside the declaring module** in the PostEco hierarchical netlist:
+
+```python
+netlist_type = detect_netlist_type()  # "flat" or "hierarchical"
+
+if netlist_type == "hierarchical":
+    # Identify which module in PostEco corresponds to the declaring module from RTL diff
+    posteco_module_name = f"<TILE>_<module_name>"  # e.g., ddrss_umccmd_t_umcdcqarb_0
+
+    for cell in fm_returned_cells:
+        # Check: does this cell appear INSIDE the declaring module in PostEco?
+        cell_in_module = check_cell_in_module(cell, posteco_module_name, posteco_lines)
+        if not cell_in_module:
+            # Cell is in a parent or sibling module — do NOT rewire it
+            # and_term rewires only apply to cells within the declaring module scope
+            mark_excluded(cell, reason=(
+                f"and_term: cell '{cell}' found in FM but exists outside module "
+                f"'{posteco_module_name}' in hierarchical PostEco — "
+                f"rewiring parent-scope cells for and_term changes causes "
+                f"unintended logic changes in other modules; excluded"
+            ))
+
+def check_cell_in_module(cell_name, module_name, lines):
+    """True if cell_name appears between 'module <module_name>' and its endmodule."""
+    in_module = False
+    for line in lines:
+        if re.match(rf'^module\s+{re.escape(module_name)}\s*[(\s]', line):
+            in_module = True
+        if in_module and re.match(r'^endmodule', line.strip()):
+            in_module = False
+        if in_module and cell_name in line:
+            return True
+    return False
+```
+
+**Why this matters:** When PreEco is flat but PostEco is hierarchical, the FM query on `old_token` returns ALL cells using that net across the ENTIRE flat netlist — including cells in parent modules (`umcarb`) that happen to use the same signal name. In the hierarchical PostEco, those parent-scope cells are in different modules and must NOT be rewired as part of an `and_term` change scoped to a child module (`umcdcqarb`). Rewiring them produces wrong logic in the parent module and causes hundreds or thousands of FM non-equivalences.
+
 ---
 
 ### 0a — Classify the new cell type
@@ -341,6 +380,57 @@ Parse `context_line` to extract clock, reset, data expression (DFF) or input sig
 grep -cw "<input_signal>" /tmp/eco_study_<TAG>_Synthesize.v
 ```
 If count = 0 → input comes from another change; record `input_from_change: <N>`.
+
+### 0b-GATE-STAGE-NETS — Per-Stage Input Net Resolution for Combinational Gates (MANDATORY)
+
+After building the input net list for any `new_logic_gate` entry (including `and_term` gates), resolve **every input net for every stage** — P&R tools rename combinational nets between stages, and a net name valid in Synthesize may not exist in PrePlace or Route.
+
+**For each input net of the gate, for each stage (Synthesize, PrePlace, Route):**
+
+```python
+for stage in ["Synthesize", "PrePlace", "Route"]:
+    stage_lines = load_preeco_stage(stage)
+    stage_nets = {}
+
+    for pin, net_name in gate_inputs.items():
+        if pin == output_pin:
+            continue  # skip output
+
+        # Priority 1 — direct name match in this stage's PreEco netlist
+        count = grep_count(net_name, stage_lines)
+        if count >= 1:
+            stage_nets[pin] = net_name
+            continue
+
+        # Priority 2 — trace the driver in Synthesize PreEco to find the cell
+        # that produces this net, then find that same cell's output in this stage
+        driver_cell = find_driver_cell(net_name, synth_preeco_lines)
+        if driver_cell:
+            stage_net = find_cell_output_in_stage(driver_cell, stage_lines)
+            if stage_net:
+                stage_nets[pin] = stage_net
+                continue
+
+        # Priority 3 — P&R alias search (partial name match excluding declarations)
+        alias = find_pr_alias(net_name, stage_lines)
+        if alias:
+            stage_nets[pin] = alias
+            continue
+
+        # Unresolved — flag as PENDING for this stage
+        stage_nets[pin] = f"UNRESOLVED_IN_{stage}:{net_name}"
+
+    port_connections_per_stage[stage] = stage_nets
+```
+
+Record `port_connections_per_stage` in the study JSON entry. **Do NOT use Synthesize nets for all stages without verification** — this silently causes gate insertion failures in P&R stages when nets don't exist.
+
+If any input is `UNRESOLVED_IN_<Stage>:<net>` after all 3 priorities:
+- Check if it's a condition input that FM can resolve → add to `condition_inputs_to_query` (Step D-POST in rtl_diff_analyzer)
+- If already in FM results → use the FM-resolved name
+- If still unresolved → mark that gate as `"confirmed": false` for that stage only, with reason "input net '<net>' not found in <Stage> PreEco — cannot insert gate"
+
+**Why this is mandatory:** P&R synthesis renames many internal combinational nets (e.g., `N2408127` in Synthesize becomes a different net in Route). A gate inserted with a non-existent input net produces a floating pin that FM classifies as DFF0X or non-equivalent. The eco_applier will SKIP the gate if the input net is not found — but if no per-stage data is provided, it falls back to Synthesize nets and then fails silently.
 
 ### 0b-STAGE-NETS — Per-Stage Pin Verification for DFF (MANDATORY)
 
