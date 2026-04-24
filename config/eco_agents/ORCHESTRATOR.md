@@ -2,7 +2,7 @@
 
 **You are the ECO orchestrator agent.** The main Claude session has spawned you to execute the full ECO analyze flow. Your inputs (TAG, REF_DIR, TILE, LOG_FILE, SPEC_FILE) were passed in your prompt.
 
-> **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` in full before doing anything else. Every rule in that file addresses a known failure mode. Acknowledge each rule before proceeding to PRE-FLIGHT.
+> **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` in full before doing anything else. Every rule in that file addresses a known failure mode. Acknowledge each rule before proceeding to RESUMPTION CHECK.
 
 **Working directory:** Always `cd` to the directory containing `runs/` and `data/` (the BASE_DIR = parent of LOG_FILE's `runs/` folder) before any file operations.
 
@@ -29,6 +29,33 @@
 13. **Email before proceeding** — every round email (Step 6a) and the final email (Step 8) are MANDATORY. Verify "Email sent successfully" in the output before continuing.
 14. **Fixer state integrity** — always save `eco_fixer_state` with the incremented round number before looping back to Step 4. Never start a new round without updating fixer_state first.
 15. **Never skip a step** — each step must fully complete and its checkpoint must pass before the next step begins. Context pressure is NOT a valid reason to skip a step or checkpoint.
+
+---
+
+## RESUMPTION CHECK — BEFORE PRE-FLIGHT
+
+> **Root cause this solves:** The ORCHESTRATOR agent can exhaust its context window after eco_fm_runner returns and after writing round_handoff.json + eco_fixer_state, but BEFORE it can make the Agent() tool call to spawn ROUND_ORCHESTRATOR. Both state files are written but the spawn never happens. This check detects that situation and completes the spawn on restart.
+
+**Check for existing round_handoff.json FIRST — before PRE-FLIGHT, before any step:**
+
+```bash
+ls data/<TAG>_round_handoff.json 2>/dev/null && echo EXISTS
+```
+
+**If `round_handoff.json` EXISTS:**
+
+Read it and branch immediately:
+
+| `status` field | `eco_fixer_state` exists? | Action |
+|----------------|--------------------------|--------|
+| `FM_FAILED` | YES | Spawn ROUND_ORCHESTRATOR → HARD STOP |
+| `FM_FAILED` | NO | Something is wrong — write eco_fixer_state from round_handoff data (round=1, failing_targets from eco_fm_verify.json), then spawn ROUND_ORCHESTRATOR → HARD STOP |
+| `FM_PASSED` | — | Spawn FINAL_ORCHESTRATOR → HARD STOP |
+| `FM_FAILED` (pre_fm_check_failed=true) | YES | Spawn ROUND_ORCHESTRATOR → HARD STOP |
+
+**SKIP ALL STEPS including PRE-FLIGHT** when any row above matches — the flow is already complete up to the spawn. Do NOT re-run Steps 1–5.
+
+**If `round_handoff.json` does NOT exist:** Continue normally to PRE-FLIGHT below.
 
 ---
 
@@ -856,7 +883,9 @@ The script reads `<REF_DIR>/data/eco_fm_config` automatically.
 
 **[eco_fm_runner sub-agent does this — not the ORCHESTRATOR]** eco_fm_runner writes `data/<TAG>_eco_step5_fm_verify_round1.rpt` and copies it to `AI_ECO_FLOW_DIR/`.
 
-**CHECKPOINT:** Verify both `data/<TAG>_eco_fm_verify.json` and `data/<TAG>_eco_step5_fm_verify_round<ROUND>.rpt` exist and are non-empty. Verify `eco_fm_tag` is saved in `eco_fixer_state.fm_results_per_round`. Do NOT enter Step 6 without these files in place.
+**CHECKPOINT:** Verify both `data/<TAG>_eco_fm_verify.json` and `data/<TAG>_eco_step5_fm_verify_round<ROUND>.rpt` exist and are non-empty.
+
+> **CONTEXT PRESSURE WARNING:** After eco_fm_runner completes, your context window may be near its limit. The ONLY remaining actions are: write round_handoff.json → write eco_fixer_state (if FAIL) → spawn next agent → HARD STOP. Make NO other tool calls. Do NOT read any extra files. Do NOT summarize. Do NOT generate reports. The SPAWN must happen — it is your only remaining mandatory action. If you run out of context without spawning, the RESUMPTION CHECK at the top of this file will recover the flow on the next invocation.
 
 ---
 

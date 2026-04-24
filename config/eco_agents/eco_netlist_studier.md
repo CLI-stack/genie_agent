@@ -386,11 +386,55 @@ grep -cw "<old_token>" /tmp/eco_study_<TAG>_Synthesize.v
 ```
 If hierarchical: do NOT use `port_promotion`. Use `port_declaration` (0g) + `port_connection` (0h).
 
-**`and_term` → `new_logic_gate` + `rewire` pair:** An `and_term` change produces TWO entries:
-1. **`new_logic_gate`** — AND/NAND gate with inputs `[<existing_expression_output_net>, <flat_net_name>]`, output `n_eco_<jira>_<seq>`
-2. **`rewire`** — consuming cell switches from `<existing_expression_output_net>` to `n_eco_<jira>_<seq>`, with `new_logic_dependency: [<seq>]`
+**`and_term` → TWO strategies depending on where cells are found:**
 
-For multi-instance modules: create separate `new_logic_gate` entries per instance using `flat_net_name_per_instance`.
+After scope validation (below), determine which strategy to use:
+
+---
+
+**Strategy A — DIRECT REWIRE (use when cells are inside the declaring module):**
+
+1. **`new_logic_gate`** — AND/NAND gate with inputs `[<existing_output_net>, <flat_net_name>]`, output `n_eco_<jira>_<seq>`
+2. **`rewire`** — consuming cells inside the declaring module switch from `<existing_output_net>` to `n_eco_<jira>_<seq>`
+
+Use when: FM-returned cells that pass scope validation exist INSIDE the declaring module.
+
+---
+
+**Strategy B — PARENT SCOPE (use when NO cells found inside declaring module):**
+
+When all FM-returned cells are excluded (all exist in parent/sibling scopes, none in declaring module), the `and_term` cannot be implemented by internal rewiring. Instead:
+
+1. **Promote the gated signal as a new output port** from the declaring module to the parent:
+   - The declaring module already outputs `<old_token>` net → the gated version `<old_token> & ~<new_term>` becomes a new output port connection at the parent scope
+   - This is handled by the existing `port_declaration` + `port_connection` changes from the RTL diff (if they exist)
+
+2. **Create the AND gate at the PARENT scope** — not inside the declaring module:
+   ```python
+   # Parent module creates the gated version
+   # Entry: new_logic_gate in PARENT module scope
+   # inputs: [promoted_output_net, new_term_flat_net]
+   # output: n_eco_<jira>_<seq>  (this becomes the gated version consumed by parent cells)
+   ```
+
+3. **Do NOT create rewire entries** for cells inside the declaring module — they are unchanged.
+
+4. Record: `and_term_strategy: "parent_scope"` in the study JSON entry.
+
+**Decision logic:**
+```python
+cells_in_declaring_module = [c for c in validated_cells if check_cell_in_module(c, declaring_module)]
+if cells_in_declaring_module:
+    strategy = "direct_rewire"   # Strategy A
+else:
+    strategy = "parent_scope"    # Strategy B — all valid cells are in parent scope
+```
+
+> **Why Strategy B is needed:** When the declaring module is a hierarchical submodule (e.g., a DCQARB instance inside ARB), the `old_token` net may be exposed as an output port that parent-scope cells consume directly. Rewiring inside the submodule is impossible (no valid cells there). Instead, the gating must happen at the parent scope where the propagated signal is consumed.
+
+---
+
+For multi-instance modules: create separate entries per instance using `flat_net_name_per_instance`.
 
 **CRITICAL — `and_term` scope validation for hierarchical PostEco netlists:**
 
@@ -564,9 +608,62 @@ zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -E "^[[:space:]]*<CELL_PATTERN
 
 ### 0c — Handle `d_input_decompose_failed` with `fallback_strategy: intermediate_net_insertion`
 
-Run for every `new_logic` change where `d_input_decompose_failed: true` AND `fallback_strategy: "intermediate_net_insertion"`. This handles priority mux chains extended with new conditions prepended before the old expression — the DFF D-input is NOT modified; instead insert at a "pivot net" in the existing combinational logic.
+Run for every `new_logic` change where `d_input_decompose_failed: true` AND `fallback_strategy: "intermediate_net_insertion"`.
 
-**Step 0c-1 — Find the pivot net** by backward tracing from `target_register.D` (up to 5 hops). At each hop: find the driver cell of the current net, read its output net, then trace to that output net's driver. Stop when you reach the first net whose driver cell has a fanout count ≥ 2 (i.e., `grep -c "( <net> )" /tmp/eco_study_<TAG>_Synthesize.v` returns ≥ 2). That net is the pivot — it feeds multiple paths in the existing priority logic, so inserting new condition gates at this point is sufficient to implement the new conditions without modifying the DFF D-input directly. Record this net as `<pivot_net>` and its driver cell as `<driver_cell_name>` — both are used in Steps 0c-2 and 0c-4.
+**TWO strategies available — choose based on expression chain structure:**
+
+---
+
+**Strategy A — CHAIN MODIFICATION (preferred when applicable):**
+
+Instead of renaming the pivot net and building a MUX cascade, modify the inputs of an EXISTING intermediate cell in the expression chain. The pivot net keeps its original name; only one cell's inputs change.
+
+**When to use:** When the new conditions can be expressed by modifying the input to an existing intermediate cell `N` that sits between the DFF D-input and the source logic. The cell's output already feeds (directly or indirectly) into the DFF D-input.
+
+**Steps:**
+```python
+# Step A1 — Trace backward from target_register.D to find an intermediate cell
+# whose inputs control the relevant condition(s)
+# Look for a cell that:
+#   a) Drives the DFF D-input (directly or through N hops)
+#   b) Has an input net that can be changed to carry the new condition
+#   c) Is NOT a DFF itself
+
+# Step A2 — Insert ECO cells that produce the new condition expression
+# These ECO cells take new_condition_gate_chain inputs and produce a net
+
+# Step A3 — Create a rewire entry: change the identified intermediate cell's
+# input from <old_net> to <eco_output_net>
+# Do NOT rename the pivot net or any existing nets
+```
+
+Record: `intermediate_net_strategy: "chain_modification"` in study JSON.
+
+**Advantages:** Fewer gates, preserves existing net names (no _orig suffix), simpler for eco_applier to apply, avoids MUX cascade complexity.
+
+---
+
+**Strategy B — MUX CASCADE (use when chain modification is not applicable):**
+
+Use when the new conditions are entirely new with no connection to any existing intermediate cell — a new MUX cascade must be built.
+
+This handles priority mux chains extended with new conditions prepended before the old expression — the DFF D-input is NOT modified; instead insert at a "pivot net" in the existing combinational logic.
+
+**Decision logic:**
+```python
+# Try chain modification first
+can_chain_modify = find_modifiable_intermediate_cell(
+    start=target_register_D_pin, new_conditions=new_condition_gate_chain
+)
+if can_chain_modify:
+    strategy = "chain_modification"   # Strategy A
+else:
+    strategy = "mux_cascade"          # Strategy B — fall back to current approach
+```
+
+---
+
+**Step 0c-1 — Find the pivot net (both strategies)** by backward tracing from `target_register.D` (up to 5 hops). At each hop: find the driver cell of the current net, read its output net, then trace to that output net's driver. Stop when you reach the first net whose driver cell has a fanout count ≥ 2 (i.e., `grep -c "( <net> )" /tmp/eco_study_<TAG>_Synthesize.v` returns ≥ 2). That net is the pivot — it feeds multiple paths in the existing priority logic, so inserting new condition gates at this point is sufficient to implement the new conditions without modifying the DFF D-input directly. Record this net as `<pivot_net>` and its driver cell as `<driver_cell_name>` — both are used in Steps 0c-2 and 0c-4.
 
 **Step 0c-2 — Verify pivot net and find driver per stage:**
 

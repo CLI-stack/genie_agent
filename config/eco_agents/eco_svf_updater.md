@@ -91,6 +91,32 @@ set_dont_verify -type { register } /path/to/failing/point
 - Path uses the FM point path from the `failing_points` field in `eco_fm_verify.json` — strip the leading `r:/` prefix.
 - Only apply to points that existed in PreEco (pre-existing, not inserted by this ECO).
 
+**CRITICAL — Validate before writing to prevent CMD-031 abort:**
+
+CMD-031 occurs when `set_dont_verify` (or any setup command) is incorrectly formatted or references an invalid path. Before writing:
+
+```python
+# Validate each set_dont_verify entry:
+# 1. Path must NOT start with 'r:/' or 'i:/' — strip these prefixes
+# 2. Path must reference a real point — check it appears in failing_points list
+# 3. Curly braces around type: -type { register } not -type register
+# 4. Only ONE set_dont_verify per unique path — deduplicate
+
+# ALSO: Never include set_dont_verify in SVF if it was written in a previous round
+# and the SVF was already appended. Check if EcoChange.svf already has this entry:
+existing = grep_eco_change_svf(entry_path)
+if existing:
+    skip_entry  # Duplicate causes CMD-031 re-run failure
+
+# VERIFY: After writing, confirm no duplicate entries in the TCL file:
+assert len(entries) == len(set(entries))
+```
+
+**If cmd-031 occurs anyway:** The eco_svf_updater wrote entries that were already present in EcoChange.svf from a previous round. The eco_fm_analyzer ABORT_SVF handler must:
+1. Delete the TCL file: `rm -f <BASE_DIR>/data/<TAG>_eco_svf_entries.tcl`
+2. Set `svf_update_needed=false` for the next round
+3. Do NOT re-run eco_svf_updater until the root cause (duplicate/malformed entries) is fixed
+
 ### `set_user_match` (ECO cell FM cannot auto-match)
 
 ```
