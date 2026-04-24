@@ -286,14 +286,14 @@ Write back `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` with ONLY the modified 
 
 Verify: `wc -l <BASE_DIR>/data/<TAG>_eco_preeco_study.json` is ≥ the original line count (you should not have removed entries, only updated them).
 
-Write `<BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<ROUND>.rpt` covering:
+Write `<BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt` covering:
 - What was re-studied (which registers, which modes)
 - What was found in the PostEco netlist
 - What was updated in the study JSON (field-level diff — old value vs new value)
 - Any `force_reapply: true` flags set and why
 
 ```bash
-cp <BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<ROUND>.rpt <AI_ECO_FLOW_DIR>/
+cp <BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt <AI_ECO_FLOW_DIR>/
 ```
 
 **Exit after writing and copying the RPT.** ROUND_ORCHESTRATOR reads the updated `eco_preeco_study.json` and spawns `eco_apply_fix_round_N`.

@@ -576,11 +576,11 @@ Format of output (each stage array may contain both wire_swap rewire entries AND
 
 **Generate Step 3 RPT from JSON (ORCHESTRATOR responsibility):**
 
-Read `data/<TAG>_eco_preeco_study.json` and write `data/<TAG>_eco_step3_netlist_study.rpt`:
+Read `data/<TAG>_eco_preeco_study.json` and write `data/<TAG>_eco_step3_netlist_study_round1.rpt`:
 
 ```python
 study = load("data/<TAG>_eco_preeco_study.json")
-with open("data/<TAG>_eco_step3_netlist_study.rpt", "w") as f:
+with open("data/<TAG>_eco_step3_netlist_study_round1.rpt", "w") as f:
     f.write(f"STEP 3 — PREECO NETLIST STUDY\nTag: <TAG>\n{'='*80}\n\n")
     for stage in ["Synthesize", "PrePlace", "Route"]:
         confirmed = [e for e in study[stage] if e.get("confirmed")]
@@ -597,8 +597,8 @@ with open("data/<TAG>_eco_step3_netlist_study.rpt", "w") as f:
 
 Then copy to AI_ECO_FLOW_DIR and verify:
 ```bash
-cp <BASE_DIR>/data/<TAG>_eco_step3_netlist_study.rpt <AI_ECO_FLOW_DIR>/
-ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study.rpt
+cp <BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round1.rpt <AI_ECO_FLOW_DIR>/
+ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round1.rpt
 ```
 
 ---
@@ -930,7 +930,7 @@ The next agent has its own fresh context and instructions. Trust the handoff.
 | `data/<TAG>_eco_fm_verify.json` | PostEco FM verification results (Round 1) |
 | `data/<TAG>_eco_fixer_state` | Round tracking (if FM fails) |
 | `data/<TAG>_eco_step1_rtl_diff.rpt` | Step 1 RPT (written by rtl_diff_analyzer) |
-| `data/<TAG>_eco_step3_netlist_study.rpt` | Step 3 RPT (written by eco_netlist_studier) |
+| `data/<TAG>_eco_step3_netlist_study_round1.rpt` | Step 3 RPT (written by eco_netlist_studier) |
 | `data/<TAG>_eco_step4_eco_applied_round1.rpt` | Step 4 RPT Round 1 (written by eco_applier) |
 | `data/<TAG>_eco_step4b_svf.rpt` | Step 4b RPT (written by eco_svf_updater, if new_logic) |
 | `data/<TAG>_eco_step5_fm_verify_round1.rpt` | Step 5 RPT Round 1 |

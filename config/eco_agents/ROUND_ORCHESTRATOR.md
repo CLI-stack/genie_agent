@@ -176,14 +176,14 @@ Verify JSON contains `condition_input_resolutions` array. Do NOT proceed to Step
 - `ROUND=<ROUND>` (the round that just failed — studier reads `<TAG>_eco_fm_analysis_round<ROUND>.json`)
 - `FM_ANALYSIS_PATH=<BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json`
 - `FENETS_RERUN_PATH=<BASE_DIR>/data/<TAG>_eco_fenets_rerun_round<ROUND>.json` if Step 6f-FENETS ran, otherwise `null`
-- Task: update `eco_preeco_study.json` for failing entries only; write `eco_step3_netlist_study_round<ROUND>.rpt`
+- Task: update `eco_preeco_study.json` for failing entries only; write `eco_step3_netlist_study_round<NEXT_ROUND>.rpt`
 
 Wait for sub-agent to complete.
 
 **CHECKPOINT:**
 ```bash
-ls <BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<ROUND>.rpt
-ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round<ROUND>.rpt
+ls <BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt
+ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt
 ```
 Verify `eco_preeco_study.json` modified time is after Step 6d completed. Do NOT proceed to Step 4 without both.
 
@@ -364,7 +364,7 @@ Update handoff: `"status": "MAX_ROUNDS"`
 | `data/<TAG>_eco_fm_analysis_round<ROUND>.json` | eco_fm_analyzer (Step 6d) | FM failure diagnosis + revised_changes |
 | `data/<TAG>_eco_fenets_rerun_round<ROUND>.json` | eco_fenets_runner RERUN_MODE (Step 6f-FENETS) | condition_input_resolutions from re-queried signals |
 | `data/<TAG>_eco_step2_fenets_rerun_round<ROUND>.rpt` | eco_fenets_runner RERUN_MODE (Step 6f-FENETS) | Per-signal FM results from rerun |
-| `data/<TAG>_eco_step3_netlist_study_round<ROUND>.rpt` | eco_netlist_studier_round_N (Step 6f) | What was re-studied, what was updated in study JSON |
+| `data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt` | eco_netlist_studier_round_N (Step 6f) | What was re-studied, what was updated in study JSON |
 | `data/<TAG>_eco_preeco_study.json` | eco_netlist_studier_round_N (Step 6f) | Updated study — force_reapply flags, corrected nets |
 | `data/<TAG>_eco_fixer_state` | ROUND_ORCHESTRATOR (Step 6e) | Incremented round + strategies_tried |
 | `data/<TAG>_eco_applied_round<NEXT_ROUND>.json` | eco_apply_fix_round_N (Step 4) | ECO changes applied in fix round |

@@ -557,6 +557,47 @@ Record: `status=APPLIED`, `change_type=port_declaration`, `declaration_type=wire
 
 **FORCE_REAPPLY override:** If the study JSON entry has `"force_reapply": true` — skip the ALREADY_APPLIED check entirely and apply Steps 2–4 unconditionally. This flag is set by ROUND_ORCHESTRATOR when eco_fm_analyzer diagnoses `ABORT_LINK` due to a false ALREADY_APPLIED on a port_declaration. Record status as `APPLIED` (not ALREADY_APPLIED) and note `"forced": true` in the JSON entry.
 
+**CRITICAL — BATCH all PORT_DECL changes for the same module in ONE port list modification:**
+
+When multiple PORT_DECL entries (declaration_type=input or output) target the **same module**, do NOT apply them one-by-one with separate port list modifications. Each sequential modification shifts line numbers, causing subsequent depth-tracking to find the wrong `port_list_close_idx` — a line without `)` — and Python's `rfind(')')` = -1 corrupts it catastrophically.
+
+**Correct approach — batch before starting:**
+```python
+# Before processing any PORT_DECL for a module, collect ALL signal names for that module
+port_decl_by_module = defaultdict(list)
+for entry in stage_array:
+    if entry.get("change_type") == "port_declaration" and entry.get("declaration_type") in ("input", "output"):
+        port_decl_by_module[entry["module_name"]].append(entry)
+
+# For each module, run port list modification ONCE with ALL signals
+for module_name, entries in port_decl_by_module.items():
+    signal_names = [e["signal_name"] for e in entries]
+    directions   = {e["signal_name"]: e["declaration_type"] for e in entries}
+
+    # Step 2: Add ALL signal names to port list in one modification
+    # Find port_list_close_idx once
+    # Modify close line: close_line[:last_paren] + ''.join(f', {s}' for s in signal_names) + ')' + close_line[last_paren+1:]
+
+    # Step 3: Add ALL direction declarations after port list close in one batch
+    for sig in signal_names:
+        lines.insert(port_list_close_idx + 1, f'  {directions[sig]}  {sig} ;\n')
+        port_list_close_idx += 1  # update index after each insertion
+
+    # Mark all entries as APPLIED
+    for e in entries:
+        e["status"] = "APPLIED"
+```
+
+**Why rfind=-1 is catastrophic:** `rfind(')')` = -1 means no `)` found. Python index -1 selects the LAST character: `line[:-1]` removes the last char (e.g., `;`), and `line[-1+1:]` = `line[0:]` = the entire line repeated. This produces a corrupted double-line that FM-599 rejects. The validation after Step 2 MUST confirm the found close line contains `)` before modifying:
+
+```python
+assert ')' in lines[port_list_close_idx], (
+    f"PORT_DECL: port_list_close_idx={port_list_close_idx} points to line without ')': "
+    f"'{lines[port_list_close_idx][:60]}...' — depth tracking found wrong line. "
+    f"Mark all PORT_DECL for module '{module_name}' as SKIPPED."
+)
+```
+
 **Steps 2–4 below apply ONLY to true port declarations (`declaration_type: "input"` or `"output"`):**
 
 **Step 1 — Find module definition line:**
