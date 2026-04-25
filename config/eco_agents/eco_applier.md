@@ -66,6 +66,58 @@ The PreEco study JSON may contain entries of multiple change types. Process in t
 
 ---
 
+## PRE-FLIGHT — NetlistState Cross-Check (MANDATORY before any stage processing)
+
+**Run this check ONCE before decompressing any stage, for ALL rounds.**
+
+eco_applier must verify that the PostEco netlist is in the EXPECTED state before making any changes. This is the primary defence against concurrent agents writing to PostEco, which causes spurious ALREADY_APPLIED floods and FM-599 aborts.
+
+### Round 1 — PostEco must be identical to PreEco
+
+```bash
+for stage in Synthesize PrePlace Route:
+    preeco_md5=$(md5sum <REF_DIR>/data/PreEco/${stage}.v.gz | awk '{print $1}')
+    posteco_md5=$(md5sum <REF_DIR>/data/PostEco/${stage}.v.gz | awk '{print $1}')
+
+    if [ "$preeco_md5" != "$posteco_md5" ]; then
+        echo "WARNING: PostEco/${stage}.v.gz differs from PreEco — restoring to clean state."
+        echo "  PreEco MD5 : $preeco_md5"
+        echo "  PostEco MD5: $posteco_md5  (likely from a concurrent agent)"
+        cp <REF_DIR>/data/PreEco/${stage}.v.gz <REF_DIR>/data/PostEco/${stage}.v.gz
+        echo "  Restored: PostEco/${stage}.v.gz now matches PreEco"
+    fi
+done
+echo "PRE-FLIGHT Round 1 PASSED: PostEco == PreEco for all 3 stages"
+```
+
+### Round 2+ — PostEco must match the backup ROUND_ORCHESTRATOR just created
+
+ROUND_ORCHESTRATOR Step 6b backed up the current PostEco as `bak_<TAG>_round<NEXT_ROUND>` immediately before spawning eco_applier. If PostEco differs from that backup, a concurrent agent wrote to it — restore from backup before editing.
+
+```bash
+NEXT_ROUND=<ROUND>  # eco_applier receives ROUND=NEXT_ROUND from ROUND_ORCHESTRATOR
+for stage in Synthesize PrePlace Route:
+    bak=<REF_DIR>/data/PostEco/${stage}.v.gz.bak_<TAG>_round${NEXT_ROUND}
+    posteco_md5=$(md5sum <REF_DIR>/data/PostEco/${stage}.v.gz | awk '{print $1}')
+    backup_md5=$(md5sum ${bak} | awk '{print $1}')
+
+    if [ "$posteco_md5" != "$backup_md5" ]; then
+        echo "WARNING: PostEco/${stage}.v.gz was modified after ROUND_ORCHESTRATOR backup — restoring."
+        echo "  Backup MD5 : $backup_md5"
+        echo "  PostEco MD5: $posteco_md5  (likely from a concurrent agent)"
+        cp ${bak} <REF_DIR>/data/PostEco/${stage}.v.gz
+        echo "  Restored: PostEco/${stage}.v.gz now matches backup bak_<TAG>_round${NEXT_ROUND}"
+    fi
+done
+echo "PRE-FLIGHT Round ${NEXT_ROUND} PASSED: PostEco matches ROUND_ORCHESTRATOR backup for all 3 stages"
+```
+
+**After restore:** proceed normally with ECO application. The restored netlist is the correct clean starting point. Log the restoration in the applied JSON summary so the ORCHESTRATOR is aware.
+
+> **Why MD5 instead of grep for eco cells:** MD5 catches ALL changes from ANY source — not just eco_<JIRA>_ cells. A concurrent agent could corrupt a port list without adding any eco_<jira>_ cells. MD5 gives an absolute guarantee of netlist state before any editing begins.
+
+---
+
 ## Process Per Stage (Synthesize, PrePlace, Route)
 
 ### Step 0 — Detect netlist type (MANDATORY, once per stage before any edits)
@@ -189,7 +241,19 @@ def apply_all_changes_to_module(lines, changes, module_name):
         # Run ALREADY_APPLIED check against ORIGINAL buffer (before any edits)
         already_applied, reason = check_already_applied(entry, original_text, original_lines)
         if already_applied and not entry.get("force_reapply"):
-            results.append({"status": "ALREADY_APPLIED", "already_applied_reason": reason, **entry})
+            # ROUND 1 GUARD: ALREADY_APPLIED for new_logic/cell entries in Round 1 is
+            # UNEXPECTED — the PRE-FLIGHT clean state check should have caught this.
+            # If we reach here with ROUND==1 and a new_logic cell ALREADY_APPLIED, it means
+            # the pre-flight check had a race condition. Record with elevated warning.
+            if ROUND == 1 and entry.get("change_type") in ("new_logic_gate", "new_logic_dff", "new_logic"):
+                results.append({
+                    "status": "ALREADY_APPLIED",
+                    "already_applied_reason": reason,
+                    "warning": "UNEXPECTED: eco cell present in Round 1 PostEco — concurrent agent suspected. Pre-flight clean state check may have been bypassed.",
+                    **entry
+                })
+            else:
+                results.append({"status": "ALREADY_APPLIED", "already_applied_reason": reason, **entry})
             continue  # skip — do not modify buffer
 
         # Apply the change to the CURRENT (possibly modified) buffer
@@ -465,12 +529,8 @@ source_net = input_value.split(":", 1)[1]   # the net currently in the port bus
 named_wire = f"eco_{JIRA}_{signal_alias}"   # new wire name — descriptive, unique within module
 ```
 
-**Sub-step A — Declare the named wire in the module body:**
-```python
-# Find module scope (mod_idx to endmodule_idx)
-# Insert wire declaration after the last existing wire declaration in scope
-lines.insert(wire_insert_idx, f"  wire {named_wire} ;\n")
-```
+**Sub-step A — SKIP explicit wire declaration.**
+The named wire will be connected via Sub-step B (port bus rewiring: `.bus_position(<named_wire>)`). That port connection implicitly declares `<named_wire>` as a wire in the module scope. Do NOT insert `wire <named_wire>;` — it would conflict with the implicit declaration from the port connection → FM-599.
 
 **Sub-step B — Find the source port bus and rewire it:**
 
@@ -655,31 +715,9 @@ For entries with `change_type: "port_declaration"`:
 
 Read `declaration_type` from the study JSON entry:
 - `"input"` or `"output"` → **TRUE PORT DECLARATION** — the signal is a port of the module. Apply Steps 2–4 (port list modification + direction declaration in body).
-- `"wire"` → **WIRE DECLARATION** — the signal is a local wire inside the module connecting submodule instances. It does NOT appear in the module port list. Apply Step 4-WIRE only (add `wire <signal_name>;` to module body). Skip Steps 2 and 3 entirely.
+- `"wire"` → **SKIP — do not add explicit wire declaration.** The corresponding `port_connection` entries for this net (which eco_applier also processes) connect the net via `.anypin(<signal_name>)` on module instances — Verilog implicitly declares the wire from those port connections. An explicit `wire <signal_name>;` alongside an implicit wire causes FM-599 ABORT_NETLIST. Record: `status=SKIPPED`, `reason="wire implicitly declared via port connections — no explicit declaration needed"`.
 
-**Why this distinction matters:** Port lists in P&R stages can be thousands of lines long due to scan/test ports added by P&R. The depth-tracking port list modification (Step 2) fails silently for extremely long port lists. Wire declarations never need port list modification — they only need a single `wire` line added to the module body, which can be done reliably regardless of port list length.
-
-**Step 4-WIRE — For wire declarations only (skip Steps 2 and 3):**
-
-Find the module start and `endmodule`, then insert `wire <signal_name>;` in the module body after the last existing `wire` declaration:
-```python
-# Find existing wire declarations in module body
-wire_lines = [(i, l) for i, l in enumerate(lines[mod_idx:endmodule_idx], mod_idx)
-              if re.match(r'^\s*wire\b', l)]
-
-if wire_lines:
-    # Insert after the last existing wire declaration
-    insert_idx = wire_lines[-1][0] + 1
-else:
-    # No existing wires — insert right after port list close (port_list_close_idx + 1)
-    insert_idx = port_list_close_idx + 1
-
-lines.insert(insert_idx, f'  wire  <signal_name> ;\n')
-```
-
-**Verify:** `grep -cw "<signal_name>" /tmp/eco_apply_<TAG>_<Stage>.v` ≥ 1 after insertion.
-
-Record: `status=APPLIED`, `change_type=port_declaration`, `declaration_type=wire`.
+> **Why no explicit wire:** eco_applier already knows every net it introduces — all ECO-introduced nets are connected through port connections (cell instance pins or module port connections). In Verilog, any net name appearing in `.anypin(N)` is implicitly declared as wire. Adding `wire N;` on top of this is always redundant and always causes FM-599. This is not detected by text scanning — it is guaranteed by construction: if eco_applier adds a port_connection for N, N is implicitly declared. Period.
 
 ---
 
@@ -793,6 +831,9 @@ if port_list_close_idx is None:
 # Insert signal name before the last ')' on port_list_close_idx
 close_line = lines[port_list_close_idx]
 last_paren = close_line.rfind(')')
+# SAFETY: rfind returns -1 if ')' not found — that would corrupt the line
+assert last_paren >= 0, f"No ')' found in port list close line: {repr(close_line)}"
+assert ')' in lines[port_list_close_idx], f"port_list_close_idx ({port_list_close_idx}) does not point to closing ')'"
 lines[port_list_close_idx] = close_line[:last_paren] + f', <signal_name>\n)' + close_line[last_paren+1:]
 ```
 
@@ -969,6 +1010,8 @@ Record: `status=APPLIED`, `change_type=port_connection`, `port_name`, `net_name`
 
 ### Step 4b — Pre-Recompress Verilog Self-Validation (MANDATORY before Step 5)
 
+> **Execution order:** Checks 1–7 run on the UNCOMPRESSED temp file `/tmp/eco_apply_<TAG>_<Stage>.v` BEFORE the `gzip` step in Step 5. If ANY check fails: discard the temp file, restore from backup (`cp bak PostEco/<Stage>.v.gz`), record all affected entries as `status=VERIFY_FAILED` in the applied JSON, and return immediately — do NOT recompress or overwrite the PostEco file. eco_pre_fm_checker will detect VERIFY_FAILED entries and escalate to ROUND_ORCHESTRATOR.
+
 **This step prevents FM ABORT (FM-599, FE-LINK-7) by catching Verilog errors in the edited file BEFORE submitting to FM.** All ABORT conditions seen in real runs traced back to eco_applier producing invalid Verilog — catching them here costs seconds vs wasting a 1-2 hour FM slot.
 
 Run these checks on `/tmp/eco_apply_<TAG>_<Stage>.v` after all edits:
@@ -1035,7 +1078,9 @@ grep -c "^module " /tmp/eco_apply_<TAG>_<Stage>.v > /tmp/posteco_module_count
 diff /tmp/preeco_module_count /tmp/posteco_module_count || echo "WARNING: module count changed"
 ```
 
-**Check 5 — No duplicate `wire` declarations in any module body:**
+**Check 5 — No explicit `wire` declarations conflict with port connections (pre-existing corruption guard):**
+
+eco_applier itself never adds `wire N;` declarations (see UNIVERSAL RULE above). This check detects corruption already present in the PostEco netlist before eco_applier ran — e.g., from a concurrent agent that wrote invalid Verilog. If detected: **abort and report to ORCHESTRATOR — do NOT recompress. The PostEco is corrupted and must be restored from backup before re-applying.**
 ```python
 import re
 content = open('/tmp/eco_apply_<TAG>_<Stage>.v').read()
@@ -1056,13 +1101,32 @@ for mod_block in re.split(r'^module\s+', content, flags=re.MULTILINE)[1:]:
 for mod_block in re.split(r'^module\s+', content, flags=re.MULTILINE)[1:]:
     mod_name = mod_block.split('(')[0].strip()
     wire_decls = set(re.findall(r'^\s*wire\s+(\w+)\s*;', mod_block, re.MULTILINE))
-    # Named port connections: .portname(anything) — portname becomes implicit wire if net=portname
-    implicit_wires = set(re.findall(r'\.\s*(\w+)\s*\(\s*\1\s*\)', mod_block))
-    conflict = wire_decls & implicit_wires
+    # ANY port connection .anypin(NETNAME) creates an implicit wire for NETNAME.
+    # Do NOT use .X(X) pattern — that misses cases like .ZN(SEQMAP_NET_2948_orig)
+    # where port name differs from net name but the net is still implicitly declared.
+    # Only WIRE declarations conflict with implicit wires from port connections.
+    # input/output declarations do NOT — passing a port to a submodule .pin(sig) is
+    # normal Verilog. Only explicit 'wire N;' + implicit wire from .anypin(N) = FM SVR-9.
+    wire_decls_only = set(re.findall(r'^\s*wire\s+(?:\[\s*\d+\s*:\s*\d+\s*\]\s+)?(\w+)\s*;', mod_block, re.MULTILINE))
+    all_port_conn_nets = set(re.findall(r'\.\s*\w+\s*\(\s*(\w+)\s*\)', mod_block))
+    conflict = wire_decls_only & all_port_conn_nets
     if conflict:
         print(f'EXPLICIT WIRE conflicts with implicit port-connection wire in {mod_name}: {conflict}')
         raise SystemExit(1)
-print('Check 5 PASSED: no duplicate wire declarations')
+print('Check 5 PASSED: no explicit wire declarations conflict with implicit port-connection wires')
+```
+
+**UNIVERSAL RULE — eco_applier NEVER adds explicit `wire N;` declarations:**
+
+Every net that eco_applier introduces is connected via at least one port connection (`.anypin(N)` on a cell or module instance). Verilog implicitly declares those nets as wires. Explicit `wire N;` is always redundant and causes FM-599 when it conflicts with the implicit declaration.
+
+This applies to:
+- Intermediate nets in MUX cascade chains (`n_eco_<jira>_c001`, renamed pivot nets, etc.)
+- Named wires for Mode H fixes
+- Parent-scope wires connecting submodule instances
+- Any other net eco_applier introduces
+
+**eco_applier constructs the netlist — it knows every net it introduces. It does not need to scan the netlist to decide whether to add wire declarations. The answer is always: do not add them.**
 ```
 
 **Check 6 — No duplicate instance port connections in any module body:**
@@ -1082,6 +1146,28 @@ for inst_match in re.finditer(r'(\w+)\s+(\w+)\s*\((.*?)\)\s*;', content, re.DOTA
         print(f'DUPLICATE PORT CONNECTION in instance {inst_name}: {dups}')
         raise SystemExit(1)
 print('Check 6 PASSED: no duplicate instance port connections')
+```
+
+**Check 7 — Every port in module header has a direction declaration in the module body:**
+```python
+import re, gzip
+content = open('/tmp/eco_apply_<TAG>_<Stage>.v').read()
+for mod_block in re.split(r'^module\s+', content, flags=re.MULTILINE)[1:]:
+    mod_name = mod_block.split('(')[0].strip()
+    # Extract port list (between first '(' and ') ;')
+    port_list_match = re.search(r'\((.*?)\)\s*;', mod_block, re.DOTALL)
+    if not port_list_match:
+        continue
+    port_names = set(re.findall(r'\b([A-Za-z_]\w*)\b', port_list_match.group(1)))
+    port_names -= {'input', 'output', 'inout', 'wire', 'reg', 'integer', 'parameter'}
+    # Check each port name has direction in body
+    body = mod_block[port_list_match.end():]
+    declared = set(re.findall(r'^\s*(?:input|output|inout)\s+(?:\[.*?\]\s+)?(\w+)\s*;', body, re.MULTILINE))
+    undeclared = port_names - declared
+    if undeclared:
+        print(f'PORT WITHOUT DIRECTION DECLARATION in {mod_name}: {undeclared}')
+        raise SystemExit(1)
+print('Check 7 PASSED: all ports have direction declarations')
 ```
 
 **If ANY check fails → DO NOT recompress. Record all affected changes as VERIFY_FAILED with the check number and reason. Report to ORCHESTRATOR. The ORCHESTRATOR will diagnose via eco_fm_analyzer without wasting an FM slot.**

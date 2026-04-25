@@ -311,7 +311,10 @@ rm -f /tmp/preeco_study_rtldiff_Synthesize.v
 ```
 
 **If the MUX cell cannot be found** (trace fails after 5 hops): set `mux_select_polarity_pending: true` and `mux_select_gate_function: null` — the studier will attempt Step 4c-POLARITY as fallback. Do NOT write any gate function hint based on RTL condition text alone.
-- For `and_term`: query `old_token` (the output net of the existing expression) to find the gate driving it; `new_token` (`flat_net_name` from Step C) already exists in PreEco — confirm with a single grep, no FM query needed
+- For `and_term`: query `old_token` (the output net of the existing expression) to find the gate driving it. **CRITICAL — `and_term` gate input scope rule:** The new AND term is inserted as a gate INSIDE the declaring module. The gate input net must be the name as it appears INSIDE that module:
+  - If the new term (`new_token`) is a `new_port` on the declaring module → gate input = the PORT NAME (`new_token`) as declared in the module header. Do NOT use `flat_net_name` (parent-scope net) as the gate input — `flat_net_name` is the connected net in the PARENT, invisible inside the child module.
+  - If the new term is an existing wire/reg in the declaring module → gate input = the wire/reg name directly.
+  - Record `and_term_gate_input: "<port_name_inside_module>"` explicitly in the JSON and use this (not `flat_net_name`) in nets_to_query reason and eco_netlist_studier guidance.
 - For `new_port`: **skip FM query** — new input ports connect to existing nets (resolved as `flat_net_name` in Step C); no gate-level net to find equivalents for
 - For `port_promotion`: **skip FM query entirely** — the net ALREADY EXISTS in the flat PreEco netlist under the signal's original name; `flat_net_exists: true`; the studier will verify existence directly
 - For `new_logic`: skip the FM query for the NEW register itself — its output net does not exist in the PreEco netlist and FM cannot find equivalents for it. Instead, query any EXISTING signal that the new register's D-input depends on (the enable signal or the driving data signal from the RTL context_line). This gives eco_netlist_studier the gate-level scope so it can find where to insert the new DFF. If the D-input expression is entirely new with no existing signal reference, leave `nets_to_query` empty for this change — the studier will use the declaring module's gate-level scope directly.
@@ -363,6 +366,100 @@ for change in rtl_diff["changes"]:
 The studier reads these FM results in Step 0c-5: when a chain entry has `"PENDING_FM_RESOLUTION:<signal>"` as an input, it substitutes the gate-level net name returned by FM for that signal.
 
 **CRITICAL — `target_register` is NEVER queried via find_equivalent_nets.** `target_register` (the LHS register of the changed assignment) is only recorded in the JSON for Step 3 backward cone verification. Do NOT add it or any bus variant of it to `nets_to_query`. Only `old_token` and `new_token` (and their bus variants if applicable) go into `nets_to_query`.
+
+---
+
+### Step D-IMPLICIT-WIRE — Detect implicit wire chains (MANDATORY, run after all changes classified)
+
+**Purpose:** Prevent eco_applier from adding explicit `wire <net>;` declarations for nets that Verilog already creates as implicit wires from port connections — which causes FM-599 ABORT_NETLIST.
+
+An implicit wire chain occurs when the same `new_token` net appears in 2 or more `port_connection` changes within the **same parent module** (`module_name` field). One connection drives the wire (output port of one child instance into the parent scope), another consumes it (input port of a different child instance). Verilog creates the wire implicitly — no explicit declaration is needed or allowed.
+
+```python
+from collections import defaultdict
+
+# Group port_connection changes by (module_name, new_token)
+port_conn_by_net = defaultdict(list)
+for change in changes:
+    if change["change_type"] == "port_connection":
+        key = (change["module_name"], change["new_token"])
+        port_conn_by_net[key].append(change)
+
+# Any net with 2+ port_connection entries in the same parent module = implicit wire
+for (parent_module, net), conn_list in port_conn_by_net.items():
+    if len(conn_list) >= 2:
+        for c in conn_list:
+            c["implicit_wire"] = True
+            c["no_wire_decl_needed"] = True
+```
+
+**Also flag single port_connection entries** where the `new_token` net is also the `new_token` of a `port_promotion` change in a child module — the promoted output creates an implicit wire in the parent when connected:
+```python
+promoted_nets = {c["new_token"] for c in changes if c["change_type"] == "port_promotion"}
+for change in changes:
+    if change["change_type"] == "port_connection" and change["new_token"] in promoted_nets:
+        change["implicit_wire"] = True
+        change["no_wire_decl_needed"] = True
+```
+
+**Record in RPT for each implicit wire detected:**
+```
+IMPLICIT WIRE WARNING: net '<new_token>' in module '<module_name>'
+  Appears in <N> port_connection entries — Verilog creates this as an implicit wire.
+  eco_applier must NOT add explicit 'wire <new_token>;' declaration.
+  Explicit declaration alongside an implicit wire causes FM-599 ABORT_NETLIST.
+```
+
+eco_applier reads `no_wire_decl_needed: true` on each `port_connection` entry and skips wire declaration for that net. eco_pre_fm_checker Check F (sub-check F2) is the safety net if eco_applier adds one anyway.
+
+---
+
+### Step D-STAGE-VERIFY — Verify gate chain inputs across all 3 PreEco stages (MANDATORY for new_logic DFFs)
+
+**Purpose:** A gate chain input net found in PreEco Synthesize may not be accessible in PrePlace/Route stages if its driving cell is inside a hard macro that is black-boxed in P&R. Detecting this early lets eco_netlist_studier set `needs_named_wire: true` proactively rather than burning a full FM round to discover it.
+
+For every input net in every `d_input_gate_chain` entry across all `new_logic` changes:
+
+```bash
+for each net in gate_chain_entry["inputs"]:
+
+    # Skip — always valid, no stage check needed
+    if net in ("1'b0", "1'b1"):
+        continue
+    if net starts with "n_eco_<jira>_":
+        continue   # ECO-inserted intermediate net — present only after ECO is applied
+
+    # Check presence in all 3 PreEco gate-level netlists
+    synth_hits    = $(zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -cw "<net>")
+    preplace_hits = $(zcat <REF_DIR>/data/PreEco/PrePlace.v.gz   | grep -cw "<net>")
+    route_hits    = $(zcat <REF_DIR>/data/PreEco/Route.v.gz      | grep -cw "<net>")
+
+    missing_stages = []
+    if preplace_hits == 0: missing_stages.append("PrePlace")
+    if route_hits    == 0: missing_stages.append("Route")
+
+    if missing_stages:
+        # Net found in Synthesize but not in P&R stages → hard macro black-box risk
+        gate_chain_entry["mode_H_risk"] = true
+        gate_chain_entry["missing_in_stages"] = missing_stages
+        # Add to RPT:
+        # MODE H RISK: net '<net>' found in Synthesize PreEco but absent in <missing_stages> PreEco.
+        # Likely driven from inside a hard macro black-boxed in P&R.
+        # eco_netlist_studier will set needs_named_wire: true for <missing_stages>.
+```
+
+**JSON output per gate chain entry when Mode H risk detected:**
+```json
+{
+  "seq": "<seq_id>",
+  "gate_function": "<gate_function>",
+  "inputs": ["<net>", "..."],
+  "mode_H_risk": true,
+  "missing_in_stages": ["PrePlace", "Route"]
+}
+```
+
+eco_netlist_studier reads `mode_H_risk: true` on the gate chain entry and automatically applies `needs_named_wire: true` for the listed stages — no FM round wasted on Mode H discovery.
 
 ---
 

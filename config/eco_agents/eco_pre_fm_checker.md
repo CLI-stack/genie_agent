@@ -28,6 +28,31 @@ These are fixable in seconds without a full round cycle.
 
 ---
 
+## STEP 0 — Verify eco_applier Completed Successfully
+
+**Before any netlist scanning, read the applied JSON for this round:**
+```python
+applied = load(f"data/{TAG}_eco_applied_round{ROUND}.json")
+verify_failed = [
+    e for stage_entries in applied.values() if isinstance(stage_entries, list)
+    for e in stage_entries if e.get("status") == "VERIFY_FAILED"
+]
+if verify_failed:
+    # eco_applier hit a Checks 1-7 self-validation failure and did NOT recompress.
+    # The PostEco netlist on disk is stale — do NOT submit to FM.
+    first_reason = verify_failed[0].get("reason", "unknown")
+    write_result(passed=False, issues_unresolved=[{
+        "check": "STEP0_APPLIER_FAILED",
+        "severity": "CRITICAL",
+        "detail": f"{len(verify_failed)} VERIFY_FAILED entries in eco_applied_round{ROUND}.json. Reason: {first_reason}. eco_applier aborted before recompress. Escalate to ROUND_ORCHESTRATOR."
+    }])
+    EXIT  # Do not proceed to FM
+```
+
+**CHECKPOINT:** Only proceed to Step 1 if zero VERIFY_FAILED entries in the applied JSON.
+
+---
+
 ## STEP 1 — Load Data
 
 ```python
@@ -61,8 +86,14 @@ for attempt in range(MAX_RETRIES):
     for issue in issues["critical"]:
         apply_inline_fix(issue)
 
-    # Reload netlists after fixes
+    # Reload netlists after fixes AND re-run ALL checks to catch cascading errors
     reload_netlists()
+    # Re-run Checks F and G (syntax-level checks) on the modified netlist
+    # before proceeding to next attempt. This prevents a fix introducing a new error.
+    issues = run_syntax_checks_only(["F", "G"])  # F1, F2, F3, G
+    if issues["critical"]:
+        # Fix introduced a new error — log and try again or escalate
+        continue
 ```
 
 ### Check A — Stage Consistency (INSERTED in some, SKIPPED in others)
@@ -198,10 +229,16 @@ for stage in ["Synthesize", "PrePlace", "Route"]:
                 "wires": dups, "severity": "CRITICAL"
             })
 
-        # F2: Explicit wire X where .X(X) port connection already creates implicit wire X
-        wire_set = set(re.findall(r'^\s*wire\s+(\w+)\s*;', mod_block, re.MULTILINE))
-        implicit = set(re.findall(r'\.\s*(\w+)\s*\(\s*\1\s*\)', mod_block))
-        conflict = wire_set & implicit
+        # F2: Explicit WIRE declaration for net X where .anypin(X) port connection ALSO
+        # creates an implicit wire X — dual wire declaration = FM SVR-9 → FM-599.
+        # NOTE: input/output declarations do NOT conflict with port connections — that is
+        # normal Verilog (a port being passed to a submodule). Only 'wire' conflicts.
+        wire_decls_only = set(re.findall(
+            r'^\s*wire\s+(?:\[\s*\d+\s*:\s*\d+\s*\]\s+)?(\w+)\s*;',
+            mod_block, re.MULTILINE))
+        # Collect ALL net names used in ANY port connection .anypin(N)
+        port_conn_nets = set(re.findall(r'\.\s*\w+\s*\(\s*(\w+)\s*\)', mod_block))
+        conflict = wire_decls_only & port_conn_nets  # explicit wire + implicit = FM-599
         if conflict:
             issues_F.append({
                 "stage": stage, "module": mod_name,
@@ -264,6 +301,35 @@ def fix_F3(lines, module_name, instance_name, dup_pin):
         result.append(line)
     return result
 ```
+
+### Check G — Every ECO-added port in module header has a direction declaration in body
+
+For each `port_declaration` entry with `declaration_type: "input"` or `"output"` in the applied JSON, verify the signal has BOTH a port list entry AND a direction declaration in the module body for each stage:
+
+```python
+for stage in ["Synthesize", "PrePlace", "Route"]:
+    content = gzip.open(f"PostEco/{stage}.v.gz", 'rt').read()
+    for mod_block in re.split(r'^module\s+', content, flags=re.MULTILINE)[1:]:
+        mod_name = mod_block.split('(')[0].strip()
+        port_list_match = re.search(r'\((.*?)\)\s*;', mod_block, re.DOTALL)
+        if not port_list_match:
+            continue
+        port_names_in_header = set(re.findall(r'\b([A-Za-z_]\w*)\b', port_list_match.group(1)))
+        port_names_in_header -= {'input','output','inout','wire','reg','integer','parameter'}
+        body = mod_block[port_list_match.end():]
+        declared_in_body = set(re.findall(
+            r'^\s*(?:input|output|inout)\s+(?:\[.*?\]\s+)?(\w+)\s*;', body, re.MULTILINE))
+        eco_ports = {e["signal_name"] for e in applied.get(stage,[])
+                     if e.get("change_type") == "port_declaration"
+                     and e.get("declaration_type") in ("input","output")
+                     and e.get("module_name","").endswith(mod_name)}
+        missing_decl = eco_ports & (port_names_in_header - declared_in_body)
+        if missing_decl:
+            issues_G.append({"stage": stage, "module": mod_name,
+                             "missing_direction_decl": list(missing_decl), "severity": "CRITICAL"})
+```
+
+**Inline fix for Check G:** For each missing direction declaration, find the port list close line, then insert `input <signal>;` or `output <signal>;` immediately after it (use `declaration_type` from the applied JSON to determine direction).
 
 ### Check E — Rewire Consistency (WARNING only — not a blocker)
 
@@ -349,7 +415,8 @@ result = {
         "C_cell_insertions":   result_C,
         "D_duplicate_ports":   result_D,
         "E_rewire_warnings":   "WARN" if issues_E else "PASS",
-        "F_wire_dup_implicit": result_F
+        "F_wire_dup_implicit": result_F,
+        "G_port_direction_completeness": result_G
     }
 }
 write_json(f"data/{TAG}_eco_pre_fm_check_round{ROUND}.json", result)
