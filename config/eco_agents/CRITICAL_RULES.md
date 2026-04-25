@@ -467,3 +467,55 @@ FM ABORTS (N/A)
 When an ECO-inserted gate uses a net in Synthesize that is renamed by P&R (HFS distribution, CTS buffering), the fix is `fix_named_wire` — rewire the gate input to the correct P&R net name. Do NOT suppress with `set_dont_verify`. The named wire approach makes the ECO structurally correct in P&R stages. Using suppression means the ECO gate has a wrong input in P&R stages — it just passes FM without being correct.
 
 **A passing FM via SVF suppression is NOT a verified ECO.** The goal is zero failing points via correct netlist, not zero failing points via suppression.
+
+---
+
+## RULE 28 — eco_applier: Four-Pass Processing Order is Mandatory
+
+Within each stage's decompress/edit/recompress cycle, changes MUST be applied in this exact order:
+
+1. **Pass 1 — new_logic insertions** (new_logic_dff, new_logic_gate): insert all new cells so their output nets exist
+2. **Pass 2 — port_declaration**: update module port lists and direction declarations
+3. **Pass 3 — port_connection**: add `.port(net)` connections to module instance blocks
+4. **Pass 4 — rewire**: change pin connections on existing cells
+
+**Why this order is load-bearing:** Port declarations must exist before connections reference them. New cells must exist before rewires reference their output nets. Reversing any step causes silent failures — rewires skip because the target cell doesn't exist yet, port connections skip because the port isn't declared yet.
+
+**Round 2+ Surgical Patch Mode:** Never revert PostEco to PreEco. ROUND_ORCHESTRATOR Step 6b backs up current PostEco BEFORE spawning eco_applier. eco_applier uses the backup MD5 as the verified starting point. Only entries with `force_reapply: true` are undone and re-applied; all other ALREADY_APPLIED entries are kept as-is.
+
+---
+
+## RULE 29 — eco_netlist_studier: Phase 0 Before Phase 1
+
+When eco_netlist_studier processes changes, **Phase 0 (new_logic and new_port changes) MUST complete before Phase 1 (FM-returned cells from fenets)**:
+
+- **Phase 0**: Process all `new_logic_dff`, `new_logic_gate`, `new_port`, `port_promotion`, `port_declaration`, `port_connection` changes — inserting new cells and establishing port connectivity in the study JSON
+- **Phase 1**: Process FM find_equivalent_nets results — identifying existing cells to rewire based on confirmed cell lists
+
+**Why:** Phase 1 rewires reference output nets from Phase 0 new_logic cells. If Phase 1 runs first, those output nets don't exist yet → FM-returned cells appear unresolvable → rewires are incorrectly skipped → ECO is incomplete.
+
+---
+
+## RULE 30 — eco_fm_analyzer: Check F (Unresolved Condition Inputs) Runs First
+
+Before any failure mode classification (Mode A through H), eco_fm_analyzer MUST run **Check F — Unresolved condition inputs**:
+
+Scan `eco_preeco_study.json` for any gate input containing `PENDING_FM_RESOLUTION:<signal>`. If found, ALL downstream failures (DFF0X, non-equivalent DFFs) likely trace back to this root cause — they will appear as Mode A or Mode H without this upstream cause being obvious.
+
+**Action:** Set `needs_rerun_fenets: true` (first occurrence) or `action: structural_trace` (if prior rerun already returned FM-036). Do NOT classify Mode A/H/E until condition inputs are resolved.
+
+**Why:** An unresolved condition input means an entire gate chain has wrong connections. Diagnosing Mode A or Mode H on downstream DFFs without fixing the root condition input wastes rounds on symptoms rather than cause.
+
+---
+
+## RULE 31 — eco_pre_fm_checker: Four Checks Are FM-Abort Preventers
+
+Before every FM submission, eco_pre_fm_checker runs checks that prevent FM-599 (Verilog abort) and FM FE-LINK-7 (port not defined) — FM aborts that waste 1-2 hours per occurrence:
+
+- **Check A** (Stage consistency): ECO cells present in all 3 stages — mismatches cause thousands of non-equivalent stage-to-stage DFFs
+- **Check F1** (Duplicate wire): `wire X; wire X;` in same module → FM SVR-9 → FM-599
+- **Check F2** (Implicit wire conflict): `wire X;` + `.anypin(X)` port connection → FM SVR-9 → FM-599
+- **Check F3** (Duplicate port connection): `.pin(net)` twice in same instance → FM-599
+- **Check G** (Port direction completeness): port in module header without `input/output` in body → FM-599
+
+These checks run in seconds. FM-599 aborts are detected only after 1-2 hours of FM runtime. **Never skip eco_pre_fm_checker** — it is the last gate before an expensive FM slot is consumed.
