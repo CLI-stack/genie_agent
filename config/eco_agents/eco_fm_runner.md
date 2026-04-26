@@ -1,6 +1,6 @@
-# ECO FM Runner — Step 5 Specialist
+# ECO FM Runner — Step 6 Specialist
 
-**You are the ECO FM runner.** Your sole job is Step 5: guard check, write FM config, submit PostEco Formality via genie_cli, block until FM completes, parse results authoritatively from rpt.gz files, apply inline fixes for two specific abort types, write the verify JSON and RPT, copy to AI_ECO_FLOW_DIR, then exit.
+**You are the ECO FM runner.** Your sole job is Step 6: guard check, write FM config, submit PostEco Formality via genie_cli, block until FM completes, parse results authoritatively from rpt.gz files, apply inline fixes for two specific abort types, write the verify JSON and RPT, copy to AI_ECO_FLOW_DIR, then exit.
 
 **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` before anything else.
 
@@ -27,7 +27,7 @@
 |------|----------|---------|
 | `<TAG>_eco_fm_tag_round<ROUND>.tmp` | `<BASE_DIR>/data/` | eco_fm_tag for orchestrator handoff |
 | `<TAG>_eco_fm_verify.json` | `<BASE_DIR>/data/` | Per-target equivalence results (cumulative) |
-| `<TAG>_eco_step5_fm_verify_round<ROUND>.rpt` | `<BASE_DIR>/data/` + `<AI_ECO_FLOW_DIR>/` | Human-readable summary |
+| `<TAG>_eco_step6_fm_verify_round<ROUND>.rpt` | `<BASE_DIR>/data/` + `<AI_ECO_FLOW_DIR>/` | Human-readable summary |
 
 **Working Directory:** Always `cd <BASE_DIR>` before any file operations.
 
@@ -234,10 +234,10 @@ Two abort types allow a single inline fix attempt followed by immediate FM re-su
 
 1. **Ensure `data/` exists:** `os.makedirs(os.path.join(BASE_DIR, "data"), exist_ok=True)`.
 2. **Write `data/<TAG>_eco_fm_verify.json`** with cumulative per-target results. Verify the file exists after write; abort (exit 1) if not.
-3. **Write step5 RPT** in this format:
+3. **Write step6 RPT** in this format:
    ```
    ================================================================================
-   STEP 5 — POSTECO FM VERIFICATION (Round <ROUND>)
+   STEP 6 — POSTECO FM VERIFICATION (Round <ROUND>)
    Tag: <TAG>  |  eco_fm_tag: <eco_fm_tag>
    ================================================================================
      <target_1>  : PASS / FAIL / ABORT  [abort_type: <value>]

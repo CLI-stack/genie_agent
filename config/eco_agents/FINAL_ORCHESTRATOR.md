@@ -156,8 +156,8 @@ Per-Step Reports  (all at: <AI_ECO_FLOW_DIR>/)
   <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round1.rpt
   <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round<N>.rpt  <- N=2..TOTAL_ROUNDS  <- one line per fix round (ROUND=1..N-1)
   <AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt  <- one line per round
-  <AI_ECO_FLOW_DIR>/<TAG>_eco_step4b_svf.rpt          <- omit if no new_logic
-  <AI_ECO_FLOW_DIR>/<TAG>_eco_step5_fm_verify_round<ROUND>.rpt  <- one line per round
+  <AI_ECO_FLOW_DIR>/<TAG>_eco_step5_pre_fm_check_round<ROUND>.rpt <- one line per round
+  <AI_ECO_FLOW_DIR>/<TAG>_eco_step6_fm_verify_round<ROUND>.rpt  <- one line per round
   <AI_ECO_FLOW_DIR>/<TAG>_eco_summary.rpt
 
 ================================================================================
@@ -204,11 +204,10 @@ Write `<BASE_DIR>/data/<TAG>_eco_report.html` with these sections:
 <p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round<N>.rpt  <- N=2..TOTAL_ROUNDS</code></p>
 <!-- One line per round: -->
 <p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt</code></p>
-<!-- Include only if new_logic insertions exist: -->
-<p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step4b_svf.rpt</code></p>
-<p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_svf_entries.tcl</code></p>
 <!-- One line per round: -->
-<p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step5_fm_verify_round<ROUND>.rpt</code></p>
+<p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step5_pre_fm_check_round<ROUND>.rpt</code></p>
+<!-- One line per round: -->
+<p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step6_fm_verify_round<ROUND>.rpt</code></p>
 <p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_summary.rpt</code></p>
 ```
 

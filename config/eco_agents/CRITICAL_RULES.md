@@ -26,7 +26,7 @@ Only read guidance files from `config/eco_agents/`. Do NOT read from `config/ana
 
 ## RULE 2 — Spawn Then Hard Stop (ORCHESTRATOR and ROUND_ORCHESTRATOR)
 
-**After Step 5, your ONLY remaining work is: (A) write `round_handoff.json`, (B) spawn the next agent, (C) stop.**
+**After Step 6, your ONLY remaining work is: (A) write `round_handoff.json`, (B) spawn the next agent, (C) stop.**
 
 You MUST NOT:
 - Run Steps 7 or 8 yourself
@@ -181,7 +181,7 @@ md5sum <REF_DIR>/data/PostEco/Synthesize.v.gz.bak_<TAG>_round<ROUND>
 # (hashes must differ)
 ```
 
-If any stage's md5 matches its backup — the ECO was not applied to that stage. Do NOT proceed to Step 5.
+If any stage's md5 matches its backup — the ECO was not applied to that stage. Do NOT proceed to Step 5 (Pre-FM Quality Checker).
 
 > **This rule prevents:** applying the ECO only to Synthesize while leaving PrePlace and Route unchanged, which causes FM stage-to-stage comparison to fail because the PostEco netlists diverge from each other.
 
@@ -232,8 +232,9 @@ This prevents context pressure from causing sub-agents to exit before completing
 | Step 3 | `data/<TAG>_eco_step2_fenets.rpt` ✓ + all fenets raw RPTs in AI_ECO_FLOW_DIR ✓ |
 | Step 4 | `data/<TAG>_eco_preeco_study.json` ✓ + `AI_ECO_FLOW_DIR/<TAG>_eco_step3_netlist_study.rpt` ✓ |
 | Step 4b | `data/<TAG>_eco_applied_round<N>.json` ✓ + `AI_ECO_FLOW_DIR/<TAG>_eco_step4_eco_applied_round<N>.rpt` ✓ + all 3 stages md5-differ from backup ✓ |
-| Step 5 | `data/<TAG>_eco_svf_entries.tcl` ✓ only if pre-existing FM failures exist — otherwise `svf_update_needed=false`, no TCL file |
-| After Step 5 | `data/<TAG>_round_handoff.json` ✓ — then spawn — then STOP |
+| Step 5 | `data/<TAG>_eco_pre_fm_check_round<N>.json` ✓ — pre-FM checks passed |
+| Step 6 | `data/<TAG>_eco_svf_entries.tcl` ✓ only if pre-existing FM failures exist — otherwise `svf_update_needed=false`, no TCL file |
+| After Step 6 | `data/<TAG>_round_handoff.json` ✓ — then spawn — then STOP |
 | Step 7b | `data/<TAG>_eco_summary.rpt` ✓ |
 | Step 8 | `data/<TAG>_eco_report.html` ✓ |
 
@@ -408,7 +409,7 @@ If Step 4b fails → record VERIFY_FAILED, do NOT recompress, do NOT submit FM. 
 
 ## RULE 25 — Run Pre-FM Integrity Checks Before Every FM Submission
 
-**Before submitting FM (Step 5), always run Step 4c — the 4 pre-FM checks:**
+**Before submitting FM (Step 6), always run Step 5 (Pre-FM Quality Checker) — the 4 pre-FM checks:**
 1. No SKIPPED entries for port_declaration or port_connection changes
 2. No Verilog syntax errors (unbalanced parentheses) in any PostEco stage
 3. All 3 stages contain ECO cells (non-zero `eco_<jira>_` count)
@@ -426,8 +427,8 @@ FM jobs run for 1–2 hours. A corrupt netlist or missing port declaration cause
 
 This applies to:
 - **eco_fm_runner**: When spec shows N/A or no failing points — write eco_fm_verify.json with `status: "ABORT"` and **EXIT IMMEDIATELY**. Do NOT re-submit FM. Do NOT apply any patches. Do NOT loop.
-- **ORCHESTRATOR After Step 5**: When eco_fm_verify.json shows ABORT or FAIL — write round_handoff.json + spawn ROUND_ORCHESTRATOR + HARD STOP. Do NOT try to fix the netlist, SVF, or cell types yourself.
-- **ROUND_ORCHESTRATOR After Step 5**: When eco_fm_verify.json shows ABORT or FAIL — update round_handoff.json + spawn next ROUND_ORCHESTRATOR + EXIT. Do NOT re-submit FM or apply inline patches.
+- **ORCHESTRATOR After Step 6**: When eco_fm_verify.json shows ABORT or FAIL — write round_handoff.json + spawn ROUND_ORCHESTRATOR + HARD STOP. Do NOT try to fix the netlist, SVF, or cell types yourself.
+- **ROUND_ORCHESTRATOR After Step 6**: When eco_fm_verify.json shows ABORT or FAIL — update round_handoff.json + spawn next ROUND_ORCHESTRATOR + EXIT. Do NOT re-submit FM or apply inline patches.
 
 **The chain for ABORT:**
 ```

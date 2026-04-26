@@ -19,10 +19,10 @@
 3. **Study PreEco before touching PostEco** — always read PreEco netlist first to confirm cell+pin
 4. **Single-occurrence rule** — if old_net appears >1 time on a pin in PostEco, skip and report AMBIGUOUS
 5. **Backup always** — `cp PostEco/${stage}.v.gz PostEco/${stage}.v.gz.bak_${tag}_round${round}` before any edit (round-specific backup so each round can be independently reverted)
-6. **new_logic = cell insertion** — when new_net doesn't exist in PostEco, insert a new cell: inverter (Step 4c) for simple inversion, DFF (Step 4c-DFF) for sequential registers, or combinational gate (Step 4c-GATE) for multi-input logic. FM auto-matches inserted cells by instance path name.
+6. **new_logic = cell insertion** — when new_net doesn't exist in PostEco, insert a new cell: inverter (Step 4 (eco_applier)) for simple inversion, DFF (Step 4 (eco_applier)-DFF) for sequential registers, or combinational gate (Step 4 (eco_applier)-GATE) for multi-input logic. FM auto-matches inserted cells by instance path name.
 7. **Polarity rule** — only use `+` (non-inverted) impl nets for rewiring, never `-` (inverted); for inverted signals use new_logic insert
 8. **Bus dual-query** — for bus signals `reg [N:0] X`, query both `X` and `X_0_` to find gate-level name
-9. **PostEco FM verification — ONE run only** — run all 3 targets in Step 5. If FM fails: write round_handoff.json → spawn ROUND_ORCHESTRATOR → HARD STOP. Never re-run FM or loop within ORCHESTRATOR. Each subsequent FM run belongs to its own ROUND_ORCHESTRATOR instance.
+9. **PostEco FM verification — ONE run only** — run all 3 targets in Step 6. If FM fails: write round_handoff.json → spawn ROUND_ORCHESTRATOR → HARD STOP. Never re-run FM or loop within ORCHESTRATOR. Each subsequent FM run belongs to its own ROUND_ORCHESTRATOR instance.
 10. **6-round fix loop** — each round = one eco_applier run + one FM run. Round 1 is in ORCHESTRATOR. Rounds 2–6 are in separate ROUND_ORCHESTRATOR instances. One ROUND_ORCHESTRATOR = one FM run, then spawn next agent.
 11. **Same instance name across all stages** — new_logic cells must use identical instance names in Synthesize, PrePlace, and Route for FM stage-to-stage matching
 12. **Output file verification** — after every sub-agent completes, verify the expected output file exists and is non-empty before proceeding to the next step. Never assume a sub-agent succeeded without checking.
@@ -53,7 +53,7 @@ Read it and branch immediately:
 | `FM_PASSED` | — | Spawn FINAL_ORCHESTRATOR → HARD STOP |
 | `FM_FAILED` (pre_fm_check_failed=true) | YES | Spawn ROUND_ORCHESTRATOR → HARD STOP |
 
-**SKIP ALL STEPS including PRE-FLIGHT** when any row above matches — the flow is already complete up to the spawn. Do NOT re-run Steps 1–5.
+**SKIP ALL STEPS including PRE-FLIGHT** when any row above matches — the flow is already complete up to the spawn. Do NOT re-run Steps 1–6.
 
 **If `round_handoff.json` does NOT exist:** Continue normally to PRE-FLIGHT below.
 
@@ -445,7 +445,7 @@ If any net returns `Error: Unknown name ... (FM-036)`:
    ```
    Where `<hierarchy_path>` is the instance path of the module containing `target_register` (from `hierarchy` field in `eco_rtl_diff.json`).
 
-   **Why this works:** FM's reference namespace exposes the register's output signal (the Q net). The eco_netlist_studier will then trace backward from `<target_register>.D` through the gate-level backward cone to find the actual cell and pin that drives the D input — which is where the internal wire (`old_net`) connects. The backward cone trace (Step 4c in eco_netlist_studier.md) identifies the exact cell to rewire without needing FM to directly name the internal wire.
+   **Why this works:** FM's reference namespace exposes the register's output signal (the Q net). The eco_netlist_studier will then trace backward from `<target_register>.D` through the gate-level backward cone to find the actual cell and pin that drives the D input — which is where the internal wire (`old_net`) connects. The backward cone trace (in eco_netlist_studier.md) identifies the exact cell to rewire without needing FM to directly name the internal wire.
 
    Write and copy the raw rpt with the `_fm036_retry<N>` suffix as normal.
 
@@ -640,7 +640,7 @@ ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round1.rpt
 
 Wait for eco_applier sub-agent to complete.
 
-**CHECKPOINT:** Verify `data/<TAG>_eco_applied_round<ROUND>.json` exists and contains a `summary` field. Check that backup files `<REF_DIR>/data/PostEco/<Stage>.v.gz.bak_<TAG>_round<ROUND>` exist for each stage that had confirmed cells. Do NOT continue to Step 5 if file is missing.
+**CHECKPOINT:** Verify `data/<TAG>_eco_applied_round<ROUND>.json` exists and contains a `summary` field. Check that backup files `<REF_DIR>/data/PostEco/<Stage>.v.gz.bak_<TAG>_round<ROUND>` exist for each stage that had confirmed cells. Do NOT continue to Step 5 (Pre-FM Quality Checker) if file is missing.
 
 **Generate Step 4 RPT from JSON (ORCHESTRATOR responsibility — NOT eco_applier):**
 
@@ -698,74 +698,7 @@ ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt
 
 ---
 
-## STEP 4c — Pre-FM Netlist Integrity Verification (MANDATORY before Step 5)
-
-Before submitting FM, verify the PostEco netlists are valid. FM jobs are expensive (1–2 hours each) — catching errors here saves wasted FM time.
-
-**Check 1 — SKIPPED entries in eco_applied:**
-```bash
-python3 -c "
-import json
-data = json.load(open('<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json'))
-for stage in ['Synthesize','PrePlace','Route']:
-    for e in data.get(stage,[]):
-        if e.get('status')=='SKIPPED':
-            print(f'{stage}: SKIPPED {e.get(\"cell_name\",\"?\")} reason={e.get(\"reason\",\"?\")}')
-"
-```
-If any SKIPPED entries exist for `port_declaration` or `port_connection` changes: the ECO is incomplete. Do NOT proceed to FM. Investigate the SKIPPED reason:
-- `"Could not find port list close"` → PORT_DECL Step 2 depth tracking failed — check the stage-specific module name and endmodule detection
-- `"cell not found"` → stage-specific cell name differs — check studier for stage-specific cell names
-
-**Check 2 — Verilog syntax quick scan of all 3 PostEco stages:**
-```bash
-for stage in Synthesize PrePlace Route; do
-  # Count unbalanced parentheses in each module definition
-  # A syntax error produces an unbalanced count
-  err=$(zcat <REF_DIR>/data/PostEco/${stage}.v.gz | \
-    python3 -c "
-import sys
-depth=0; errs=[]
-for i,l in enumerate(sys.stdin,1):
-    for c in l:
-        if c=='(': depth+=1
-        elif c==')': depth-=1
-    if depth<0:
-        errs.append(f'line {i}: unbalanced ) — depth={depth}')
-        depth=0
-if errs: print('\n'.join(errs[:5]))
-else: print('OK')
-" 2>/dev/null)
-  echo "$stage: $err"
-done
-```
-If any stage shows unbalanced parentheses or syntax errors: the eco_applier corrupted that stage's netlist. Revert and investigate before submitting FM — a corrupt netlist causes FM 599 (read error) and wastes the entire FM slot.
-
-**Check 3 — Verify ECO cells exist in all 3 stages:**
-```bash
-for stage in Synthesize PrePlace Route; do
-  count=$(zcat <REF_DIR>/data/PostEco/${stage}.v.gz | grep -c "eco_<jira>_" 2>/dev/null)
-  echo "$stage: $count eco_<jira>_ cells"
-done
-```
-All 3 stages must show non-zero counts. A stage with 0 ECO cells means the eco_applier did not modify that stage — FM stage-to-stage comparison will fail.
-
-**Check 4 — Verify port declarations applied in all stages:**
-
-For each `port_declaration` change in the study JSON, verify the signal name appears in all 3 PostEco stages:
-```bash
-for stage in Synthesize PrePlace Route; do
-  count=$(zcat <REF_DIR>/data/PostEco/${stage}.v.gz | grep -cw "<signal_name>" 2>/dev/null)
-  echo "$stage: $count occurrences of <signal_name>"
-done
-```
-If count=0 in any P&R stage: the port declaration was skipped → FM will fail with "port not defined" error for that stage. Do NOT submit FM — fix the port declaration first.
-
-**If any check fails:** Do NOT submit FM. Instead, record the failure in `data/<TAG>_eco_step4c_prefm_check.json` and either fix inline (if the issue is a simple name mismatch) or mark the affected changes as SKIPPED with reasons, then re-run eco_applier for the affected stage only. Only proceed to Step 5 when all 4 checks pass.
-
----
-
-## STEP 4c — Pre-FM Cross-Stage Consistency Check
+## STEP 5 — Pre-FM Quality Checker (MANDATORY)
 
 **Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_pre_fm_checker.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `BASE_DIR`, `ROUND=1`, `AI_ECO_FLOW_DIR`
@@ -777,7 +710,7 @@ Wait for sub-agent to complete.
 ```python
 check = load(f"data/{TAG}_eco_pre_fm_check_round1.json")
 if check["passed"]:
-    # All checks passed (including any inline fixes applied) → proceed to Step 5
+    # All checks passed (including any inline fixes applied) → proceed to Step 6
     pass
 else:
     # Issues remained after MAX_RETRIES inline fix attempts
@@ -790,14 +723,14 @@ else:
     })
     write_eco_fixer_state(round=1)
     spawn ROUND_ORCHESTRATOR
-    HARD STOP  # Step 5 skipped — FM never submitted
+    HARD STOP  # Step 6 skipped — FM never submitted
 ```
 
 > **Why before FM:** FM stage-to-stage comparisons (PrePlace vs Synthesize, Route vs PrePlace) fail when stages have different ECO changes applied — e.g., a port added to Synthesize but SKIPPED in PrePlace causes thousands of non-equivalent DFFs. This check takes seconds. FM takes 1-2 hours.
 
 ---
 
-## STEP 5 — PostEco Formality Verification
+## STEP 6 — PostEco Formality Verification
 
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_fm_runner.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `TILE`, `BASE_DIR`, `AI_ECO_FLOW_DIR`, `ROUND=1`
@@ -809,13 +742,13 @@ Wait for the sub-agent to complete.
 **CHECKPOINT:** Verify ALL of the following:
 ```bash
 ls <BASE_DIR>/data/<TAG>_eco_fm_verify.json
-ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step5_fm_verify_round1.rpt
+ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step6_fm_verify_round1.rpt
 ```
 Also read `data/<TAG>_eco_fm_tag_round1.tmp` to get `eco_fm_tag` — save it to `eco_fixer_state` if FM failed.
 
 ---
 
-### Step 5 Notes (reference — do NOT execute yourself)
+### Step 6 Notes (reference — do NOT execute yourself)
 
 > **HARD RULE: ORCHESTRATOR runs PostEco FM EXACTLY ONCE — Round 1 only, all 3 targets.**
 > If FM fails after Round 1: do NOT re-run FM. Do NOT write a new eco_fm_config. Do NOT call genie_cli again.
@@ -824,7 +757,7 @@ Also read `data/<TAG>_eco_fm_tag_round1.tmp` to get `eco_fm_tag` — save it to 
 
 Full implementation is in `eco_fm_runner.md`. Key rules for the Round 1 sub-agent: write eco_fm_config with ALL 3 targets (fixed filename, not tag-based), poll every 5 minutes with individual Bash tool calls (max 72 polls = 6h), write tmp file with eco_fm_tag.
 
-### Step 5a — Write FM config file (Round 1 only — all 3 targets)
+### Step 6a — Write FM config file (Round 1 only — all 3 targets)
 
 Write to `<REF_DIR>/data/eco_fm_config` — **fixed filename inside refDir** (NOT tag-based):
 ```bash
@@ -836,7 +769,7 @@ EOF
 
 `RUN_SVF_GEN=0` always — SVF generation is disabled. The AI flow never applies SVF.
 
-### Step 5b — Run PostEco FM (once)
+### Step 6b — Run PostEco FM (once)
 
 ```bash
 cd <BASE_DIR>
@@ -863,15 +796,15 @@ The script reads `<REF_DIR>/data/eco_fm_config` automatically.
 
 **OVERALL PASS** (as determined by the ORCHESTRATOR after the sub-agent completes) = all 3 targets show PASS in the merged `eco_fm_verify.json`.
 
-**[eco_fm_runner sub-agent does this — not the ORCHESTRATOR]** eco_fm_runner writes `data/<TAG>_eco_step5_fm_verify_round1.rpt` and copies it to `AI_ECO_FLOW_DIR/`.
+**[eco_fm_runner sub-agent does this — not the ORCHESTRATOR]** eco_fm_runner writes `data/<TAG>_eco_step6_fm_verify_round1.rpt` and copies it to `AI_ECO_FLOW_DIR/`.
 
-**CHECKPOINT:** Verify both `data/<TAG>_eco_fm_verify.json` and `data/<TAG>_eco_step5_fm_verify_round<ROUND>.rpt` exist and are non-empty.
+**CHECKPOINT:** Verify both `data/<TAG>_eco_fm_verify.json` and `data/<TAG>_eco_step6_fm_verify_round<ROUND>.rpt` exist and are non-empty.
 
 > **CONTEXT PRESSURE WARNING:** After eco_fm_runner completes, your context window may be near its limit. The ONLY remaining actions are: write round_handoff.json → write eco_fixer_state (if FAIL) → spawn next agent → HARD STOP. Make NO other tool calls. Do NOT read any extra files. Do NOT summarize. Do NOT generate reports. The SPAWN must happen — it is your only remaining mandatory action. If you run out of context without spawning, the RESUMPTION CHECK at the top of this file will recover the flow on the next invocation.
 
 ---
 
-## After Step 5 — Spawn Next Agent
+## After Step 6 — Spawn Next Agent
 
 > **ANTI-PATTERN WARNING — READ FIRST:**
 > Your ONLY job here is: (A) write `round_handoff.json`, (B) spawn the correct next agent, (C) stop.
@@ -906,9 +839,9 @@ If the file does not exist or is empty — write it again. Do NOT proceed to spa
 
 ### Mandatory Step B — Spawn the correct next agent
 
-#### If pre_fm_check_failed = true (Step 4c failure — FM was never submitted)
+#### If pre_fm_check_failed = true (Step 5 failure — FM was never submitted)
 
-This path is triggered when eco_pre_fm_checker returned `passed: false` after MAX_RETRIES inline fix attempts. FM was **never submitted** this round. The round_handoff.json already has `status: FM_FAILED` and `pre_fm_check_failed: true` from Step 4c.
+This path is triggered when eco_pre_fm_checker returned `passed: false` after MAX_RETRIES inline fix attempts. FM was **never submitted** this round. The round_handoff.json already has `status: FM_FAILED` and `pre_fm_check_failed: true` from Step 5.
 
 **Spawn ROUND_ORCHESTRATOR** — same as FM FAIL path below. ROUND_ORCHESTRATOR's Step 0 will detect `pre_fm_check_failed: true` in the handoff and skip FM log parsing, reading instead from `eco_pre_fm_check_round<ROUND>.json` for the diagnosis.
 
@@ -985,5 +918,5 @@ The next agent has its own fresh context and instructions. Trust the handoff.
 | `data/<TAG>_eco_step1_rtl_diff.rpt` | Step 1 RPT (written by rtl_diff_analyzer) |
 | `data/<TAG>_eco_step3_netlist_study_round1.rpt` | Step 3 RPT (written by eco_netlist_studier) |
 | `data/<TAG>_eco_step4_eco_applied_round1.rpt` | Step 4 RPT Round 1 (written by eco_applier) |
-| `data/<TAG>_eco_step5_fm_verify_round1.rpt` | Step 5 RPT Round 1 |
+| `data/<TAG>_eco_step6_fm_verify_round1.rpt` | Step 6 RPT Round 1 |
 | `data/<TAG>_round_handoff.json` | Handoff to ROUND_ORCHESTRATOR or FINAL_ORCHESTRATOR |

@@ -12,7 +12,7 @@
 
 ## CRITICAL RULES
 
-1. **You handle ONE round only — ONE FM run only.** Do not loop. After Step 5 completes (whether FM passes or fails), spawn the next agent and EXIT. Never re-run FM within the same ROUND_ORCHESTRATOR instance regardless of the result.
+1. **You handle ONE round only — ONE FM run only.** Do not loop. After Step 6 completes (whether FM passes or fails), spawn the next agent and EXIT. Never re-run FM within the same ROUND_ORCHESTRATOR instance regardless of the result.
 2. **Read state from disk, not memory** — all inputs come from `ROUND_HANDOFF_PATH` and `_eco_fixer_state`. Do not assume anything from previous context.
 3. **Every step must complete and checkpoint must pass** before proceeding to the next step.
 4. **Email before revert** — Step 6a (email) always runs before Step 6b (revert). Never skip.
@@ -43,13 +43,13 @@ handoff = load(f"data/{TAG}_round_handoff.json")
 pre_fm_check_failed = handoff.get("pre_fm_check_failed", False)
 ```
 
-If `pre_fm_check_failed: true` — FM was never submitted (blocked by Step 4c). Write a **simplified HTML** noting pre-FM check failure and skip the FM failing points section. Do NOT try to read `eco_fm_tag_spec` (it doesn't exist). Send email with subject indicating "Pre-FM Check Failed".
+If `pre_fm_check_failed: true` — FM was never submitted (blocked by Step 5). Write a **simplified HTML** noting pre-FM check failure and skip the FM failing points section. Do NOT try to read `eco_fm_tag_spec` (it doesn't exist). Send email with subject indicating "Pre-FM Check Failed".
 
 If `pre_fm_check_failed: false` (normal FM failure) — write full HTML:
 - Round N summary: which targets failed, failing point count per target
 - ECO changes attempted: read from `data/<TAG>_eco_applied_round<ROUND>.json`
 - FM failing points detail: hierarchy paths of failing DFFs — read from `data/<eco_fm_tag>_spec`
-- Pre-FM check results: read from `data/<TAG>_eco_step4c_pre_fm_check_round<ROUND>.rpt` (if exists)
+- Pre-FM check results: read from `data/<TAG>_eco_step5_pre_fm_check_round<ROUND>.rpt` (if exists)
 - What will be tried next round (from eco_fm_analyzer — written in Step 6d)
 
 Then send:
@@ -284,11 +284,11 @@ cp <BASE_DIR>/data/<TAG>_eco_step4_eco_applied_round<NEXT_ROUND>.rpt <AI_ECO_FLO
 ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<NEXT_ROUND>.rpt
 ```
 
-Do NOT proceed to Step 4c until the RPT is confirmed in both data/ and AI_ECO_FLOW_DIR.
+Do NOT proceed to Step 5 until the RPT is confirmed in both data/ and AI_ECO_FLOW_DIR.
 
 ---
 
-## STEP 4c — Pre-FM Cross-Stage Consistency Check
+## STEP 5 — Pre-FM Quality Checker (MANDATORY)
 
 **Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_pre_fm_checker.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `BASE_DIR`, `ROUND=<NEXT_ROUND>`, `AI_ECO_FLOW_DIR`
@@ -300,7 +300,7 @@ Wait for sub-agent to complete.
 ```python
 check = load(f"data/{TAG}_eco_pre_fm_check_round{NEXT_ROUND}.json")
 if check["passed"]:
-    # All checks passed (fixes applied inline if needed) → proceed to Step 5
+    # All checks passed (fixes applied inline if needed) → proceed to Step 6
     pass
 else:
     # Inline fixes exhausted after MAX_RETRIES — escalate to next ROUND_ORCHESTRATOR
@@ -310,12 +310,12 @@ else:
         "unresolved_issues": check["issues_unresolved"]
     }])
     spawn ROUND_ORCHESTRATOR (next instance)
-    EXIT  # Step 5 skipped — FM never submitted this round
+    EXIT  # Step 6 skipped — FM never submitted this round
 ```
 
 ---
 
-## STEP 5 — PostEco Formality Verification
+## STEP 6 — PostEco Formality Verification
 
 > **HARD RULE: Each ROUND_ORCHESTRATOR instance runs PostEco FM EXACTLY ONCE for its round.**
 > If FM fails after this one run: do NOT re-run FM. Do NOT spawn another eco_fm_runner.
@@ -330,20 +330,20 @@ else:
 
 Wait for the sub-agent to complete. **Do NOT spawn another eco_fm_runner if results are not what you expected — read them as-is and hand off.**
 
-> **CRITICAL: When eco_fm_runner returns — regardless of PASS, FAIL, or ABORT — go directly to "After Step 5" and spawn the correct next agent. NEVER attempt to diagnose, patch, or re-submit FM within this same ROUND_ORCHESTRATOR instance. ABORT results (N/A, no matching/failing points) go to the NEXT ROUND_ORCHESTRATOR, not handled inline.**
+> **CRITICAL: When eco_fm_runner returns — regardless of PASS, FAIL, or ABORT — go directly to "After Step 6" and spawn the correct next agent. NEVER attempt to diagnose, patch, or re-submit FM within this same ROUND_ORCHESTRATOR instance. ABORT results (N/A, no matching/failing points) go to the NEXT ROUND_ORCHESTRATOR, not handled inline.**
 
 **CHECKPOINT:** Verify ALL of the following:
 ```bash
 ls <BASE_DIR>/data/<TAG>_eco_fm_verify.json
-ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step5_fm_verify_round<NEXT_ROUND>.rpt
+ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step6_fm_verify_round<NEXT_ROUND>.rpt
 ```
 Read `data/<TAG>_eco_fm_tag_round<NEXT_ROUND>.tmp` to get `eco_fm_tag` — save to `eco_fixer_state.fm_results_per_round`.
 
-**CHECKPOINT:** Verify `data/<TAG>_eco_fm_verify.json` and `data/<TAG>_eco_step5_fm_verify_round<NEXT_ROUND>.rpt` both exist. Verify `eco_fm_tag` is recorded.
+**CHECKPOINT:** Verify `data/<TAG>_eco_fm_verify.json` and `data/<TAG>_eco_step6_fm_verify_round<NEXT_ROUND>.rpt` both exist. Verify `eco_fm_tag` is recorded.
 
 ---
 
-## After Step 5 — Spawn Next Agent
+## After Step 6 — Spawn Next Agent
 
 > **HARD RULE: Read eco_fm_verify.json ONCE and spawn the next agent. Do not loop.**
 > - `status: "PASS"` on ALL targets → FINAL_ORCHESTRATOR
@@ -417,6 +417,6 @@ Update handoff: `"status": "MAX_ROUNDS"`
 | `data/<TAG>_eco_fixer_state` | ROUND_ORCHESTRATOR (Step 6e) | Incremented round + strategies_tried |
 | `data/<TAG>_eco_applied_round<NEXT_ROUND>.json` | eco_apply_fix_round_N (Step 4) | ECO changes applied in fix round |
 | `data/<TAG>_eco_step4_eco_applied_round<NEXT_ROUND>.rpt` | ROUND_ORCHESTRATOR (Step 4) | Detailed application report |
-| `data/<TAG>_eco_fm_verify.json` | eco_fm_runner (Step 5) | Merged FM results cumulative across rounds |
-| `data/<TAG>_eco_step5_fm_verify_round<NEXT_ROUND>.rpt` | eco_fm_runner (Step 5) | Step 5 FM result RPT |
+| `data/<TAG>_eco_fm_verify.json` | eco_fm_runner (Step 6) | Merged FM results cumulative across rounds |
+| `data/<TAG>_eco_step6_fm_verify_round<NEXT_ROUND>.rpt` | eco_fm_runner (Step 6) | Step 6 FM result RPT |
 | `data/<TAG>_round_handoff.json` | ROUND_ORCHESTRATOR (After Step 5) | Updated handoff for next agent |

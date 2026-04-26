@@ -1,6 +1,6 @@
 # ECO Pre-FM Checker — Cross-Stage Consistency Validator
 
-**You are the ECO pre-FM checker.** You run AFTER eco_applier (Step 4) and BEFORE FM submission (Step 5). Your job: verify the 3 PostEco netlists are consistent, fix any issues found inline (without spawning a new round), and gate FM submission.
+**You are the ECO pre-FM checker.** You run AFTER eco_applier (Step 4) and BEFORE FM submission (Step 6). Your job: verify the 3 PostEco netlists are consistent, fix any issues found inline (without spawning a new round), and gate FM submission.
 
 **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` before anything else.
 
@@ -10,7 +10,7 @@
 - PostEco netlists: `<REF_DIR>/data/PostEco/Synthesize.v.gz`, `PrePlace.v.gz`, `Route.v.gz`
 
 **Outputs (BOTH required before exiting):**
-- `<BASE_DIR>/data/<TAG>_eco_step4c_pre_fm_check_round<ROUND>.rpt` → copied to `AI_ECO_FLOW_DIR/`
+- `<BASE_DIR>/data/<TAG>_eco_step5_pre_fm_check_round<ROUND>.rpt` → copied to `AI_ECO_FLOW_DIR/`
 - `<BASE_DIR>/data/<TAG>_eco_pre_fm_check_round<ROUND>.json`
 
 **Max inline fix retries:** 3 — if issues persist after 3 fix attempts, escalate to ROUND_ORCHESTRATOR.
@@ -481,11 +481,11 @@ for name, stages in change_map.items():
 
 ## STEP 3 — Write RPT
 
-Write `<BASE_DIR>/data/<TAG>_eco_step4c_pre_fm_check_round<ROUND>.rpt`:
+Write `<BASE_DIR>/data/<TAG>_eco_step5_pre_fm_check_round<ROUND>.rpt`:
 
 ```
 ================================================================================
-STEP 4c — PRE-FM CROSS-STAGE CONSISTENCY CHECK (Round <ROUND>)
+STEP 5 — PRE-FM CROSS-STAGE CONSISTENCY CHECK (Round <ROUND>)
 Tag: <TAG>  |  Tile: <TILE>  |  JIRA: <JIRA>
 Attempts: <N of MAX_RETRIES>
 ================================================================================
@@ -522,13 +522,13 @@ OVERALL: <PASS — proceed to FM / FAIL after 3 retries — escalate to ROUND_OR
   Rewire applied in P&R stages but skipped in Synthesize (cell not found in declaring module scope)
   Action: Proceeding to FM — eco_fm_analyzer will diagnose if FM fails on this
 ================================================================================
-NEXT STEP: <Proceed to Step 5 (FM submission) / Escalate to ROUND_ORCHESTRATOR>
+NEXT STEP: <Proceed to Step 6 (FM submission) / Escalate to ROUND_ORCHESTRATOR>
 ================================================================================
 ```
 
 Copy to AI_ECO_FLOW_DIR:
 ```bash
-cp <BASE_DIR>/data/<TAG>_eco_step4c_pre_fm_check_round<ROUND>.rpt <AI_ECO_FLOW_DIR>/
+cp <BASE_DIR>/data/<TAG>_eco_step5_pre_fm_check_round<ROUND>.rpt <AI_ECO_FLOW_DIR>/
 ```
 
 ---
@@ -659,14 +659,14 @@ write_json(f"data/{TAG}_eco_pre_fm_check_round{ROUND}.json", result)
 
 ---
 
-## Chain: Step 4 → Step 4c → Step 5
+## Chain: Step 4 → Step 5 → Step 6
 
 ```
 eco_applier (Step 4) completes
        ↓
-eco_pre_fm_checker (Step 4c)  ← checks + inline fixes (no new round spawned)
+eco_pre_fm_checker (Step 5)  ← checks + inline fixes (no new round spawned)
        ↓
-  passed: true ─────────────────────────────────→ Step 5: FM submission
+  passed: true ─────────────────────────────────→ Step 6: FM submission
        │
   passed: false after MAX_RETRIES
        │  (inline fixes exhausted — remaining issues need deeper diagnosis)
@@ -685,5 +685,5 @@ eco_pre_fm_checker (Step 4c)  ← checks + inline fixes (no new round spawned)
 
 | File | Location | Purpose |
 |------|---------|---------|
-| `<TAG>_eco_step4c_pre_fm_check_round<ROUND>.rpt` | `data/` + `AI_ECO_FLOW_DIR/` | Human-readable: what was found, what was fixed, what was warned |
+| `<TAG>_eco_step5_pre_fm_check_round<ROUND>.rpt` | `data/` + `AI_ECO_FLOW_DIR/` | Human-readable: what was found, what was fixed, what was warned |
 | `<TAG>_eco_pre_fm_check_round<ROUND>.json` | `data/` | Machine-readable: passed/failed, issues list, for orchestrators |
