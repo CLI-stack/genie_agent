@@ -225,6 +225,7 @@ modules_arg = " ".join(touched_modules)
 
 ```bash
 python3 script/validate_verilog_netlist.py \
+  --strict \
   --modules <touched_modules_space_separated> \
   -- \
   <REF_DIR>/data/PostEco/Synthesize.v.gz \
@@ -233,7 +234,20 @@ python3 script/validate_verilog_netlist.py \
 # Exit 0 = PASS for all stages. Exit 1 = errors found → block FM submission → escalate to ROUND_ORCHESTRATOR
 ```
 
-This validator catches F3 (declaration inside cell instance) and F5 (corrupted port value) — always eco_applier bugs. Runs in seconds when `--modules` is used. Without `--modules` it scans the entire netlist which is too slow.
+**ALWAYS run with `--strict`** — this enables F1 (duplicate wire) detection in addition to F3/F5/Check9. F1 catches cases where an explicit `wire n_eco_*;` declaration was added alongside a cell that already creates the net implicitly (eco_applier UNIVERSAL RULE violation). Without `--strict`, duplicate wire errors reach FM and cause FM-599 → ABORT_NETLIST.
+
+**Inline fix for F1 (duplicate wire `n_eco_*`):**
+```python
+for err in errors:
+    if err["check"] == "F1_dup_wire" and err["signal"].startswith("n_eco_"):
+        # Remove the explicit wire declaration — the cell output creates the net implicitly
+        fix_applied |= remove_line_from_gz(
+            stage_gz=f"{REF_DIR}/data/PostEco/{err['stage']}.v.gz",
+            lineno=err["line"]  # line of the DUPLICATE wire declaration (second occurrence)
+        )
+```
+
+This validator catches F1 (duplicate wire), F3 (declaration inside cell instance), F4 (duplicate port connection), and F5 (corrupted port value). Runs in seconds when `--modules` is used. Without `--modules` it scans the entire netlist which is too slow.
 
 If the validator script is unavailable, run the manual checks below.
 
@@ -361,6 +375,93 @@ for stage in ["Synthesize", "PrePlace", "Route"]:
 ```
 
 **Inline fix for Check G:** For each missing direction declaration, find the port list close line, then insert `input <signal>;` or `output <signal>;` immediately after it (use `declaration_type` from the applied JSON to determine direction).
+
+### Check H — ECO Cell Output Pin Name Validation (FE-LINK-7 prevention)
+
+For every inserted ECO gate (new_logic_gate, new_logic_dff entries in applied JSON), verify the output pin name used matches the actual cell library definition. Wrong pin names cause FM FE-LINK-7 → ABORT_LINK on ALL subsequent stage comparisons.
+
+**Method: look up the cell type in the PreEco netlist to find the actual output pin name.**
+
+```python
+for stage in ["Synthesize", "PrePlace", "Route"]:
+    for entry in applied.get(stage, []):
+        if entry.get("change_type") not in ("new_logic_gate", "new_logic_dff"):
+            continue
+        if entry.get("status") not in ("INSERTED",):
+            continue
+
+        cell_type  = entry.get("cell_type", "")
+        inst_name  = entry.get("instance_name", "")
+        gate_fn    = entry.get("gate_function", "")
+        # Expected output pin from GATE_OUTPUT_PIN table (see below)
+        expected_out_pin = GATE_OUTPUT_PIN.get(gate_fn, None)
+
+        # Method 1: fast table lookup
+        if expected_out_pin:
+            # Verify PostEco netlist uses correct pin
+            posteco_line = find_instance_line(f"PostEco/{stage}.v.gz", inst_name)
+            actual_out_pin = extract_output_pin(posteco_line, cell_type)
+            if actual_out_pin and actual_out_pin != expected_out_pin:
+                issues_H.append({
+                    "check": "H_wrong_output_pin",
+                    "stage": stage, "instance": inst_name, "cell_type": cell_type,
+                    "wrong_pin": actual_out_pin, "correct_pin": expected_out_pin,
+                    "severity": "CRITICAL"
+                })
+
+        # Method 2: grep PreEco for cell_type to find actual pin name
+        else:
+            preeco_example = grep_cell_type_example(f"PreEco/Synthesize.v.gz", cell_type)
+            if preeco_example:
+                # Parse output pin from example: last .PIN(NET) before ); where PIN is Z/ZN/Q etc
+                correct_pin = extract_output_pin_from_example(preeco_example)
+                posteco_line = find_instance_line(f"PostEco/{stage}.v.gz", inst_name)
+                actual_out_pin = extract_output_pin(posteco_line, cell_type)
+                if actual_out_pin and correct_pin and actual_out_pin != correct_pin:
+                    issues_H.append({
+                        "check": "H_wrong_output_pin",
+                        "stage": stage, "instance": inst_name, "cell_type": cell_type,
+                        "wrong_pin": actual_out_pin, "correct_pin": correct_pin,
+                        "severity": "CRITICAL"
+                    })
+```
+
+**GATE_OUTPUT_PIN lookup table** — authoritative mapping of gate function to output pin name in this library:
+
+```python
+GATE_OUTPUT_PIN = {
+    # Non-inverting outputs → Z
+    "AND2":  "Z",   "AND3":  "Z",   "AND4":  "Z",
+    "OR2":   "Z",   "OR3":   "Z",   "OR4":   "Z",
+    "MUX2":  "Z",   "MUX4":  "Z",   # MUX2D* output is .Z — NOT .ZN
+    "IND2":  "ZN",  "IND3":  "ZN",  # IND = AND-NOT (inverted AND) → ZN
+    # Inverting outputs → ZN
+    "INV":   "ZN",
+    "NAND2": "ZN",  "NAND3": "ZN",  "NAND4": "ZN",
+    "NOR2":  "ZN",  "NOR3":  "ZN",
+    "XNOR2": "ZN",
+    "XOR2":  "Z",
+    # DFF outputs → Q (QN for inverted copy, but ECO only uses Q)
+    "DFF":   "Q",   "SDFF":  "Q",
+}
+```
+
+> **CRITICAL:** MUX2 output pin is `.Z` — never `.ZN`. IND2 (inverted AND) is `.ZN`. This distinction is the most common source of FE-LINK-7 ABORT_LINK.
+
+**Inline fix for Check H (wrong output pin):**
+```python
+for issue in issues_H:
+    if issue["check"] == "H_wrong_output_pin":
+        # Fix: replace .WRONG_PIN(net) with .CORRECT_PIN(net) for this instance in this stage
+        fix_applied |= replace_pin_in_instance(
+            stage_gz=f"{REF_DIR}/data/PostEco/{issue['stage']}.v.gz",
+            instance_name=issue["instance"],
+            wrong_pin=issue["wrong_pin"],
+            correct_pin=issue["correct_pin"]
+        )
+```
+
+This fix is always safe — only modifies the named ECO cell instance's output pin connection. Re-run Check H after fixing to confirm.
 
 ### Check E — Rewire Consistency (WARNING only — not a blocker)
 

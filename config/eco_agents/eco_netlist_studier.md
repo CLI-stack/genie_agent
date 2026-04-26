@@ -380,6 +380,35 @@ After all chain gates, set DFF entry `port_connections.D = "n_eco_<jira>_d<last>
 
 **For combinational gate:** Determine function from RTL expression (`A & B` → AND2, `~A | ~B` → NAND2, etc.), then search PreEco for matching cell pattern.
 
+---
+
+### CELL OUTPUT PIN TABLE — MANDATORY REFERENCE
+
+**Always use this table to set the output pin name in `port_connections`. Using the wrong pin causes FM FE-LINK-7 → ABORT_LINK on ALL stage comparisons.**
+
+| Gate Function | Output Pin | Notes |
+|--------------|-----------|-------|
+| AND2, AND3, AND4 | `Z` | Non-inverting |
+| OR2, OR3, OR4 | `Z` | Non-inverting |
+| **MUX2, MUX4** | **`Z`** | **NOT `ZN` — MUX output is non-inverting** |
+| XOR2 | `Z` | Non-inverting |
+| INV | `ZN` | Inverting |
+| NAND2, NAND3, NAND4 | `ZN` | Inverting |
+| NOR2, NOR3, NOR4 | `ZN` | Inverting |
+| XNOR2 | `ZN` | Inverting |
+| IND2, IND3 | `ZN` | AND-NOT (inverting AND) |
+| DFF, SDFF | `Q` | Sequential — also `QN` if inverted Q needed (rare) |
+
+**Verification step:** After selecting cell type from PreEco, confirm the output pin by examining an actual instance:
+```bash
+zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep "<cell_type>" | head -1
+# Read the .PIN(net) at the END of the port list — that is the output pin
+```
+
+If there is any doubt, the PreEco netlist instance is authoritative over this table.
+
+---
+
 ### 0c — Handle `d_input_decompose_failed` with `fallback_strategy: intermediate_net_insertion`
 
 Run for every `new_logic` change where `d_input_decompose_failed: true` AND `fallback_strategy: "intermediate_net_insertion"`.

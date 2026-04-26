@@ -194,7 +194,9 @@ ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt
 ```
 Verify `eco_preeco_study.json` modified time is after Step 6d completed. Do NOT proceed to Step 4 without both.
 
-**MANUAL_ONLY RE-CHECK (after Step 6f):** After eco_netlist_studier_round_N completes, re-scan `eco_preeco_study.json` for entries with `force_reapply: true`:
+**MANUAL_ONLY RE-CHECK (after Step 6f) — SINGLE UNIFIED EXIT RULE:**
+
+After eco_netlist_studier_round_N completes, check `eco_preeco_study.json` for entries with `force_reapply: true AND NOT manual_only`:
 
 ```python
 study = load(f"data/{TAG}_eco_preeco_study.json")
@@ -203,23 +205,21 @@ reapply_entries = [
     for e in stage_entries
     if e.get("force_reapply") and not e.get("manual_only")
 ]
-if not reapply_entries:
-    if NEXT_ROUND >= max_rounds:
-        # Truly exhausted — exit with MANUAL_LIMIT
-        update_handoff(status="MANUAL_LIMIT")
-        spawn FINAL_ORCHESTRATOR with TOTAL_ROUNDS=<NEXT_ROUND>
-        EXIT
-    else:
-        # No fixable work THIS round but rounds remain — eco_fm_analyzer may have
-        # queued a progressive strategy (invert_cmux_constants etc.) for next round.
-        # Spawn next ROUND_ORCHESTRATOR to try the next strategy.
-        # Do NOT exit early — always use available rounds.
-        update_handoff(status="FM_FAILED")
-        spawn ROUND_ORCHESTRATOR
-        EXIT
+
+# UNIFIED EXIT RULE — only one condition triggers MANUAL_LIMIT:
+if not reapply_entries and NEXT_ROUND >= max_rounds:
+    # ALL strategies exhausted AND max rounds reached
+    update_handoff(status="MANUAL_LIMIT")
+    spawn FINAL_ORCHESTRATOR with TOTAL_ROUNDS=<NEXT_ROUND>
+    EXIT
+
+# All other cases: continue to Step 4 (eco_applier)
+# - No fixable work BUT rounds remain → eco_fm_analyzer queued progressive strategy
+# - Some fixable work → apply it normally
+# Do NOT exit early. Always use available rounds.
 ```
 
-This catches the case where eco_netlist_studier found no immediately fixable work. If rounds remain, continue trying — eco_fm_analyzer will attempt a different strategy. Only exit at max_rounds.
+**Why unified:** The Step 6d check (eco_fm_analyzer output) and the Step 6f check (eco_netlist_studier output) must agree on exit conditions. The single rule `not reapply_entries AND NEXT_ROUND >= max_rounds` covers both cases consistently — if the studier found no work AND rounds are exhausted → MANUAL_LIMIT. Otherwise always continue to eco_applier.
 
 ---
 
