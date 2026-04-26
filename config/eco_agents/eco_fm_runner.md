@@ -144,6 +144,8 @@ If any signal indicates ABORT → classify as ABORT. Classify abort type by read
 - `FM-599` → `ABORT_NETLIST`
 - Any other `\bError\b` → `ABORT_OTHER`
 
+**Priority when multiple codes appear:** `ABORT_SVF` > `ABORT_NETLIST` > `ABORT_LINK` > `ABORT_OTHER`. Use the highest-priority classification.
+
 ### Load Previous Round Results
 
 On ROUND > 1, load `data/<TAG>_eco_fm_verify.json`. On missing or corrupt file, start with an empty dict (never crash).
@@ -182,8 +184,12 @@ Two abort types allow a single inline fix attempt followed by immediate FM re-su
 
 **Procedure:**
 1. Increment `verilog_fix_attempts`.
-2. Extract touched modules from `data/<TAG>_eco_applied_round<ROUND>.json`.
-3. Run validator with `--strict` on all three PostEco stages:
+2. **Save pre-fix MD5 for all 3 stages** (needed for rollback if timeout):
+   ```bash
+   md5_pre = {s: md5sum(<REF_DIR>/data/PostEco/${s}.v.gz) for s in [Synthesize, PrePlace, Route]}
+   ```
+3. Extract touched modules from `data/<TAG>_eco_applied_round<ROUND>.json`.
+4. Run validator with `--strict` on all three PostEco stages:
    ```bash
    python3 script/validate_verilog_netlist.py --strict \
      --modules <touched_modules> \
@@ -191,15 +197,15 @@ Two abort types allow a single inline fix attempt followed by immediate FM re-su
         <REF_DIR>/data/PostEco/PrePlace.v.gz \
         <REF_DIR>/data/PostEco/Route.v.gz
    ```
-   On timeout → treat as fix-failed → exit with ABORT_NETLIST.
-4. Validate output format contains `[check_name]` or `module | line` patterns; if unexpected format → treat as fix-failed.
-5. If `returncode != 0`, parse errors and apply inline fixes per type:
+   On timeout → **restore all 3 stages from backup** (`bak_<TAG>_round<ROUND>`) → treat as fix-failed → exit with ABORT_NETLIST.
+5. Validate output format contains `[check_name]` or `module | line` patterns; if unexpected format → treat as fix-failed.
+6. If `returncode != 0`, parse errors and apply inline fixes per type:
    - `check9_decl_not_in_header` → add signal to module port list.
    - `F3_decl_inside_instance`, `F5_corrupted_port_value` → remove the offending line from the gzipped netlist; verify the line is gone after removal.
    - `F1_dup_wire` → remove the explicit wire declaration; verify removal.
-   - Any timeout during fix → treat as fix-failed → exit.
-6. Compute MD5 of all three PostEco netlists before and after. If unchanged → fix did nothing → treat as fix-failed.
-7. Re-run validator (without `--strict`). If `returncode == 0` → re-submit FM at STEP B. If still failing → treat as fix-failed.
+   - Any timeout during fix → **restore all 3 stages from their pre-fix MD5** (copy backup back) → treat as fix-failed → exit.
+7. Compute MD5 of all three PostEco netlists before and after. If unchanged → fix did nothing → treat as fix-failed.
+8. Re-run validator (without `--strict`). If `returncode == 0` → re-submit FM at STEP B. If still failing → treat as fix-failed.
 
 **When NOT attempted / escalate:** Second attempt, validator finds no parseable errors, recheck still fails, any timeout, MD5 unchanged. Write `eco_fm_verify.json` with `abort_type: "ABORT_NETLIST"` and EXIT 0.
 

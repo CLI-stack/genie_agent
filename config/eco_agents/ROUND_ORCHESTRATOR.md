@@ -194,11 +194,14 @@ ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt
 ```
 Verify `eco_preeco_study.json` modified time is after Step 6d completed. Do NOT proceed to Step 4 without both.
 
+**MANDATORY: Re-load study JSON before exit check** — the file was just updated by eco_netlist_studier. Do NOT use any in-memory study JSON from earlier in this instance. Always load fresh from disk:
+
 **MANUAL_ONLY RE-CHECK (after Step 6f) — SINGLE UNIFIED EXIT RULE:**
 
-After eco_netlist_studier_round_N completes, check `eco_preeco_study.json` for entries with `force_reapply: true AND NOT manual_only`:
+After eco_netlist_studier_round_N completes, re-load `eco_preeco_study.json` from disk and check for entries with `force_reapply: true AND NOT manual_only`:
 
 ```python
+# MANDATORY: load fresh from disk — do NOT reuse in-memory copy
 study = load(f"data/{TAG}_eco_preeco_study.json")
 reapply_entries = [
     e for stage_entries in study.values() if isinstance(stage_entries, list)

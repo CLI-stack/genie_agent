@@ -112,17 +112,19 @@ for name, stages in change_map.items():
 
 For each SKIPPED stage, determine why it was skipped (read `reason` from applied JSON):
 
-- If reason = "input net not found" → check `port_connections_per_stage` in study — find P&R-renamed net for that stage, update study, re-run eco_applier for that stage only:
+- If reason = "input net not found" → grep for the P&R-renamed net in the SKIPPED stage PostEco:
   ```bash
-  # Re-apply only the specific gate in the specific stage
-  python3 script/genie_cli.py -i "apply eco fix for <TAG> stage <SKIPPED_STAGE> cell <name>" --execute --xterm
+  zcat <REF_DIR>/data/PostEco/<SKIPPED_STAGE>.v.gz | grep -cw "<old_net_from_study>"
   ```
+  If found → update `port_connections_per_stage[<SKIPPED_STAGE>]` in study JSON with the correct net, then **spawn eco_applier as a sub-agent** (same way ORCHESTRATOR spawns it) with `ROUND=<ROUND>` — eco_applier will detect the now-resolvable entry and apply it in Surgical Patch mode.
 
-- If reason = "cell not found in module scope" → the cell is at a different hierarchy level in that stage's PostEco. Find actual location:
+  > **IMPORTANT:** eco_pre_fm_checker does NOT directly edit PostEco netlists for cell insertions — it spawns eco_applier as a sub-agent for any fix requiring gate insertion or rewiring. Direct netlist edits by eco_pre_fm_checker are limited to: removing duplicate lines, adding signals to module port lists, and removing explicit wire declarations (all simple text operations on known line numbers).
+
+- If reason = "cell not found in module scope" → find the correct module (P&R may have added `_0` suffix):
   ```bash
-  zcat <REF_DIR>/data/PostEco/<SKIPPED_STAGE>.v.gz | grep "\b<cell_name>\b" | head -3
+  zcat <REF_DIR>/data/PostEco/<SKIPPED_STAGE>.v.gz | grep "module.*<module_base_name>" | head -3
   ```
-  Update study JSON `instance_scope` for that stage, re-apply.
+  Update `module_name` in study JSON for that stage, then spawn eco_applier sub-agent.
 
 - If cannot resolve in 3 attempts → mark as **unresolvable**, record in JSON, allow FM to run (eco_fm_analyzer will handle in next round).
 

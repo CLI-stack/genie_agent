@@ -95,7 +95,31 @@ Before re-applying a `force_reapply: true` entry: check prior status in `data/<T
 | `wire_declaration` | Remove the explicit `wire <net_name>;` that caused FM-599 |
 | `port_connection_duplicate` | Remove the duplicate `.<pin>(<net>)` line from instance block |
 
-After undo, verify removed element is gone: `grep -c "<instance_name>"` must = 0.
+**UNDO step-by-step — per change_type:**
+
+**rewire UNDO:**
+1. Find cell block: grep `<cell_name>` in module buffer — not found → skip UNDO.
+2. Within cell block: find `.<pin>(<new_net>)` — not found → new_net already gone → skip UNDO.
+3. Replace `.<pin>(<new_net>)` with `.<pin>(<old_net>)` (scoped to cell block).
+4. Verify: grep `<new_net>` in cell block = 0; grep `<old_net>` on pin = 1. If not → UNDO_FAILED.
+
+**new_logic_gate / new_logic_dff UNDO:**
+1. Find instance: grep `<cell_type>\s\+<instance_name>\s*(` in module buffer. Not found → already removed → skip UNDO.
+2. Find the full instance block (from instance start to `") ;"` or `");"`).
+3. Remove the entire block including the ECO comment line above it (if present: `"// ECO.*"`).
+4. Verify: grep `<instance_name>` in module buffer = 0. If > 0 → UNDO_FAILED.
+5. Verify output net `n_eco_<jira>_<seq>` has no remaining driver in module buffer (other gates may still reference it as input — that is OK; having no driver is OK for UNDO).
+
+**port_declaration UNDO:**
+1. Remove signal from port list: re-run depth tracking, remove `, <signal_name>` from close line.
+2. Remove direction declaration: find `  (input|output)\s+<signal_name>\s*;` and remove line.
+3. Verify: grep `<signal_name>` in port list range = 0; grep `input|output <signal_name>` = 0.
+
+**port_connection UNDO:**
+1. Find instance block of `<submodule_instance>`.
+2. Find `.<port_name>(<net_name>)` in instance block — not found → skip UNDO.
+3. Remove the line containing `.<port_name>(<net_name>)`.
+4. Verify: grep `<port_name>` in instance block = 0.
 
 ---
 
@@ -116,8 +140,38 @@ Process ALL changes for a stage in 4 passes within each module's isolated buffer
 - **S0 — Netlist type:** `grep -c "^module "` — count > 1 = hierarchical (port_declaration and port_connection mandatory; flat_net_confirmed/no_gate_needed ignored); count = 1 = flat.
 - **S1 — Confirmed entries:** If none with `"confirmed": true` → write all SKIPPED, skip to next stage.
 - **S2 — Backup:** Round 1: `cp <Stage>.v.gz <Stage>.v.gz.bak_<TAG>_round1`. Round 2+: skip.
-- **S3 — Decompress strategy:** Group confirmed changes by module. Stream through compressed file — extract target modules into memory buffer, pass others through unchanged unchanged.
+- **S3 — Decompress strategy:** Group confirmed changes by module. Stream through compressed file — extract target modules into memory buffer, pass others through unchanged.
 - **S4 — ALREADY_APPLIED pre-snapshot:** Snapshot original module buffer BEFORE any changes. Run ALREADY_APPLIED checks against this snapshot, not the modified buffer. For Round 1 `new_logic` entries flagged ALREADY_APPLIED → add `"warning": "UNEXPECTED in Round 1 — concurrent agent suspected"`.
+
+## Module Buffer Extraction
+
+For each stage, extract target modules into isolated buffers:
+
+```python
+target_modules = {entry["module_name"] for entry in confirmed_entries}
+module_buffers = {}   # {module_name: [lines]}
+module_start = {}     # {module_name: line_number_in_temp_file}
+
+in_target = None
+for lineno, line in enumerate(stage_lines):
+    m = re.match(r'^module\s+(\S+)[\s(;]', line)
+    if m:
+        mod_name = m.group(1)
+        if mod_name in target_modules:
+            in_target = mod_name
+            module_buffers[mod_name] = [line]
+            module_start[mod_name] = lineno
+    elif re.match(r'^endmodule\b', line.strip()):
+        if in_target:
+            module_buffers[in_target].append(line)
+            in_target = None
+    elif in_target:
+        module_buffers[in_target].append(line)
+```
+
+After processing all passes on `module_buffers`, write modified modules back to the temp file at their original positions. Non-target modules pass through unchanged.
+
+**IMPORTANT:** A module may appear multiple times in a stage file (parameterized instances). Process EACH occurrence separately — the same `change_id` applies to all instances.
 
 ---
 
@@ -148,15 +202,47 @@ When `change_type == "rewire"` and effective `new_net` absent in PostEco:
 
 ### Pass 1c — DFF insertion (new_logic_dff)
 
-1. **Per-stage port connections:** Use `port_connections_per_stage[stage]`; fall back to `port_connections` only if absent. Validate all 3 stages have entries in `port_connections_per_stage`; if missing for a stage and clock/reset nets differ from Synthesize, log a WARNING about possible net mismatch.
+1. **Per-stage port connections:** Use `port_connections_per_stage[stage]`; fall back to `port_connections` only if that stage entry is absent AND it is the Synthesize stage. For PrePlace or Route: if `port_connections_per_stage[stage]` is absent, verify that the clock and reset nets from the Synthesize `port_connections` entry actually exist in the current stage PostEco (`grep -cw "<clock_net>" in stage buffer`). If count = 0 → **SKIPPED** with reason `"port_connections_per_stage missing for <stage> and clock net absent — P&R renamed nets differ"`. Do NOT fall back silently — a DFF with wrong clock in PrePlace/Route causes FM stage-to-stage mismatch.
 2. **Functional pins** (clock, data, D-input chain): `grep -cw "<net>"` >= 1 required.
-3. **Auxiliary pins** (scan, enable) — fallback hierarchy: (1) neighbour DFF in same module scope; (2) any DFF of same cell type anywhere in PostEco file; (3) Synthesize-derived value only for Synthesize stage. For PrePlace/Route with no DFF found → SKIPPED with reason "no DFF cell instance found in PostEco". Use flexible port extraction: `re.findall(r'\.\s*(\w+)\s*\(', cell_block_text)`.
-4. **Cell type in this stage:** `zcat <REF_DIR>/data/PreEco/<Stage>.v.gz | grep -m1 "<dff_cell_type>"`. If absent → find variant used in this stage.
-5. **Instance scope validation:** Verify module matching `instance_scope` exists in current stage PostEco. If not found → try with `_0` suffix (P&R rename). Still not found → VERIFY_FAILED.
-6. Insert: `<cell_type> <instance_name> (.<pin1>(<net1>), ...);` before enclosing `endmodule`.
-7. Compute `inv_inst_full_path = f"{TILE}/{instance_scope}/{instance_name}"`.
-8. Verify: `grep -c "<instance_name>"` in module buffer >= 1.
-9. Record status=INSERTED, change_type=new_logic_dff, instance_name, inv_inst_full_path, output_net, cell_type.
+3. **Auxiliary pins (scan: SI/SE, test: any non-functional pins) — three-step search:**
+
+   **Step A — Find neighbour DFF in SAME MODULE SCOPE:**
+   Search the module buffer for any DFF instance of the SAME cell_type family (match first 8 chars of cell_type prefix, e.g. `SDFQD1AM` matches `SDFQD4AM`). Extract its SI, SE pins. Use those exact net names. If found → use it. Stop.
+
+   **Step B — Find ANY DFF of same cell_type in this stage PostEco:**
+   ```bash
+   grep -m1 "<cell_type_prefix>" /tmp/eco_apply_<TAG>_<Stage>.v
+   ```
+   Extract SI, SE nets from that instance. If found → use it. Stop.
+
+   **Step C — Synthesize-derived fallback (Synthesize stage only):**
+   Use `SI=1'b0`, `SE=1'b0` as safe constants. ONLY valid for Synthesize stage — never use for PrePlace/Route since scan chain connectivity is different per stage. For PrePlace/Route: if Steps A and B fail → SKIPPED with reason `"no DFF neighbour found in <Stage> — cannot safely derive SI/SE"`.
+
+4. **Clock pin verification (MANDATORY before inserting):**
+   ```bash
+   grep -cw "<clock_net>" <current_stage_module_buffer>
+   ```
+   If count = 0 → SKIPPED with reason `"clock net <clock_net> absent in <Stage>"`. This catches cross-domain clock name differences between stages.
+
+5. **Cell type in this stage:** `zcat <REF_DIR>/data/PreEco/<Stage>.v.gz | grep -m1 "<dff_cell_type>"`. If absent → find variant used in this stage.
+6. **Instance scope validation:** Verify module matching `instance_scope` exists in current stage PostEco. If not found → try with `_0` suffix (P&R rename). Still not found → VERIFY_FAILED.
+
+7. **Insertion point:** Before the LAST `endmodule` in the module buffer (not first endmodule).
+   ```python
+   lines.insert(last_endmodule_idx, dff_line)
+   ```
+
+8. **Output net:** The DFF Q pin drives `<target_register>` (the RTL signal name). The output net `<target_register>` becomes an implicit wire — do NOT add explicit `wire <target_register>;` — it will conflict with any existing declarations.
+
+   Verify `<target_register>` does NOT already exist as a wire/reg in the module:
+   ```bash
+   grep -cw "wire <target_register>\|reg <target_register>" <module_buffer>
+   ```
+   If count > 0 → the DFF output conflicts with existing declaration → VERIFY_FAILED.
+
+9. Compute `inv_inst_full_path = f"{TILE}/{instance_scope}/{instance_name}"`.
+10. Verify: `grep -c "<instance_name>"` in module buffer >= 1.
+11. Record status=INSERTED, change_type=new_logic_dff, instance_name, inv_inst_full_path, output_net, cell_type.
 
 ### Pass 1d — Combinational gate insertion (new_logic_gate)
 
@@ -177,6 +263,7 @@ For each pin in `port_connections_per_stage[Stage]` (or `port_connections` if ab
 - `NEEDS_NAMED_WIRE:*`: skip (resolved in Step 0).
 - `UNRESOLVABLE_IN_<signal>`: grep the signal in current stage PostEco temp — found → use it; not found → SKIPPED.
 - All other nets: `grep -cw "<net>"` in module buffer >= 1 required.
+- **HFS alias check (Real Net Preference):** If net_name matches an HFS alias pattern (`FxPrePlace_`, `FxCts_`, `ctmn_`, `ctmi_`, `phfnn_`, `phfnr_`, `SEQMAP_NET_`, `dftopt`) → grep the real RTL-named net from the study JSON in module buffer. If count >= 1 → use the real net instead. Record `"net_upgraded_from_alias": true` in the entry JSON. See Pass 4 Real Net Preference Check for full procedure.
 
 If any input missing → SKIPPED. NEVER insert a gate with missing input — floating input causes FM to misclassify downstream DFFs.
 
@@ -195,7 +282,45 @@ for line in module_scope_lines:
 ```
 If no match in this stage → try other stages. Still none → SKIPPED. NEVER use bare generic primitives (`MUX2`, `AND2`, `OR2`) — FM cannot elaborate behavioral constructs.
 
-**Step 3 — Insert** (same pattern as Pass 1c Step 6). **Step 4 — Compute `inv_inst_full_path`** and verify instance in module buffer.
+**GATE_OUTPUT_PIN verification (run AFTER Step 2, BEFORE Step 3):**
+
+Verify the output pin name matches expectations before inserting:
+
+| Gate function | Expected output pin |
+|---------------|---------------------|
+| AND2/3/4, OR2/3/4, XOR2, MUX2, BUF | `Z` |
+| INV, NAND2/3/4, NOR2/3/4, XNOR2, IND2/3 | `ZN` |
+| DFF, SDFF, DFFR | `Q` |
+
+Verification steps:
+1. From `port_connections`, identify the output pin key (the one whose value is `n_eco_<jira>_<seq>`).
+2. Look up `gate_function` in GATE_OUTPUT_PIN table → `expected_output_pin`.
+3. Verify `output_pin_key == expected_output_pin`.
+4. If mismatch → correct the `port_connections` to use `expected_output_pin` BEFORE inserting.
+5. Grep the found `cell_type` instance in PreEco netlist to confirm the actual output pin:
+   ```bash
+   grep -m1 "<cell_type>" <REF_DIR>/data/PreEco/<Stage>.v.gz
+   ```
+   Parse the last `.PIN(net)` in that instance — that is the actual output pin.
+6. PreEco grep wins over table if they disagree (library is authoritative).
+
+**WIRE DECLARATION PREVENTION (run before every gate insertion — CRITICAL):**
+
+The output net of the new gate (`n_eco_<jira>_<seq>`) will be created IMPLICITLY by the gate's output pin connection — do NOT add explicit wire declarations.
+
+Before inserting, verify `n_eco_<jira>_<seq>` does NOT already have an explicit wire declaration in the module buffer:
+```bash
+grep -c "wire\s\+n_eco_<jira>_<seq>\s*;" <module_buffer>
+```
+If count > 0 → remove the existing explicit wire declaration FIRST, then insert. Record `"removed_explicit_wire_declaration": true` in the entry JSON.
+
+After inserting, scan the module buffer for any new explicit wire declarations that reference `n_eco_<jira>_<seq>`:
+```bash
+grep -c "wire\s\+n_eco_<jira>_<seq>" <module_buffer_after_insertion>
+```
+If count > 0 → VERIFY_FAILED — eco_applier accidentally added a wire declaration.
+
+**Step 3 — Insert** (same pattern as Pass 1c Step 7). **Step 4 — Compute `inv_inst_full_path`** and verify instance in module buffer.
 
 Record status=INSERTED, change_type=new_logic_gate, instance_name, inv_inst_full_path, output_net, cell_type.
 
@@ -217,7 +342,9 @@ Read `declaration_type`:
 ```python
 depth = 0
 for i in range(mod_idx, endmodule_idx):
-    for ch in lines[i]:
+    # Strip trailing comments before counting parens — comments may contain ) chars
+    line_no_comment = lines[i].split('//')[0]
+    for ch in line_no_comment:
         if ch == '(': depth += 1
         elif ch == ')':
             depth -= 1
@@ -234,9 +361,25 @@ lines[port_list_close_idx] = close_line[:last_paren] + new_sigs + '\n)' + close_
 ```
 Then verify port list depth = 0 after insertion.
 
-**Insert direction declarations** after port list close (one line per signal). Each insert shifts subsequent indices — update `port_list_close_idx` accordingly.
+**Port list format differences by stage:**
+- Synthesize: Compact port list, usually fits in 10–30 lines.
+- PrePlace/Route: Expanded port list with scan/clock/test ports — may span 200+ lines.
+- NEVER assume the close `) ;` is within the first N lines — scan the full range.
 
-**P&R note:** P&R port lists are much longer than Synthesize (scan, clock distribution, test ports). Never limit the depth-tracking search range — always scan `mod_idx` to `endmodule_idx`.
+**Multi-line port list:** the port list `) ;` may be:
+- Case A: `  signal_N) ;` — signal and closing `)` on same line
+- Case B: `  signal_N ,` ... `  ) ;` — closing `)` on its own line
+- Case C: `  signal_N` ... `  ,` ... `) ;` — comma-separated across many lines
+
+The depth tracking handles all cases — just find depth == 0.
+
+**After insertion, verify the inserted signals appear in the correct port list range:**
+Re-run depth tracking after insertion to find `port_list_close_idx_new`. Verify all inserted signal names appear between `mod_idx` and `port_list_close_idx_new`. If any signal not found in port list range → VERIFY_FAILED (inserted in wrong location).
+
+**Direction declaration placement:**
+Insert IMMEDIATELY after the port list close line (`port_list_close_idx + 1`). Format: `"  <direction> <signal_name> ;\n"`. Do NOT insert at the end of the module — position matters for FM's port ordering check.
+
+**Insert direction declarations** after port list close (one line per signal). Each insert shifts subsequent indices — update `port_list_close_idx` accordingly.
 
 ### Pass 2b — port_promotion
 
@@ -254,6 +397,20 @@ Find instance: `re.search(rf'\b{re.escape(submodule_pattern)}\s+{re.escape(insta
 
 Find instance close using depth tracking. Validate close line: must NOT contain `.pin(` (would be an inner cell port connection); if it does, advance to find the actual `) ;` line.
 
+**Instance block scope validation:**
+The found `instance_close_idx` must satisfy ALL of:
+- (a) Line contains `) ;` or `);` pattern
+- (b) Line does NOT contain `.pin(` — would mean we're inside a nested instance
+- (c) The number of `(` minus `)` in `[instance_start_idx..instance_close_idx]` = 0 (balanced)
+- (d) `instance_close_idx < endmodule_idx` for this module
+
+If (b) fails: advance line-by-line until a line with just `) ;` is found.
+If (c) fails after advancing: SKIPPED with reason `"instance block parentheses unbalanced"`.
+If (d) fails: SKIPPED with reason `"instance block extends past endmodule — corrupted netlist"`.
+
+**Net existence check before inserting port_connection:**
+For the `net_name` being connected: `grep -cw "<net_name>"` in module buffer. If count = 0 AND the net is NOT created by a `port_declaration` in this same round (check if `net_name` matches any `port_declaration` applied/to-be-applied in this stage): → log WARNING `"net_name not yet present — depends on port_declaration order"` → proceed anyway (port_declaration creates it in Pass 2 which runs first). If count = 0 AND net is not from a `port_declaration` → SKIPPED.
+
 **ALREADY_APPLIED:** `re.search(rf'\.\s*{re.escape(port_name)}\s*\(\s*{re.escape(net_name)}\s*\)', instance_block)` — found → ALREADY_APPLIED. If still on `old_net` → set `force_reapply: true`.
 
 **Insert:** `', .<port_name>( <net_name> )'` before last `)` on close line.
@@ -266,15 +423,40 @@ Find instance close using depth tracking. Validate close line: must NOT contain 
 
 For existing cells where `new_net` already exists in PostEco.
 
+### Real Net Preference Check
+
+Before writing any net name into a rewire port connection, check whether the net from `port_connections_per_stage` is an HFS alias. HFS aliases are P&R-stage artifacts that can be renamed in subsequent operations — hardcoding them causes FM mismatches in later rounds.
+
+**HFS alias patterns** (if net_name matches any of these prefixes/patterns, it is an alias):
+`FxPrePlace_`, `FxCts_`, `ctmn_`, `ctmi_`, `phfnn_`, `phfnr_`, `SEQMAP_NET_`, `dftopt`
+
+**Check procedure:**
+1. If net_name matches an HFS alias pattern → it is an alias.
+2. Grep for the real RTL-named net (from the study JSON `old_net` or `new_net` field) in the current stage module buffer:
+   ```bash
+   grep -cw "<real_net>" <module_buffer>
+   ```
+3. If real net count >= 1 → use the real net instead of the alias. Record in the entry JSON:
+   ```json
+   "net_upgraded_from_alias": true,
+   "original_alias": "<alias>",
+   "real_net_used": "<real_net>"
+   ```
+4. If real net count = 0 → proceed with the alias as-is (real net not present in this stage).
+
+This check applies to BOTH the `old_net` lookup AND the `new_net` to be written.
+
 **ALREADY_APPLIED:** `re.search(rf'\.\s*{re.escape(pin_name)}\s*\(\s*{re.escape(new_net)}\s*\)', cell_block)` — found → ALREADY_APPLIED. If still on `old_net` in Round 2+ → set `force_reapply: true`. If old_net not found either → SKIPPED (PostEco differs structurally).
 
 Apply scoped replacement within cell instance block only. Never global replace.
 
 ---
 
-## 9. Post-Apply Validation (Checks 1–8)
+## 9. Post-Apply Validation (Checks 1–7)
 
 Run on the UNCOMPRESSED temp file BEFORE `gzip`. If ANY check fails: discard temp file, restore from backup, mark ALL affected entries VERIFY_FAILED, do NOT recompress.
+
+**Note:** Checks 1–7 are eco_applier's responsibility. The validate_verilog_netlist.py strict-mode run and cross-stage consistency checks are owned by Step 5 (eco_pre_fm_checker), which runs after eco_applier writes the applied JSON. The calling orchestrator reads the applied JSON and generates the RPT — eco_applier writes JSON only, not RPT.
 
 **Check 1 — No duplicate ports in any module header.** Parse each module's port list `(...)`, collect port names, flag any appearing > 1 time.
 
@@ -295,18 +477,6 @@ Mark ALL entries VERIFY_FAILED. Never proceed to recompress with wrong module co
 **Check 6 — No duplicate port connections in any instance block.** For each `<type> <inst> (...)` block, collect `.pin(` names, flag any appearing > 1 time.
 
 **Check 7 — Every port in module header has a direction declaration in the body.** Parse port list names (excluding Verilog keywords), verify each has an `input`/`output`/`inout` declaration in the module body.
-
-**Check 8 — Verilog netlist validator (strict mode).**
-```bash
-python3 script/validate_verilog_netlist.py --strict \
-  --modules <touched_modules_space_separated> \
-  -- /tmp/eco_apply_<TAG>_<Stage>.v
-```
-Touched modules = all entries with status INSERTED or APPLIED. Errors → mark ALL entries for affected modules as VERIFY_FAILED (not just the failing entry); record in `summary.verilog_validator.errors`; do NOT recompress.
-
-**Cross-stage consistency check (after all 3 stages):**
-- For each `change_id`, verify status is the same across Synthesize/PrePlace/Route. Asymmetric status for UNRESOLVABLE entries is expected — log as INFO, not WARNING.
-- For each `new_logic` entry, verify the `eco_instance_name` from seq_table appears in all 3 stage PostEco netlists. Missing in any → WARNING.
 
 ---
 
@@ -402,18 +572,10 @@ Write `<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`. Every entry MUST in
     "already_applied": "<count>", "skipped": "<count>", "verify_failed": "<count>",
     "module_count_mismatch": false,
     "pre_flight_restore": false,
-    "pre_flight_restored_stages": [],
-    "verilog_validator": {
-      "Synthesize": "<PASS|FAIL|SKIPPED>",
-      "PrePlace": "<PASS|FAIL|SKIPPED>",
-      "Route": "<PASS|FAIL|SKIPPED>",
-      "errors": []
-    }
+    "pre_flight_restored_stages": []
   }
 }
 ```
-
-`verilog_validator` values: `PASS` = 0 errors; `FAIL` = errors found, stage not recompressed, all affected modules → VERIFY_FAILED; `SKIPPED` = validator script unavailable (Checks 1–7 only).
 
 ---
 
@@ -430,5 +592,6 @@ Write `<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`. Every entry MUST in
 9. **Detect netlist type before every stage** — `grep -c "^module "` before processing.
 10. **eco_applier NEVER adds `wire N;` declarations** — every net is implicitly declared via port connections; explicit `wire N;` always causes FM-599.
 11. **ALREADY_APPLIED for new_logic requires pin verification** — instance existence alone is insufficient; verify each input pin connection matches study JSON; if any pin differs → `force_reapply: true`.
+12. **Always use real RTL-named net, not HFS alias, when both exist** — before writing any net name into a port connection or rewire, check if it is an HFS alias (`FxPrePlace_`, `FxCts_`, `ctmn_`, `ctmi_`, `phfnn_`, `phfnr_`, `SEQMAP_NET_`, `dftopt`). If it is, grep for the real RTL net; if found (count >= 1) use the real net and record `net_upgraded_from_alias: true`. Prevents hardcoded P&R aliases from breaking subsequent rounds.
 
-**Final output:** `<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`. After writing, verify it is non-empty and contains a `summary` field, then exit. Do NOT write the RPT — the calling orchestrator reads the JSON and generates the RPT.
+**Final output:** `<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`. After writing, verify it is non-empty and contains a `summary` field, then exit. The calling orchestrator reads the applied JSON and generates the RPT — eco_applier writes JSON only, not RPT.
