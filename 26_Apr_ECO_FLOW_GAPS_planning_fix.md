@@ -412,34 +412,66 @@ The flow hit max rounds (5) without resolving. FINAL_ORCHESTRATOR should be spaw
 
 ---
 
-## GAP-18 — eco_fm_analyzer: driver search misses submodule bus output ports
+## GAP-18 — Driver search misses submodule bus output ports (eco_netlist_studier + eco_fm_analyzer)
 
 **Severity:** HIGH
-**Observed in:** 9868 Round 1 — `EcoUseSdpOutstRdCnt_reg` classified `manual_only` incorrectly
-**File:** `config/eco_agents/eco_fm_analyzer.md`
+**Observed in:** 9868 — `UNCONNECTED_3288` (REG_UmcCfgEco[1]) wrongly treated as undriven in both studier and analyzer
+**Files:** `config/eco_agents/eco_netlist_studier.md`, `config/eco_agents/eco_fm_analyzer.md`
 
 **What happened:**
-eco_fm_analyzer diagnosed `UNCONNECTED_3288` (= REG_UmcCfgEco[1]) as "undriven — no gate-level driver in umccmd scope" and classified the fix as `manual_only`. But `UNCONNECTED_3288` IS driven — it appears as an output element of the REGCMD submodule output bus:
+`UNCONNECTED_3288` is driven by the REGCMD submodule output bus:
 ```
 UNCONNECTED_3287 , UNCONNECTED_3288 , SplitActCtrPhaseDis } ) ,  ← REGCMD .REG_UmcCfgEco bus output
 ```
-REGCMD drives `UNCONNECTED_3288` as bit[1] of its `REG_UmcCfgEco[31:0]` output bus. The engineer simply renamed it `eco9868_UmcCfgEco_1` — no new gate needed.
+REGCMD drives `UNCONNECTED_3288` as bit[1] of `REG_UmcCfgEco[31:0]`. The engineer simply renamed it `eco9868_UmcCfgEco_1` — no new gate needed.
 
-**Root cause:**
-eco_fm_analyzer's driver search pattern: `grep ".<pin>(<signal>)" module_body` — finds cells where the signal is on a single output pin (`.ZN(UNCONNECTED_3288)`). It does NOT find drivers where the signal appears as part of a multi-bit bus port connection: `{ ..., UNCONNECTED_3288, ... }`.
+Both the studier and analyzer failed to detect this because their driver search only looks for **single output pin patterns** (`.ZN(signal)`) — not **submodule bus output elements** (`{ ..., signal, ... }`).
 
-**Fix required:**
-In eco_fm_analyzer.md, when checking if a signal is "undriven," also search for it as a submodule output bus element:
-```bash
-# Check 1: direct cell output pin
-grep -c "\.<output_pin>( <signal> )" module_body
+**Impact on flow:**
+1. **eco_netlist_studier (Step 3):** When resolving PENDING_FM_RESOLUTION for `REG_UmcCfgEco[1]` → correctly found `UNCONNECTED_3288` as the gate-level name. But did NOT verify it is driven → passed it to eco_applier with no warning.
+2. **eco_applier (Step 4):** Inserted `eco_9868_d009.A2 = UNCONNECTED_3288` — correct connection but the downstream analysis misread it.
+3. **eco_fm_analyzer (Round 1):** Searched for a driver and found none (searched `.anyPin(UNCONNECTED_3288)`) → classified as `manual_only` → wasted Round 2 with no fix.
 
-# Check 2: submodule output bus element (NEW)
-grep -c "^\s*\.[A-Za-z_]\+\s*(\s*{[^}]*\b<signal>\b[^}]*}" module_body
-# Or more simply:
-grep -c "<signal>" submodule_port_connections | grep -v "input\|wire\|assign"
+**The correct flow (with the fix):**
+- eco_netlist_studier detects `UNCONNECTED_3288` is a submodule bus output → marks it as `driven_by_submodule: true` → passes this info to studier JSON
+- eco_fm_analyzer reads `driven_by_submodule: true` → does NOT classify as manual_only → identifies it as a valid driven signal that FM can trace through the submodule hierarchy
+
+**Fix required in eco_netlist_studier.md:**
+When resolving any signal (including PENDING_FM_RESOLUTION), add a submodule bus output check:
+```python
+def is_driven_by_submodule_bus(signal_name, module_lines):
+    """
+    Check if signal_name appears as an element of a submodule output port bus:
+      .SomePort( { ..., signal_name, ... } )
+    rather than as a direct cell output pin:
+      CellType inst (.ZN(signal_name))
+    """
+    for line in module_lines:
+        # Bus connection pattern: .PORT({ ... signal_name ... })
+        if re.search(rf'\.\s*\w+\s*\(\s*\{{[^}}]*\b{re.escape(signal_name)}\b', line):
+            return True
+    return False
+
+# Apply after finding gate-level name:
+if is_driven_by_submodule_bus(resolved_net, module_buffer):
+    entry["driven_by_submodule"] = True
+    entry["driver_type"] = "submodule_bus_output"
+    # This net IS driven — do NOT treat as unresolvable or PENDING
 ```
-If signal appears as a submodule output bus element → it IS driven (by the submodule) → classify as **Mode H (net rename)** not `manual_only`. The fix is to rename the unconnected wire to a meaningful name and keep the existing connection.
+
+**Fix required in eco_fm_analyzer.md:**
+When diagnosing why a DFF fails (D-input analysis):
+```python
+# Before classifying as manual_only or UNRESOLVABLE:
+if check_submodule_bus_driver(signal_name, module_body):
+    # Signal IS driven by submodule output bus
+    # Fix: rename the UNCONNECTED_* wire to a meaningful name
+    # No new gate needed — connection already exists
+    classify_as("Mode_H_submodule_rename")
+    fix = {"action": "rename_wire", "old_name": signal_name, "new_name": f"eco_{JIRA}_{signal_alias}"}
+else:
+    classify_as("manual_only")
+```
 
 ---
 
@@ -462,6 +494,7 @@ Once all FM runs finish, prioritize fixes in this order:
 | P1 | GAP-15 — eco_netlist_studier: and_term IND2 must drive module OUTPUT PORT directly | eco_netlist_studier.md |
 | P2 | GAP-16 — eco_fm_analyzer: wrong Mode B diagnosis → counterproductive pivot fix | eco_fm_analyzer.md |
 | P2 | GAP-17 — 9899: 3000+ Synth failures unresolved through 5 rounds | eco_netlist_studier.md |
+| P2 | GAP-18 — driver search misses submodule bus output ports → wrong manual_only | eco_netlist_studier.md + eco_fm_analyzer.md |
 | P2 | GAP-13 — manual_only too early: add Priority 4 backward cone trace before giving up | eco_netlist_studier.md |
 | P4 | GAP-10 — MUX cascade priority (pending FM result) | eco_netlist_studier.md |
 
