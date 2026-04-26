@@ -701,8 +701,8 @@ If neither direct name NOR alias found: `"confirmed": false`.
 
 **Always prefer the real RTL-named net over any P&R-generated alias, for every stage.**
 
-- **Real net** = the signal name from the RTL diff (`old_token` or `new_token`). Appears in RTL source as a `reg`, `wire`, or port declaration. Stable across P&R runs.
-- **HFS alias** = a P&R tool-generated name for a buffer/clone of the real net. Recognisable by prefix: `FxPrePlace_`, `FxCts_`, `ctmn_`, `ctmi_`, `phfnn_`, `phfnr_`, `SEQMAP_NET_`, `dftopt`. Changes between P&R runs.
+- **Real net** = the signal name from the RTL diff (`old_token` or `new_token`). Exists in RTL source files (`data/PreEco/SynRtl/*.v`) as a `reg`, `wire`, or port declaration. Stable across P&R runs.
+- **P&R alias** = a net created by P&R tools for buffer/clone of the real net. Does NOT appear in RTL source files — only in gate-level netlists. May be renamed in subsequent P&R operations. Detect by: `grep -rw "<net_name>" <REF_DIR>/data/PreEco/SynRtl/` — count = 0 means it is a P&R alias.
 
 **For every net to be written into port_connections_per_stage[stage]:**
 1. Check if the real RTL-named net exists in current stage PostEco: `grep -cw "<real_net>" /tmp/eco_study_<TAG>_<Stage>.v`

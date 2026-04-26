@@ -529,13 +529,21 @@ These checks run in seconds. FM-599 aborts are detected only after 1-2 hours of 
 
 When selecting a net to write into any `port_connections_per_stage` entry (gate inputs, rewire targets, DFF D-input, port connections), **always prefer the real RTL-named net over any P&R-generated HFS alias** when both exist in the current stage's PostEco netlist.
 
-| Net type | Pattern | Preference |
-|----------|---------|-----------|
-| **Real net** | RTL signal name — matches `old_token` or `new_token` from RTL diff JSON (e.g., the register or wire name from the RTL source) | **USE FIRST** |
-| **HFS alias** | P&R tool-generated buffer/clone net: `FxPrePlace_ZBUF_*`, `FxPrePlace_ZINV_*`, `ctmn_*`, `ctmi_*`, `phfnn_*`, `phfnr_*`, `SEQMAP_NET_*`, `dftopt*`, `FxCts_*` | Use ONLY if real net absent |
+| Net type | How to identify | Preference |
+|----------|----------------|-----------|
+| **Real net** | Matches `old_token` or `new_token` from RTL diff JSON. Found in RTL source files (`data/SynRtl/*.v` or `data/PreEco/SynRtl/*.v`) as a `reg`, `wire`, or port declaration. Stable across P&R runs. | **USE FIRST** |
+| **P&R alias** | Does NOT appear in RTL source. Exists only in gate-level netlists (Synthesize/PrePlace/Route). Created by P&R tools as buffer/clone nets for high-fanout signals. May change name between P&R runs. | Use ONLY if real net absent |
+
+**Detection method — is a net a P&R alias?**
+```bash
+# A net is a P&R alias if it does NOT exist in the RTL source:
+grep -rw "<net_name>" <REF_DIR>/data/PreEco/SynRtl/ | grep -v "^Binary"
+# count = 0 → P&R alias (not from RTL source)
+# count > 0 → real RTL-named net
+```
 
 **Rule:** For every net connection:
-1. Check if real RTL-named net exists: `grep -cw "<real_net>" <PostEco_stage>` — if ≥ 1, use it.
-2. Only if count = 0 → search for HFS alias via Priority 2/3 structural trace.
+1. Check if real RTL-named net exists in current stage PostEco: `grep -cw "<real_net>" <PostEco_stage>` — if ≥ 1, use it.
+2. Only if count = 0 → fall back to P&R alias search via Priority 2/3 structural trace.
 
 **Why:** HFS aliases change between P&R runs. Using an alias in Round 1 that gets renamed in Round 2 causes SKIPPED/UNRESOLVABLE entries. Real RTL-named nets are stable across rounds, make eco_fm_analyzer diagnosis cleaner, and avoid false Mode H classifications.
