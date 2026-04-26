@@ -256,6 +256,49 @@ The ORCHESTRATOR's Step 3 RPT generator used `e.get('cell_name','?')` genericall
 
 ---
 
+## GAP-13 — eco_netlist_studier: manual_only declared too early — engineers can fix Route signal restructuring
+
+**Severity:** HIGH
+**Observed in:** 9899 — Route eco_9899_c007/c008/c009/c_mux3/c_mux_final declared manual_only
+**File:** `config/eco_agents/eco_netlist_studier.md`
+
+**What happened:**
+DcqArb1_QualPhArbReqVld was absent from Route after P&R optimization. Priority 1 (net name grep), Priority 2 (alias search), and Priority 3 (structural driver trace via A2230141 cell) all returned 0 matches → classified as `manual_only`. Engineers however CAN find and fix this.
+
+**What engineers do that the flow doesn't:**
+
+1. **Trace backward from ToggleChn_reg.D in Route** — instead of tracing FROM the absent signal, trace BACKWARD from the DFF D-input in Route. The gate feeding ToggleChn_reg.D is the pivot net anchor. From there, the backward cone will reveal what signals ARE present in Route for the condition logic.
+
+2. **Search from DCQARB1 module output boundary** — DcqArb1_QualPhArbReqVld is internal to DCQARB1. In Route, even if the internal net was restructured, find the cell in DCQARB1 scope that was previously driven by DcqArb1_QualPhArbReqVld and trace its Route P&R equivalent via fanout from DCQARB1's output ports.
+
+3. **Cross-reference against Synthesize fanout** — find all cells in Synthesize that consume `N2408127` (the resolved gate-level name for DcqArb1_QualPhArbReqVld), then search for those same cell instances in Route PostEco to find their input nets.
+
+4. **Use 1'b0 constant as partial fix** — if DcqArb1 truly cannot be found, eco_9899_c007 can be built as `OR2(DcqArb0_QualPhArbReqVld, 1'b0)` = effectively using only DcqArb0's signal. This changes behavior (only DCQ0's phase arb request is checked) but allows the cascade to be inserted. Engineers must decide if this is functionally acceptable.
+
+**Fix required:**
+In eco_netlist_studier.md, add Priority 4 before declaring `manual_only`:
+
+```
+Priority 4 — Backward cone trace from the DFF D-input in the failing stage:
+  1. Find the target DFF (e.g., ToggleChn_reg) in the failing stage PostEco
+  2. Read its .D(<net>) pin value
+  3. Trace backward through the gate chain (max 10 hops)
+  4. At each gate, check if the gate's inputs contain any net resolvable to
+     the absent signal's Synthesize equivalent (check gate instance names
+     — same cell names often survive P&R renaming)
+  5. If found: use that net for the gate input in this stage
+
+Only after Priority 4 fails → declare UNRESOLVABLE (not manual_only unless
+RULE 27 SVF prohibition applies to the specific fix type).
+```
+
+**Distinction: UNRESOLVABLE vs manual_only:**
+- `UNRESOLVABLE` = signal genuinely absent and no structural equivalent found after all 4 priorities → eco_applier uses `1'b0` fallback if allowed
+- `manual_only` = fix COULD be done but requires SVF (prohibited for AI flow per RULE 27)
+- Current flow incorrectly uses `manual_only` when the issue is actually `UNRESOLVABLE` or fixable with Priority 4
+
+---
+
 ## Pending After FM Completion
 
 Once all FM runs finish, prioritize fixes in this order:
@@ -271,6 +314,7 @@ Once all FM runs finish, prioritize fixes in this order:
 | P3 | GAP-7 — wire decl note in rtl_diff_analyzer | rtl_diff_analyzer.md |
 | P3 | GAP-8 — EcoUseSdpOutstRdCnt not in Step 2 RPT | eco_fenets_runner.md |
 | P3 | GAP-9 — wire_swap classification misleading | eco_fenets_runner.md |
+| P2 | GAP-13 — manual_only too early: add Priority 4 backward cone trace before giving up | eco_netlist_studier.md |
 | P4 | GAP-10 — MUX cascade priority (pending FM result) | eco_netlist_studier.md |
 
 ---
