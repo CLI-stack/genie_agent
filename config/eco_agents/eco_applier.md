@@ -847,6 +847,22 @@ last_paren = close_line.rfind(')')
 assert last_paren >= 0, f"No ')' found in port list close line: {repr(close_line)}"
 assert ')' in lines[port_list_close_idx], f"port_list_close_idx ({port_list_close_idx}) does not point to closing ')'"
 lines[port_list_close_idx] = close_line[:last_paren] + f', <signal_name>\n)' + close_line[last_paren+1:]
+
+# MANDATORY POST-INSERTION VERIFICATION:
+# Confirm the signal name now appears in the modified port list header
+modified_header = ''.join(lines[mod_idx:port_list_close_idx + 1])
+if re.search(rf'\b{re.escape(signal_name)}\b', modified_header):
+    pass  # SUCCESS — signal is in the port list
+else:
+    # CRITICAL: port name was NOT inserted despite the edit — this causes FM-599 (-r mode)
+    # Most likely cause: port_list_close_idx points to wrong line (cell instance line, not module port list)
+    # Mark this entry as VERIFY_FAILED
+    raise RuntimeError(
+        f"PORT_DECL: Signal '{signal_name}' NOT found in port list header after insertion attempt. "
+        f"port_list_close_idx={port_list_close_idx} may be wrong. "
+        f"FM will reject this with 'Port not defined in module terminal list' (-r mode). "
+        f"Mark as VERIFY_FAILED — do NOT recompress."
+    )
 ```
 
 > **Why P&R port lists are much longer than Synthesize:** The Synthesis stage netlist only includes functional ports. P&R stages insert scan chain ports, clock distribution ports, and test ports, making the port list potentially 5–10× longer. The depth tracking loop MUST NOT be limited to a shorter range — it must always search the full module scope (`mod_idx` to `endmodule_idx`).

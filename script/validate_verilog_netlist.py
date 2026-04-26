@@ -157,6 +157,9 @@ def validate_module(mod_name, mod_lines, start_lineno):
                         })
                 in_instance = False
 
+    # Check 9: direction declaration not in port list header
+    errors.extend(check_declaration_not_in_header(mod_lines, mod_name, start_lineno))
+
     # F2: wire X conflicts with implicit wire from port connection
     wire_implicit_conflicts = set(wire_decls.keys()) & port_conn_nets
     for net in wire_implicit_conflicts:
@@ -214,6 +217,31 @@ def validate_file(path, quiet=False, max_errors=50, skip_checks=None, target_mod
 
     return total_errors
 
+
+
+def check_declaration_not_in_header(mod_lines, mod_name, start_lineno):
+    """Check 9: Every input/output declaration in body must appear in port list header.
+    FM-599 when reading as -r (reference): port declared in body but missing from terminal list."""
+    errors = []
+    # Build port list header from first ~200 lines
+    header_text = "".join(mod_lines[:200])
+    port_list_match = re.search(r"\((.*?)\)\s*;", header_text, re.DOTALL)
+    if not port_list_match:
+        return errors
+    header_ports = set(re.findall(r"\b([A-Za-z_]\w*)\b", port_list_match.group(1)))
+    header_ports -= {"input","output","inout","wire","reg","integer","parameter",
+                     "localparam","genvar","time","real","realtime"}
+    # Check all direction declarations in body
+    for i, line in enumerate(mod_lines):
+        m = re.match(r"^\s*(input|output|inout)\s+(?:\[.*?\]\s+)?(\w+)\s*;", line)
+        if m:
+            sig = m.group(2)
+            if sig not in header_ports:
+                errors.append({"check": "check9_decl_not_in_header", "module": mod_name,
+                    "msg": (f"'{sig}' has '{m.group(1)} {sig};' declaration in body "
+                            f"but NOT in module port list header — FM-599 when file used as REF (-r flag)"),
+                    "line": start_lineno + i})
+    return errors
 
 def main():
     parser = argparse.ArgumentParser(
