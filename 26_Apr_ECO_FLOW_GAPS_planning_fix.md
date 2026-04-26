@@ -412,6 +412,37 @@ The flow hit max rounds (5) without resolving. FINAL_ORCHESTRATOR should be spaw
 
 ---
 
+## GAP-18 — eco_fm_analyzer: driver search misses submodule bus output ports
+
+**Severity:** HIGH
+**Observed in:** 9868 Round 1 — `EcoUseSdpOutstRdCnt_reg` classified `manual_only` incorrectly
+**File:** `config/eco_agents/eco_fm_analyzer.md`
+
+**What happened:**
+eco_fm_analyzer diagnosed `UNCONNECTED_3288` (= REG_UmcCfgEco[1]) as "undriven — no gate-level driver in umccmd scope" and classified the fix as `manual_only`. But `UNCONNECTED_3288` IS driven — it appears as an output element of the REGCMD submodule output bus:
+```
+UNCONNECTED_3287 , UNCONNECTED_3288 , SplitActCtrPhaseDis } ) ,  ← REGCMD .REG_UmcCfgEco bus output
+```
+REGCMD drives `UNCONNECTED_3288` as bit[1] of its `REG_UmcCfgEco[31:0]` output bus. The engineer simply renamed it `eco9868_UmcCfgEco_1` — no new gate needed.
+
+**Root cause:**
+eco_fm_analyzer's driver search pattern: `grep ".<pin>(<signal>)" module_body` — finds cells where the signal is on a single output pin (`.ZN(UNCONNECTED_3288)`). It does NOT find drivers where the signal appears as part of a multi-bit bus port connection: `{ ..., UNCONNECTED_3288, ... }`.
+
+**Fix required:**
+In eco_fm_analyzer.md, when checking if a signal is "undriven," also search for it as a submodule output bus element:
+```bash
+# Check 1: direct cell output pin
+grep -c "\.<output_pin>( <signal> )" module_body
+
+# Check 2: submodule output bus element (NEW)
+grep -c "^\s*\.[A-Za-z_]\+\s*(\s*{[^}]*\b<signal>\b[^}]*}" module_body
+# Or more simply:
+grep -c "<signal>" submodule_port_connections | grep -v "input\|wire\|assign"
+```
+If signal appears as a submodule output bus element → it IS driven (by the submodule) → classify as **Mode H (net rename)** not `manual_only`. The fix is to rename the unconnected wire to a meaningful name and keep the existing connection.
+
+---
+
 ## Pending After FM Completion
 
 Once all FM runs finish, prioritize fixes in this order:
