@@ -63,17 +63,43 @@ Always include F6 in default mode (not --strict only) — `/` in a net name is a
 
 ---
 
-## GAP-3 — eco_pre_fm_checker: Check 8 SKIPPED in Round 1, not caught
+## GAP-3 — eco_pre_fm_checker: Check 8 SKIPPED in Round 1 — missed inline fix opportunity, wasted a full round
 
-**Severity:** HIGH
+**Severity:** HIGH (CRITICAL impact on round efficiency)
 **Observed in:** 9899 Round 1 Step 5
 **File:** `config/eco_agents/eco_pre_fm_checker.md`
 
 **What happened:**
-Round 1 Step 5 ran but the validator (Check 8) was SKIPPED. The `A2336162/ZN` invalid net name was already in the Synthesize PostEco at this point but went undetected.
+Round 1 Step 5 ran but the validator (Check 8) was SKIPPED. `A2336162/ZN` invalid net names were already in Synthesize PostEco but went undetected.
+
+**Impact — a full round was wasted:**
+If the validator had run with F6 (invalid net name check), the flow would have been:
+```
+Step 5 Round 1:
+  Check A/C: Route SKIPPED → 3 inline fix attempts → UNRESOLVABLE (correct)
+  Check 8:   DETECTS A2336162/ZN (F6 invalid net name)
+             INLINE FIX: grep PreEco → A2336162.ZN drives phfnn_2405075 → replace
+             Re-validate: PASS
+  Result: Escalate ONLY for Route issue → Round 2 FM runs with clean Verilog
+```
+
+Instead, without validator:
+- Round 1: escalated without fixing the Verilog bug
+- Round 2: eco_fm_analyzer classified everything as manual_only without seeing the Verilog issue
+- Round 2: FM submitted with corrupt Verilog → ABORT_NETLIST → wasted FM slot (1-2 hours)
+- Round 3: finally fixed
+
+**The validator being SKIPPED cost 1 extra round + 1 wasted FM run.**
 
 **Fix required:**
-The validator MUST run unless the script is genuinely unavailable. The existing mandatory self-check (added today) ensures `check8_verilog_validator` is in the JSON. Ensure the eco_pre_fm_checker agent always attempts to run the validator before marking it SKIPPED. SKIPPED should only occur if `script/validate_verilog_netlist.py` does not exist.
+1. The validator MUST always run (not SKIPPED unless script genuinely absent)
+2. F6 invalid net name check must be in default mode (GAP-2)
+3. When F6 is detected: eco_pre_fm_checker must apply inline fix:
+   - Parse the invalid net name (e.g., `A2336162/ZN`)
+   - Grep PreEco for the cell: `grep "A2336162" <PreEco/Synthesize.v.gz>` → find `.ZN(<actual_wire>)`
+   - Replace `A2336162/ZN` with `<actual_wire>` in PostEco
+   - Re-validate → if pass, rerun Step 5 (do NOT escalate to ROUND_ORCHESTRATOR just for this)
+4. Only escalate to ROUND_ORCHESTRATOR when Route-level issues (UNRESOLVABLE) remain after all inline fixes
 
 ---
 
@@ -241,7 +267,7 @@ Once all FM runs finish, prioritize fixes in this order:
 | P1 | GAP-4 — manual_only should not suppress Verilog check | eco_pre_fm_checker.md |
 | P2 | GAP-5 — A648153 PrePlace missing (Stage Fallback gap) | eco_netlist_studier.md |
 | P2 | GAP-6 — ALREADY_APPLIED for manual_only SKIPPED entries | eco_applier.md |
-| P2 | GAP-3 — validator SKIPPED enforcement | eco_pre_fm_checker.md |
+| P1 | GAP-3 — validator SKIPPED: missed inline fix, wasted full round | eco_pre_fm_checker.md |
 | P3 | GAP-7 — wire decl note in rtl_diff_analyzer | rtl_diff_analyzer.md |
 | P3 | GAP-8 — EcoUseSdpOutstRdCnt not in Step 2 RPT | eco_fenets_runner.md |
 | P3 | GAP-9 — wire_swap classification misleading | eco_fenets_runner.md |
