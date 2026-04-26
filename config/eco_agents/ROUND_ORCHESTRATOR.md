@@ -27,7 +27,6 @@ Read `<ROUND_HANDOFF_PATH>` (passed in your prompt) to get:
 - `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`, `ai_eco_flow_dir`
 - `round` — the round that just failed (e.g., 1)
 - `eco_fm_tag` — FM tag from the failed round
-- `svf_update_needed` — whether new_logic cells were inserted
 - `status` — should be `FM_FAILED`
 
 Set `AI_ECO_FLOW_DIR = ai_eco_flow_dir` from handoff.
@@ -85,13 +84,7 @@ for stage in Synthesize PrePlace Route:
 
 ---
 
-## STEP 6c — Clean Up SVF Entries
-
-```bash
-rm -f <BASE_DIR>/data/<TAG>_eco_svf_entries.tcl
-```
-
----
+## STEP 6c — (Removed — SVF is engineers-only)
 
 ## STEP 6d — Analyze FM Failure
 
@@ -109,7 +102,6 @@ rm -f <BASE_DIR>/data/<TAG>_eco_svf_entries.tcl
 **CRITICAL — When to exit the loop early based on eco_fm_analyzer output:**
 
 - `failure_mode: UNKNOWN` → NOT a reason to stop — eco_fm_analyzer MUST have run Step 3b deep investigation before returning UNKNOWN. If `revised_changes` is non-empty, apply them and continue. If empty, treat same as MAX_ROUNDS.
-- `failure_mode: ABORT_SVF` → NOT a reason to stop — fix SVF issue (set `svf_update_needed=false`), continue to next round
 - `failure_mode: ABORT_LINK` → NOT a reason to stop — `revised_changes` contains `force_port_decl` entries; apply them in Step 6e (`force_reapply: true` in study JSON), continue to next round
 - `failure_mode: ABORT_CELL_TYPE` → NOT a reason to stop — `revised_changes` contains `fix_cell_type` entries; eco_netlist_studier_round_N re-searches PreEco for correct cell type and updates study JSON, continue to next round
 - `failure_mode: H` (hierarchical port bus input) → NOT a reason to stop — `revised_changes` contains `fix_named_wire` entries; eco_netlist_studier_round_N sets `needs_named_wire: true` in study JSON, eco_apply_fix_round_N declares named wire and rewires port bus, continue to next round
@@ -117,14 +109,15 @@ rm -f <BASE_DIR>/data/<TAG>_eco_svf_entries.tcl
 - `failure_mode: ABORT_NETLIST` → NOT a reason to stop — eco_applier corrupted the netlist; revert is already done in 6b; revised_changes will re-apply the affected entries correctly
 - `failure_mode: E` (pre-existing) → revised_changes contains `manual_only` entries. These failures existed before this ECO — the AI flow cannot fix them. Report in FINAL_ORCHESTRATOR summary for engineer review. Engineer decides whether SVF `set_dont_verify` is appropriate. Do NOT apply SVF in the AI flow.
 - `failure_mode: G` (structural stage mismatch) → first attempt `fix_named_wire` (Mode H path) for any ECO gate with a P&R-renamed net. If Priority 3 structural trace confirms no fixable net → revised_changes contains `manual_only` entries. Report for engineer review. Do NOT apply SVF.
-- `failure_mode: F` (manual_only — `d_input_decompose_failed`) → **check if ALL `revised_changes` entries have `action: manual_only`**:
-  - If YES → **exit the loop early right here** — set handoff `status: MANUAL_LIMIT`, NEXT_ROUND = ROUND + 1, spawn FINAL_ORCHESTRATOR with `TOTAL_ROUNDS: <ROUND>`. Do NOT run Steps 6e/6f/4/5 — those are wasted rounds. These points cannot be automated.
-  - If NO (mixed — some manual_only, some fixable) → continue; apply the fixable changes in Steps 6e/6f/4/5, leave manual_only points in engineer report
-- If `revised_changes` is empty → **exit the loop early** — treat same as MAX_ROUNDS; spawn FINAL_ORCHESTRATOR with `status: MAX_ROUNDS`, `TOTAL_ROUNDS: <ROUND>`
+- `failure_mode: F` (manual_only — `d_input_decompose_failed`) → check `revised_changes`:
+  - If ALL entries have `action: manual_only` **AND NEXT_ROUND ≥ max_rounds** → exit early with `status: MANUAL_LIMIT`, spawn FINAL_ORCHESTRATOR
+  - If ALL entries have `action: manual_only` **AND NEXT_ROUND < max_rounds** → **DO NOT exit early**. eco_fm_analyzer has queued progressive strategies (invert_cmux_constants, try_strategy_A_andterm, try_alternative_pivot). Continue to Steps 6e/6f/4/5 — the studier will attempt the next strategy. `manual_only` means "no fix found YET", not "no fix possible ever".
+  - If mixed (some manual_only, some fixable) → always continue; apply fixable changes, leave manual_only points for later rounds or final report
+- If `revised_changes` is empty → exit early — treat same as MAX_ROUNDS; spawn FINAL_ORCHESTRATOR with `status: MAX_ROUNDS`
 
-**RULE: Early-exit decisions (Mode F all-manual, empty revised_changes) happen HERE immediately after Step 6d — before Steps 6e/6f/4/5. Do NOT continue to Steps 6e/6f/4/5 if exiting early.**
+**CORE RULE: `manual_only` is ONLY a final outcome at max rounds. Within the fix loop, it means "try a different strategy next round". NEVER exit early purely because revised_changes are all manual_only unless NEXT_ROUND ≥ max_rounds.**
 
-**RULE: "After Step 5" only handles 3 outcomes: FM PASS → FINAL_ORCHESTRATOR, FM FAIL+NEXT_ROUND<6 → new ROUND_ORCHESTRATOR, FM FAIL+NEXT_ROUND=6 → FINAL_ORCHESTRATOR(MAX_ROUNDS). Mode F all-manual is never seen in "After Step 5" because it exits at Step 6d.**
+**RULE: Early-exit decisions happen HERE immediately after Step 6d — but ONLY when ALL strategies exhausted (all manual_only AND at max rounds), OR revised_changes is empty.**
 
 ---
 
@@ -211,14 +204,22 @@ reapply_entries = [
     if e.get("force_reapply") and not e.get("manual_only")
 ]
 if not reapply_entries:
-    # All force_reapply entries are manual_only — no fixable work remains
-    # Exit early: do NOT spawn eco_applier or eco_fm_runner
-    update_handoff(status="MANUAL_LIMIT")
-    spawn FINAL_ORCHESTRATOR with TOTAL_ROUNDS=<NEXT_ROUND>
-    EXIT
+    if NEXT_ROUND >= max_rounds:
+        # Truly exhausted — exit with MANUAL_LIMIT
+        update_handoff(status="MANUAL_LIMIT")
+        spawn FINAL_ORCHESTRATOR with TOTAL_ROUNDS=<NEXT_ROUND>
+        EXIT
+    else:
+        # No fixable work THIS round but rounds remain — eco_fm_analyzer may have
+        # queued a progressive strategy (invert_cmux_constants etc.) for next round.
+        # Spawn next ROUND_ORCHESTRATOR to try the next strategy.
+        # Do NOT exit early — always use available rounds.
+        update_handoff(status="FM_FAILED")
+        spawn ROUND_ORCHESTRATOR
+        EXIT
 ```
 
-This catches the case where eco_netlist_studier discovered that all previously-fixable entries are now `manual_only` (e.g., cell lookup failed, net unresolvable in all stages). Without this re-check, eco_applier and eco_fm_runner would be spawned with nothing actionable to do.
+This catches the case where eco_netlist_studier found no immediately fixable work. If rounds remain, continue trying — eco_fm_analyzer will attempt a different strategy. Only exit at max_rounds.
 
 ---
 
@@ -283,16 +284,7 @@ cp <BASE_DIR>/data/<TAG>_eco_step4_eco_applied_round<NEXT_ROUND>.rpt <AI_ECO_FLO
 ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<NEXT_ROUND>.rpt
 ```
 
-Do NOT proceed to Step 4b until the RPT is confirmed in both data/ and AI_ECO_FLOW_DIR.
-
----
-
-## STEP 4b — DISABLED (SVF is for engineers only)
-
-> **SVF updates are PROHIBITED for the AI flow. Step 4b is permanently disabled.**
-> Always set `svf_update_needed = false`. Do NOT spawn eco_svf_updater. Do NOT write any `set_dont_verify`, `set_user_match`, or `guide_eco_change` entries. SVF changes are manual engineer decisions.
-
-Set `svf_update_needed = false` and proceed directly to Step 4c.
+Do NOT proceed to Step 4c until the RPT is confirmed in both data/ and AI_ECO_FLOW_DIR.
 
 ---
 
@@ -333,7 +325,6 @@ else:
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_fm_runner.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `TILE`, `BASE_DIR`, `AI_ECO_FLOW_DIR`, `ROUND=<NEXT_ROUND>`
 - `ECO_TARGETS=<space-separated failing targets from previous round>` (only failing targets, not all 3)
-- `svf_update_needed=<true|false>` (from Step 4b)
 - Path to existing `data/<TAG>_eco_fm_verify.json` (for merge with previous round results)
 - Task: write FM config, submit FM, block until complete, parse+merge results, write verify JSON + RPT
 
@@ -372,7 +363,6 @@ Update `<BASE_DIR>/data/<TAG>_round_handoff.json`:
   "round": "<NEXT_ROUND>",
   "fenets_tag": "<fenets_tag>",
   "eco_fm_tag": "<new eco_fm_tag>",
-  "svf_update_needed": "<true|false>",
   "status": "<FM_PASSED|FM_FAILED|MAX_ROUNDS>"
 }
 ```
@@ -427,7 +417,6 @@ Update handoff: `"status": "MAX_ROUNDS"`
 | `data/<TAG>_eco_fixer_state` | ROUND_ORCHESTRATOR (Step 6e) | Incremented round + strategies_tried |
 | `data/<TAG>_eco_applied_round<NEXT_ROUND>.json` | eco_apply_fix_round_N (Step 4) | ECO changes applied in fix round |
 | `data/<TAG>_eco_step4_eco_applied_round<NEXT_ROUND>.rpt` | ROUND_ORCHESTRATOR (Step 4) | Detailed application report |
-| `data/<TAG>_eco_svf_entries.tcl` | eco_svf_updater (Step 4b) | SVF entries for pre-existing failures |
 | `data/<TAG>_eco_fm_verify.json` | eco_fm_runner (Step 5) | Merged FM results cumulative across rounds |
 | `data/<TAG>_eco_step5_fm_verify_round<NEXT_ROUND>.rpt` | eco_fm_runner (Step 5) | Step 5 FM result RPT |
 | `data/<TAG>_round_handoff.json` | ROUND_ORCHESTRATOR (After Step 5) | Updated handoff for next agent |

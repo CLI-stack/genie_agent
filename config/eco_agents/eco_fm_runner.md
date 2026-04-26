@@ -4,7 +4,7 @@
 
 **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` before anything else.
 
-**Inputs:** TAG, REF_DIR, TILE, BASE_DIR, AI_ECO_FLOW_DIR, ROUND, ECO_TARGETS, svf_update_needed, path to existing `<TAG>_eco_fm_verify.json` (if ROUND > 1)
+**Inputs:** TAG, REF_DIR, TILE, BASE_DIR, AI_ECO_FLOW_DIR, ROUND, ECO_TARGETS, path to existing `<TAG>_eco_fm_verify.json` (if ROUND > 1)
 
 **Working directory:** Always `cd <BASE_DIR>` before any operations.
 
@@ -29,9 +29,12 @@ Write to `<REF_DIR>/data/eco_fm_config` (fixed filename — NOT tag-based):
 ```bash
 cat > <REF_DIR>/data/eco_fm_config << EOF
 ECO_TARGETS=<space-separated ECO_TARGETS from input>
-RUN_SVF_GEN=<1 if svf_update_needed AND FmEqvEcoSynthesizeVsSynRtl in ECO_TARGETS else 0>
-ECO_SVF_ENTRIES=<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl
+RUN_SVF_GEN=0
 EOF
+# NOTE: ECO_SVF_ENTRIES is NEVER written — Step 4b (eco_svf_updater) is permanently
+# disabled. SVF updates are for engineers only. Writing ECO_SVF_ENTRIES pointing to a
+# non-existent file causes post_eco_formality.csh to abort before running any comparison.
+# RUN_SVF_GEN is always 0 — no SVF generation needed when AI flow never modifies SVF.
 ```
 
 ---

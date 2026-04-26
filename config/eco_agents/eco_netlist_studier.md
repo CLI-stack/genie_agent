@@ -410,16 +410,41 @@ Run for every `new_logic` change where `d_input_decompose_failed: true` AND `fal
 
 **Step 0c-3 — Reuse driver found in Step 0c-2 per stage.**
 
+**Step 0c-3b — MANDATORY: Validate pivot driver cell polarity:**
+
+Before building the c_mux cascade entries, determine whether the pivot driver cell is INVERTING or NON-INVERTING. This determines the correct `1'b0`/`1'b1` constants in each c_mux gate:
+
+```bash
+# Find the driver cell of <pivot_net> in Synthesize PreEco
+grep -n "\.<output_pin>( <pivot_net> )" /tmp/eco_study_<TAG>_Synthesize.v | head -3
+# → extract cell type name (e.g., NR2D1, AN2D1, INV, etc.)
+```
+
+Determine polarity:
+- **INVERTING** (NOR, NAND, INV, NR, ND, IN prefixes): when ALL conditions in c_mux chain are FALSE, pivot driver outputs HIGH (inverted). The c_mux_final drives `<pivot_net>` which feeds the inverting driver → a HIGH input to the inverting driver gives the SAME result as the old pivot signal. **The `1'b0`/`1'b1` constants in each c_mux gate must be determined by working backward from the desired RTL output through the inverting driver.**
+- **NON-INVERTING** (AND, OR, BUF, AN, OR prefixes): straightforward — c_mux constants directly reflect the RTL `? 1'b0 : 1'b1` values.
+
+```python
+# Record pivot polarity in study JSON:
+entry["pivot_driver_cell_type"] = driver_cell_type
+entry["pivot_is_inverting"] = is_inverting(driver_cell_type)
+# eco_applier uses this to validate c_mux constants are consistent with polarity
+```
+
+**If pivot is INVERTING and c_mux cascade has 1'b0/1'b1 constants from RTL decomposition:**
+The constants need to be flipped relative to the RTL values because the inverting driver negates the signal. Verify: when condition fires → c_mux output → pivot driver output → downstream DFF.D should match RTL intent.
+
 **Step 0c-4 — Build entries:**
 - **Entry A (rewire):** Redirect driver output from `<pivot_net>` → `<pivot_net>_orig`
 - **Entry B (new_logic_gate chain):** Read `new_condition_gate_chain` from `eco_rtl_diff.json`. If null → mark MANUAL_ONLY. Otherwise, for each gate in the chain: create `new_logic_gate` entry with per-stage net verification (same Priority 1/2 as 0b-GATE-STAGE-NETS). Last gate in chain outputs to `<pivot_net>_orig`; downstream cells unchanged.
+- **Validate cascade polarity before recording:** After building the full c_mux chain, verify that the cascade + pivot driver combination produces the correct RTL output for each condition. If polarity is inconsistent → swap the `1'b0`/`1'b1` constants in the c_mux gates accordingly.
 
 **Step B-P3 — Structural Driver Trace (Priority 3 fallback for P&R-renamed nets):**
 
 When FM returns FM-036 for a net in a P&R stage AND Priority 2 also fails, the net may have been P&R-renamed to a `tmp_net*` or `FxPlace_*` alias. Use the **driver cell** from the Synthesize resolution to find the renamed net in the P&R stage:
 
 ```python
-# Given: synth_resolved_net (e.g., "N2408127") and its driver from Synthesize FM
+# Given: synth_resolved_net (<synth_resolved_net>) and its driver from Synthesize FM
 # Step 1: Find the driver cell in Synthesize
 driver_cell = None
 for line in synth_stage_lines:
@@ -440,7 +465,7 @@ if driver_cell:
                 break
 ```
 
-**Why this works:** P&R tools rename internal nets (e.g., `N2408127 → tmp_net360205`) but they keep the same cell instance name for the driving cell (`A2230141`). By finding the driver cell in the P&R stage and reading its output net, we recover the P&R alias without needing FM.
+**Why this works:** P&R tools rename internal nets (e.g., `<synth_net_name> → <par_alias>`) but they keep the same cell instance name for the driving cell (<driver_cell_name>). By finding the driver cell in the P&R stage and reading its output net, we recover the P&R alias without needing FM.
 
 **If driver cell is also renamed in P&R:** Search by structural signature — cell type AND input net(s) from Synthesize:
 ```bash
@@ -521,8 +546,8 @@ If the signal is a new_port from this ECO: record `input_from_change`. Signal wi
 
 **For `new_logic_dff` (sequential DFF insertions):**
 ```
-instance_name = <target_register>_reg    (e.g., NeedFreqAdj_reg)
-output_net    = <target_register>        (e.g., NeedFreqAdj)
+instance_name = <target_register>_reg    
+output_net    = <target_register>        
 ```
 Use the `target_register` field from the RTL diff JSON as the DFF instance name (with `_reg` suffix) and the Q output net name. This matches the instance name that FM synthesizes from the RTL — enabling FM auto-matching in `FmEqvEcoSynthesizeVsSynRtl` without any `set_user_match`. Same name used in all 3 stages.
 

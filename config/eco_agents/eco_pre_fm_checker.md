@@ -206,6 +206,37 @@ recompress(lines, f"PostEco/{stage}.v.gz")
 
 ### Check F — Duplicate Wire Declarations and Duplicate Instance Port Connections
 
+**Run the general Verilog validator FIRST (covers all F sub-checks plus additional patterns):**
+
+Get the ECO-touched module names from the applied JSON (module_name field of all entries). Pass via `--modules` — this is MANDATORY to keep runtime fast on large P&R netlists (otherwise it scans 8000+ modules and gets killed):
+
+```python
+# Extract touched module names from eco_applied_round<ROUND>.json
+import json
+applied = json.load(open(f"data/{TAG}_eco_applied_round{ROUND}.json"))
+touched_modules = set()
+for stage_entries in applied.values():
+    if isinstance(stage_entries, list):
+        for e in stage_entries:
+            if e.get("module_name"):
+                touched_modules.add(e["module_name"])
+modules_arg = " ".join(touched_modules)
+```
+
+```bash
+python3 script/validate_verilog_netlist.py \
+  --modules <touched_modules_space_separated> \
+  -- \
+  <REF_DIR>/data/PostEco/Synthesize.v.gz \
+  <REF_DIR>/data/PostEco/PrePlace.v.gz \
+  <REF_DIR>/data/PostEco/Route.v.gz
+# Exit 0 = PASS for all stages. Exit 1 = errors found → block FM submission → escalate to ROUND_ORCHESTRATOR
+```
+
+This validator catches F3 (declaration inside cell instance) and F5 (corrupted port value) — always eco_applier bugs. Runs in seconds when `--modules` is used. Without `--modules` it scans the entire netlist which is too slow.
+
+If the validator script is unavailable, run the manual checks below.
+
 These are FM-599 abort triggers that eco_applier's Check 5/6 may have missed (e.g., in modules not directly touched by eco_applier, or when the conflict was introduced via port_promotion interaction).
 
 ```python
@@ -364,6 +395,11 @@ Check C — Inserted Cells in all 3 stages                : <PASS / FIXED / FAIL
 Check D — No Duplicate Port Names (port list header)     : <PASS / FIXED / FAIL>
 Check E — Rewire Consistency (warning)                   : <PASS / WARN>
 Check F — Duplicate Wire Decls / Implicit Wire Conflicts : <PASS / FIXED / FAIL>
+Check G — Port Direction Completeness                    : <PASS / FIXED / FAIL>
+Check 8 — Verilog Netlist Validator (validate_verilog_netlist.py):
+  Synthesize : <PASS / FAIL — <N> error(s): <brief description>>
+  PrePlace   : <PASS / FAIL — <N> error(s): <brief description>>
+  Route      : <PASS / FAIL — <N> error(s): <brief description>>
 
 OVERALL: <PASS — proceed to FM / FAIL after 3 retries — escalate to ROUND_ORCHESTRATOR>
 
@@ -416,9 +452,105 @@ result = {
         "D_duplicate_ports":   result_D,
         "E_rewire_warnings":   "WARN" if issues_E else "PASS",
         "F_wire_dup_implicit": result_F,
-        "G_port_direction_completeness": result_G
+        "G_port_direction_completeness": result_G,
+        "check8_verilog_validator": {
+            "Synthesize": validator_result_synth,   # "PASS" | "FAIL" | "SKIPPED"
+            "PrePlace":   validator_result_pplace,
+            "Route":      validator_result_route,
+            "errors":     validator_errors           # list of error dicts from validator
+        }
     }
 }
+
+# Run Check 8 — Verilog Netlist Validator
+# Get touched module names from applied JSON
+touched_modules = set(
+    e.get("module_name","") for stage_entries in applied.values()
+    if isinstance(stage_entries, list)
+    for e in stage_entries if e.get("module_name")
+)
+modules_arg = list(touched_modules)
+
+validator_errors = []
+validator_result_synth = validator_result_pplace = validator_result_route = "SKIPPED"
+try:
+    import subprocess, json as _json
+    result_c8 = subprocess.run(
+        ["python3", "script/validate_verilog_netlist.py",
+         "--modules"] + modules_arg + ["--",
+         f"{REF_DIR}/data/PostEco/Synthesize.v.gz",
+         f"{REF_DIR}/data/PostEco/PrePlace.v.gz",
+         f"{REF_DIR}/data/PostEco/Route.v.gz"],
+        capture_output=True, text=True, timeout=120
+    )
+    output = result_c8.stdout
+    # Parse per-stage results from output
+    validator_result_synth = "PASS" if "PASS:" in output.split("Synthesize")[1].split("\n")[0] else "FAIL"
+    validator_result_pplace = "PASS" if "PASS:" in output.split("PrePlace")[1].split("\n")[0] else "FAIL"
+    validator_result_route  = "PASS" if "PASS:" in output.split("Route")[1].split("\n")[0] else "FAIL"
+    if result_c8.returncode != 0:
+        # Extract errors from output
+        for line in output.splitlines():
+            if line.strip().startswith("[F"):
+                validator_errors.append(line.strip())
+
+        # INLINE FIX ATTEMPT — fix each error before proceeding:
+        # For each error, parse stage/module/lineno and attempt targeted fix:
+        #
+        # F3 fix (declaration inside cell instance): remove the offending line
+        #   - Find the line containing 'input/output/wire <signal> ;' at lineno
+        #   - Decompress the stage, remove that line, recompress
+        #
+        # F5 fix (corrupted port value): remove the extra comma-separated nets
+        #   - Find '.pin( net1 , ecoadded1, ecoadded2 )' at lineno
+        #   - Replace with original single-net form '.pin( net1 )'
+        #   - The ECO-added nets are identifiable by name pattern (e.g., signal_name from eco_applied JSON)
+        #
+        for err_line in validator_errors:
+            stage = parse_stage_from_error(err_line)         # "Synthesize"|"PrePlace"|"Route"
+            lineno = parse_lineno_from_error(err_line)       # integer line number
+            check = parse_check_from_error(err_line)         # "F3"|"F5"
+            stage_gz = f"{REF_DIR}/data/PostEco/{stage}.v.gz"
+
+            fix_success = False
+            if check == "F3_decl_inside_instance":
+                # Remove the direction declaration line from the gz file
+                fix_success = remove_line_from_gz(stage_gz, lineno)
+            elif check == "F5_corrupted_port_value":
+                # Revert corrupted .pin(net1, eco_net1, eco_net2) to .pin(net1)
+                # Keep only the FIRST net in the port connection value
+                fix_success = fix_corrupted_port_value_in_gz(stage_gz, lineno)
+
+            if fix_success:
+                issues_fixed.append({"check": f"check8_{check}", "line": lineno, "stage": stage})
+            else:
+                issues_critical.append({
+                    "check": "check8_verilog_validator",
+                    "severity": "CRITICAL",
+                    "error": err_line,
+                    "detail": f"Cannot auto-fix {check} at line {lineno} in {stage}. "
+                              f"eco_applier port_list_close_idx bug — revert PostEco to PreEco and re-run eco_applier."
+                })
+
+        # Re-run validator after fixes to confirm all resolved
+        if issues_fixed and not issues_critical:
+            recheck = subprocess.run(
+                ["python3", "script/validate_verilog_netlist.py",
+                 "--modules"] + modules_arg + ["--",
+                 f"{REF_DIR}/data/PostEco/Synthesize.v.gz",
+                 f"{REF_DIR}/data/PostEco/PrePlace.v.gz",
+                 f"{REF_DIR}/data/PostEco/Route.v.gz"],
+                capture_output=True, text=True, timeout=120
+            )
+            if recheck.returncode != 0:
+                issues_critical.append({
+                    "check": "check8_verilog_validator_recheck",
+                    "severity": "CRITICAL",
+                    "detail": "Verilog errors persist after inline fix. Revert PostEco to PreEco and re-run eco_applier."
+                })
+except Exception as e:
+    validator_result_synth = validator_result_pplace = validator_result_route = "SKIPPED"
+    # Validator unavailable — log warning but proceed (manual checks below still run)
 write_json(f"data/{TAG}_eco_pre_fm_check_round{ROUND}.json", result)
 ```
 

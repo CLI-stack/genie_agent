@@ -19,7 +19,7 @@
 3. **Study PreEco before touching PostEco** — always read PreEco netlist first to confirm cell+pin
 4. **Single-occurrence rule** — if old_net appears >1 time on a pin in PostEco, skip and report AMBIGUOUS
 5. **Backup always** — `cp PostEco/${stage}.v.gz PostEco/${stage}.v.gz.bak_${tag}_round${round}` before any edit (round-specific backup so each round can be independently reverted)
-6. **new_logic = cell insertion** — when new_net doesn't exist in PostEco, insert a new cell: inverter (Step 4c) for simple inversion, DFF (Step 4c-DFF) for sequential registers, or combinational gate (Step 4c-GATE) for multi-input logic. FM auto-matches inserted cells by instance path name — do NOT call eco_svf_updater for cell insertions. eco_svf_updater is only called (Step 4b) when pre-existing FM failures require `set_dont_verify` suppression.
+6. **new_logic = cell insertion** — when new_net doesn't exist in PostEco, insert a new cell: inverter (Step 4c) for simple inversion, DFF (Step 4c-DFF) for sequential registers, or combinational gate (Step 4c-GATE) for multi-input logic. FM auto-matches inserted cells by instance path name.
 7. **Polarity rule** — only use `+` (non-inverted) impl nets for rewiring, never `-` (inverted); for inverted signals use new_logic insert
 8. **Bus dual-query** — for bus signals `reg [N:0] X`, query both `X` and `X_0_` to find gate-level name
 9. **PostEco FM verification — ONE run only** — run all 3 targets in Step 5. If FM fails: write round_handoff.json → spawn ROUND_ORCHESTRATOR → HARD STOP. Never re-run FM or loop within ORCHESTRATOR. Each subsequent FM run belongs to its own ROUND_ORCHESTRATOR instance.
@@ -640,7 +640,7 @@ ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round1.rpt
 
 Wait for eco_applier sub-agent to complete.
 
-**CHECKPOINT:** Verify `data/<TAG>_eco_applied_round<ROUND>.json` exists and contains a `summary` field. Check that backup files `<REF_DIR>/data/PostEco/<Stage>.v.gz.bak_<TAG>_round<ROUND>` exist for each stage that had confirmed cells. Do NOT continue to Step 4b or Step 5 if file is missing.
+**CHECKPOINT:** Verify `data/<TAG>_eco_applied_round<ROUND>.json` exists and contains a `summary` field. Check that backup files `<REF_DIR>/data/PostEco/<Stage>.v.gz.bak_<TAG>_round<ROUND>` exist for each stage that had confirmed cells. Do NOT continue to Step 5 if file is missing.
 
 **Generate Step 4 RPT from JSON (ORCHESTRATOR responsibility — NOT eco_applier):**
 
@@ -695,12 +695,6 @@ ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt
 
 ---
 
-## STEP 4b — DISABLED (SVF is for engineers only)
-
-> **SVF updates are PROHIBITED for the AI flow. Step 4b is permanently disabled.**
-> Always set `svf_update_needed = false`. Do NOT spawn eco_svf_updater. Do NOT write any `set_dont_verify`, `set_user_match`, or `guide_eco_change` entries. SVF changes are manual engineer decisions made after reviewing the AI flow's FINAL_ORCHESTRATOR report.
-
-Set `svf_update_needed = false` and proceed directly to Step 4c.
 
 ---
 
@@ -808,7 +802,6 @@ else:
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_fm_runner.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `TILE`, `BASE_DIR`, `AI_ECO_FLOW_DIR`, `ROUND=1`
 - `ECO_TARGETS=FmEqvEcoSynthesizeVsSynRtl FmEqvEcoPrePlaceVsEcoSynthesize FmEqvEcoRouteVsEcoPrePlace`
-- `svf_update_needed=<true|false>` (from Step 4b)
 - Task: write FM config, submit FM, block until complete, parse results, write verify JSON + RPT
 
 Wait for the sub-agent to complete.
@@ -837,12 +830,11 @@ Write to `<REF_DIR>/data/eco_fm_config` — **fixed filename inside refDir** (NO
 ```bash
 cat > <REF_DIR>/data/eco_fm_config << EOF
 ECO_TARGETS=FmEqvEcoSynthesizeVsSynRtl FmEqvEcoPrePlaceVsEcoSynthesize FmEqvEcoRouteVsEcoPrePlace
-RUN_SVF_GEN=<1 if svf_update_needed else 0>
-ECO_SVF_ENTRIES=<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl
+RUN_SVF_GEN=0
 EOF
 ```
 
-`RUN_SVF_GEN=1` only when BOTH: `FmEqvEcoSynthesizeVsSynRtl` is in targets AND `svf_update_needed = true`.
+`RUN_SVF_GEN=0` always — SVF generation is disabled. The AI flow never applies SVF.
 
 ### Step 5b — Run PostEco FM (once)
 
@@ -902,7 +894,6 @@ Write `<BASE_DIR>/data/<TAG>_round_handoff.json` **before any spawn decision**:
   "round": 1,
   "fenets_tag": "<fenets_tag>",
   "eco_fm_tag": "<eco_fm_tag>",
-  "svf_update_needed": "<true|false>",
   "status": "<FM_PASSED|FM_FAILED>"
 }
 ```
@@ -988,13 +979,11 @@ The next agent has its own fresh context and instructions. Trust the handoff.
 | `data/<TAG>_eco_step2_fenets.rpt` | Step 2 RPT — find_equivalent_nets results |
 | `data/<TAG>_eco_preeco_study.json` | PreEco netlist confirmation |
 | `data/<TAG>_eco_applied_round1.json` | ECO changes applied/inserted/skipped (Round 1) |
-| `data/<TAG>_eco_svf_entries.tcl` | SVF TCL entries (new_logic only) |
 | `<REF_DIR>/data/eco_fm_config` | FM run config (fixed filename) |
 | `data/<TAG>_eco_fm_verify.json` | PostEco FM verification results (Round 1) |
 | `data/<TAG>_eco_fixer_state` | Round tracking (if FM fails) |
 | `data/<TAG>_eco_step1_rtl_diff.rpt` | Step 1 RPT (written by rtl_diff_analyzer) |
 | `data/<TAG>_eco_step3_netlist_study_round1.rpt` | Step 3 RPT (written by eco_netlist_studier) |
 | `data/<TAG>_eco_step4_eco_applied_round1.rpt` | Step 4 RPT Round 1 (written by eco_applier) |
-| `data/<TAG>_eco_step4b_svf.rpt` | Step 4b RPT (written by eco_svf_updater, if new_logic) |
 | `data/<TAG>_eco_step5_fm_verify_round1.rpt` | Step 5 RPT Round 1 |
 | `data/<TAG>_round_handoff.json` | Handoff to ROUND_ORCHESTRATOR or FINAL_ORCHESTRATOR |

@@ -562,7 +562,7 @@ If not found → P&R renamed the cell. Find the actual name in this stage and up
 ### Mode E — Pre-existing failure (unrelated to ECO)
 
 > **HARD RULE — ECO-inserted DFFs are NEVER Mode E:**
-> If the failing DFF instance name matches the `eco_<jira>_` pattern (e.g., `eco_9868_dff1`, `eco_9899_c001`), it was inserted by THIS ECO. It did NOT exist in PreEco. It CANNOT be pre-existing. **Do NOT write `set_dont_verify` for it. Do NOT write `set_user_match` for it.** Re-examine as Mode A or Mode H immediately.
+> If the failing DFF instance name matches the `eco_<jira>_` pattern (e.g., `eco_<jira>_dff1`, `eco_<jira>_c001`), it was inserted by THIS ECO. It did NOT exist in PreEco. It CANNOT be pre-existing. **Do NOT write `set_dont_verify` for it. Do NOT write `set_user_match` for it.** Re-examine as Mode A or Mode H immediately.
 >
 > **HARD RULE — `set_user_match` is NEVER written for ECO-inserted cells:**
 > FM auto-matches ECO-inserted cells by instance path in the PostEco netlist. `set_user_match` is only for points that FM cannot find at all (unmatched). An equivalence FAILURE on an ECO-inserted DFF is NOT an unmatched point — it is Mode A, H, or D. Never write `set_user_match` for a DFF that matches `eco_<jira>_` pattern.
@@ -601,14 +601,73 @@ if [ "$synth_count" -gt 0 ] && [ "$pplace_count" -eq 0 ]; then
 fi
 ```
 
-Only after ALL conditions (0, 1, 2, 3) are confirmed: classify Mode E and write `set_dont_verify` entry targeting this specific DFF path. Do NOT write a wildcard scope — scope it to exactly the failing DFF hierarchy path.
+Only after ALL conditions (0, 1, 2, 3) are confirmed: classify Mode E and add `action: "manual_only"` to `revised_changes` — SVF is for engineers only, the AI flow does NOT write `set_dont_verify`. Record the failing DFF path in the diagnosis for engineer review.
 
 ### Mode F — d_input_decompose_failed
 
 Check `fallback_strategy` in `eco_rtl_diff.json` before classifying:
 
-- **`fallback_strategy: "intermediate_net_insertion"`** → Mode F1: pivot net approach is applicable. Check if `eco_preeco_study.json` has any entry with `source: "intermediate_net_fallback"`. If such entries ARE present: the studier already ran Step 0c and produced the gate chain — the issue is in eco_applier's execution, classify as Mode A (re-apply). If such entries are ABSENT: the studier did NOT run Step 0c. Set `action: "manual_only"` in revised_changes for this register and add a `rationale` explaining that the intermediate_net_fallback entries are missing from eco_preeco_study.json — the engineer must manually re-run the studier with Step 0c enabled for this change. Do NOT mark as MANUAL_ONLY for the whole flow — only for this register's entry.
+- **`fallback_strategy: "intermediate_net_insertion"`** → Mode F1: pivot net approach is applicable. Check if `eco_preeco_study.json` has any entry with `source: "intermediate_net_fallback"`. If such entries ARE present: the studier already ran Step 0c and produced the gate chain — the issue is in eco_applier's execution, classify as Mode A (re-apply). If such entries are ABSENT: the studier did NOT run Step 0c. Set `action: "manual_only"`.
+
+  **Detect intermediate_net_insertion structural issues and try progressive fixes:**
+  When `intermediate_net_insertion` was applied and the failing count is IDENTICAL across 2+ consecutive rounds, the c_mux cascade has a structural issue. Try the following fixes in order — do NOT declare `manual_only` until max rounds are exhausted:
+
+  ```python
+  prev_count = fixer_state["fm_results_per_round"][-2]["failing_count"].get(target, 0)
+  curr_count = fixer_state["fm_results_per_round"][-1]["failing_count"].get(target, 0)
+  strategies_tried = fixer_state.get("strategies_tried", [])
+
+  if intermediate_net_insertion_was_applied and prev_count == curr_count and curr_count > 10:
+      if "invert_cmux_constants" not in strategies_tried:
+          # Try 1: Flip ALL 1'b0/1'b1 constants in c_mux chain (pivot may be inverting)
+          action = "invert_cmux_constants"
+          # eco_netlist_studier will flip all constants and set force_reapply=true on chain
+      elif "try_strategy_A_andterm" not in strategies_tried:
+          # Try 2: Abandon intermediate_net_insertion, try and_term Strategy B instead
+          action = "try_strategy_A_andterm"
+          # eco_netlist_studier re-studies with Strategy A (direct rewire inside declaring module)
+      elif "try_alternative_pivot" not in strategies_tried:
+          # Try 3: Find alternative pivot net (different hop count backward from DFF.D)
+          action = "try_alternative_pivot"
+      else:
+          # All strategies exhausted — declare manual_only ONLY if at max rounds
+          if current_round >= max_rounds - 1:
+              action = "manual_only"
+              rationale = "intermediate_net_insertion: all fix strategies exhausted across rounds"
+          else:
+              action = "try_alternative_pivot"  # Keep trying until max rounds
+  ```
+
+  Also check **pivot cell polarity** in eco_preeco_study.json `pivot_driver_cell_type`. If INVERTING (NOR, NAND, INV) and constants not yet flipped → `invert_cmux_constants` is the first fix to try.
+
+  **When diagnosing Mode A for intermediate_net_insertion failures:** Run proactive Check D (polarity) on ALL c_mux gates. Verify pivot cell type — if missing, re-read from PreEco netlist.
 - **`fallback_strategy: null`** → Mode F2: no intermediate net approach possible. Set all revised_changes for this register to `action: manual_only`. ROUND_ORCHESTRATOR exits loop early if all points are manual_only.
+
+### Mode F3 — Pre-existing DFF failing due to wrong ECO gate chain driving it
+
+**Trigger:** A pre-existing DFF (NOT matching `eco_<jira>_` pattern) fails FM AND has a large cascade count (≥ 100 failing DFFs in one stage). Standard Mode E proof (Conditions 0-3) would incorrectly classify this as pre-existing.
+
+**Root cause:** The failing DFF is NOT the ECO change itself — it is a DOWNSTREAM register driven by the ECO c_mux cascade chain. When the c_mux chain produces wrong output (wrong polarity, wrong constants, missing gate), ALL DFFs that depend on the pivot net fail → large cascade.
+
+**Detection:**
+```python
+# If failing DFF is pre-existing AND cascade count > 100 in one stage:
+if (not is_eco_inserted(failing_dff) and cascade_count > 100):
+    # Trace BACKWARD from failing DFF to find ECO gates in its D-input chain
+    eco_gates_in_cone = trace_D_input_chain_for_eco_gates(failing_dff, eco_preeco_study)
+    if eco_gates_in_cone:
+        # This is Mode F3 — ECO gate chain error causing cascade
+        # Run deep D-input chain trace (Check E logic) on the ECO gate chain
+        # Find the gate with wrong polarity or missing input
+        classify_as_mode_A_with_eco_chain_diagnosis(eco_gates_in_cone)
+    # Do NOT classify as Mode E — the ECO gates are the root cause
+```
+
+**Action:** Classify as Mode A (ECO change not correctly applied) targeting the specific ECO gate in the chain that is wrong. Run Check D (polarity verification) on ALL c_mux gates in the chain. Return `action: rewire` or `update_gate_function` for the specific gate.
+
+**Do NOT classify as Mode E** (pre-existing) just because the failing DFF is pre-existing. The failing DFF is correct — the ECO chain DRIVING it is wrong.
+
+**Do NOT declare `manual_only` until max rounds are exhausted.** Try progressive fixes: first update_gate_function, then invert_cmux_constants, then try_alternative_pivot. Only after all strategies fail AND max rounds reached → `manual_only`.
 
 ### Mode G — Structural stage mismatch
 

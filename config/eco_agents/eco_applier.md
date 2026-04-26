@@ -818,17 +818,26 @@ for i in range(mod_idx, endmodule_idx):
     if port_list_close_idx is not None:
         break
 
-# Step 2d — MANDATORY checkpoint before proceeding
+# Step 2d — MANDATORY checkpoint: validate port_list_close_idx is correct
 if port_list_close_idx is None:
-    # Depth tracking failed — module structure is unexpected. Do NOT silently skip.
-    # Record as SKIPPED with reason so the issue is visible in the Step 4 RPT.
     raise RuntimeError(
-        f"PORT_DECL: Could not find port list close for module '{module_name}' "
-        f"(searched lines {mod_idx}–{endmodule_idx}). "
-        f"Possible causes: (1) endmodule_idx found too early due to comment parsing, "
-        f"(2) mismatched parentheses in port list, "
-        f"(3) module_name mismatch between stages (check stage-specific module suffixes). "
-        f"Mark this port_declaration entry as SKIPPED."
+        f"PORT_DECL: Could not find port list close for module '{module_name}'. Mark as SKIPPED."
+    )
+
+# CRITICAL VALIDATION — verify port_list_close_idx points to the MODULE PORT LIST close,
+# NOT to a cell instance internal line. The found line must:
+# 1. NOT contain '.pinname(' patterns (cell port connections, not module port list)
+# 2. NOT be a direction declaration (input/output/wire/reg)
+# 3. Contain ')' followed eventually by ';' on the same line
+close_candidate = lines[port_list_close_idx]
+if re.search(r'\.\w+\s*\(', close_candidate):
+    # Found a cell port connection line — depth tracking landed in wrong place
+    # This means the module port list has unbalanced content or the module
+    # was extracted incorrectly. Mark as SKIPPED — do NOT corrupt the netlist.
+    raise RuntimeError(
+        f"PORT_DECL: port_list_close_idx for '{module_name}' points to a cell port "
+        f"connection line (contains '.pin('): '{close_candidate[:80].strip()}'. "
+        f"Depth tracking error — mark PORT_DECL entries as SKIPPED and report to ORCHESTRATOR."
     )
 
 # Insert signal name before the last ')' on port_list_close_idx
@@ -946,9 +955,9 @@ if inst_line is None:
     # SKIPPED: instance not found in parent module scope
 ```
 
-**Step 3 — Find the TRUE closing `);` using parenthesis depth tracking:**
+**Step 3 — Find the TRUE closing `);` using parenthesis depth tracking with VALIDATION:**
 
-Do NOT use simple string pattern matching on `);` — a module instance block may span many lines and contain nested expressions with their own parentheses. Track depth:
+Do NOT use simple string pattern matching on `);`. Track depth character-by-character and VALIDATE the result:
 
 ```python
 depth = 0
@@ -966,10 +975,32 @@ for i in range(inst_line, parent_endmodule_idx):
         break
 
 if close_idx is None:
-    # SKIPPED: could not find matching closing ')' — malformed instance block
+    # SKIPPED: instance block not closed before endmodule
+
+# MANDATORY VALIDATION — prevent inserting into wrong block:
+# The closing line must end with ') ;' or ') ;' pattern (whitespace-flexible)
+# AND must NOT contain '.pinname(' patterns (which indicate it's INSIDE a port connection)
+if close_idx is not None:
+    close_line = lines[close_idx]
+    # Check 1: line must look like an instance close, not a port connection value
+    if re.search(r'\.\w+\s*\(', close_line):
+        # This line contains '.pin(' — it's INSIDE a port connection, NOT the instance close
+        # The depth tracking found the wrong depth=0 point
+        # Try advancing to find the actual ') ;' on its own line
+        for j in range(close_idx + 1, parent_endmodule_idx):
+            if re.match(r'^\s*\)\s*;', lines[j]):
+                close_idx = j
+                break
+        else:
+            close_idx = None  # Cannot safely find close — SKIP
+
+    # Check 2: validate no direction declarations ('input'/'output'/'wire') would land inside a cell block
+    if close_idx is not None:
+        if re.search(r'^\s*(input|output|wire|reg)\s+', lines[close_idx]):
+            close_idx = None  # Wrong location — direction declaration line
 ```
 
-> **This rule prevents:** a simple `);` pattern matching a mid-block line like `.last_port( <net> ) ) ;` (which has `))` closing both the port value and the instance) and inserting the new connection at the wrong position, corrupting the port list.
+> **Why this validation matters:** In large P&R netlists, a module's instance block (like `umcsdpintf SDPINTF (...)`) can span thousands of lines with hundreds of port connections. Each port connection `.portname ( net )` adds `(` and `)` that the depth tracker must handle. If any tracking error causes depth to return to 0 prematurely (e.g., at a port connection line like `.A1 ( net )`), the insertion lands inside a port value — corrupting Verilog. The validation checks that the found `close_idx` is actually the instance closing line, not an inner port connection line.
 
 **Step 4 — Insert new port connection at the close line:**
 
@@ -1105,7 +1136,7 @@ for mod_block in re.split(r'^module\s+', content, flags=re.MULTILINE)[1:]:
     mod_name = mod_block.split('(')[0].strip()
     wire_decls = set(re.findall(r'^\s*wire\s+(\w+)\s*;', mod_block, re.MULTILINE))
     # ANY port connection .anypin(NETNAME) creates an implicit wire for NETNAME.
-    # Do NOT use .X(X) pattern — that misses cases like .ZN(SEQMAP_NET_2948_orig)
+    # Do NOT use .X(X) pattern — that misses cases where port name differs from net name
     # where port name differs from net name but the net is still implicitly declared.
     # Only WIRE declarations conflict with implicit wires from port connections.
     # input/output declarations do NOT — passing a port to a submodule .pin(sig) is
@@ -1172,6 +1203,28 @@ for mod_block in re.split(r'^module\s+', content, flags=re.MULTILINE)[1:]:
         raise SystemExit(1)
 print('Check 7 PASSED: all ports have direction declarations')
 ```
+
+**Check 8 — Run general Verilog netlist validator (MANDATORY, fastest to run on uncompressed temp file):**
+
+Collect the unique module names touched in this stage (from `module_name` field of all INSERTED/APPLIED entries). Pass via `--modules` to skip the 8000+ untouched modules:
+
+```python
+# After processing all entries for this stage:
+touched_modules = set(
+    e["module_name"] for e in stage_results
+    if e.get("status") in ("INSERTED", "APPLIED") and e.get("module_name")
+)
+modules_arg = " ".join(touched_modules)
+```
+
+```bash
+python3 script/validate_verilog_netlist.py \
+  --modules <touched_modules_space_separated> \
+  -- /tmp/eco_apply_<TAG>_<Stage>.v
+# Exit 0 = PASS. Exit 1 = FAIL (details printed) → DO NOT recompress → VERIFY_FAILED
+```
+
+Catches F3 (direction declaration inside cell instance block) and F5 (multiple nets in single port connection) — always eco_applier bugs, never pre-existing. Runs in seconds on targeted modules.
 
 **If ANY check fails → DO NOT recompress. Record all affected changes as VERIFY_FAILED with the check number and reason. Report to ORCHESTRATOR. The ORCHESTRATOR will diagnose via eco_fm_analyzer without wasting an FM slot.**
 
@@ -1370,9 +1423,29 @@ Write `data/<TAG>_eco_applied_round<ROUND>.json`. Each stage is an array — one
     "inserted": <count of INSERTED entries>,
     "already_applied": <count of ALREADY_APPLIED entries>,
     "skipped": <count of SKIPPED entries>,
-    "verify_failed": <count of VERIFY_FAILED entries>
+    "verify_failed": <count of VERIFY_FAILED entries>,
+    "verilog_validator": {
+      "Synthesize": "<PASS|FAIL|SKIPPED>",
+      "PrePlace":   "<PASS|FAIL|SKIPPED>",
+      "Route":      "<PASS|FAIL|SKIPPED>",
+      "errors":     [<list of error dicts from validator, empty if all PASS>]
+    }
   }
 }
+```
+
+The `verilog_validator` field records the result of Check 8 per stage:
+- `PASS` — validator ran and found 0 errors
+- `FAIL` — validator found F3/F5 errors (stage not recompressed → VERIFY_FAILED)
+- `SKIPPED` — validator script not available (fall back to Checks 1-7 only)
+
+The calling ORCHESTRATOR/ROUND_ORCHESTRATOR reads this field and includes it in the Step 4 RPT:
+```
+[Check 8] Verilog validator:
+  Synthesize: PASS ✓
+  PrePlace:   FAIL ✗ — F3: declaration inside instance at module ddrss_umccmd_t_umcsdpintf line 6400430
+  Route:      FAIL ✗ — F5: corrupted port value at module ddrss_umccmd_t_umcsdpintf_0 line 6268141
+```
 ```
 
 **Your final output is `<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`.** After writing it, verify it is non-empty and contains a `summary` field, then exit. Do NOT write the RPT — the calling orchestrator reads the JSON and generates the RPT.
@@ -1389,8 +1462,10 @@ Write `data/<TAG>_eco_applied_round<ROUND>.json`. Each stage is an array — one
    - **Combinational gate insertions** (`new_logic_gate`): use `eco_<jira>_<seq>` for instances, `n_eco_<jira>_<seq>` for output nets. FM matches these by structural cone tracing, not by name.
    - **D-input chain gates**: use `eco_<jira>_d<seq>` with `d` prefix; condition gates use `eco_<jira>_c<seq>` with `c` prefix.
 5. **ALWAYS verify after recompressing** — confirm old_net count drops to 0 in the scoped block and new cell is present; global grep gives false results
-6. **Keep processing remaining cells if one is SKIPPED** — a SKIPPED cell does not abort the stage; continue with all remaining confirmed entries
+6. **Keep processing remaining cells if one is SKIPPED** — a SKIPPED cell does not abort the stage; continue with all remaining confirmed entries. **CRITICAL: Only skip entries whose `input_from_change` directly points to the SKIPPED entry.** Do NOT cascade-skip an entire chain just because one member is SKIPPED — other entries in the same chain that have independent inputs (no `input_from_change` dependency) must still be inserted.
+
+   Example: if gate X is SKIPPED (unresolvable input), another gate Y with independent inputs (no `input_from_change` pointing to X) must still be inserted. Only gates that have `input_from_change` pointing to the SKIPPED gate should also be skipped.
 7. **Polarity rule** — only use Step 4c (inverter) when new_net is an inverted signal (`~source_net`); for DFF or gate new_logic, use 4c-DFF or 4c-GATE respectively — never SKIPPED simply because it is not a simple inversion
-8. **Dependency order** — always insert new_logic cells (Pass 1) before rewires that depend on their output nets (Pass 4); never attempt rewire when new_net is a `n_eco_<jira>_<seq>` that hasn't been inserted yet; `input_from_change` dependencies within D-input chains are guaranteed by eco_netlist_studier
+8. **Dependency order within Pass 1** — when a gate's input is `input_from_change: <N>` (its input comes from another gate inserted in this same round), process gate N first, then use its actual output net as the input. For MUX cascade chains (c_mux1→c_mux2→c_mux3→c_mux_final), the final gate's select pin may depend on a gate inserted earlier in the same pass — resolve all intra-pass dependencies before writing port connections. If a dependency gate was SKIPPED, substitute `1'b0` as a conservative placeholder for that input pin rather than skipping the dependent gate entirely.
 9. **Use per-stage port_connections for DFF** — always read `port_connections_per_stage[<Stage>]` from the study JSON; fall back to flat `port_connections` only if absent; never assume signal names valid in Synthesize are also present in PrePlace or Route
 10. **Detect netlist type before every stage** — run `grep -c "^module " <temp_file>` before processing; if count > 1 (hierarchical), `port_declaration` and `port_connection` entries are mandatory and `flat_net_confirmed`/`no_gate_needed` flags are ignored
