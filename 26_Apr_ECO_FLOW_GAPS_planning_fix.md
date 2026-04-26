@@ -321,49 +321,48 @@ The UNIVERSAL RULE "eco_applier NEVER adds explicit wire declarations" was appli
 
 ---
 
-## GAP-15 — eco_netlist_studier: and_term gate must drive module output port directly (engineer comparison confirmed)
-
-**Engineer solution (confirmed from `/proj/cip_feint2_konark/konark/MECO/regr_0306/main/pd/tiles/ddrss_umccmd_t_DEUMCIPRTL-9899`):**
-```verilog
-// DCQARB1 — engineer approach:
-// 1. Rename original driver output: QualPmArbWinVld_d1 → ECO_9899_net21
-INR3D8BWP... A2387450 ( .A1(...), .B1(...), .B2(...), .ZN ( ECO_9899_net21 ) ) ;
-// 2. INV for ~SplitActInProgOthDcq
-INVD4BWP... ECO_9899_cell20 ( .I ( SplitActInProgOthDcq ), .ZN ( ECO_9899_net20 ) ) ;
-// 3. AND2 drives QualPmArbWinVld_d1 directly (port output)
-AN2D3BWP... ECO_9899_cell21 ( .A1 ( ECO_9899_net20 ), .A2 ( ECO_9899_net21 ), .Z ( QualPmArbWinVld_d1 ) ) ;
-// Result: ALL consumers of QualPmArbWinVld_d1 see gated value. No individual rewires needed.
-```
-
-**AI approach (wrong — 3000 Synthesize failures):**
-```verilog
-// IND2 drives n_eco_9899_1_DCQARB1 (new net) — only 2-4 consumers rewired
-IND2LLKGD1... eco_9899_1_DCQARB1 ( .A1(QualPmArbWinVld_d1), .B1(SplitActInProgOthDcq), .ZN(n_eco_9899_1_DCQARB1) );
-// → rewired A648153.A2 and A648363.A1 only — all other consumers still see ungated value
-```
-
-**eco_netlist_studier: and_term IND2 gate should drive module output port directly
+## GAP-15 — eco_netlist_studier: and_term gate must drive module output port directly
 
 **Severity:** CRITICAL
 **Observed in:** 9899 Rounds 1-5 — 3000+ Synthesize failures persisted across all 5 rounds
 **File:** `config/eco_agents/eco_netlist_studier.md`
 
-**What happened:**
-The `and_term` change for `QualPmArbWinVld_d1` in DCQARB/DCQARB1 required gating the value with `~SplitActInProgOthDcq`. The studier's strategy (IND2 gate inside module, rewire individual consumers A648153/A648363/A606036/A606254) only gated 2-4 consumers. All other downstream consumers of `QualPmArbWinVld_d1` (in TIM, ARB, CMDARB via DcqArb0/1_QualPmArbWinVld_d1 ports) still saw the UNGATED old value → 3000 Synthesize failures.
+**Note:** The AI does NOT need to match the engineer's exact implementation (any functionally correct gate combination is acceptable). The gap is that the **guidance is wrong on WHERE the gate output should go** — not HOW the gate is built.
 
-**Root cause:**
-`QualPmArbWinVld_d1` is a module OUTPUT PORT in DCQARB/DCQARB1. All external consumers read through this port. The correct fix is to make the IND2 gate drive the PORT directly:
-1. Rename the old port driver: `A2387450.ZN: QualPmArbWinVld_d1 → QualPmArbWinVld_d1_orig` (NO explicit wire declaration — implicit from driver output)
-2. IND2 gate input A1 = `QualPmArbWinVld_d1_orig`, output ZN = `QualPmArbWinVld_d1`
-3. ALL external consumers (TIM, ARB, CMDARB) automatically see the gated value through the port
-4. NO individual consumer rewires (A648153/A648363/A606036/A606254) needed — they all read through the port
+**The principle (implementation-agnostic):**
+For `and_term` changes where `<old_token>` is a module output port:
+1. Find the cell currently driving `<old_token>` (the original driver)
+2. Rename that cell's output from `<old_token>` to any valid intermediate net name (implicit wire — no explicit declaration needed)
+3. Insert the new gating gate (any implementation: IND2, INV+AND2, NAND+INV, etc.) with:
+   - Inputs: the intermediate net (pre-gate value) + the new AND term signal
+   - **Output: `<old_token>` — the original port name**
+4. All downstream consumers automatically see the gated value through the port
+5. **No individual consumer rewires needed**
 
-**The wrong approach (what happened):**
-IND2 gate drives `n_eco_9899_1_DCQARB1` (new net). Only 2-4 internal consumers rewired to use it. The module output port `QualPmArbWinVld_d1` still carries ungated value → all external consumers fail.
+**Wrong approach (what the AI did — 3000 failures):**
+New gate output → **new intermediate net** (`n_eco_..._DCQARB1`) → manually rewire 2-4 consumers → all other consumers still see ungated `<old_token>` value → thousands of FM failures.
 
-**Fix required:**
-In eco_netlist_studier.md, for `and_term` changes where `old_token` is a module output port:
-> "If `old_token` is exposed as a module output port (check `port_promotion` or `new_port` change for same signal), the IND2 gate MUST drive the module output port name directly (`ZN=<old_token>`). Rename the original driver output to `<old_token>_orig_eco` (implicit wire — no explicit declaration). Do NOT rewire individual consumers — the port gating handles all of them automatically."
+**Wrong approach (Round 4 pivot fix):**
+Correct concept but wrong scope: internal wire `<old_token>_orig` is driven by DIFFERENT P&R cell types per stage → FM cannot prove stage equivalence → PrePlace regression 2→4458.
+
+**How to detect this situation:**
+In eco_netlist_studier.md, before creating `port_connections_per_stage` for an `and_term` new gate:
+```python
+# Check if old_token is a module output port
+is_module_port = grep_count(f"output.*{old_token}", module_body) > 0
+           OR grep_count(f"{old_token}", module_header_port_list) > 0
+if is_module_port:
+    # GATE MUST DRIVE PORT DIRECTLY
+    # output net = old_token (not n_eco_..._new)
+    # rename original driver output to an intermediate net name
+    # NO individual consumer rewires needed
+else:
+    # Normal and_term: gate drives new net, rewire specific consumers
+```
+
+**Fix required in eco_netlist_studier.md:**
+Add a "Module Port Direct Gating" rule for and_term changes:
+> "**CRITICAL:** Before choosing the gate output net, check if `<old_token>` is a module output port. If yes, the new gate output MUST be `<old_token>` (the port name itself). The original port driver is renamed to an intermediate net (any valid name — the cell output creates an implicit wire). This ensures ALL module port consumers automatically see the gated value without any individual rewires."
 
 ---
 
