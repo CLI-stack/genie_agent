@@ -524,6 +524,52 @@ for issue in issues_H:
 
 This fix is always safe — only modifies the named ECO cell instance's output pin connection. Re-run Check H after fixing to confirm.
 
+**Check H extension — input pin names validation:**
+After verifying the output pin, also verify all INPUT pin names in `port_connections`:
+1. Grep PreEco for an existing usage of `<cell_type>`: `grep -m1 "<cell_type>" <REF_DIR>/data/PreEco/Synthesize.v.gz`
+2. Parse all `.<PIN>(` from that instantiation → collect valid_pins set
+3. For each pin in `port_connections` that is NOT the output pin: verify it appears in valid_pins
+4. If any input pin NOT in valid_pins → `H_wrong_input_pin_name` error:
+   - Find correct name from valid_pins (same position/role)
+   - Replace in PostEco: `sed -i "s/\\.{wrong_pin}(/{correct_pin}(/g"` within cell instance block
+   - Re-validate
+5. This catches FE-LINK-7 on wrong input pin names BEFORE FM submission
+
+```python
+    # Check H extension: input pin name validation
+    preeco_example = grep_cell_type_example(f"PreEco/Synthesize.v.gz", cell_type)
+    if preeco_example:
+        valid_pins = set(re.findall(r'\.\s*(\w+)\s*\(', preeco_example))
+        output_pin_key = identify_output_pin(entry)  # the pin whose net = n_eco_* or Q-output
+        for pin in entry.get("port_connections", {}):
+            if pin == output_pin_key:
+                continue  # output pin already validated above
+            if valid_pins and pin not in valid_pins:
+                # Find best candidate from valid_pins (same position in pin list)
+                issues_H.append({
+                    "check": "H_wrong_input_pin_name",
+                    "stage": stage, "instance": inst_name, "cell_type": cell_type,
+                    "wrong_pin": pin, "valid_pins": list(valid_pins),
+                    "severity": "CRITICAL"
+                })
+```
+
+**Inline fix for `H_wrong_input_pin_name`:**
+```python
+    if issue["check"] == "H_wrong_input_pin_name":
+        # Determine correct pin name (same positional role from valid_pins)
+        correct_pin = resolve_correct_input_pin(issue["wrong_pin"], issue["valid_pins"])
+        if correct_pin:
+            fix_applied |= replace_pin_in_instance(
+                stage_gz=f"{REF_DIR}/data/PostEco/{issue['stage']}.v.gz",
+                instance_name=issue["instance"],
+                wrong_pin=issue["wrong_pin"],
+                correct_pin=correct_pin
+            )
+```
+
+`H_wrong_input_pin_name` is treated as a fixable check type in the inline fix loop, alongside F3/F5/F6. Re-run Check H after applying the fix to confirm the input pin name is now valid.
+
 ### Check E — Rewire Consistency (WARNING only — not a blocker)
 
 ```python

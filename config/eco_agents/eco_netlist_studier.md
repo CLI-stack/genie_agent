@@ -198,20 +198,30 @@ cp <BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt <AI_ECO_F
 
 **`port_promotion` — FLAT NETLIST ONLY:** Only when `grep -c "^module " Synthesize.v` = 1. Verify net exists; if hierarchical use `port_declaration` + `port_connection` instead.
 
-**GAP-15 — `and_term` → MODULE PORT DIRECT GATING (mandatory check):**
+**MODULE PORT DIRECT GATING — STEP 0 (mandatory, runs before any strategy selection):**
 
-Before building `port_connections_per_stage` for an `and_term` gate, check if `<old_token>` is a module output port:
-```
-grep -cw "output.*\b<old_token>\b" <module_body_lines>
-```
-If YES → gate output MUST be `<old_token>`:
-1. Find cell currently driving `<old_token>`
-2. Rename that cell's output from `<old_token>` to any valid intermediate net name (implicit wire — no `wire N;` needed)
-3. Gate inputs: intermediate net + new AND-term signal; Gate output: `<old_token>`
-4. All consumers automatically see gated value. No individual `rewire` entries needed.
-Set `and_term_strategy: "module_port_direct_gating"`.
+Run this check FIRST. If it fires, RETURN immediately — do NOT evaluate any other strategy.
 
-If NO → normal and_term: gate drives `n_eco_<jira>_<seq>`, rewire specific consumers.
+```python
+# STEP 0 — mandatory pre-check (always runs first)
+is_output_port = (
+    grep_count(f"output.*\\b{old_token}\\b", module_body_lines) >= 1
+    or old_token in parse_port_list_names(module_header)
+)
+
+if is_output_port:
+    # STOP — module port direct gating applies
+    # Do NOT fall through to parent_scope or direct_rewire
+    and_term_strategy = "module_port_direct_gating"
+    # Pattern:
+    #   1. Find original driver cell of <old_token>
+    #   2. Change its output from <old_token> to a new intermediate net name (implicit wire)
+    #   3. New gate output = <old_token>  (drives port directly — all consumers gated automatically)
+    #   4. No individual rewire entries needed
+    # RETURN — exit and_term processing here
+```
+
+**Only if `is_output_port == False`** → proceed to normal strategy selection (direct_rewire or parent_scope).
 
 **`and_term` gate input scope:** Gate inputs must use names as they appear INSIDE the declaring module. If the new term is a `new_port` → use the PORT NAME (`new_token` as declared). Do NOT use `flat_net_name`. Read `and_term_gate_input` from RTL diff JSON if present — it already stores the correct module-internal name.
 
@@ -275,6 +285,12 @@ For each gate in `d_input_gate_chain` (d001→d00N), create a `new_logic_gate` e
 3. Verify all inputs exist; if input is `n_eco_<jira>_d<prev>` → set `input_from_change: <prev_gate_id>`
 4. If any signal not found → set `d_input_decompose_failed: true`, skip rest of chain
 
+**CRITICAL — seq counter is per-JIRA across ALL DFF chains, not per-chain:**
+If a design has multiple DFF insertions in different module scopes, the seq counter CONTINUES across all chains:
+- Chain 1 (e.g., DFF in ModuleA): eco_<jira>_d001, d002, ... d007
+- Chain 2 (e.g., DFF in ModuleB): eco_<jira>_d008, d009  ← continues from d007, never resets
+Never restart from d001 for a second DFF chain. Each eco_<jira>_d<N> name must be globally unique across the entire ECO.
+
 After all chain gates: set DFF entry `port_connections.D = "n_eco_<jira>_d<last>"`. If `d_input_decompose_failed: true`: set `d_input_net = "SKIPPED_DECOMPOSE_FAILED"`, `confirmed: false`.
 
 **GAP-14 — Wire declaration flag:** For each new gate in the chain whose output net does not exist anywhere in the PreEco netlist (freshly coined name), set `needs_explicit_wire_decl: true`. eco_applier uses this to add `wire <net_name>;`. Do NOT set for: gate outputs that drive port connections, or renamed original driver output nets.
@@ -284,6 +300,15 @@ After all chain gates: set DFF entry `port_connections.D = "n_eco_<jira>_d<last>
 **For DFF:** `zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -E "^[[:space:]]*(DFF|DFQD|SDFQD|SDFFQ|DFFR|DFFRQ)[A-Z0-9]* [a-z]" | head -5`
 
 **For combinational gate:** Determine function from RTL expression (`A & B` → AND2, `~A | ~B` → NAND2, etc.), then search PreEco for matching cell pattern.
+
+**MANDATORY — extract actual pin names from PreEco example (ALL pins, not just output):**
+After finding `<cell_type>` in PreEco, read its full instantiation:
+```bash
+grep -m1 "<cell_type>" /tmp/eco_study_<TAG>_<Stage>.v
+```
+Parse every `.<PIN>(` from that instantiation → these are the ONLY valid pin names for this cell.
+Use these exact names in `port_connections` — never assume input pin names from the gate function name.
+Example: NOR3 cell may use `A1,A2,A3` NOT `A1,B1,B2`. AND2 may use `A1,A2` NOT `A,B`. Always read from PreEco.
 
 **GAP-20 — SE/SI scan chain mismatch detection:** After resolving auxiliary pins for all 3 stages, compare the SE net in PrePlace vs Route. If both differ AND both match P&R-generated alias patterns (not in RTL source — verify `grep -rw "<se_net>" data/PreEco/SynRtl/` → count = 0):
 - Set `needs_se_tune: true` in the DFF study JSON entry
@@ -452,6 +477,11 @@ output_net    = n_eco_<jira>_<seq>
 Same seq across all 3 stages.
 
 ### 0e — Record as new_logic_insertion entry in study JSON
+
+**instance_scope is MANDATORY for every gate entry — never leave it blank:**
+- Gates in a sub-module instance (e.g., ARB/CTRLSW): `instance_scope = "ARB/CTRLSW"`
+- Gates in the tile-root module (e.g., the top tile module itself, not a sub-instance): `instance_scope = "<tile_module_name>"` — use the gate-level module name (e.g., `"umccmd"` or whatever the top tile module is named in the netlist). Check: `grep -m1 "^module ddrss_<tile>_t_<tile>" PreEco/Synthesize.v.gz` to get the exact module name.
+- NEVER leave instance_scope = "" or None. eco_applier cannot find the insertion point without it.
 
 **`instance_scope` rules — MANDATORY:**
 - Submodule declaring module: `instance_scope = "<INST_A>/<INST_B>"`
