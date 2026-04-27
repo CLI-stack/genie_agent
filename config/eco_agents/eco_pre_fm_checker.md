@@ -34,12 +34,15 @@
   "check_summary": {
     "A_stage_consistency":           "PASS | FAIL | FIXED",
     "B_port_declarations":           "PASS | FAIL | FIXED | N/A",
+    "B2_missing_output_ports":       "PASS | FAIL | FIXED | N/A",
     "C_cell_insertions":             "PASS | FAIL | FIXED | N/A",
     "D_duplicate_ports":             "PASS | FAIL | FIXED | N/A",
     "E_rewire_warnings":             "PASS | WARN | N/A",
     "F_wire_dup_implicit":           "PASS | FAIL | FIXED | N/A",
+    "F2_position_conflict":          "PASS | FAIL | FIXED | N/A",
     "G_port_direction_completeness": "PASS | FAIL | FIXED | N/A",
     "H_eco_cell_pin_names":          "PASS | FAIL | FIXED | N/A",
+    "UNDRIVEN_dff_inputs":           "PASS | FAIL | N/A",
     "I_se_cone_mismatch":            "WARN | N/A",
     "check8_verilog_validator": {
       "Synthesize": "PASS | FAIL",
@@ -134,26 +137,55 @@ for stage in ["Synthesize", "PrePlace", "Route"]:
 
 ## STEP 2 — Run Checks + Fix Inline (repeat up to 3 times)
 
+**DESIGN RULE:** Every syntax issue that would cause FM ABORT (SVR-9, FM-599, FE-LINK-7, FE-LINK-2) MUST be caught and fixed here. If an FM ABORT is seen in Step 6 for any syntax reason that Step 5 did not catch and fix, that is a Step 5 bug — not a "next round" issue. Syntax errors MUST NEVER consume a round.
+
 ```python
 MAX_RETRIES = 3
-for attempt in range(MAX_RETRIES):
-    issues = run_all_checks(change_map, study)
-    if not issues["critical"]:
-        break  # All checks passed — proceed to Step 3 (write RPT) and Step 4 (FM)
+all_issues_found  = []
+all_issues_fixed  = []
+all_issues_unfixed = []
 
-    # Fix each critical issue inline
-    for issue in issues["critical"]:
-        apply_inline_fix(issue)
+for attempt in range(1, MAX_RETRIES + 1):
+    # ── Run FULL check suite every attempt (not just F+G after fixes) ──
+    issues = run_all_checks()   # Checks A, B, B2, C, D, E, F (F1+F2+F2-POSITION+F3), G, H, UNDRIVEN, Check8
+    critical = issues["critical"]
 
-    # Reload netlists after fixes AND re-run ALL checks to catch cascading errors
-    reload_netlists()
-    # Re-run Checks F and G (syntax-level checks) on the modified netlist
-    # before proceeding to next attempt. This prevents a fix introducing a new error.
-    issues = run_syntax_checks_only(["F", "G"])  # F1, F2, F3, G
-    if issues["critical"]:
-        # Fix introduced a new error — log and try again or escalate
-        continue
+    if not critical:
+        break  # All checks PASS/FIXED — proceed to FM
+
+    all_issues_found.extend(critical)
+
+    # ── Apply inline fix for EVERY critical issue ──
+    for issue in critical:
+        success = apply_inline_fix(issue)
+        if success:
+            all_issues_fixed.append(issue)
+        else:
+            all_issues_unfixed.append(issue)
+
+    # ── After fixes: re-run the FULL check suite ──
+    # This catches cascading errors introduced by fixes AND verifies fixes took effect.
+    # CRITICAL: Check 8 must always be re-run — syntax fixes must be validated before FM.
+    recheck = run_all_checks()
+    if not recheck["critical"]:
+        all_issues_unfixed = []  # All resolved
+        break
+
+# ── FM gate ──
+remaining_critical = [i for i in all_issues_unfixed
+                      if i not in all_issues_fixed]
+passed = len(remaining_critical) == 0
 ```
+
+**Checks that ALWAYS block FM on failure (no waiver possible):**
+- F1, F2, F2-POSITION, F3 — duplicate wire / implicit conflict → FM-599 SVR-9
+- B2 — missing output port declaration → FM FE-LINK-7
+- Check 8 (all 3 stages must PASS) — any Verilog syntax error → FM ABORT
+- Check UNDRIVEN — undriven DFF D-input → FM DFF0X cascade
+- H wrong output/input pin → FM FE-LINK-7
+
+**Checks that produce WARN only (FM proceeds):**
+- Check E — rewire skipped in some stage (eco_fm_analyzer diagnoses if FM fails)
 
 ### Check A — Stage Consistency (INSERTED in some, SKIPPED in others)
 
@@ -269,7 +301,40 @@ recompress(lines, f"PostEco/{stage}.v.gz")
 
 **Run the general Verilog validator FIRST (covers all F sub-checks plus additional patterns):**
 
-Get the ECO-touched module names from the applied JSON (module_name field of all entries). Pass via `--modules` — this is MANDATORY to keep runtime fast on large P&R netlists (otherwise it scans 8000+ modules and times out or gets killed). If the validator times out even with `--modules`, run each stage independently and use `timeout 120` per stage — never fall back to manual-only without attempting module-scoped validation:
+**CRITICAL — scan scope for Check F:**
+Check F must scan **all modules that contain ECO net references** — not just directly touched modules. SVR-9 fires in ANY module where an ECO output net is referenced before its wire declaration. This includes parent modules where port connections reference ECO nets.
+
+```python
+# Build expanded module scan list:
+# 1. Directly touched modules (from applied JSON module_name fields)
+directly_touched = set(
+    e.get("module_name","") for stage_entries in applied.values()
+    if isinstance(stage_entries, list)
+    for e in stage_entries if e.get("module_name")
+)
+# 2. Parent modules where ECO output nets appear as port connection arguments
+eco_output_nets = set(
+    e.get("output_net","") for stage_entries in applied.values()
+    if isinstance(stage_entries, list)
+    for e in stage_entries if e.get("output_net")
+)
+parent_modules = set()
+for stage in ["Synthesize","PrePlace","Route"]:
+    lines = list(gzip.open(f"PostEco/{stage}.v.gz",'rt'))
+    cur_mod = None
+    for line in lines:
+        m = re.match(r'^module\s+(\S+)', line)
+        if m: cur_mod = m.group(1)
+        if cur_mod and cur_mod not in directly_touched:
+            for net in eco_output_nets:
+                if net and re.search(rf'\.\w+\s*\(\s*{re.escape(net)}\s*\)', line):
+                    parent_modules.add(cur_mod)
+                    break
+# All modules to scan:
+scan_modules = directly_touched | parent_modules
+```
+
+Pass via `--modules` — this is MANDATORY to keep runtime fast on large P&R netlists (otherwise it scans 8000+ modules and times out or gets killed). If the validator times out even with `--modules`, run each stage independently and use `timeout 120` per stage — never fall back to manual-only without attempting module-scoped validation:
 
 ```python
 # Extract touched module names from eco_applied_round<ROUND>.json
@@ -867,11 +932,30 @@ try:
         for err_line in validator_errors:
             stage = parse_stage_from_error(err_line)         # "Synthesize"|"PrePlace"|"Route"
             lineno = parse_lineno_from_error(err_line)       # integer line number
-            check = parse_check_from_error(err_line)         # "F3"|"F5"|"F6"
+            check = parse_check_from_error(err_line)         # "F1"|"F2"|"F3"|"F5"|"F6"|"SVR9"
+            net_name = parse_net_name_from_error(err_line)   # net involved in the error
             stage_gz = f"{REF_DIR}/data/PostEco/{stage}.v.gz"
 
             fix_success = False
-            if check == "F3_decl_inside_instance":
+
+            if check in ("F1_dup_wire", "SVR9_duplicate_wire", "F2_implicit_wire_conflict", "F2_position_conflict"):
+                # Unified fix for ALL duplicate-wire / implicit-wire conflicts:
+                # Remove the explicit 'wire <net>;' declaration at lineno.
+                # Rationale: the net is already implicitly declared by either:
+                #   (a) a cell output port binding  (.Z/.ZN/.Q(net))
+                #   (b) a gate input reference that appears before this line
+                #   (c) an input/output port declaration
+                # The explicit wire decl is always the redundant one — remove it.
+                fix_success = remove_line_from_gz(stage_gz, lineno)
+                if fix_success:
+                    # Verify the wire decl is gone and net still referenced (not dangling)
+                    remaining = int(bash(
+                        f'zcat {stage_gz} | grep -c "^\\s*wire\\s\\+{re.escape(net_name)}\\s*;"'
+                    ))
+                    if remaining > 0:
+                        fix_success = False  # Still has duplicates — log and continue
+
+            elif check == "F3_decl_inside_instance":
                 # Remove the direction declaration line from the gz file
                 fix_success = remove_line_from_gz(stage_gz, lineno)
             elif check == "F5_corrupted_port_value":
@@ -931,15 +1015,54 @@ try:
                     "severity": "CRITICAL",
                     "detail": "Verilog errors persist after inline fix. Revert PostEco to PreEco and re-run eco_applier."
                 })
+except subprocess.TimeoutExpired:
+    # Timeout with full netlist scan — retry with per-stage individual runs
+    for stage_name, stage_gz in [("Synthesize", f"{REF_DIR}/data/PostEco/Synthesize.v.gz"),
+                                   ("PrePlace",   f"{REF_DIR}/data/PostEco/PrePlace.v.gz"),
+                                   ("Route",      f"{REF_DIR}/data/PostEco/Route.v.gz")]:
+        try:
+            r = subprocess.run(
+                ["python3", "script/validate_verilog_netlist.py",
+                 "--strict", "--modules"] + list(scan_modules) + ["--", stage_gz],
+                capture_output=True, text=True, timeout=120
+            )
+            stage_result = "PASS" if r.returncode == 0 else "FAIL"
+        except Exception:
+            stage_result = "FAIL"  # timeout or error → treat as FAIL, never SKIPPED
+        if stage_name == "Synthesize": validator_result_synth = stage_result
+        elif stage_name == "PrePlace": validator_result_pplace = stage_result
+        else: validator_result_route = stage_result
 except Exception as e:
-    validator_result_synth = validator_result_pplace = validator_result_route = "SKIPPED"
-    # Validator unavailable — log warning but proceed (manual checks below still run)
+    # ANY exception → FAIL, never SKIPPED
+    # SKIPPED is not a valid state — it means we don't know the netlist is clean
+    # Do NOT proceed to FM with unknown netlist validity
+    validator_result_synth = validator_result_pplace = validator_result_route = "FAIL"
+    issues_critical.append({
+        "check": "check8_verilog_validator",
+        "severity": "CRITICAL",
+        "error": str(e),
+        "detail": "Validator raised exception. Netlist validity unknown. FM submission BLOCKED. "
+                  "Fix the validator invocation before proceeding."
+    })
 # MANDATORY SELF-CHECK before writing — verify all required fields present
 assert "check_summary" in result, "BUG: check_summary missing from result"
 assert "check8_verilog_validator" in result["check_summary"], "BUG: validator result missing"
 for stage in ("Synthesize", "PrePlace", "Route"):
-    assert result["check_summary"]["check8_verilog_validator"].get(stage) in ("PASS","FAIL","SKIPPED"), \
-        f"BUG: validator result for {stage} is missing or invalid"
+    val = result["check_summary"]["check8_verilog_validator"].get(stage)
+    assert val in ("PASS", "FAIL"), \
+        f"FATAL: validator result for {stage} is '{val}' — only PASS/FAIL are valid. " \
+        f"SKIPPED is NEVER acceptable — it means we do not know if the netlist is clean. " \
+        f"Fix the validator invocation. Do NOT proceed to FM."
+
+# Verify the overall 'passed' flag is consistent with check_summary
+if any(result["check_summary"].get(k) == "FAIL"
+       for k in ("A_stage_consistency","B_port_declarations","C_cell_insertions",
+                 "D_duplicate_ports","F_wire_dup_implicit","G_port_direction_completeness",
+                 "H_eco_cell_pin_names")):
+    assert not result["passed"], "BUG: passed=True but a critical check is FAIL"
+if any(result["check_summary"]["check8_verilog_validator"].get(s) == "FAIL"
+       for s in ("Synthesize","PrePlace","Route")):
+    assert not result["passed"], "BUG: passed=True but Check 8 FAIL — FM would ABORT"
 
 write_json(f"data/{TAG}_eco_pre_fm_check_round{ROUND}.json", result)
 # Verify file written and non-empty
