@@ -127,171 +127,119 @@ Before re-applying a `force_reapply: true` entry: check prior status in `data/<T
 
 ## 4. Pass Order
 
-Process ALL changes for a stage in 4 passes within each module's isolated buffer. Never mix order.
+Process ALL changes for a stage in 4 passes. Never mix order.
 
-| Pass | change_type(s) | Why |
-|------|----------------|-----|
-| 1 | `new_logic_gate`, `new_logic_dff`, `new_logic` | Insert cells so output nets exist before rewires reference them |
-| 2 | `port_declaration`, `port_promotion` | Add ports/directions before connections reference them |
-| 3 | `port_connection` | Add `.port(net)` to submodule instances after ports exist |
-| 4 | `rewire` | Change pin connections last — may depend on new cells AND new ports |
+| Pass | change_type(s) | Method |
+|------|----------------|--------|
+| 1 | `new_logic_gate`, `new_logic_dff`, `new_logic` | **Perl script** — batch insert before endmodule via streaming pipe |
+| 2 | `port_declaration`, `port_promotion` | Agent text op on decompressed temp file |
+| 3 | `port_connection` | Agent text op on decompressed temp file |
+| 4 | `rewire` | Agent text op on decompressed temp file |
 
-**ONE decompress per stage.** Decompress once → apply ALL passes to the same temp file → recompress once.
+**Pass 1 runs first via Perl pipe (no decompress needed for gates).** Passes 2–4 decompress once → apply all text ops → recompress once.
 
-**Per-stage setup (S0–S4):**
-- **S0 — Netlist type:** `grep -c "^module "` — count > 1 = hierarchical (port_declaration and port_connection mandatory; flat_net_confirmed/no_gate_needed ignored); count = 1 = flat.
+**Per-stage setup (S0–S3):**
+- **S0 — Netlist type:** `grep -c "^module "` — count > 1 = hierarchical (port_declaration and port_connection mandatory); count = 1 = flat.
 - **S1 — Confirmed entries:** If none with `"confirmed": true` → write all SKIPPED, skip to next stage.
-- **S2 — Backup:** Round 1: `cp <Stage>.v.gz <Stage>.v.gz.bak_<TAG>_round1`. Round 2+: skip.
-- **S3 — Decompress strategy:** Group confirmed changes by module. Stream through compressed file — extract target modules into memory buffer, pass others through unchanged.
-- **S4 — ALREADY_APPLIED pre-snapshot:** Snapshot original module buffer BEFORE any changes. Run ALREADY_APPLIED checks against this snapshot, not the modified buffer. For Round 1 `new_logic` entries flagged ALREADY_APPLIED → add `"warning": "UNEXPECTED in Round 1 — concurrent agent suspected"`.
+- **S2 — Backup:** Round 1: `cp <Stage>.v.gz <Stage>.v.gz.bak_<TAG>_round1`. Round 2+: skip (ROUND_ORCHESTRATOR already backed up).
+- **S3 — ALREADY_APPLIED pre-check:** Before building the Perl spec, grep the compressed stage file for each `new_logic` instance_name. If found → ALREADY_APPLIED (skip from Perl spec). For Round 1 entries flagged ALREADY_APPLIED → add `"warning": "UNEXPECTED in Round 1 — concurrent agent suspected"`.
 
-## Module Buffer Extraction
+## Phase A — Collect Gate Spec (Agent Reasoning — no file touch)
 
-For each stage, extract target modules into isolated buffers:
+Before generating the Perl script, decide the status of every `new_logic_gate`, `new_logic_dff`, and `remove_wire_decl` entry for this stage:
 
 ```python
-target_modules = {entry["module_name"] for entry in confirmed_entries}
-module_buffers = {}   # {module_name: [lines]}
-module_start = {}     # {module_name: line_number_in_temp_file}
+perl_spec = {}   # {module_name: {wire_decls: [], wire_removes: [], gates: []}}
 
-in_target = None
-for lineno, line in enumerate(stage_lines):
-    m = re.match(r'^module\s+(\S+)[\s(;]', line)
-    if m:
-        mod_name = m.group(1)
-        if mod_name in target_modules:
-            in_target = mod_name
-            module_buffers[mod_name] = [line]
-            module_start[mod_name] = lineno
-    elif re.match(r'^endmodule\b', line.strip()):
-        if in_target:
-            module_buffers[in_target].append(line)
-            in_target = None
-    elif in_target:
-        module_buffers[in_target].append(line)
+for entry in confirmed_new_logic_entries:
+    mod = entry["module_name"]
+
+    # ALREADY_APPLIED check (grep compressed file — fast, no decompress)
+    inst = entry["instance_name"]
+    count = int(bash(f'zcat PostEco/{stage}.v.gz | grep -cw "{inst}"'))
+    if count > 0 and not entry.get("force_reapply"):
+        record(status="ALREADY_APPLIED", reason=f"instance '{inst}' found (grep count={count})")
+        continue
+
+    # SKIPPED checks
+    stage_ports = entry.get("port_connections_per_stage", {}).get(stage) or entry["port_connections"]
+    for pin, net in stage_ports.items():
+        if pin == output_pin_key: continue          # output net — checked separately
+        if net in ("1'b0", "1'b1"): continue        # constants always valid
+        if net.startswith("NEEDS_NAMED_WIRE:"): continue
+        net_count = int(bash(f'zcat PostEco/{stage}.v.gz | grep -cw "{net}"'))
+        if net_count == 0:
+            record(status="SKIPPED", reason=f"input net '{net}' absent in {stage}")
+            goto next_entry
+
+    # wire_decls: OUTPUT net only — never input nets
+    output_net = stage_ports[output_pin_key]
+    if entry.get("needs_explicit_wire_decl"):
+        perl_spec[mod]["wire_decls"].append(output_net)
+
+    # wire_removes: remove_wire_decl entries
+    if entry["change_type"] == "remove_wire_decl":
+        perl_spec[mod]["wire_removes"].append(entry["signal_name"])
+        record(status="APPLIED", reason="remove_wire_decl — added to Perl wire_removes")
+        continue
+
+    # Build gate instantiation line
+    pins = ", ".join(f".{p}({n})" for p, n in stage_ports.items())
+    gate_line = f"  {entry['cell_type']} {inst} ( {pins} ) ;"
+    perl_spec[mod]["gates"].append(gate_line)
+    record(status="INSERTED", reason=f"gate added to Perl spec for module {mod}")
 ```
 
-After processing all passes on `module_buffers`, write modified modules back to the temp file at their original positions. Non-target modules pass through unchanged.
-
-**IMPORTANT:** A module may appear multiple times in a stage file (parameterized instances). Process EACH occurrence separately — the same `change_id` applies to all instances.
+**A module may appear multiple times** (parameterized instances) — the Perl engine handles each occurrence separately (see template below).
 
 ---
 
-## 5. Pass 1 — new_logic Insertions
+## 5. Pass 1 — new_logic Insertions (Perl Script Approach)
 
-### Pass 1a — rewire (new_net exists in PostEco)
+Pass 1 uses a **Perl streaming script** to apply all gate/DFF insertions and wire decl operations in a single pipe pass. This eliminates endmodule boundary drift (SVR-4) and spurious wire decl duplicates (SVR-9) by design.
 
-When `change_type == "rewire"` and effective `new_net` found in temp file (`new_net_alias` if non-null, else `new_net`):
-1. Find cell: `grep -n "<cell_name>"` — not found → SKIPPED.
-2. Verify `old_net` on expected pin (count = 1); count > 1 → SKIPPED with reason AMBIGUOUS.
-3. Replace within cell instance block scope only: `.<pin_name>(<old_net>)` → `.<pin_name>(<new_net>)`.
-4. Record status=APPLIED, change_type=rewire.
+### Pre-Pass 1 — Per-Entry Decisions (agent reasoning, no file touch)
 
-### Pass 1b — Inverter insertion (new_net absent)
+Before generating the Perl script, resolve the following for each `new_logic_gate`, `new_logic_dff`, and `remove_wire_decl` entry:
 
-When `change_type == "rewire"` and effective `new_net` absent in PostEco:
-1. Verify `old_net` (source_net) exists; if not → SKIPPED.
-2. Find inverter cell type from this stage's PreEco: `grep -E "^[[:space:]]*INV[A-Z0-9]+ [a-z]"`. Try Synthesize if not in this stage. **Cross-stage cell type validation:** after finding cell_type in Synthesize PreEco, verify it also appears in PrePlace and Route PreEco (`grep -c "<cell_type>"` >= 1 in each). If missing in any stage → find an alternative for that stage.
-3. Derive from seq_table: `inv_inst = eco_<jira>_<seq>`, `inv_out = n_eco_<jira>_<seq>`.
-4. Insert before the `endmodule` enclosing the target cell:
-   ```verilog
-   // ECO inverter insert — TAG=<TAG> JIRA=<JIRA>
-   <cell_type> <inv_inst> (.I(<source_net>), .ZN(<inv_out>));
-   ```
-5. Rewire target pin from `old_net` → `inv_out` (scoped to cell block).
-6. Compute `inv_inst_full_path = f"{TILE}/{instance_scope}/{inv_inst}"`.
-7. Record status=INSERTED, change_type=new_logic, inv_inst, inv_out, source_net, cell_type, inv_inst_full_path.
-
-### Pass 1c — DFF insertion (new_logic_dff)
-
-1. **Per-stage port connections:** Use `port_connections_per_stage[stage]`; fall back to `port_connections` only if that stage entry is absent AND it is the Synthesize stage. For PrePlace or Route: if `port_connections_per_stage[stage]` is absent, verify that the clock and reset nets from the Synthesize `port_connections` entry actually exist in the current stage PostEco (`grep -cw "<clock_net>" in stage buffer`). If count = 0 → **SKIPPED** with reason `"port_connections_per_stage missing for <stage> and clock net absent — P&R renamed nets differ"`. Do NOT fall back silently — a DFF with wrong clock in PrePlace/Route causes FM stage-to-stage mismatch.
-2. **Functional pins** (clock, data, D-input chain): `grep -cw "<net>"` >= 1 required.
-3. **Auxiliary pins (scan: SI/SE, test: any non-functional pins) — three-step search:**
-
-   **Step A — Find neighbour DFF in SAME MODULE SCOPE:**
-   Search the module buffer for any DFF instance of the SAME cell_type family (match first 8 chars of cell_type prefix, e.g. `SDFQD1AM` matches `SDFQD4AM`). Extract its SI, SE pins. Use those exact net names. If found → use it. Stop.
-
-   **Step B — Find ANY DFF of same cell_type in this stage PostEco:**
-   ```bash
-   grep -m1 "<cell_type_prefix>" /tmp/eco_apply_<TAG>_<Stage>.v
-   ```
-   Extract SI, SE nets from that instance. If found → use it. Stop.
-
-   **Step C — Synthesize-derived fallback (Synthesize stage only):**
-   Use `SI=1'b0`, `SE=1'b0` as safe constants. ONLY valid for Synthesize stage — never use for PrePlace/Route since scan chain connectivity is different per stage. For PrePlace/Route: if Steps A and B fail → SKIPPED with reason `"no DFF neighbour found in <Stage> — cannot safely derive SI/SE"`.
-
-4. **Clock pin verification (MANDATORY before inserting):**
-   ```bash
-   grep -cw "<clock_net>" <current_stage_module_buffer>
-   ```
-   If count = 0 → SKIPPED with reason `"clock net <clock_net> absent in <Stage>"`. This catches cross-domain clock name differences between stages.
-
-5. **Cell type in this stage:** `zcat <REF_DIR>/data/PreEco/<Stage>.v.gz | grep -m1 "<dff_cell_type>"`. If absent → find variant used in this stage.
-6. **Instance scope validation:** Verify module matching `instance_scope` exists in current stage PostEco. If not found → try with `_0` suffix (P&R rename). Still not found → VERIFY_FAILED.
-
-7. **Insertion point:** Before the LAST `endmodule` in the module buffer (not first endmodule).
-   ```python
-   lines.insert(last_endmodule_idx, dff_line)
-   ```
-
-8. **Output net:** The DFF Q pin drives `<target_register>` (the RTL signal name). The output net `<target_register>` becomes an implicit wire — do NOT add explicit `wire <target_register>;` — it will conflict with any existing declarations.
-
-   Verify `<target_register>` does NOT already exist as a wire/reg in the module:
-   ```bash
-   grep -cw "wire <target_register>\|reg <target_register>" <module_buffer>
-   ```
-   If count > 0 → the DFF output conflicts with existing declaration → VERIFY_FAILED.
-
-9. Compute `inv_inst_full_path = f"{TILE}/{instance_scope}/{instance_name}"`.
-10. Verify: `grep -c "<instance_name>"` in module buffer >= 1.
-11. Record status=INSERTED, change_type=new_logic_dff, instance_name, inv_inst_full_path, output_net, cell_type.
-
-### Pass 1d — Combinational gate insertion (new_logic_gate)
-
-**Step 0 — NEEDS_NAMED_WIRE inputs (handle BEFORE other steps):**
-
-If any input in `port_connections` starts with `NEEDS_NAMED_WIRE:<source_net>`:
-- Derive `named_wire = f"eco_{JIRA}_{<signal_alias>}"`.
-- Do NOT insert explicit `wire <named_wire>;` — the port connection creates an implicit wire; explicit causes FM-599.
-- Find the port bus line and replace `source_net` → `named_wire` (scoped to instance block, exactly once).
-- Verify `source_net` count = 0 in that line after replacement; verify `named_wire` appears >= 1 in module.
-- Update `port_connections[input_pin] = named_wire`.
-- Record: named_wire_inserted=true, named_wire, source_net_rewired.
-
-**Step 1 — Verify ALL input signals exist:**
-
-For each pin in `port_connections_per_stage[Stage]` (or `port_connections` if absent):
-- Constants (`1'b0`, `1'b1`): valid — write directly in port connection, no tie cells needed.
-- `NEEDS_NAMED_WIRE:*`: skip (resolved in Step 0).
-- `UNRESOLVABLE_IN_<signal>`: grep the signal in current stage PostEco temp — found → use it; not found → SKIPPED.
-- All other nets: `grep -cw "<net>"` in module buffer >= 1 required.
-- **HFS alias check (Real Net Preference):** Detect a P&R alias by checking if the net exists in RTL source: `grep -rw "<net_name>" data/PreEco/SynRtl/ → count = 0` means it is a P&R alias (not from RTL). If alias detected → grep the real RTL-named net from the study JSON `old_net`/`new_net` field in the module buffer. If count >= 1 → use the real net instead. Record `"net_upgraded_from_alias": true` in the entry JSON. See Pass 4 Real Net Preference Check for full procedure.
-
-If any input missing → SKIPPED. NEVER insert a gate with missing input — floating input causes FM to misclassify downstream DFFs.
-
-**Step 1b — Cell type port compatibility:** If `cell_type` provided, verify all required pins are in that cell's port list (flexible regex: `re.findall(r'\.\s*(\w+)\s*\(', block)`). If any pin missing → clear `cell_type` and re-search.
-
-**Step 2 — Find gate cell type by port structure (technology-agnostic):**
-```python
-required_ports = set(port_connections.keys())
-for line in module_scope_lines:
-    m = re.match(r'^\s*([A-Z][A-Z0-9]+)\s+\w+\s*\(', line)
-    if m:
-        block = read_instance_block(line_idx, module_scope_lines)
-        cell_ports = set(re.findall(r'\.\s*(\w+)\s*\(', block))
-        if required_ports.issubset(cell_ports):
-            cell_type = m.group(1); break
+**ALREADY_APPLIED check:**
+```bash
+zcat <REF_DIR>/data/PostEco/<Stage>.v.gz | grep -cw "<instance_name>"
 ```
-If no match in this stage → try other stages. Still none → SKIPPED. NEVER use bare generic primitives (`MUX2`, `AND2`, `OR2`) — FM cannot elaborate behavioral constructs.
+If count > 0 AND `force_reapply: false` → mark ALREADY_APPLIED, exclude from Perl spec.
+If count > 0 AND `force_reapply: true` → include in Perl spec (Perl will find and remove the old instance, then re-insert).
 
-**Per-stage cell type resolution:** The cell_type found from Synthesize PreEco may have a different variant in PrePlace/Route (e.g., `CPDLVT` → `CPDLVTLL` suffix for Route low-leakage variant). After finding cell_type in Synthesize:
-1. Verify the cell_type exists in the current stage's PreEco: `zcat <REF_DIR>/data/PreEco/<Stage>.v.gz | grep -cm1 "<cell_type>"`
-2. If count = 0 → search for a variant in this stage: same gate function, different suffix. Replace in `cell_type` for this stage.
-3. Record the resolved cell_type in the applied JSON for ALL stages — never leave `cell_type: "?"` in the output.
+**SKIPPED checks (for new_logic_gate / new_logic_dff):**
 
-**GATE_OUTPUT_PIN verification (run AFTER Step 2, BEFORE Step 3):**
+*Input net existence:*
+For each input pin in `port_connections_per_stage[Stage]` (or `port_connections` if absent):
+- Constants (`1'b0`, `1'b1`): always valid.
+- `NEEDS_NAMED_WIRE:<source_net>`: resolve named_wire (see below), then verify named_wire exists.
+- `UNRESOLVABLE_IN_<signal>`: grep in compressed stage file — found → use it; not found → SKIPPED.
+- All other nets: `zcat PostEco/<Stage>.v.gz | grep -cw "<net>"` >= 1 required.
+If any required input absent → SKIPPED. Record reason.
 
-Verify the output pin name matches expectations before inserting:
+*HFS alias check (Real Net Preference):*
+Before encoding any net into the Perl spec, check if it is a P&R alias:
+```bash
+grep -rw "<net_name>" data/PreEco/SynRtl/   # count=0 → P&R alias
+```
+If alias → grep the real RTL net (`old_net`/`new_net` from study JSON) in compressed stage file. If count >= 1 → use real net. Record `net_upgraded_from_alias: true`.
+
+*DFF-specific: scan pin derivation (SI/SE) — THREE-STEP before encoding:*
+- Step A: `zcat PreEco/<Stage>.v.gz | grep -m1 "<cell_type_prefix>"` in same module scope — extract SI/SE.
+- Step B: `zcat PreEco/<Stage>.v.gz | grep -m1 "<cell_type_prefix>"` anywhere in stage — extract SI/SE.
+- Step C (Synthesize only): use `1'b0` constants. For PrePlace/Route: if Steps A/B fail → SKIPPED.
+
+*DFF-specific: clock verification:*
+`zcat PostEco/<Stage>.v.gz | grep -cw "<clock_net>"` — if count=0 → SKIPPED.
+
+**Cell type resolution (new_logic_gate):**
+1. Use `cell_type` from study JSON if provided — verify it exists in this stage's PreEco: `zcat PreEco/<Stage>.v.gz | grep -cm1 "<cell_type>"`.
+2. If absent → search for variant with same gate function, different suffix.
+3. If still not found → SKIPPED. Never leave `cell_type: "?"`.
+
+**GATE_OUTPUT_PIN verification:**
 
 | Gate function | Expected output pin |
 |---------------|---------------------|
@@ -299,39 +247,164 @@ Verify the output pin name matches expectations before inserting:
 | INV, NAND2/3/4, NOR2/3/4, XNOR2, IND2/3 | `ZN` |
 | DFF, SDFF, DFFR | `Q` |
 
-Verification steps:
-1. From `port_connections`, identify the output pin key (the one whose value is `n_eco_<jira>_<seq>`).
-2. Look up `gate_function` in GATE_OUTPUT_PIN table → `expected_output_pin`.
-3. Verify `output_pin_key == expected_output_pin`.
-4. If mismatch → correct the `port_connections` to use `expected_output_pin` BEFORE inserting.
-5. Grep the found `cell_type` instance in PreEco netlist to confirm the actual output pin:
-   ```bash
-   grep -m1 "<cell_type>" <REF_DIR>/data/PreEco/<Stage>.v.gz
-   ```
-   Parse the last `.PIN(net)` in that instance — that is the actual output pin.
-6. PreEco grep wins over table if they disagree (library is authoritative).
+Grep `cell_type` in PreEco to confirm actual output pin — PreEco wins over table. Correct `port_connections` before encoding into Perl spec.
 
-**WIRE DECLARATION — TWO CASES (run before every gate insertion — CRITICAL):**
+**OUTPUT NET — wire_decls rule (CRITICAL — prevents SVR-9):**
+- `needs_explicit_wire_decl: true` → add OUTPUT NET ONLY to `wire_decls` — the net whose key is ZN/Z/Q in `port_connections`.
+- NEVER add any INPUT net to `wire_decls`, even if `needs_explicit_wire_decl: true` is set on the entry. Input nets already exist in the netlist.
+- DFF output (`target_register`) is an implicit wire — never add to `wire_decls`.
 
-**Case 1 — `needs_explicit_wire_decl: true` (set by eco_netlist_studier for new intermediate nets):**
-The net does not exist anywhere in the netlist yet. Add `wire <net_name>;` immediately before the gate insertion line. After insertion, verify count of explicit `wire <net_name>;` = 1.
+**NEEDS_NAMED_WIRE inputs:**
+For pins starting `NEEDS_NAMED_WIRE:<source_net>`:
+- Derive `named_wire = f"eco_{JIRA}_{<signal_alias>}"` — record in applied JSON.
+- The port bus rewire (replacing `source_net` → `named_wire`) is a Pass 4 rewire operation, NOT a Perl gate insertion. Encode the port connection with `named_wire` in the gate line directly.
 
-**Case 2 — all other nets (port-connection implicit wires, renamed driver outputs, `no_wire_decl_needed: true`):**
-NEVER add `wire <net_name>;`. These nets are created implicitly by port connections or cell output bindings.
+---
 
-Before inserting, verify the output net does NOT already have an explicit wire declaration in the module buffer:
-```bash
-grep -c "wire\s\+<output_net>\s*;" <module_buffer>
+### Phase B — Generate Perl Script
+
+After all per-entry decisions, write one Perl script per stage:
+
+**File:** `/tmp/eco_apply_<TAG>_<Stage>.pl`
+
+```perl
+#!/usr/bin/perl
+# ECO Apply — JIRA <JIRA> — <Stage> stage
+# TAG=<TAG>  Round=<ROUND>
+# Generated by eco_applier — do NOT edit manually
+use strict;
+use warnings;
+
+# All changes collected upfront — module_name → {wire_decls, wire_removes, gates}
+# wire_decls : output nets of new gates that need explicit wire declaration
+# wire_removes: existing wire decls to remove (prevent SVR-9 duplicate)
+# gates       : complete instantiation lines for ALL new cells in this module
+my %changes = (
+  '<module_name_1>' => {
+    wire_decls   => ['<output_net_1>', '<output_net_2>'],
+    wire_removes => ['<existing_wire_to_remove>'],
+    gates        => [
+      '  // ECO <JIRA> TAG=<TAG>',
+      '  <cell_type> <inst_name> ( .<pin1>(<net1>), .<pin2>(<net2>), .<outpin>(<out_net>) ) ;',
+      # ... ALL gates for this module listed here
+    ],
+  },
+  '<module_name_2>' => { wire_decls => [...], wire_removes => [...], gates => [...] },
+  # ... one entry per target module
+);
+
+my $in_module = '';
+my @buf;
+my %processed;
+
+while (my $line = <STDIN>) {
+    if ($line =~ /^module\s+(\S+?)[\s(;]/) {
+        my $mod = $1;
+        if (exists $changes{$mod}) {
+            $in_module = $mod;
+            @buf = ($line);
+            next;
+        }
+    }
+    if ($in_module) {
+        if ($line =~ /^endmodule\b/) {
+            my $spec = $changes{$in_module};
+            # Build wire remove set
+            my %rm = map { $_ => 1 } @{ $spec->{wire_removes} };
+            # Filter buffer: remove matching wire decls
+            my @filtered;
+            for my $bl (@buf) {
+                if (%rm && $bl =~ /^\s*wire\s+(\w+)\s*;/ && $rm{$1}) {
+                    print STDERR "REMOVED wire $1 from $in_module\n";
+                    next;
+                }
+                push @filtered, $bl;
+            }
+            # Add wire decls for new output nets (batch — all before gates)
+            push @filtered, "  wire $_ ;\n" for @{ $spec->{wire_decls} };
+            # Insert all gates as single batch
+            push @filtered, "$_\n" for @{ $spec->{gates} };
+            print join('', @filtered);
+            print $line;   # endmodule
+            $processed{$in_module}++;
+            $in_module = '';
+            @buf = ();
+        } else {
+            push @buf, $line;
+        }
+    } else {
+        print $line;
+    }
+}
+# Summary to stderr — agent reads this to verify
+print STDERR "\n=== ECO APPLY SUMMARY: <TAG> <Stage> ===\n";
+for my $mod (sort keys %changes) {
+    if ($processed{$mod}) {
+        print STDERR "OK  $mod: ${\scalar @{$changes{$mod}{gates}}} gates, "
+                   . "${\scalar @{$changes{$mod}{wire_decls}}} wire_decls, "
+                   . "${\scalar @{$changes{$mod}{wire_removes}}} wire_removes\n";
+    } else {
+        print STDERR "MISSING  $mod — NOT FOUND in netlist\n";
+    }
+}
+print STDERR "=== DONE ===\n";
 ```
-If count > 0 → remove the existing explicit wire declaration FIRST, then insert. Record `"removed_explicit_wire_declaration": true` in the entry JSON.
 
-After insertion, verify count of explicit `wire <output_net>;` = 0. If count > 0 → VERIFY_FAILED — eco_applier accidentally added a wire declaration.
+**Rules when filling in `%changes`:**
+1. One key per target module — ALL gates for that module in the `gates` array.
+2. `wire_decls`: output nets only (ZN/Z/Q values) — never input net names.
+3. `wire_removes`: only pre-existing explicit `wire <net>;` lines that cause SVR-9.
+4. Gate lines must be complete Verilog instantiations including all pins and terminating ` ;`.
+5. If a module appears 0 times in the netlist, the MISSING line in summary triggers VERIFY_FAILED.
 
-In both cases: after gate insertion, verify the output net appears in the module buffer (from the gate's output pin).
+---
 
-**Step 3 — Insert** (same pattern as Pass 1c Step 7). **Step 4 — Compute `inv_inst_full_path`** and verify instance in module buffer.
+### Phase C — Execute and Verify
 
-Record status=INSERTED, change_type=new_logic_gate, instance_name, inv_inst_full_path, output_net, cell_type.
+**Step C1 — Run:**
+```bash
+zcat <REF_DIR>/data/PostEco/<Stage>.v.gz \
+  | perl /tmp/eco_apply_<TAG>_<Stage>.pl 2>/tmp/eco_apply_<TAG>_<Stage>_summary.txt \
+  | gzip > <REF_DIR>/data/PostEco/<Stage>_eco_new.v.gz
+```
+
+**Step C2 — Read summary, check for MISSING:**
+```bash
+cat /tmp/eco_apply_<TAG>_<Stage>_summary.txt
+grep "^MISSING" /tmp/eco_apply_<TAG>_<Stage>_summary.txt
+```
+If any MISSING line → the target module was not found → VERIFY_FAILED for all entries in that module. Do NOT proceed to swap.
+
+**Step C3 — Verify instances are inside module boundary:**
+For each inserted instance_name:
+```bash
+# Get line numbers
+zcat <Stage>_eco_new.v.gz | grep -n "<instance_name>\|^endmodule" | \
+  awk '/instance_name/{inst=$0} /^endmodule/{if(inst) {print inst; print $0; inst=""; exit}}'
+```
+Instance line must be < endmodule line. If instance_line >= endmodule_line → BOUNDARY_VIOLATION → VERIFY_FAILED.
+
+**Step C4 — Verify wire decls removed:**
+For each net in `wire_removes`:
+```bash
+zcat <Stage>_eco_new.v.gz | grep -c "^\s*wire <net>\s*;"
+```
+Count must be 0. If > 0 → wire decl not removed → flag as WARNING (FM may still abort).
+
+**Step C5 — Atomic swap (only if all checks pass):**
+```bash
+mv <REF_DIR>/data/PostEco/<Stage>_eco_new.v.gz \
+   <REF_DIR>/data/PostEco/<Stage>.v.gz
+```
+If any check failed → delete `<Stage>_eco_new.v.gz`, restore from backup, mark VERIFY_FAILED.
+
+**Step C6 — DFF-specific: verify output net not pre-declared:**
+```bash
+zcat <Stage>.v.gz | grep -cw "wire <target_register>\|reg <target_register>"
+```
+If count > 0 → DFF output conflicts with existing declaration → VERIFY_FAILED.
+
+Record final status for each entry: INSERTED (gate in summary OK), SKIPPED (reason from Phase A), ALREADY_APPLIED (from pre-check), VERIFY_FAILED (from C2/C3/C4).
 
 ---
 
@@ -585,6 +658,11 @@ Write `<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`. Every entry MUST in
       "status": "ALREADY_APPLIED",
       "already_applied_reason": "instance 'eco_<jira>_<seq>' present (grep count=1) AND all input pins verified in instance block"
     },
+    // SCHEMA RULE: Every entry — including ALREADY_APPLIED and SKIPPED — MUST include at least one
+    // identifier field: instance_name (new_logic types), cell_name (rewire types),
+    // signal_name (port_declaration types), or port_name (port_connection types).
+    // Copy the identifier from the study JSON entry. An entry that omits ALL identifiers
+    // produces "?" in the RPT and is a schema violation.
     {
       "change_type": "port_declaration", "signal_name": "<port_signal>",
       "module_name": "<module>", "declaration_type": "output",
@@ -625,5 +703,8 @@ Write `<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`. Every entry MUST in
 10. **eco_applier NEVER adds `wire N;` declarations** — every net is implicitly declared via port connections; explicit `wire N;` always causes FM-599.
 11. **ALREADY_APPLIED for new_logic requires pin verification** — instance existence alone is insufficient; verify each input pin connection matches study JSON; if any pin differs → `force_reapply: true`.
 12. **Always use real RTL-named net, not P&R alias, when both exist** — before writing any net name into a port connection or rewire, check if it is a P&R alias: `grep -rw "<net_name>" data/PreEco/SynRtl/ → count = 0` means P&R alias. If alias, grep for the real RTL net from the study JSON; if found (count >= 1) use the real net and record `net_upgraded_from_alias: true`. Prevents P&R aliases from breaking subsequent rounds.
+13. **Pass 1 uses Perl streaming — no in-memory buffer for gate insertions.** All `new_logic_gate`, `new_logic_dff`, and `remove_wire_decl` operations are encoded in a Perl script and executed via `zcat | perl | gzip` pipe. This eliminates endmodule boundary drift (SVR-4) by design — the Perl engine buffers each target module and inserts ALL its gates as a single batch before `endmodule`. Never revert to in-memory Python buffer manipulation for gate insertions.
+14. **NEVER add `wire N;` for INPUT nets** — `wire_decls` in the Perl spec accepts ONLY the gate's OUTPUT net (ZN/Z/Q value). Input nets already exist in the netlist as driven nets; inserting an explicit wire decl for an input net creates SVR-9 (duplicate wire declaration) when the gate reference appears before the pre-existing driver instantiation. If `needs_explicit_wire_decl: true` is set on an entry, add ONLY the output net to `wire_decls`, never any input pin net.
+15. **ALWAYS populate identifier fields in every JSON entry** — every entry (APPLIED, INSERTED, ALREADY_APPLIED, SKIPPED, VERIFY_FAILED) MUST include at least one of: `instance_name`, `cell_name`, `signal_name`, or `port_name`. Copy the identifier from the study JSON. An entry with no identifier produces `?` in the RPT — this is a schema violation.
 
 **Final output:** `<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`. After writing, verify it is non-empty and contains a `summary` field, then exit. The calling orchestrator reads the applied JSON and generates the RPT — eco_applier writes JSON only, not RPT.

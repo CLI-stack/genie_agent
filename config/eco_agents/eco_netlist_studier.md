@@ -293,7 +293,15 @@ Never restart from d001 for a second DFF chain. Each eco_<jira>_d<N> name must b
 
 After all chain gates: set DFF entry `port_connections.D = "n_eco_<jira>_d<last>"`. If `d_input_decompose_failed: true`: set `d_input_net = "SKIPPED_DECOMPOSE_FAILED"`, `confirmed: false`.
 
-**GAP-14 — Wire declaration flag:** For each new gate in the chain whose output net does not exist anywhere in the PreEco netlist (freshly coined name), set `needs_explicit_wire_decl: true`. eco_applier uses this to add `wire <net_name>;`. Do NOT set for: gate outputs that drive port connections, or renamed original driver output nets.
+**GAP-14 — Wire declaration flag:** For each new gate in the chain whose **output net** does not exist anywhere in the PreEco netlist (freshly coined name), set `needs_explicit_wire_decl: true`. eco_applier uses this to add `wire <net_name>;`.
+
+**CRITICAL — output net ONLY:** `needs_explicit_wire_decl: true` MUST ONLY be set for the net driven by the gate's output pin (ZN, Z, or Q — the value of `port_connections[<output_pin>]`). NEVER set it for input nets. Input nets are existing nets driven by other cells; they are already present in the netlist and never need an explicit wire declaration. Setting `needs_explicit_wire_decl: true` for an input net causes eco_applier to insert `wire <input_net>;` before the gate, which creates an SVR-9 duplicate wire declaration when FM reads the netlist (the existing driver's instantiation already implicitly declares the net).
+
+Do NOT set `needs_explicit_wire_decl: true` for:
+- Gate inputs (any port other than ZN/Z/Q)
+- Gate outputs that drive port connections (the port connection implicitly declares the wire)
+- Renamed original driver output nets (already present as the old_net)
+- Any net that already appears in the PreEco netlist via `grep -cw "<net_name>" <Stage_PreEco>` ≥ 1
 
 ### 0c — Find suitable cell type from PreEco netlist
 
