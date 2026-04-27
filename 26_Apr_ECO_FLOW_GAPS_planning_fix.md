@@ -475,6 +475,57 @@ else:
 
 ---
 
+## GAP-19 — eco_netlist_studier Mode H: prioritize original register over duplicate instances
+
+**Severity:** HIGH
+**Observed in:** 9868 Round 2 — eco_9868_d006 Route used `aps_rename_12113_` (IReset_reg_dup8.Q1 — a duplicate register clone) instead of the original register output
+**File:** `config/eco_agents/eco_netlist_studier.md`
+
+**What happened:**
+When resolving Mode H (P&R renamed IReset in Route), the studier found `aps_rename_12113_` which is the Q1 output of `IReset_reg_dup8` — a **duplicate/clone** of IReset_reg created by P&R scan chain optimization. FM stage-to-stage comparison (FmEqvEcoRouteVsEcoPrePlace) could not prove `aps_rename_12113_` (Route) == `test_so4927` (PrePlace) because they come from **different register instances** in the hierarchy, even though they carry the same functional value.
+
+Round 3 fix: use `dftopt3065` = Q3 of the **MB3 merged cell** `IReset_reg_dup8_MB_IReset_reg_dup5_MB_IReset_reg` — the original IReset_reg is the LAST in the chain (by name suffix `_MB_IReset_reg`) and Q3 maps to its output. FM can match this with PrePlace's `test_so4927` because they trace to the same original register.
+
+**Fix required:**
+In eco_netlist_studier.md Mode H resolution:
+> "When multiple DFF instances produce the same functional signal (e.g., IReset_reg, IReset_reg_dup8, IReset_reg_MB_...), always prefer the **original register** over duplicates/clones. Identification:
+> - Avoid cells with `_dup<N>` suffix — these are scan-chain duplicates, NOT the original
+> - For merged MB cells (multi-bit DFFs): parse the cell name — the LAST `_MB_<register_name>` segment identifies which original register's output to use
+> - Verify by checking: does FM's reg_map/matched_points show this net mapping to the correct PreEco register?"
+
+---
+
+## GAP-20 — DFF scan chain (SI/SE) pin cone mismatch between PrePlace and Route
+
+**Severity:** HIGH
+**Observed in:** 9868 Round 3 — NeedFreqAdj_reg fails FmEqvEcoRouteVsEcoPrePlace due to SE cone mismatch even after D-input was correctly fixed
+**File:** `config/eco_agents/eco_netlist_studier.md`, `config/eco_agents/eco_pre_fm_checker.md`
+
+**What happened:**
+After correctly fixing eco_9868_d006 D-input chain (IReset resolution), NeedFreqAdj_reg still fails FmEqvEcoRouteVsEcoPrePlace because:
+- PrePlace SE = `FxPrePlace_HFSNET_177`
+- Route SE = `FxPrePlace_HFSNET_178`
+
+FM cannot auto-match these HFS buffer nets across stages. Additionally, scan chain nets (`scan_cntl/gen_scan_en/mux_se_sel/d0nt_mux/Z`, `dft_clk_cntl_Scanned_Tck/clone_SE_OP/mrk_SE/d0nt_mbuf/Z`) are globally unmatched. Existing tune file entries (`set_constant SE=0`, `set_dont_reverse on LatCG`) were applied but insufficient.
+
+**Root cause:**
+Newly inserted DFF scan pins (SI, SE) are connected to HFS buffer nets that differ per P&R stage. FM's stage-to-stage comparison (FmEqvEcoPrePlaceVsEcoSynthesize / FmEqvEcoRouteVsEcoPrePlace) cannot resolve these structural differences in the scan/DFT domain.
+
+**Fix required:**
+
+1. **eco_netlist_studier.md** — When inserting a new DFF, add a note for SE/SI pins:
+   > "Auxiliary pins (SI, SE) are NOT verified by FM stage-to-stage as functional logic — they are part of the scan chain. FM requires tune file entries to handle SE cone mismatches. Eco_netlist_studier must flag newly inserted DFFs with `needs_se_tune: true` so eco_fm_runner knows to add tune file entries if NeedFreqAdj_reg/similar DFFs fail stage-to-stage."
+
+2. **eco_pre_fm_checker.md** — Add Check I: SE pin cone cross-stage validation:
+   > "For each newly inserted DFF, verify the SE pin net is present in all 3 stages. If the SE net is an HFS alias that differs per stage (e.g., FxPrePlace_HFSNET_177 vs FxPrePlace_HFSNET_178), flag it as `se_cone_mismatch_risk: true`. This will require tune file entries in FmEqvEcoPrePlaceVsEcoSynthesize and FmEqvEcoRouteVsEcoPrePlace to suppress the SE cone comparison:
+   > ```
+   > set_constant -type port {<DFF_instance>/SE} 0
+   > ```"
+
+3. **eco_fm_analyzer.md** — When NeedFreqAdj_reg/newly inserted DFF fails with globally unmatched SE cone nets, classify as `SCAN_CHAIN_MISMATCH` (not Mode H) and generate the required tune file entries automatically rather than escalating to engineer.
+
+---
+
 ## Pending After FM Completion
 
 Once all FM runs finish, prioritize fixes in this order:
@@ -495,6 +546,8 @@ Once all FM runs finish, prioritize fixes in this order:
 | P2 | GAP-16 — eco_fm_analyzer: wrong Mode B diagnosis → counterproductive pivot fix | eco_fm_analyzer.md |
 | P2 | GAP-17 — 9899: 3000+ Synth failures unresolved through 5 rounds | eco_netlist_studier.md |
 | P2 | GAP-18 — driver search misses submodule bus output ports → wrong manual_only | eco_netlist_studier.md + eco_fm_analyzer.md |
+| P2 | GAP-19 — Mode H: use original register not duplicate clone (IReset_reg_dup8 issue) | eco_netlist_studier.md |
+| P2 | GAP-20 — DFF scan chain SE pin cone mismatch PrePlace↔Route — needs tune file | eco_netlist_studier.md + eco_pre_fm_checker.md + eco_fm_analyzer.md |
 | P2 | GAP-13 — manual_only too early: add Priority 4 backward cone trace before giving up | eco_netlist_studier.md |
 | P4 | GAP-10 — MUX cascade priority (pending FM result) | eco_netlist_studier.md |
 
