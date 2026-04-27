@@ -371,6 +371,11 @@ for my $mod (sort keys %changes) {
 print STDERR "=== DONE ===\n";
 ```
 
+**Perl pipe error handling:**
+- If a module in `%changes` is NOT found → printed as `MISSING` in summary → eco_applier reads summary, marks all entries for that module VERIFY_FAILED, restores backup.
+- Partial write (pipe interrupted): eco_applier detects via MD5 unchanged or line count anomaly → restore backup.
+- Gate ordering within a module: gates in `gates[]` are inserted top-to-bottom before `endmodule`. Dependent gates (gate B uses gate A's output) must appear with gate A before gate B in the list.
+
 **Rules when filling in `%changes`:**
 1. One key per target module — ALL gates for that module in the `gates` array.
 2. `wire_decls`: output nets only (ZN/Z/Q values) — never input net names.
@@ -589,6 +594,8 @@ posteco_count=$(grep -c "^module " /tmp/eco_apply_<TAG>_<Stage>.v)
 [ "$preeco_count" != "$posteco_count" ] && set summary.module_count_mismatch=true && exit 1
 ```
 Mark ALL entries VERIFY_FAILED. Never proceed to recompress with wrong module count.
+
+**Acceptable module count changes:** `count_after == count_before` (PASS). Any increase → FAIL (eco_applier must not create new modules). Any decrease → FAIL (module deleted). Delta ≤ 5 is the only known false-alarm range — verify ECO instances present before overriding.
 
 **Known false alarm condition:** Hierarchical netlists with parameterized or uniquified sub-modules may show a module count that differs by a small amount (≤ 5) after decompress/recompress due to tooling artifacts — not actual module creation/deletion. In this case:
 1. Verify all ECO instances are present via grep in the modified module buffer

@@ -108,6 +108,12 @@ Copy each retry rpt to `AI_ECO_FLOW_DIR/` immediately after writing. Verify copy
 
 **No-Equiv-Nets:** max 2 retries, always DEEPER hierarchy. Add one sub-instance level per retry — NEVER strip a level (shallower queries move away from the declaring module, making FM's scope wider and less precise, which does not resolve No-Equiv-Nets).
 
+**Net selection for retries:**
+- Retry 1 path: `<original_path>/<child_inst>/<signal>` where `<child_inst>` is the sub-instance inside the declaring module that contains the signal declaration (grep: `grep -n "module.*<child_inst>" PreEco/Synthesize.v.gz`)
+- Retry 2 path: `<retry1_path>/<grandchild_inst>/<signal>` (one more level deeper)
+- Bus signals: query BOTH `<signal>` and `<signal>_0_` in the same genie_cli call (`netName:<path>/<signal>,<path>/<signal>_0_`)
+- If no child instances exist to go deeper → skip retries, apply Stage Fallback directly
+
 **FM-036 — MUST classify before retrying:**
 First determine if the net is a port-level signal or an internal wire:
 - Read `eco_rtl_diff.json` for this net's `change_type`. If `change_type = "wire_swap"` and the net has no `input`/`output` declaration in any RTL module (only `reg`/`wire`), it is an **internal wire** — FM will return FM-036 at every hierarchy level because the net is never exposed in FM's reference namespace. Do NOT strip levels. Instead, pivot immediately to querying `target_register` (the DFF output Q signal), which IS visible to FM. Submit one genie_cli call with `netName:<hierarchy_path>/<target_register>` — this is the internal wire pivot (max 1 pivot attempt per net).

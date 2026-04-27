@@ -780,8 +780,9 @@ for name, stages in change_map.items():
 For each `new_logic_dff` entry in the applied JSON with `needs_se_tune: true` (set by eco_netlist_studier):
 1. Read `port_connections_per_stage["PrePlace"]["<SE_pin>"]` and `port_connections_per_stage["Route"]["<SE_pin>"]`
 2. If both differ AND neither appears in RTL source (`grep -rw "<se_net>" data/PreEco/SynRtl/ → count = 0`): flag `se_cone_mismatch_risk: true`
-3. Record in `check_summary["I_se_cone_mismatch"]`: `"WARN"` (non-blocking — FM proceeds)
-4. Add to `warnings[]`: recommended tune file entry `set_constant -type port {<DFF_hierarchy_path>/SE} 0` for stage-to-stage FM targets
+3. **Detection algorithm:** `grep -cw "<se_net>" data/PreEco/Synthesize.v.gz` > 0 AND `grep -cw "<se_net>" data/PreEco/PrePlace.v.gz` = 0 → HFS-renamed SE net → `se_cone_mismatch_risk: true`
+4. Record in `check_summary["I_se_cone_mismatch"]`: `"WARN"` (non-blocking — FM proceeds)
+5. Add to `warnings[]`: recommended tune file entry `set_constant -type port {<DFF_hierarchy_path>/SE} 0` for stage-to-stage FM targets
 
 Check I is non-blocking. It surfaces the risk before FM runs so eco_fm_analyzer can auto-classify the resulting failure as `SCAN_CHAIN_MISMATCH` without engineer escalation.
 
@@ -1070,6 +1071,10 @@ assert os.path.getsize(f"data/{TAG}_eco_pre_fm_check_round{ROUND}.json") > 10, "
 ```
 
 **EXIT immediately. Do NOT modify study JSON beyond what was needed for inline fixes.**
+
+**Inline fix side effects:** eco_pre_fm_checker DOES modify `PostEco/{Synthesize,PrePlace,Route}.v.gz` in-place during inline fixes (wire removal, port addition, duplicate removal). These edits are tracked in `issues_fixed[]` in the JSON output. eco_applier in the NEXT round must read `eco_pre_fm_check_round<ROUND>.json` and treat `FIXED` entries as ALREADY_APPLIED — do NOT re-apply them.
+
+**Retry semantics:** MAX_RETRIES=3 is a TOTAL budget across all checks in one Step 5 invocation. Each attempt runs the full check suite. A single fix that resolves all issues in one attempt counts as attempt 1 of 3. If attempt 3 still has critical issues → `passed: false` → escalate.
 
 ---
 

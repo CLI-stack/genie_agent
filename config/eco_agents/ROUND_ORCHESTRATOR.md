@@ -183,6 +183,7 @@ Verify JSON contains `condition_input_resolutions` array. Do NOT proceed to Step
 - `ROUND=<ROUND>` (the round that just failed — studier reads `<TAG>_eco_fm_analysis_round<ROUND>.json`)
 - `FM_ANALYSIS_PATH=<BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json`
 - `FENETS_RERUN_PATH=<BASE_DIR>/data/<TAG>_eco_fenets_rerun_round<ROUND>.json` if Step 6f-FENETS ran, otherwise `null`
+- `SPEC_SOURCES`: extract from `<BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt` footer (same algorithm as ORCHESTRATOR Step 2) and pass so studier reads the correct FM spec file per stage
 - Task: update `eco_preeco_study.json` for failing entries only; write `eco_step3_netlist_study_round<NEXT_ROUND>.rpt`
 
 Wait for sub-agent to complete.

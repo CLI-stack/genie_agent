@@ -667,6 +667,13 @@ for rewire_entry in study_entries_with_driver_rename:
 
 For each `wire_swap` whose `new_token` matches a `new_logic` output net, add `"new_logic_dependency": [<seq>]`.
 
+**MUX select polarity validation:** If `mux_select_gate_function` is set in the RTL diff JSON, verify `mux_select_i0_net` and `mux_select_i1_net` are both resolved (not null) before encoding into the study JSON. If FM results (from Step 2 spec) show the MUX cell but the FM-resolved net does not match either `mux_select_i0_net` or `mux_select_i1_net` → flag `mux_polarity_conflict: true` and add to `revised_changes` in the re-study so eco_fm_analyzer can prescribe a gate re-check.
+
+**Phase 0 / Phase 1 interaction guarantees:**
+- **Instance naming:** Phase 0 (new_logic) and Phase 1 (wire_swap) both use the shared seq_counter — no name collision possible.
+- **Wire declarations:** Before adding any `wire_decls` entry, check if that net already appears in `wire_decls` from Phase 0; skip duplicates.
+- **Port list stability:** eco_applier processes Phase 0 `port_declaration` entries in Pass 2 (before Pass 4 rewires). Phase 1 entries may reference those ports safely.
+
 For wire_swap changes requiring a new MUX select gate: read `mux_select_gate_function` from RTL diff JSON. If non-null → create `new_logic_gate` entry directly (skip Step 4c-POLARITY). If null → do NOT create entry in Phase 0; let Step 4c-POLARITY determine the gate function. **Do NOT derive gate function from RTL condition text** — only equal to condition expression when true-branch maps to I1.
 
 ### 0g — Process `new_port` changes → `port_declaration` study entries
@@ -756,7 +763,7 @@ If neither found: `"confirmed": false`.
 
 ### Cone Verification (MANDATORY for wire_swap)
 
-#### Backward Cone (max 8 hops)
+#### Backward Cone (max 8 hops — covers typical 4-6 hop driver chains with margin)
 
 **Step 1 — Find target register D-input net.** Gate-level instance for `target_register` bit `[N]` may appear as `<target_register>_reg_<N>_`. If `target_bit` is null (scalar), search without bit suffix. In the matching block, locate `.D(<net>)` → `<target_d_net>`.
 
@@ -764,7 +771,7 @@ If neither found: `"confirmed": false`.
 
 **Step 3 — Decision:** In cone → `"in_backward_cone": true`. Not in cone → `"confirmed": false`, `"in_backward_cone": false`.
 
-#### Forward Trace Verification (MANDATORY for cells marked in_backward_cone: false, max 6 hops)
+#### Forward Trace Verification (MANDATORY for cells marked in_backward_cone: false, max 6 hops — covers typical 2-4 hop fanout chains; if limit exceeded, log WARNING and assume valid rather than marking VERIFY_FAILED)
 
 **Step 1 — Find cell's output net** (pin Z/ZN/Q) → `<cell_output_net>`.
 

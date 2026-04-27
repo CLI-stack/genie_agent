@@ -358,6 +358,12 @@ Add each missing cell as a `rewire` or `insert_cell` action in revised_changes.
 
 The cell or net name differs between stages. Grep PostEco for the failing stage to find the actual cell name, then update eco_preeco_study accordingly.
 
+**DFF0X sub-case (ECO-inserted DFF):** If the failing point is an ECO DFF (`eco_<jira>_` pattern) classified DFF0X, check in order:
+1. Clock net absent in this stage → SKIPPED by eco_applier → Mode A (re-apply with correct stage clock)
+2. Gate input undriven (submodule bus) → Mode H (fix_named_wire)
+3. SE/SI scan nets differ across stages → Mode D (update `port_connections_per_stage` with correct stage nets)
+Grep `<eco_instance>` in PostEco for this stage; read actual pin connections; update study JSON `port_connections_per_stage[<stage>]`.
+
 ### Mode E — Pre-existing failure (unrelated to ECO)
 
 > **HARD RULE — ECO-inserted DFFs (`eco_<jira>_` pattern) are NEVER Mode E.** Do NOT write `set_dont_verify` or `set_user_match` for them. Re-examine as Mode A or Mode H immediately.

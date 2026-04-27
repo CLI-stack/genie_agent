@@ -564,3 +564,48 @@ grep -rw "<net_name>" <REF_DIR>/data/PreEco/SynRtl/ | grep -v "^Binary"
 eco_applier reads the `needs_explicit_wire_decl` flag to implement this rule. eco_pre_fm_checker Check F (`--strict`) catches any violations.
 
 > **This rule prevents:** FM-599 errors caused by either (a) adding explicit `wire <net_name>;` for nets already created implicitly by port connections, or (b) omitting explicit `wire <net_name>;` for brand-new intermediate nets that have no other declaration path.
+
+---
+
+## RULE 34 — FM Failure Mode Reference Table (eco_fm_analyzer output)
+
+| Mode | Code | Meaning | Safe auto-fix | Manual flag |
+|------|------|---------|---------------|-------------|
+| A | `A` | ECO change not correctly applied (SKIPPED/wrong net/wrong gate) | Re-apply with corrected approach | No |
+| B | `B` | Wrong cell rewired — ECO gate drives unrelated DFFs | Exclude the rewire entry | Sometimes |
+| C | `C` | Partial progress — confirmed entry missing from eco_applied | Re-apply missing entry | No |
+| D | `D` | Stage mismatch — cell/net name differs between stages | Grep PostEco for correct name | No |
+| E | `E` | Pre-existing failure — no ECO contact (5-condition proof required) | set_dont_verify | Yes — engineer |
+| F1 | `F1` | d_input_decompose_failed with intermediate_net_insertion | Invert MUX constants / pivot | No |
+| F2 | `F2` | d_input_decompose_failed with no fallback strategy | manual_only | Yes |
+| F3 | `F3` | Pre-existing DFF downstream of wrong ECO gate chain | Fix ECO gate (Mode A) | No |
+| G | `G` | Structural P&R stage mismatch (HFS cone divergence) | fix_named_wire or set_dont_verify | Sometimes |
+| H | `H` | Gate input driven only through hierarchical submodule bus | fix_named_wire | No |
+| `INCOMPLETE_AND_TERM` | — | and_term gate drove new net instead of port directly (GAP-15) | Re-study with module_port_direct_gating | No |
+
+ECO-inserted DFFs (`eco_<jira>_` pattern) are **never** Mode E or subject to `set_dont_verify`.
+
+---
+
+## RULE 35 — MANUAL_LIMIT and MAX_ROUNDS Exit Semantics
+
+- **MANUAL_LIMIT**: All remaining failures have `action: manual_only` (modes E, F2, G with priority-3 exhausted). Rounds may still remain. Spawn FINAL_ORCHESTRATOR immediately — do not waste rounds on unfixable failures.
+- **MAX_ROUNDS**: Round 6 completed with FM still failing. Spawn FINAL_ORCHESTRATOR regardless of failure mode.
+- **Both** write `status: "MANUAL_LIMIT"` or `status: "MAX_ROUNDS"` to round_handoff.json and spawn FINAL_ORCHESTRATOR.
+- FINAL_ORCHESTRATOR maps these to: MANUAL_LIMIT → "FAIL — Manual fix required"; MAX_ROUNDS → "FAIL — Max rounds reached"; FM_PASSED → "PASS".
+
+---
+
+## RULE 36 — round_handoff.json Required Fields
+
+Every ORCHESTRATOR and ROUND_ORCHESTRATOR MUST write these fields before spawning the next agent:
+
+```json
+{ "tag": "str", "ref_dir": "path", "tile": "str", "jira": "str",
+  "base_dir": "path", "ai_eco_flow_dir": "path",
+  "round": 1,
+  "eco_fm_tag": "20260427HHMMSS | null (if FM not run)",
+  "status": "FM_PASSED | FM_FAILED | MANUAL_LIMIT | MAX_ROUNDS",
+  "pre_fm_check_failed": false }
+```
+Missing any field → the spawned agent cannot recover state correctly.

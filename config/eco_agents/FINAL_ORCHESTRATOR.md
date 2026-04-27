@@ -58,9 +58,16 @@ Rounds      : <TOTAL_ROUNDS>
 
 FINAL STATUS : <PASS / FAIL — MANUAL FIX NEEDED / MAX ROUNDS REACHED>
 
+<Status classification:>
+  FM_PASSED                       → PASS — All 3 Formality targets verified clean.
+  MANUAL_LIMIT (all 3 pass)       → PASS — All 3 targets passed (pre-existing failures waived).
+  MANUAL_LIMIT (some fail)        → FAIL — MANUAL FIX NEEDED. Pre-existing failures remain; engineer must apply SVF.
+  MAX_ROUNDS (any fail)           → FAIL — MAX ROUNDS REACHED. <N> rounds attempted, failures persist.
+  Partial pass (1-2 targets PASS) → FAIL — PARTIAL. List which targets pass/fail.
+
 <If PASS:>  All 3 Formality targets passed. ECO is clean.
 <If FAIL:>  Manual fix required. See step5 RPT for failing points.
-<If MAX:>   5 rounds attempted. See per-round step5 RPTs for details.
+<If MAX:>   Rounds attempted. See per-round step5 RPTs for details.
 
   FmEqvEcoSynthesizeVsSynRtl      : <PASS/FAIL>  (<timestamp> — <N> equiv points, <M> failing)
   FmEqvEcoPrePlaceVsEcoSynthesize : <PASS/FAIL>  (<timestamp> — <N> equiv points, <M> failing)
@@ -114,6 +121,8 @@ ECO STATISTICS
 
 --------------------------------------------------------------------------------
 TIMING & LOL ESTIMATION  (structural analysis — Synthesize PreEco netlist)
+  LOL = Lines Of Logic: combinational gate levels from new cell output to first register input.
+  Compute by tracing forward cone from ECO gate output; count gate levels until reaching a DFF .D pin.
 --------------------------------------------------------------------------------
 
   Signal Change  : <old_net>  →  <new_net>
