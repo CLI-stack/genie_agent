@@ -198,30 +198,71 @@ cp <BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt <AI_ECO_F
 
 **`port_promotion` — FLAT NETLIST ONLY:** Only when `grep -c "^module " Synthesize.v` = 1. Verify net exists; if hierarchical use `port_declaration` + `port_connection` instead.
 
-**MODULE PORT DIRECT GATING — STEP 0 (mandatory, runs before any strategy selection):**
+**MODULE PORT DIRECT GATING — STEP 0 (ABSOLUTE MANDATORY — cannot be bypassed under any circumstances):**
 
-Run this check FIRST. If it fires, RETURN immediately — do NOT evaluate any other strategy.
+This check runs FIRST. If it fires, RETURN IMMEDIATELY and HARD STOP all other strategy evaluation. There is no else branch, no fallthrough, no "also consider parent_scope". The RETURN is unconditional.
 
 ```python
-# STEP 0 — mandatory pre-check (always runs first)
-is_output_port = (
-    grep_count(f"output.*\\b{old_token}\\b", module_body_lines) >= 1
-    or old_token in parse_port_list_names(module_header)
+# STEP 0 — ABSOLUTE GATE (runs before anything else, always)
+# Check 1: RTL source declares old_token as output port
+rtl_is_output = (
+    grep_count(rf"^\s*output\b.*\b{re.escape(old_token)}\b", module_rtl_lines) >= 1
+)
+# Check 2: Gate-level PreEco declares old_token as output port in the module header
+gatelvl_is_output = (
+    grep_count(rf"output\b.*\b{re.escape(old_token)}\b", preeco_module_header_lines) >= 1
+    or old_token in parse_port_list_names(preeco_module_header)
+)
+# Check 3: Gate-level PostEco has old_token as a net driven by a cell inside this module
+# (confirms old_token is visible as a named net — not just an internal alias)
+gatelvl_driven = (
+    grep_count(rf"\.\w+\s*\(\s*{re.escape(old_token)}\s*\)", preeco_module_body_lines) >= 1
 )
 
+is_output_port = rtl_is_output or gatelvl_is_output
+
 if is_output_port:
-    # STOP — module port direct gating applies
-    # Do NOT fall through to parent_scope or direct_rewire
+    # ══════════════════════════════════════════════════════════
+    # MODULE PORT DIRECT GATING — the ONLY valid strategy
+    # ══════════════════════════════════════════════════════════
     and_term_strategy = "module_port_direct_gating"
-    # Pattern:
-    #   1. Find original driver cell of <old_token>
-    #   2. Change its output from <old_token> to a new intermediate net name (implicit wire)
-    #   3. New gate output = <old_token>  (drives port directly — all consumers gated automatically)
-    #   4. No individual rewire entries needed
-    # RETURN — exit and_term processing here
+
+    # Mandatory steps — ALL must be completed:
+    # 1. Find original driver cell of <old_token> in PreEco gate-level
+    #    grep: zcat PreEco/Synthesize.v.gz | grep -n "\.<output_pin>(\s*<old_token>\s*)"
+    # 2. Create rewire entry: rename driver cell output from <old_token> → eco_<jira>_<seq>_orig
+    #    (implicit wire — do NOT add wire decl for this intermediate net)
+    # 3. Create new_logic_gate entry: new AND/NAND/IND2 gate
+    #    - instance_scope = <declaring_module_scope>
+    #    - output_net = <old_token>   ← drives port directly (same name as port)
+    #    - port_connections: all inputs including the new AND-term
+    # 4. No individual consumer rewires — ALL consumers see gated value via port
+    # 5. needs_explicit_wire_decl = False for <old_token> (it IS the port — already declared)
+    # 6. needs_explicit_wire_decl = False for eco_<jira>_<seq>_orig (implicit from driver rename)
+
+    # VERIFICATION: after building entries, confirm:
+    assert output_net == old_token, f"FATAL: module_port_direct_gating must use output_net=old_token, got {output_net}"
+
+    # HARD RETURN — no further strategy evaluation
+    # If you find yourself evaluating parent_scope or direct_rewire after this block,
+    # you have violated this rule. STOP and re-read STEP 0.
+    return and_term_entries  # EXIT and_term processing
+
+# ── Only reaches here when is_output_port is definitively False ──
+# Verify: if failing_count >= 500 in FM and strategy chosen is NOT module_port_direct_gating,
+# double-check is_output_port before proceeding — large cascade counts are a strong signal
+# that STEP 0 should have fired.
 ```
 
 **Only if `is_output_port == False`** → proceed to normal strategy selection (direct_rewire or parent_scope).
+
+**SELF-CHECK (write this to RPT before proceeding):**
+```
+STEP 0 result: is_output_port=<True/False>
+  rtl_is_output=<True/False>  gatelvl_is_output=<True/False>
+  → strategy=<module_port_direct_gating | proceeding to selection>
+```
+If strategy is NOT `module_port_direct_gating` and FM later shows 500+ cascade failures from this module, the STEP 0 check was incorrectly False — re-examine.
 
 **`and_term` gate input scope:** Gate inputs must use names as they appear INSIDE the declaring module. If the new term is a `new_port` → use the PORT NAME (`new_token` as declared). Do NOT use `flat_net_name`. Read `and_term_gate_input` from RTL diff JSON if present — it already stores the correct module-internal name.
 
@@ -451,6 +492,40 @@ If found → set `driven_by_submodule: true`, `driver_type: "submodule_bus_outpu
 
 **CRITICAL:** Nets driven only through hierarchical submodule output port buses must never be used directly as gate inputs in P&R stages. Declare a named wire, connect it in the port bus, use the named wire as gate input. eco_applier handles this when `needs_named_wire: true`.
 
+**UNCONNECTED BUS BIT — MANDATORY PORT_CONNECTION FIX:**
+
+When a DFF D-input or gate input uses an `UNCONNECTED_<N>` net (a tie-off placeholder in a child module's bus output), the studier MUST add a `port_connection` change to rename that bus slot to an explicit named wire. Without this, the DFF D-input is tied to constant-0 across all stages → FM non-equivalence.
+
+```python
+# Detect UNCONNECTED_* pattern in D-input or gate input net name
+if re.match(r'^UNCONNECTED_\d+$', resolved_net) or re.match(r'^SYNOPSYS_UNCONNECTED_\d+$', resolved_net):
+    # 1. Identify the child module instance that drives this bus bit
+    #    grep -n ".<output_port_bus>.*{.*<resolved_net>" PreEco/Synthesize.v → find instance + port + bit index
+    # 2. Create a named wire for this bit:
+    eco_wire_name = f"eco_{JIRA}_{<signal_alias>}"  # e.g. eco_<jira>_<reg_name>_bit<N>
+
+    # 3. Add port_connection change to rename the UNCONNECTED_<N> slot in the child instance:
+    add_study_entry({
+        "change_type": "port_connection",
+        "parent_module": <parent_module_name>,
+        "instance_name": <child_instance_name>,  # the instance whose bus has UNCONNECTED_<N>
+        "port_name": <bus_port_name>,            # e.g. the output bus port name
+        "net_name": eco_wire_name,               # replace UNCONNECTED_<N> with named wire
+        "bus_bit_index": <N>,                    # which bit in the bus
+        "force_reapply": True,
+        "reason": f"UNCONNECTED_{N} renamed to {eco_wire_name} for D-input traceability across stages"
+    })
+
+    # 4. Use eco_wire_name as the DFF/gate input (not UNCONNECTED_<N>)
+    port_connections[input_pin] = eco_wire_name
+    needs_explicit_wire_decl = True  # eco_wire_name is genuinely new — no existing driver in netlist
+
+    # 5. Verify eco_wire_name does NOT already exist:
+    assert grep_count(eco_wire_name, stage_lines) == 0, f"{eco_wire_name} already exists — pick different alias"
+```
+
+This pattern is required any time a DFF's D-input chain must trace through a submodule output bus where the relevant bit was unconnected pre-ECO. Both the `port_connection` rename AND the `needs_explicit_wire_decl=True` for the new named wire must be set together.
+
 Apply `needs_named_wire()` to any net found by any means.
 
 **Step 0c-5 — Per-stage net verification for each new condition signal:**
@@ -505,6 +580,88 @@ for gate in rtl_change.get("d_input_gate_chain", []):
             entry_per_stage[stage]["port_bus_source_net"] = gate["inputs"][0]
         # Skip needs_named_wire() structural check for these stages — already known
 ```
+
+### 0e-PORT — Port Boundary Analysis (MANDATORY after every new cell insertion)
+
+After building any `new_logic_dff` or `new_logic_gate` entry, check whether the cell's output net escapes the module scope. If it does, a `port_declaration` entry is REQUIRED — without it FM gets FE-LINK-7 (port not found on instance).
+
+```python
+output_net = entry["output_net"]  # Q net for DFF, ZN/Z net for gate
+declaring_module = entry["module_name"]
+
+# Check if parent module instance connects this net
+# grep the parent module's PostEco scope for: .<any_port>(<output_net>)
+# where the instance is the child containing this gate
+parent_module = find_parent_module(declaring_module, preeco_hierarchy)
+parent_connections = grep_parent_for_output_net(output_net, parent_module, preeco_lines)
+
+if parent_connections:
+    # output_net is used in parent scope → must be a port of declaring_module
+    port_already_declared = any(
+        e["change_type"] == "port_declaration"
+        and e["signal_name"] == output_net
+        and e["module_name"] == declaring_module
+        for e in study_entries
+    )
+    if not port_already_declared:
+        add_study_entry({
+            "change_type": "port_declaration",
+            "signal_name": output_net,
+            "module_name": declaring_module,
+            "declaration_type": "output",
+            "instance_scope": entry["instance_scope"],
+            "confirmed": True,
+            "force_reapply": True,
+            "reason": f"Cell output {output_net} used in parent module {parent_module} — must be declared as output port of {declaring_module}"
+        })
+        log(f"PORT_BOUNDARY: auto-added output port_declaration for {output_net} in {declaring_module}")
+```
+
+### 0e-CASCADE — Consumer Cascade Tracing (MANDATORY after every driver output rename)
+
+When an existing cell's output is renamed (e.g. for `module_port_direct_gating` or `and_term` Strategy A), ALL consumers of the original output net in the same module must be identified and added as explicit `rewire` entries. Failing to do this leaves DFF inputs undriven.
+
+```python
+# For every rewire entry that renames a driver output (old_net → old_net_orig or similar):
+for rewire_entry in study_entries_with_driver_rename:
+    renamed_from = rewire_entry["old_net"]   # original net name (now abandoned)
+    renamed_to   = rewire_entry["new_net"]   # new intermediate name
+
+    # Find ALL cells in the same module that reference renamed_from as an INPUT
+    consumers = grep_all_consumers(renamed_from, declaring_module_lines)
+    # consumers = [(cell_name, pin_name), ...] for all .pin(<renamed_from>) references
+
+    for (cell_name, pin_name) in consumers:
+        # Check if a rewire for this cell+pin is already in study_entries
+        already_covered = any(
+            e["change_type"] == "rewire"
+            and e.get("cell_name") == cell_name
+            and e.get("pin") == pin_name
+            for e in study_entries
+        )
+        if not already_covered:
+            # Determine what this consumer should be rewired to
+            # If the new gate drives old_token directly (module_port_direct_gating):
+            #   → rewire consumer to old_token (the port name = new gate output)
+            # If using intermediate net strategy:
+            #   → rewire consumer to the new ECO gate output net
+            new_target_net = determine_consumer_target(cell_name, pin_name, rewire_entry, study_entries)
+            add_study_entry({
+                "change_type": "rewire",
+                "cell_name": cell_name,
+                "pin": pin_name,
+                "old_net": renamed_from,
+                "new_net": new_target_net,
+                "instance_scope": rewire_entry["instance_scope"],
+                "module_name": rewire_entry["module_name"],
+                "confirmed": True,
+                "force_reapply": True,
+                "reason": f"Consumer of renamed driver {renamed_from} → must be updated to {new_target_net}. Auto-added by consumer cascade trace."
+            })
+            log(f"CASCADE_TRACE: auto-added rewire for consumer {cell_name}.{pin_name} ({renamed_from} → {new_target_net})")
+```
+
+**This prevents the pattern seen in multiple rounds where a driver output is renamed but downstream DFF inputs are left pointing to the old (now undriven) net, causing FM DFF0X failures.**
 
 ### 0f — Mark wire_swap entries that depend on new_logic outputs
 

@@ -269,7 +269,7 @@ recompress(lines, f"PostEco/{stage}.v.gz")
 
 **Run the general Verilog validator FIRST (covers all F sub-checks plus additional patterns):**
 
-Get the ECO-touched module names from the applied JSON (module_name field of all entries). Pass via `--modules` — this is MANDATORY to keep runtime fast on large P&R netlists (otherwise it scans 8000+ modules and gets killed):
+Get the ECO-touched module names from the applied JSON (module_name field of all entries). Pass via `--modules` — this is MANDATORY to keep runtime fast on large P&R netlists (otherwise it scans 8000+ modules and times out or gets killed). If the validator times out even with `--modules`, run each stage independently and use `timeout 120` per stage — never fall back to manual-only without attempting module-scoped validation:
 
 ```python
 # Extract touched module names from eco_applied_round<ROUND>.json
@@ -569,6 +569,132 @@ After verifying the output pin, also verify all INPUT pin names in `port_connect
 ```
 
 `H_wrong_input_pin_name` is treated as a fixable check type in the inline fix loop, alongside F3/F5/F6. Re-run Check H after applying the fix to confirm the input pin name is now valid.
+
+### Check F2-POSITION — Cross-Position Wire Declaration Conflict (SVR-9 prevention)
+
+The standard F2 check detects `wire X` + `port_connection(X)` in the same module. This extension specifically detects **position-based conflicts**: an eco-inserted gate output net referenced by a pre-existing cell at a lower line number than the explicit `wire X;` declaration. FM sees the earlier reference as an implicit declaration, then the explicit wire as a duplicate → SVR-9.
+
+```python
+for stage in ["Synthesize", "PrePlace", "Route"]:
+    lines = list(gzip.open(f"PostEco/{stage}.v.gz", 'rt'))
+    for mod_name, mod_start, mod_end in find_module_ranges(lines):
+        mod_lines = lines[mod_start:mod_end]
+
+        # Collect: line index of each explicit wire decl for eco-inserted nets
+        wire_decl_positions = {}
+        for i, line in enumerate(mod_lines):
+            m = re.match(r'^\s*wire\s+(\w+)\s*;', line)
+            if m:
+                wire_decl_positions[m.group(1)] = i
+
+        # Collect: line index of ALL port connection references to eco nets
+        for net_name, wire_lineno in wire_decl_positions.items():
+            for i, line in enumerate(mod_lines):
+                if i >= wire_lineno:
+                    break  # only check lines BEFORE the wire decl
+                # Is this net referenced as a port connection input here?
+                if re.search(rf'\.\w+\s*\(\s*{re.escape(net_name)}\s*\)', line):
+                    # Reference at line i < wire decl at wire_lineno → SVR-9 risk
+                    issues_F.append({
+                        "stage": stage, "module": mod_name,
+                        "sub_check": "F2_position_conflict",
+                        "wire": net_name,
+                        "ref_line": mod_start + i,
+                        "decl_line": mod_start + wire_lineno,
+                        "severity": "CRITICAL",
+                        "fix": "remove_explicit_wire_decl"
+                    })
+```
+
+**Inline fix for F2-POSITION:** Remove the explicit `wire <net>;` declaration — the earlier port connection reference already implicitly declares the net. The gate output binding that follows also references it correctly.
+
+### Check NEW-B2 — Missing Port Declarations for Cells Whose Outputs Escape Module Scope
+
+For each newly inserted ECO cell, verify that if its output net appears in a parent module's instance connection, a corresponding `port_declaration` entry was applied. Missing port declarations cause FE-LINK-7 ABORT_LINK.
+
+```python
+# Build set of output nets from all ECO-inserted cells (new_logic_gate, new_logic_dff)
+eco_output_nets = {}  # {output_net: (instance_name, module_name, stage)}
+for stage in ["Synthesize", "PrePlace", "Route"]:
+    for entry in applied.get(stage, []):
+        if entry.get("status") == "INSERTED" and entry.get("change_type") in ("new_logic_gate", "new_logic_dff"):
+            eco_output_nets[entry.get("output_net", "")] = (
+                entry.get("instance_name", ""),
+                entry.get("module_name", ""),
+                stage
+            )
+
+# For each eco output net, check if it appears in parent module scope
+for output_net, (inst_name, mod_name, stage) in eco_output_nets.items():
+    # Search PostEco for this net being used as a port connection argument OUTSIDE mod_name
+    parent_ref_count = int(bash(
+        f'zcat {REF_DIR}/data/PostEco/{stage}.v.gz | '
+        f'grep -c "\\.\\w\\+\\s*(\\s*{re.escape(output_net)}\\s*)"'
+    ))
+    local_ref_count = int(bash(
+        f'zcat {REF_DIR}/data/PostEco/{stage}.v.gz | '
+        f'awk "/^module {re.escape(mod_name)}/,/^endmodule/" | '
+        f'grep -c "\\.\\w\\+\\s*(\\s*{re.escape(output_net)}\\s*)"'
+    ))
+    # If net referenced more times than just in its own module → used by parent
+    if parent_ref_count > local_ref_count:
+        # Verify port_declaration exists for this module/signal
+        port_declared = any(
+            e.get("change_type") == "port_declaration"
+            and e.get("signal_name") == output_net
+            and mod_name in e.get("module_name", "")
+            for e in applied.get(stage, [])
+        )
+        if not port_declared:
+            issues_B2.append({
+                "stage": stage, "module": mod_name,
+                "output_net": output_net, "eco_instance": inst_name,
+                "sub_check": "B2_missing_output_port",
+                "severity": "CRITICAL"
+            })
+```
+
+**Inline fix for Check B2:** Spawn eco_applier sub-agent with a targeted `port_declaration` entry: `{"change_type": "port_declaration", "signal_name": <output_net>, "module_name": <mod_name>, "declaration_type": "output", "force_reapply": True}`.
+
+### Check NEW-UNDRIVEN — Undriven DFF Inputs After ECO Changes
+
+For each DFF in ECO-touched modules, verify the `.D` pin net has at least one primitive driver in PostEco. An undriven D-input causes FM DFF0X (mode H), which can cascade to hundreds of downstream failures.
+
+```python
+for stage in ["Synthesize", "PrePlace", "Route"]:
+    touched_modules = get_touched_module_names(applied, stage)
+    for mod_name in touched_modules:
+        mod_lines = extract_module_lines(f"PostEco/{stage}.v.gz", mod_name)
+        # Find all DFF .D pin connections in this module
+        for dff_match in re.finditer(
+            r'(\w+)\s+(\w+)\s*\(.*?\.\s*D\s*\(\s*(\w+)\s*\).*?\)\s*;',
+            "\n".join(mod_lines), re.DOTALL
+        ):
+            cell_type  = dff_match.group(1)
+            dff_inst   = dff_match.group(2)
+            d_input_net = dff_match.group(3)
+
+            if d_input_net in ("1'b0", "1'b1"):
+                continue  # constant input — always driven
+
+            # Count drivers: any .anypin(<d_input_net>) where anypin is NOT an input port
+            # Simplified: count gate output bindings where output = d_input_net
+            driver_count = sum(
+                1 for line in mod_lines
+                if re.search(rf'\.\s*(?:Z|ZN|Q|QN)\s*\(\s*{re.escape(d_input_net)}\s*\)', line)
+            )
+            if driver_count == 0:
+                issues_UNDRIVEN.append({
+                    "stage": stage, "module": mod_name,
+                    "dff_instance": dff_inst, "d_input_net": d_input_net,
+                    "sub_check": "UNDRIVEN_DFF_D_INPUT",
+                    "severity": "CRITICAL"
+                })
+```
+
+**UNDRIVEN failures BLOCK FM submission** — they cause FM DFF0X which cascades to hundreds of false non-equivalences. Must be fixed before FM runs.
+
+**Fix procedure:** Identify which renamed driver output left this net undriven. Find the ECO rewire that renamed the driver output. Add a new rewire entry connecting the DFF .D to the new driver net. Spawn eco_applier sub-agent.
 
 ### Check E — Rewire Consistency (WARNING only — not a blocker)
 

@@ -321,6 +321,7 @@ Use Step 2 results to classify:
 | `d_input_decompose_failed` in RTL diff | F | See Mode F below |
 | `FmEqvEcoRouteVsEcoPrePlace` PASS, `FmEqvEcoPrePlaceVsEcoSynthesize` FAIL ≥ 10, no failing DFF matches target_register | G | Structural HFS mismatch — attempt fix_named_wire; if Priority 3 trace confirms no fixable net → manual_only |
 | 3000+ cascade failures from one module scope where `<old_token>` was a module output port | `Mode_A_module_port_direct_gating` | Set `and_term_strategy: "module_port_direct_gating"` |
+| Pre-existing DFF downstream of `and_term` old_token, and_term gate drove new net NOT the port | `INCOMPLETE_AND_TERM` | Re-study with `module_port_direct_gating`; new gate output = old_token; rename original driver; remove individual rewires |
 | Newly inserted DFF fails with globally unmatched SE/SI cone nets (HFS aliases differ between stages) | `SCAN_CHAIN_MISMATCH` | Auto-fixable via tune file entries (GAP-20) |
 
 **Multiple modes can coexist** — classify each failing point independently and combine all into a single `revised_changes` list.
@@ -365,7 +366,7 @@ The cell or net name differs between stages. Grep PostEco for the failing stage 
 >
 > **HARD RULE — `set_dont_verify` is NEVER a substitute for `fix_named_wire`.** When an ECO DFF fails in P&R only due to HFS-renamed nets, the correct action is `fix_named_wire` (Mode H).
 
-**PROOF required — all four conditions must be satisfied:**
+**PROOF required — ALL five conditions must be satisfied. One failure → not Mode E:**
 
 **Condition 0:** If `<failing_dff_instance>` matches `eco_<jira>_` → STOP. Cannot be Mode E.
 
@@ -384,7 +385,24 @@ pplace_count=$(zcat <REF_DIR>/data/PreEco/PrePlace.v.gz   | grep -cw "<input_net
 # synth_count > 0 AND pplace_count = 0 → Mode H (fix_named_wire), NOT Mode E
 ```
 
-Only after ALL conditions confirmed → classify Mode E → `action: manual_only`.
+**Condition 4 — Not downstream of an and_term target (CRITICAL — prevents misclassifying GAP-15 failures as Mode E):**
+Check whether any `and_term` change in `eco_rtl_diff.json` has `old_token` whose gate-level equivalent net appears in this DFF's D-input cone:
+```python
+and_term_tokens = [c["old_token"] for c in rtl_diff["changes"] if c["change_type"] == "and_term"]
+d_input_cone_nets = trace_D_input_chain(failing_dff, depth=10, stage_lines=posteco_lines)
+for token in and_term_tokens:
+    token_aliases = find_all_stage_aliases(token, preeco_lines)  # RTL net + all P&R aliases
+    if any(alias in d_input_cone_nets for alias in token_aliases):
+        # DFF is downstream of an and_term target → NOT Mode E
+        # The ECO did not gate ALL consumers of old_token (GAP-15 not applied correctly)
+        classify_as("INCOMPLETE_AND_TERM", old_token=token, failing_dff=failing_dff)
+        return  # STOP — do NOT continue to Mode E
+```
+
+**Condition 5 — Cascade count is not suspiciously large:**
+If `cascade_count >= 100` and all failing DFFs share a common module scope related to an `and_term` change → the cascade strongly suggests GAP-15 was not applied (not a pre-existing divergence). Do NOT classify as Mode E; classify as `INCOMPLETE_AND_TERM` and prescribe GAP-15 fix.
+
+Only after ALL five conditions confirmed → classify Mode E → `action: manual_only`.
 
 ### Mode F — d_input_decompose_failed
 
@@ -407,14 +425,70 @@ Check `fallback_strategy` in eco_rtl_diff.json:
 
 - **`null`** → Mode F2: set all revised_changes to `action: manual_only`. ROUND_ORCHESTRATOR exits loop early.
 
+### Mode INCOMPLETE_AND_TERM — and_term gate did not drive port directly (GAP-15 violation)
+
+**Trigger:** Pre-existing DFF (NOT `eco_<jira>_`) fails FM AND the D-input cone traces back to an `and_term` target signal (`old_token`) from `eco_rtl_diff.json` AND cascade count ≥ 50. This is NOT Mode E — it is a structural incompleteness in the ECO application: the `and_term` gate drove a new intermediate net (`n_eco_<jira>_<seq>`) and rewired only 2–4 individual consumer cells, leaving all other consumers (including the failing DFFs) still seeing the ungated value.
+
+**Diagnosis steps:**
+```python
+# 1. Identify which and_term old_token's downstream this is
+for change in rtl_diff["changes"]:
+    if change["change_type"] != "and_term":
+        continue
+    old_token = change["old_token"]
+    # 2. Find what the ECO gate output net was (from eco_preeco_study)
+    eco_gate = find_eco_gate_for_and_term(old_token, eco_preeco_study)
+    if eco_gate:
+        current_output = eco_gate["output_net"]  # what the gate actually drives
+        # 3. If current_output != old_token → GAP-15 not applied (drives new net, not port)
+        if current_output != old_token:
+            return {
+                "failure_mode": "INCOMPLETE_AND_TERM",
+                "old_token": old_token,
+                "eco_gate": eco_gate["instance_name"],
+                "current_output_net": current_output,
+                "required_output_net": old_token,
+                "cascade_count": cascade_count,
+                "fix": "apply_module_port_direct_gating"
+            }
+```
+
+**Fix — prescribe module_port_direct_gating re-study:**
+```json
+{
+  "stage": "ALL",
+  "action": "re_study_and_term",
+  "change_type": "and_term",
+  "old_token": "<old_token>",
+  "required_strategy": "module_port_direct_gating",
+  "current_incorrect_output": "<n_eco_jira_seq>",
+  "required_output": "<old_token>",
+  "rationale": "and_term gate drives new intermediate net instead of module port directly. All <N> consumer DFFs still see ungated value. Fix: new gate output = old_token (port name). Rename original driver output to old_token_orig. No individual consumer rewires needed.",
+  "eco_preeco_study_update": {
+    "action": "update_and_term_strategy",
+    "old_token": "<old_token>",
+    "new_output_net": "<old_token>",
+    "rename_original_driver_output_to": "eco_<jira>_<old_token>_orig",
+    "remove_individual_rewire_entries": true
+  }
+}
+```
+
+**HARD RULE: Do NOT classify INCOMPLETE_AND_TERM as Mode E.** The 3000+ / 159 / 4616 cascade pattern is the signature of an incomplete and_term application, not pre-existing P&R structural divergence.
+
 ### Mode F3 — Pre-existing DFF failing due to wrong ECO gate chain
 
-**Trigger:** Pre-existing DFF (NOT `eco_<jira>_`) fails FM AND cascade count ≥ 100 in one stage.
+**Trigger:** Pre-existing DFF (NOT `eco_<jira>_`) fails FM AND cascade count ≥ 100 in one stage AND Condition 4 of Mode E check confirmed no `and_term` connection.
 
 The failing DFF is a DOWNSTREAM register driven by a wrong ECO c_mux cascade. Do NOT classify as Mode E.
 
 ```python
 if not is_eco_inserted(failing_dff) and cascade_count > 100:
+    # First check INCOMPLETE_AND_TERM (higher priority)
+    if and_term_downstream_check(failing_dff, rtl_diff, posteco_lines):
+        classify_as("INCOMPLETE_AND_TERM")
+        return
+    # Then check c_mux cascade
     eco_gates_in_cone = trace_D_input_chain_for_eco_gates(failing_dff, eco_preeco_study)
     if eco_gates_in_cone:
         classify_as_mode_A_with_eco_chain_diagnosis(eco_gates_in_cone)
