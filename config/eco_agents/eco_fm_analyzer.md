@@ -446,6 +446,11 @@ Check `fallback_strategy` in eco_rtl_diff.json:
   ```python
   if "invert_cmux_constants" not in strategies_tried:
       action = "invert_cmux_constants"  # Flip all 1'b0/1'b1 constants in c_mux chain
+  elif "try_structural_insertion" not in strategies_tried:
+      action = "try_structural_insertion"  # Use Strategy A: find existing gate for structural insertion
+      # eco_netlist_studier re-study with intermediate_net_strategy="structural_insertion"
+      # Uses OA12/OAI21/AND3/ND3 compound gates feeding into existing priority chain gate
+      # This produces FM-verifiable structure without set_dont_verify
   elif "try_strategy_A_andterm" not in strategies_tried:
       action = "try_strategy_A_andterm"  # Abandon intermediate_net_insertion, try and_term Strategy B
   elif "try_alternative_pivot" not in strategies_tried:
@@ -526,7 +531,44 @@ if not is_eco_inserted(failing_dff) and cascade_count > 100:
         classify_as_mode_A_with_eco_chain_diagnosis(eco_gates_in_cone)
 ```
 
-Classify as Mode A targeting the specific ECO gate that is wrong. Run Check D (polarity) on ALL c_mux gates in the chain. Try progressive fixes (update_gate_function → invert_cmux_constants → try_alternative_pivot) before declaring manual_only.
+Classify as Mode A targeting the specific ECO gate that is wrong. Run Check D (polarity) on ALL c_mux gates in the chain. Try progressive fixes (update_gate_function → invert_cmux_constants → try_structural_insertion → try_alternative_pivot) before declaring manual_only.
+
+### Mode WRONG_GATE_STRUCTURE — MUX2 cascade creates FM-unverifiable structure
+
+**Trigger:** `FmEqvEcoPrePlaceVsEcoSynthesize` fails with N > 50 points AND:
+1. `d_input_decompose_failed: true` in `eco_rtl_diff.json` for a `new_logic` change
+2. Failing DFFs are all in the same module scope as the `intermediate_net_insertion` change
+3. At least one `MUX2` gate appears in `eco_preeco_study.json` for this change (as `fn=MUX2`)
+
+**Root cause:** MUX2 cascade does not match the structural form RTL synthesis would produce for priority expressions. PrePlace has a different synthesis of the same RTL (different gate topology), so FM structural comparison fails. The engineer's solution uses `OA12`/`OAI21`/`AN3`/`ND3` compound gates that directly translate the RTL boolean and match RTL synthesis output.
+
+**Diagnosis:**
+```python
+# Check if failing DFFs are in same module as intermediate_net_insertion
+mux2_gates = [e for e in eco_preeco_study.get("Synthesize",[])
+              if e.get("gate_function") == "MUX2" and e.get("source") == "intermediate_net_fallback"]
+if mux2_gates and ppvssynth_failing_count > 50:
+    classify_as("WRONG_GATE_STRUCTURE", mux2_gates=mux2_gates)
+```
+
+**Fix — prescribe structural re-study:**
+```json
+{
+  "stage": "ALL",
+  "action": "try_structural_insertion",
+  "failure_mode": "WRONG_GATE_STRUCTURE",
+  "rationale": "MUX2 cascade produces structural non-equivalence in PPvsSynth. Re-study with Strategy A: find existing compound gate (OA12/OAI21) in priority chain for structural insertion. Use OA12/OAI21/AND3/ND3 gate types for condition chain — not MUX2.",
+  "eco_preeco_study_update": {
+    "action": "re_study_intermediate_net_insertion",
+    "preferred_strategy": "structural_insertion",
+    "preferred_gate_types": ["OA12", "OAI21", "AN3", "ND3", "IND2"],
+    "forbidden_gate_types": ["MUX2"],
+    "note": "Find existing compound gate in priority chain and feed new conditions into its inputs instead of building a new parallel MUX cascade"
+  }
+}
+```
+
+**HARD RULE: Do NOT classify WRONG_GATE_STRUCTURE as Mode E.** The engineer's pure netlist solution (no SVF) proves these failures are fixable. The correct fix is changing the gate structure, not adding set_dont_verify.
 
 ### Mode G — Structural stage mismatch
 

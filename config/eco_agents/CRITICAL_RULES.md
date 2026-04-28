@@ -583,6 +583,7 @@ eco_applier reads the `needs_explicit_wire_decl` flag to implement this rule. ec
 | H | `H` | Gate input driven only through hierarchical submodule bus | fix_named_wire | No |
 | `INCOMPLETE_AND_TERM` | — | and_term gate drove new net instead of port directly (GAP-15) | Re-study with module_port_direct_gating | No |
 | `INTENTIONAL_CASCADE` | — | DFF downstream of gated port — value intentionally changed by ECO | manual_only immediately (Round 1); engineer applies set_dont_verify | Yes — engineer |
+| `WRONG_GATE_STRUCTURE` | — | MUX2 cascade in d_input_decompose_failed creates FM-unverifiable structure vs RTL synthesis | Re-study with structural_insertion; use OA12/OAI21/AN3/ND3 — never MUX2 | No — netlist fixable |
 
 ECO-inserted DFFs (`eco_<jira>_` pattern) are **never** Mode E or subject to `set_dont_verify`.
 

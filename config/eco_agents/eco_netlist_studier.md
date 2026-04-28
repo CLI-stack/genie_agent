@@ -520,13 +520,58 @@ PreEco netlist instance is authoritative over this table.
 
 ### 0c — Handle `d_input_decompose_failed` with `fallback_strategy: intermediate_net_insertion`
 
-**Strategy A — CHAIN MODIFICATION (preferred):** When new conditions can be expressed by modifying inputs of an existing intermediate cell between the DFF D-input and source logic:
-1. Trace backward from target_register.D to find the intermediate cell
-2. Insert ECO cells producing the new condition expression
-3. Create rewire entry: change intermediate cell's input from `<old_net>` to `<eco_output_net>`
-4. Record: `intermediate_net_strategy: "chain_modification"`
+**Strategy A — STRUCTURAL INSERTION (preferred — FM-verifiable without SVF):**
 
-**Strategy B — MUX CASCADE (fallback):** When new conditions have no connection to any existing intermediate cell. Decision: Try Strategy A first; if no modifiable cell found → use Strategy B.
+Find an EXISTING gate in the priority chain between the DFF D-input and source logic that can accept the new conditions as additional inputs. This approach keeps the gate-level structure close to RTL synthesis → FM can verify without set_dont_verify.
+
+**Step A-SEARCH — Find the structural insertion gate:**
+```bash
+# Trace backward from target_register.D (up to 8 hops)
+# Look for compound gates: OA12, OAI21, AN2/AN3, ND2/ND3, OR2/OR3
+# that have at least one input that can be replaced with a condition expression
+zcat PreEco/Synthesize.v.gz | awk "/\b<target_register>_reg\b/,/\) ;/" | \
+  grep -E "OA[0-9]|OAI[0-9]|AN[0-9]|ND[0-9]|OR[0-9]"  | head -5
+```
+For each candidate gate found:
+1. Verify it's in the backward cone of target_register.D
+2. Identify which input can be replaced (the one connected to the "else/default" path in the RTL priority)
+3. Record: `intermediate_gate_target`, `intermediate_gate_pin`, `intermediate_gate_cell`
+
+**Step A-BUILD — If structural insertion gate found:**
+- Create rewire entry: `<intermediate_gate>.<pin>: <old_net> → <eco_condition_output>`
+- Create new_logic_gate entries for conditions using **OA12/OAI21/AND3/ND3** that match RTL boolean structure:
+  - `(A | B) & C` → use `OA12` (one OR-AND-2-1 gate, not INV+OR+AND)
+  - `~(A & B & C)` → use `ND3`
+  - `A & ~B & C` → use `AN3` with B inverted by `INV`
+- Record: `intermediate_net_strategy: "structural_insertion"`
+- **No MUX2 gates** — MUX2 cascade creates structural divergence FM cannot verify
+
+**Step A-VERIFY FM compatibility:**
+After building entries, verify gate types match what RTL synthesis would produce:
+```bash
+# Check if similar OA12/OAI21 exist in PreEco (confirms library supports them)
+zcat PreEco/Synthesize.v.gz | grep -cm1 "OA12\|OAI21" → must be > 0
+```
+
+**Strategy B — PIVOT APPROACH (fallback — use ONLY when Strategy A fails):**
+
+When no structural insertion gate found after Strategy A search, use the DFF D-input pivot. Decision: always try Strategy A first; only use B if A search exhausted.
+
+**CRITICAL — Even in Strategy B: use OA12/OAI21/AND3/ND3 gate types for condition chain — never use MUX2 cascade.** MUX2 cascade produces structural non-equivalence that requires set_dont_verify. OA12/OAI21 directly translate RTL boolean expressions and FM can verify them automatically.
+
+```python
+# When building condition gates for ANY strategy:
+# Use compound gates matching RTL boolean structure:
+preferred_gate_types = {
+    "(A | B) & C":    "OA12",   # one gate replaces INV+OR+AND
+    "(~A & B)":       "IND2",   # inverted-AND
+    "~(A | B) & C":  "AOI12 → INV", # or OAI21
+    "A & B & C":      "AN3",
+    "~(A & B & C)":   "ND3",
+}
+# NEVER use MUX2 for priority selection — it creates unverifiable structure
+# NEVER decompose compound boolean into multi-level INV+AND+OR chains
+```
 
 **Step 0c-1 — Find the pivot net (Strategy B):** Trace backward from `target_register.D` (up to 5 hops). Stop at first net whose driver has fanout ≥ 2 (`grep -c "( <net> )" /tmp/eco_study_<TAG>_Synthesize.v` ≥ 2). Record as `<pivot_net>`.
 
