@@ -28,20 +28,17 @@ import sys
 from pathlib import Path
 
 
-def find_cell_type(gate_function, stage_gz, timeout=60):
-    """Find a matching cell type from PreEco for the given gate function."""
-    fn_upper = gate_function.upper()
-    # Map gate function to common cell name prefixes
-    fn_to_prefix = {
-        'INV': 'INV', 'NOR2': 'NR2', 'NOR3': 'NR3', 'NOR4': 'NR4',
-        'AND2': 'AN2', 'AND3': 'AN3', 'AND4': 'AN4',
-        'OR2': 'OR2', 'OR3': 'OR3', 'NAND2': 'ND2', 'NAND3': 'ND3',
-        'XOR2': 'XOR2', 'MUX2': 'MUX2',
-    }
-    prefix = fn_to_prefix.get(fn_upper, fn_upper[:3])
+def find_cell_type_from_preeco(cell_type_hint, stage_gz, timeout=60):
+    """
+    Find cell type from PreEco netlist by grepping for the hint (generic — no hardcoded prefixes).
+    If cell_type_hint is already a valid full cell type, verify it exists in PreEco.
+    Otherwise try to find any cell that matches the hint prefix.
+    """
+    if not cell_type_hint:
+        return ''
     try:
         proc = subprocess.run(
-            f'zcat {stage_gz} | grep -m1 "^ *{prefix}[A-Z0-9]" | awk \'{{print $1}}\'',
+            f'zcat {stage_gz} | grep -m1 "^ *{re.escape(cell_type_hint)}" | awk \'{{print $1}}\'',
             shell=True, capture_output=True, text=True, timeout=timeout
         )
         ct = proc.stdout.strip()
@@ -49,19 +46,7 @@ def find_cell_type(gate_function, stage_gz, timeout=60):
             return ct
     except Exception:
         pass
-    return ''
-
-
-def output_pin_for_fn(gate_function):
-    """Return expected output pin name for gate function."""
-    fn = gate_function.upper()
-    if fn in ('INV', 'NOR2', 'NOR3', 'NOR4', 'NAND2', 'NAND3', 'NAND4', 'XNOR2', 'IND2', 'IND3'):
-        return 'ZN'
-    if fn in ('AND2', 'AND3', 'AND4', 'OR2', 'OR3', 'OR4', 'XOR2', 'MUX2', 'BUF'):
-        return 'Z'
-    if fn in ('DFF', 'SDFF', 'DFFR'):
-        return 'Q'
-    return 'ZN'  # default
+    return cell_type_hint  # return as-is if not found
 
 
 def main():
@@ -113,29 +98,26 @@ def main():
                 if not inst or inst in existing_insts:
                     continue
 
-                fn       = gate.get('gate_function', 'INV')
-                out_pin  = output_pin_for_fn(fn)
-                out_net  = gate.get('output_net', f'n_eco_{args.jira}_{inst.split("_")[-1]}')
-                inputs   = gate.get('inputs', [])
-                scope    = gate.get('instance_scope', '') or dff_entry.get('instance_scope', '')
-                mod_name = gate.get('module_name', '') or dff_entry.get('module_name', '')
-                cell_type = gate.get('cell_type', '') or find_cell_type(fn, synth_gz)
+                fn        = gate.get('gate_function', '')
+                out_net   = gate.get('output_net', '')
+                scope     = gate.get('instance_scope', '') or dff_entry.get('instance_scope', '')
+                mod_name  = gate.get('module_name', '') or dff_entry.get('module_name', '')
+                cell_type = find_cell_type_from_preeco(gate.get('cell_type', ''), synth_gz)
 
-                # Build port_connections
-                # Gate has inputs list + one output pin
-                input_pins = {
-                    'INV': ['I'], 'NOR2': ['A1','A2'], 'NOR3': ['A1','A2','A3'],
-                    'AND2': ['A1','A2'], 'AND3': ['A1','A2','A3'],
-                    'AND4': ['A1','A2','A3','A4'],
-                    'OR2': ['A1','A2'], 'OR3': ['A1','A2','A3'],
-                    'NAND2': ['A1','A2'], 'NAND3': ['A1','A2','A3'],
-                }.get(fn.upper(), [f'A{i+1}' for i in range(len(inputs))])
-
-                port_connections = {}
-                for i, inp_net in enumerate(inputs):
-                    pin = input_pins[i] if i < len(input_pins) else f'A{i+1}'
-                    port_connections[pin] = inp_net
-                port_connections[out_pin] = out_net
+                # Use port_connections directly from RTL diff if available — NO hardcoded pin names
+                port_connections = gate.get('port_connections') or gate.get('port_connections_per_stage', {}).get('Synthesize')
+                if not port_connections:
+                    # Fallback: build from inputs list using generic A1/A2/... naming
+                    # Pin names will be corrected by eco_netlist_studier from actual PreEco example
+                    inputs = gate.get('inputs', [])
+                    port_connections = {f'A{i+1}': net for i, net in enumerate(inputs)}
+                    if out_net:
+                        # Determine output pin from existing port_connections keys in RTL diff
+                        # by finding the key whose value matches out_net
+                        existing_pc = gate.get('port_connections', {})
+                        out_pin = next((k for k, v in existing_pc.items() if v == out_net), None)
+                        if out_pin:
+                            port_connections[out_pin] = out_net
 
                 entry = {
                     'change_type':    'new_logic_gate',
