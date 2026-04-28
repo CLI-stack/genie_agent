@@ -45,12 +45,41 @@ pre_fm_check_failed = handoff.get("pre_fm_check_failed", False)
 
 If `pre_fm_check_failed: true` — FM was never submitted (blocked by Step 5). Write a **simplified HTML** noting pre-FM check failure and skip the FM failing points section. Do NOT try to read `eco_fm_tag_spec` (it doesn't exist). Send email with subject indicating "Pre-FM Check Failed".
 
-If `pre_fm_check_failed: false` (normal FM failure) — write full HTML:
-- Round N summary: which targets failed, failing point count per target
-- ECO changes attempted: read from `data/<TAG>_eco_applied_round<ROUND>.json`
-- FM failing points detail: hierarchy paths of failing DFFs — read from `data/<eco_fm_tag>_spec`
-- Pre-FM check results: read from `data/<TAG>_eco_step5_pre_fm_check_round<ROUND>.rpt` (if exists)
-- What will be tried next round (from eco_fm_analyzer — written in Step 6d)
+If `pre_fm_check_failed: false` (normal FM failure) — write full HTML using this template:
+
+```html
+<html><body style="font-family:Arial,sans-serif;margin:20px">
+<h2>ECO Round <ROUND> — JIRA <JIRA> (<TILE>)</h2>
+<p><b>Tag:</b> <TAG> | <b>eco_fm_tag:</b> <eco_fm_tag> | <b>Status:</b> FM FAIL/ABORT</p>
+
+<h3>FM Results</h3>
+<table border="1" cellpadding="6" style="border-collapse:collapse">
+<tr><th>Target</th><th>Status</th><th>Failing Points</th></tr>
+<tr><td>FmEqvEcoSynthesizeVsSynRtl</td><td><PASS/FAIL/ABORT></td><td><N></td></tr>
+<tr><td>FmEqvEcoPrePlaceVsEcoSynthesize</td><td><PASS/FAIL/ABORT></td><td><N></td></tr>
+<tr><td>FmEqvEcoRouteVsEcoPrePlace</td><td><PASS/FAIL/ABORT></td><td><N></td></tr>
+</table>
+
+<h3>Failing Points Detail</h3>
+<pre><read from data/<eco_fm_tag>_spec — list all failing DFF hierarchy paths></pre>
+
+<h3>ECO Changes This Round</h3>
+<p>Applied: <N> | Inserted: <N> | Skipped: <N> | Already: <N> | VerifyFailed: <N></p>
+<p><read summary from data/<TAG>_eco_applied_round<ROUND>.json summary field></p>
+
+<h3>Pre-FM Check (Round <ROUND>)</h3>
+<pre><read from data/<TAG>_eco_step5_pre_fm_check_round<ROUND>.rpt — first 30 lines></pre>
+
+<h3>Failure Diagnosis</h3>
+<p><failure_mode from eco_fm_analysis_round<ROUND>.json></p>
+<p><diagnosis excerpt — first 300 chars></p>
+
+<h3>Next Round Plan</h3>
+<p><revised_changes summary from eco_fm_analysis_round<ROUND>.json — list action per change></p>
+</body></html>
+```
+
+Populate each section by reading the actual files — do NOT write placeholder text like "N/A" or "see logs". Every section must contain real data from the round's output files.
 
 Then send:
 ```bash
