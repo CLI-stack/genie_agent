@@ -765,9 +765,26 @@ ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt
 
 ## STEP 5 — Pre-FM Quality Checker (MANDATORY)
 
+**BEFORE spawning eco_pre_fm_checker: run eco_check8.sh directly from the ORCHESTRATOR.**
+
+This is the most critical syntax gate. eco_check8.sh runs the Verilog validator deterministically — it CANNOT be skipped or replaced by manual grepping. Run it NOW:
+
+```bash
+cd <BASE_DIR>
+bash script/eco_scripts/eco_check8.sh \
+    <BASE_DIR> <REF_DIR> <TAG> 1 \
+    data/<TAG>_eco_applied_round1.json
+CHECK8_EXIT=$?
+```
+
+Read `data/<TAG>_eco_check8_round1.json`. If any stage is FAIL → **do NOT spawn eco_pre_fm_checker yet**. Fix the syntax issues first using the inline fix procedures in eco_pre_fm_checker.md, then re-run eco_check8.sh. Only proceed when all 3 stages are PASS.
+
+Pass `CHECK8_RESULT_PATH=data/<TAG>_eco_check8_round1.json` to the eco_pre_fm_checker sub-agent — it reads this pre-computed result directly (does NOT re-run eco_check8.sh).
+
 **Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_pre_fm_checker.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `BASE_DIR`, `ROUND=1`, `AI_ECO_FLOW_DIR`
 - Path to applied JSON: `<BASE_DIR>/data/<TAG>_eco_applied_round1.json`
+- `CHECK8_RESULT_PATH=<BASE_DIR>/data/<TAG>_eco_check8_round1.json` (pre-computed by ORCHESTRATOR — do NOT re-run)
 
 Wait for sub-agent to complete.
 

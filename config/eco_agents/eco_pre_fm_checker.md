@@ -334,15 +334,20 @@ for stage in ["Synthesize","PrePlace","Route"]:
 scan_modules = directly_touched | parent_modules
 ```
 
-**Run Check 8 using the eco_check8.sh script — single command, no manual parsing:**
+**Check 8 was already run by the ORCHESTRATOR/ROUND_ORCHESTRATOR before you were spawned.**
 
+Read the pre-computed result — do NOT re-run eco_check8.sh:
+```bash
+# CHECK8_RESULT_PATH was passed to you in your prompt
+cat <CHECK8_RESULT_PATH>
+# → {"Synthesize": "PASS|FAIL", "PrePlace": "PASS|FAIL", "Route": "PASS|FAIL", "errors": [...]}
+```
+
+If `CHECK8_RESULT_PATH` was NOT passed or file does not exist → the ORCHESTRATOR skipped the pre-run (bug). In that case ONLY, run it now:
 ```bash
 cd <BASE_DIR>
 bash script/eco_scripts/eco_check8.sh \
-    <BASE_DIR> \
-    <REF_DIR> \
-    <TAG> \
-    <ROUND> \
+    <BASE_DIR> <REF_DIR> <TAG> <ROUND> \
     data/<TAG>_eco_applied_round<ROUND>.json
 CHECK8_EXIT=$?
 ```
@@ -353,9 +358,11 @@ This script runs `validate_verilog_netlist.py --strict`, parses per-stage result
 {"Synthesize": "PASS|FAIL", "PrePlace": "PASS|FAIL", "Route": "PASS|FAIL", "errors": [...]}
 ```
 
-**Read the output JSON and merge into check_summary:**
+**Read the pre-computed Check 8 result and merge into check_summary — this is MANDATORY:**
 ```python
-check8 = json.load(open(f"data/{TAG}_eco_check8_round{ROUND}.json"))
+# Use CHECK8_RESULT_PATH if provided, otherwise fall back to standard path
+check8_path = CHECK8_RESULT_PATH or f"data/{TAG}_eco_check8_round{ROUND}.json"
+check8 = json.load(open(check8_path))
 result["check_summary"]["check8_verilog_validator"] = check8
 # check8["Synthesize"] / check8["PrePlace"] / check8["Route"] are "PASS" or "FAIL"
 # check8["errors"] is a list of error strings

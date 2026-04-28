@@ -349,9 +349,27 @@ If this file does NOT exist — eco_applier failed to write its output JSON. Do 
 
 ## STEP 5 — Pre-FM Quality Checker (MANDATORY)
 
+**BEFORE spawning eco_pre_fm_checker: run eco_check8.sh directly from ROUND_ORCHESTRATOR.**
+
+eco_check8.sh is the syntax gate that prevents FM ABORT_NETLIST. It MUST be run by the orchestrator — not delegated to the sub-agent which has repeatedly skipped it. Run it NOW:
+
+```bash
+cd <BASE_DIR>
+bash script/eco_scripts/eco_check8.sh \
+    <BASE_DIR> <REF_DIR> <TAG> <NEXT_ROUND> \
+    data/<TAG>_eco_applied_round<NEXT_ROUND>.json
+CHECK8_EXIT=$?
+```
+
+- If CHECK8_EXIT = 0 (all PASS) → proceed to spawn eco_pre_fm_checker
+- If CHECK8_EXIT = 1 (any FAIL) → apply inline SVR-9/FM-599 fixes directly (remove duplicate wire decls, fix bare parens), then re-run eco_check8.sh. Only proceed when PASS.
+
+Pass `CHECK8_RESULT_PATH=data/<TAG>_eco_check8_round<NEXT_ROUND>.json` to eco_pre_fm_checker — it reads this pre-computed result (does NOT re-run eco_check8.sh).
+
 **Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_pre_fm_checker.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `BASE_DIR`, `ROUND=<NEXT_ROUND>`, `AI_ECO_FLOW_DIR`
 - Path to applied JSON: `<BASE_DIR>/data/<TAG>_eco_applied_round<NEXT_ROUND>.json`
+- `CHECK8_RESULT_PATH=<BASE_DIR>/data/<TAG>_eco_check8_round<NEXT_ROUND>.json`
 
 Wait for sub-agent to complete.
 
