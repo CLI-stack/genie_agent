@@ -613,6 +613,22 @@ Format of output (each stage array may contain both wire_swap rewire entries AND
 
 **CHECKPOINT:** Verify `data/<TAG>_eco_preeco_study.json` exists and has non-empty arrays for all 3 stages (Synthesize, PrePlace, Route) before proceeding. If missing or all stages empty — the sub-agent failed. Do NOT continue to Step 4.
 
+**MANDATORY post-Step 3: Run eco_expand_chains.py to inject missing D-input gate chains:**
+
+The eco_netlist_studier sometimes produces DFF entries (new_logic_dff) with `.D` referencing intermediate nets (e.g. `n_eco_<jira>_d007`) but omits the actual gate chain entries. This script reads `d_input_gate_chain` from the RTL diff and injects the missing gates into the study JSON before Step 4 runs.
+
+```bash
+cd <BASE_DIR>
+python3 script/eco_scripts/eco_expand_chains.py \
+    --rtl-diff data/<TAG>_eco_rtl_diff.json \
+    --study    data/<TAG>_eco_preeco_study.json \
+    --ref-dir  <REF_DIR> \
+    --jira     <JIRA> \
+    --output   data/<TAG>_eco_preeco_study.json
+```
+
+Check output for `ECO_SCRIPT_LAUNCHED: eco_expand_chains.py` and `chains_expanded: N`. If N=0, no chains were missing (OK). If N>0, gates were injected — verify the study JSON now has the correct chain entries before proceeding.
+
 **Generate Step 3 RPT from JSON (ORCHESTRATOR responsibility):**
 
 Read `data/<TAG>_eco_preeco_study.json` and write `data/<TAG>_eco_step3_netlist_study_round1.rpt`:

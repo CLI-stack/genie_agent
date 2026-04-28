@@ -205,6 +205,16 @@ ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt
 ```
 Verify `eco_preeco_study.json` modified time is after Step 6d completed. Do NOT proceed to Step 4 without both.
 
+**MANDATORY: Run eco_expand_chains.py after every re-study to inject any missing D-input gate chains:**
+```bash
+cd <BASE_DIR>
+python3 script/eco_scripts/eco_expand_chains.py \
+    --rtl-diff data/<TAG>_eco_rtl_diff.json \
+    --study    data/<TAG>_eco_preeco_study.json \
+    --ref-dir  <REF_DIR> --jira <JIRA> \
+    --output   data/<TAG>_eco_preeco_study.json
+```
+
 **MANDATORY: Re-load study JSON before exit check** — the file was just updated by eco_netlist_studier. Do NOT use any in-memory study JSON from earlier in this instance. Always load fresh from disk:
 
 **MANUAL_ONLY RE-CHECK (after Step 6f) — SINGLE UNIFIED EXIT RULE:**
