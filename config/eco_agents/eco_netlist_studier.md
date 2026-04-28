@@ -77,6 +77,33 @@ Read `FM_ANALYSIS_PATH`. Extract: `failure_mode`, `revised_changes`, `re_study_t
 
 Only proceed to Step 3 for: `ABORT_LINK`, `ABORT_CELL_TYPE`, `A`, `B`, `C`, `D`, `H`, `UNKNOWN`, or mixed modes with non-empty `re_study_targets`.
 
+**RE_STUDY MANDATORY — STEP 0 re-check for all `and_term` entries in study JSON:**
+
+Before processing any failure mode, scan `eco_preeco_study.json` for `and_term` change entries where `and_term_strategy` is NOT `module_port_direct_gating`. For each such entry, run STEP 0 to determine if it SHOULD have been `module_port_direct_gating`:
+
+```bash
+# For each and_term entry with strategy != module_port_direct_gating:
+old_token="<old_token_from_study_json>"
+rtl_file="<corresponding_rtl_file>"
+
+rtl_check=$(grep -c "output.*\b${old_token}\b" <REF_DIR>/data/SynRtl/${rtl_file}.v 2>/dev/null || echo 0)
+gatelvl_check=$(zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | \
+  awk "/^module <posteco_module_name>/,/\) ;/" | \
+  grep -c "output.*\b${old_token}\b" || echo 0)
+
+echo "RE_STUDY STEP0: ${old_token} rtl=${rtl_check} gatelvl=${gatelvl_check}"
+```
+
+If `rtl_check >= 1` OR `gatelvl_check >= 1` → **this entry was WRONG** — must be corrected to `module_port_direct_gating`:
+1. Set `and_term_strategy = "module_port_direct_gating"` on the entry
+2. Change `output_net` from `n_eco_<jira>_<seq>` → `<old_token>` (the port name itself)
+3. Add driver rename rewire: original driver cell `.ZN → eco_<jira>_<seq>_orig`
+4. Remove ALL individual consumer rewires for `<old_token>` in this module
+5. Set `force_reapply: true` on this entry and the driver rename rewire
+6. Record `re_study_note: "STEP0 correction in round N: strategy changed from Strategy_A to module_port_direct_gating. output_net corrected from n_eco_<jira>_<seq> to <old_token>."`
+
+This check ensures GAP-15 is enforced even when the initial study used the wrong strategy.
+
 ### Re-study Step 3 — Handle each failure mode
 
 **For `ABORT_LINK` (missing port from port list):** For each `force_port_decl` in `revised_changes`:
@@ -202,25 +229,29 @@ cp <BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt <AI_ECO_F
 
 This check runs FIRST. If it fires, RETURN IMMEDIATELY and HARD STOP all other strategy evaluation. There is no else branch, no fallthrough, no "also consider parent_scope". The RETURN is unconditional.
 
+**Run these exact bash commands NOW before choosing any strategy:**
+
+```bash
+# Command 1 — RTL source check
+rtl_check=$(grep -c "output.*\b<old_token>\b" <REF_DIR>/data/SynRtl/<rtl_file>.v 2>/dev/null || echo 0)
+
+# Command 2 — Gate-level PreEco module header check
+gatelvl_check=$(zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | \
+  awk '/^module <posteco_module_name>/,/\)\s*;/' | \
+  grep -c "\boutput\b.*\b<old_token>\b" || echo 0)
+
+echo "STEP0_RESULT: rtl_check=$rtl_check  gatelvl_check=$gatelvl_check"
+```
+
+**Decision rule (MANDATORY — write this exact line to the Step 3 RPT):**
+```
+STEP 0: old_token=<old_token>  rtl_check=<N>  gatelvl_check=<N>
+  is_output_port=<True/False>  → strategy=<module_port_direct_gating | proceed_to_selection>
+```
+
+If `rtl_check >= 1` OR `gatelvl_check >= 1` → `is_output_port = True` → strategy MUST be `module_port_direct_gating`. **There is NO other valid strategy. Do NOT evaluate parent_scope. Do NOT evaluate direct_rewire.**
+
 ```python
-# STEP 0 — ABSOLUTE GATE (runs before anything else, always)
-# Check 1: RTL source declares old_token as output port
-rtl_is_output = (
-    grep_count(rf"^\s*output\b.*\b{re.escape(old_token)}\b", module_rtl_lines) >= 1
-)
-# Check 2: Gate-level PreEco declares old_token as output port in the module header
-gatelvl_is_output = (
-    grep_count(rf"output\b.*\b{re.escape(old_token)}\b", preeco_module_header_lines) >= 1
-    or old_token in parse_port_list_names(preeco_module_header)
-)
-# Check 3: Gate-level PostEco has old_token as a net driven by a cell inside this module
-# (confirms old_token is visible as a named net — not just an internal alias)
-gatelvl_driven = (
-    grep_count(rf"\.\w+\s*\(\s*{re.escape(old_token)}\s*\)", preeco_module_body_lines) >= 1
-)
-
-is_output_port = rtl_is_output or gatelvl_is_output
-
 if is_output_port:
     # ══════════════════════════════════════════════════════════
     # MODULE PORT DIRECT GATING — the ONLY valid strategy
@@ -228,20 +259,27 @@ if is_output_port:
     and_term_strategy = "module_port_direct_gating"
 
     # Mandatory steps — ALL must be completed:
-    # 1. Find original driver cell of <old_token> in PreEco gate-level
-    #    grep: zcat PreEco/Synthesize.v.gz | grep -n "\.<output_pin>(\s*<old_token>\s*)"
+    # 1. Find original driver cell of <old_token> in PreEco gate-level:
+    #    zcat PreEco/Synthesize.v.gz | grep -n "\.<output_pin>(<old_token>)"
     # 2. Create rewire entry: rename driver cell output from <old_token> → eco_<jira>_<seq>_orig
     #    (implicit wire — do NOT add wire decl for this intermediate net)
-    # 3. Create new_logic_gate entry: new AND/NAND/IND2 gate
+    # 3. Create new_logic_gate entry: new AND2 gate (NOT IND2 — AND2 preserves polarity):
     #    - instance_scope = <declaring_module_scope>
-    #    - output_net = <old_token>   ← drives port directly (same name as port)
-    #    - port_connections: all inputs including the new AND-term
-    # 4. No individual consumer rewires — ALL consumers see gated value via port
+    #    - output_net = <old_token>   ← MUST equal old_token exactly — drives port directly
+    #    - port_connections: {<input_pin_A>: eco_<jira>_<seq>_orig, <input_pin_B>: <new_and_term_input>, <output_pin>: <old_token>}
+    # 4. NO individual consumer rewires — ALL consumers see gated value via port automatically
     # 5. needs_explicit_wire_decl = False for <old_token> (it IS the port — already declared)
     # 6. needs_explicit_wire_decl = False for eco_<jira>_<seq>_orig (implicit from driver rename)
+    # 7. DO NOT rename A2234246.ZN or similar driver to <old_token>_orig in eco_preeco_study.json
+    #    UNTIL confirming the renamed net (eco_<jira>_<seq>_orig) is used as the AND gate input.
 
-    # VERIFICATION: after building entries, confirm:
-    assert output_net == old_token, f"FATAL: module_port_direct_gating must use output_net=old_token, got {output_net}"
+    # HARD VERIFICATION — run this grep BEFORE writing the study JSON:
+    # zcat PreEco/Synthesize.v.gz | grep -c "\beco_<jira>_<seq>\b" → must return 0 (not yet inserted)
+    # Then verify output_net field = old_token in the JSON entry being written:
+    assert output_net == old_token, \
+        f"FATAL: output_net={output_net} but must equal old_token={old_token}. " \
+        f"Strategy is module_port_direct_gating — gate output IS the port name. " \
+        f"Do NOT use n_eco_<jira>_<seq> as output_net."
 
     # MANDATORY — Identify expected cascade DFFs:
     # Any DFF in the declaring module whose D-input cone reaches <old_token> will
