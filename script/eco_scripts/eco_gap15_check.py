@@ -50,17 +50,39 @@ def grep_count(pattern, path, decompress=False):
 
 
 def find_rtl_file(ref_dir, module_name):
-    """Find the RTL source file for a module."""
-    synrtl_dir = Path(ref_dir) / 'data' / 'SynRtl'
-    if not synrtl_dir.exists():
-        synrtl_dir = Path(ref_dir) / 'data' / 'PreEco' / 'SynRtl'
-    for f in synrtl_dir.glob('*.v'):
-        try:
-            text = f.read_text(errors='replace')
-            if f'module {module_name}' in text or f'module {module_name.split("_t_")[-1]}' in text:
-                return f
-        except Exception:
-            pass
+    """
+    Find the RTL source file for a module — generic, works for any tile/project.
+    Searches multiple candidate directories in priority order.
+    """
+    ref = Path(ref_dir)
+    # Priority search paths (handles different tile structures)
+    candidate_dirs = [
+        ref / 'data' / 'SynRtl',
+        ref / 'data' / 'PreEco' / 'SynRtl',
+        ref / 'data' / 'SynRtl' / 'rtl',
+    ]
+    # Also check parent directories (some tiles share RTL)
+    for parent in [ref.parent, ref.parent.parent]:
+        candidate_dirs.append(parent / 'data' / 'SynRtl')
+
+    # Build short module name variants to match against
+    # e.g. "ddrss_umccmd_t_umcdcqarb_0" → try "umcdcqarb", "umcdcqarb_0", full name
+    variants = [module_name]
+    if '_t_' in module_name:
+        short = module_name.split('_t_')[-1]          # e.g. "umcdcqarb_0"
+        variants.append(short)
+        variants.append(re.sub(r'_\d+$', '', short))  # strip trailing _0 suffix
+
+    for d in candidate_dirs:
+        if not d.exists():
+            continue
+        for f in sorted(d.glob('**/*.v')):
+            try:
+                text = f.read_text(errors='replace')
+                if any(f'module {v}' in text or f'module {v} ' in text for v in variants):
+                    return f
+            except Exception:
+                pass
     return None
 
 

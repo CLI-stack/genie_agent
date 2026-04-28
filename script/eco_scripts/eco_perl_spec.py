@@ -49,6 +49,75 @@ def net_exists_in_posteco(net, gz_path, timeout=60):
     return zgrep_count(net, gz_path, timeout) > 0
 
 
+def build_scope_to_module_map(gz_path, timeout=120):
+    """
+    Build a mapping from instance path last segment → gate-level module name.
+    e.g.  'ARB/DCQARB' → 'ddrss_umccmd_t_umcdcqarb_0'
+    Scans module declarations in the gate-level netlist.
+    Returns dict: {scope_key: module_name}
+    """
+    try:
+        proc = subprocess.run(
+            f'zcat {gz_path} | grep "^module "',
+            shell=True, capture_output=True, text=True, timeout=timeout
+        )
+        modules = []
+        for line in proc.stdout.splitlines():
+            m = re.match(r'^module\s+(\S+)', line)
+            if m:
+                modules.append(m.group(1))
+    except Exception:
+        return {}
+
+    scope_map = {}
+    for mod in modules:
+        # Last segment of module name after final underscore group gives a hint
+        # e.g. ddrss_umccmd_t_umcdcqarb_0 → last meaningful part = umcdcqarb
+        parts = mod.split('_')
+        for i, part in enumerate(parts):
+            if part.startswith('umc') or part.startswith('ati') or part.startswith('gmc'):
+                suffix = '_'.join(parts[i:])
+                scope_map[suffix] = mod
+                break
+    return scope_map
+
+
+def resolve_module_name(e, scope_to_mod, gz_path):
+    """
+    Resolve gate-level module_name for a study entry.
+    Priority: explicit module_name > scope-based lookup > posteco grep.
+    """
+    mod = e.get('module_name', '')
+    if mod:
+        return mod
+
+    scope = e.get('instance_scope', '')
+    if not scope:
+        return ''
+
+    # Try last segment of scope path
+    last = scope.split('/')[-1].lower()
+    for suffix, modname in scope_to_mod.items():
+        if last in suffix.lower() or suffix.lower().endswith(last):
+            return modname
+
+    # Fallback: grep PostEco for module containing the instance
+    inst = e.get('instance_name', '')
+    if inst:
+        try:
+            proc = subprocess.run(
+                f'zcat {gz_path} | grep -B500 " {inst} " | grep "^module " | tail -1',
+                shell=True, capture_output=True, text=True, timeout=30
+            )
+            m = re.match(r'^module\s+(\S+)', proc.stdout.strip())
+            if m:
+                return m.group(1)
+        except Exception:
+            pass
+
+    return scope  # last resort: use scope as key
+
+
 def already_applied(inst_name, gz_path, prev_status=None, force_reapply=False):
     """Check if instance already inserted in PostEco. Returns True/False."""
     if force_reapply:
@@ -96,6 +165,8 @@ def main():
                 prev_applied[inst] = e.get('status','')
 
     entries  = study.get(args.stage, [])
+    # Build scope → module_name map from PostEco for module resolution
+    scope_to_mod = build_scope_to_module_map(posteco)
     # {module_name: {wire_decls, wire_removes, gates}}
     changes  = {}
     statuses = []  # list of {instance_name, status, reason}
@@ -108,12 +179,8 @@ def main():
 
         ct   = e.get('change_type','')
         inst = e.get('instance_name') or e.get('cell_name') or e.get('signal_name','')
-        # Derive module_name: use module_name if set, else derive from instance_scope
-        mod  = e.get('module_name','')
-        if not mod and e.get('instance_scope'):
-            # instance_scope = "ARB/DCQARB" → posteco module = ddrss_<tile>_t_um<last_segment>
-            # Fall back to scope-based lookup later; use scope as key for now
-            mod = e.get('instance_scope','')
+        # Resolve gate-level module name (generic — works for any tile)
+        mod   = resolve_module_name(e, scope_to_mod, posteco)
         force = e.get('force_reapply', False)
 
         # ── new_logic_gate / new_logic_dff ───────────────────────────────────
