@@ -351,8 +351,18 @@ while (my $line = <STDIN>) {
                 }
                 push @filtered, $bl;
             }
-            # Add wire decls for new output nets (batch — all before gates)
-            push @filtered, "  wire $_ ;\n" for @{ $spec->{wire_decls} };
+            # Add wire decls for new output nets — ONLY if net not already in module buffer
+            # This prevents SVR-9: if a Pass 4 rewired cell references the net earlier in
+            # the file, the buffer already contains that reference which implicitly declares
+            # the net. Adding explicit wire decl = duplicate = FM SVR-9.
+            my $buf_text = join('', @filtered);
+            for my $net (@{ $spec->{wire_decls} }) {
+                if ($buf_text =~ /\b\Q$net\E\b/) {
+                    print STDERR "SVR9_PREVENT: SKIP wire $net in $in_module (already referenced in buffer)\n";
+                } else {
+                    push @filtered, "  wire $net ;\n";
+                }
+            }
             # Insert all gates as single batch
             push @filtered, "$_\n" for @{ $spec->{gates} };
             print join('', @filtered);
