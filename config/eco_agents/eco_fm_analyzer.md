@@ -574,31 +574,33 @@ if mux2_gates and ppvssynth_failing_count > 50:
 
 **Trigger:** ECO-inserted DFF fails only in `FmEqvEcoRouteVsEcoPrePlace` AND `cts_clock_renamed: true` in study JSON AND DFF type is DFF (not DFF0X).
 
-**Diagnosis:** Clock tree synthesis renamed the DFF's CP net from the PrePlace value (e.g. `wrp_clk_1`) to a CTS-generated net (e.g. `FxCts_ZCTSNET_<N>`) in Route. FM sees mismatched clock connections → non-equivalent.
+**Diagnosis:** Clock tree synthesis renamed the DFF's CP clock net in Route. FM sees mismatched clock connections between PrePlace and Route → non-equivalent.
 
 **Fix:**
 ```json
 { "stage": "Route", "action": "rewire_cp",
   "instance": "<eco_dff_instance>", "pin": "CP",
-  "old_net": "<preplace_cp_net>", "new_net": "<route_cts_cp_net>",
-  "rationale": "CTS renamed clock net in Route. Rewire CP to CTS-generated equivalent." }
+  "old_net": "<preplace_cp_net>",
+  "new_net": "<cts_clock_net_from_neighbour_dff>",
+  "rationale": "CTS renamed clock net in Route. Rewire CP to CTS-assigned equivalent found in neighbour DFF of same clock domain." }
 ```
-Find `<route_cts_cp_net>` by: grep a neighbour DFF of same clock domain in Route PostEco and read its CP pin value.
+Find `<cts_clock_net>` by: read CP pin of a neighbour DFF in the same module and clock domain in Route PostEco.
 
-### Mode CTS_BBNET_INPUT — ECO gate input passes through CTS BBNet merged cell
+### Mode CTS_BBNET_INPUT — ECO gate input passes through CTS multi-driver merged cell
 
-**Trigger:** ECO-inserted DFF is DFF0X in Route (passes PrePlace) AND the gate feeding its D-input has an input that traces to a `_MB_` merged cell in Route.
+**Trigger:** ECO-inserted DFF is DFF0X in Route (passes Synthesize and PrePlace) AND the gate feeding its D-input uses a net whose Route driver is a CTS-created merged cell (absent from Synthesize/PrePlace PreEco).
 
-**Diagnosis:** CTS creates multi-bit merged (BBNet) cells for reset/test signals. FM black-boxes the merged cell → gate input appears undriven → DFF0X. The signal has a primary input port version (e.g. `<signal>_m1`) that FM can trace directly.
+**Diagnosis:** CTS creates multi-driver merged cells for test/reset signals in Route. FM treats these as black-box → gate input appears undriven → DFF0X. The underlying signal has a primary input port declaration in the module header that FM can trace directly without going through the merged cell.
 
 **Fix:**
 ```json
 { "stage": "Route", "action": "rewire_gate_input",
-  "gate_instance": "<eco_gate>", "pin": "<I_or_A_pin>",
-  "old_net": "<bbnet_signal>", "new_net": "<primary_input_port_version>",
-  "rationale": "BBNet merged cell black-boxed by FM. Use primary input port (single driver)." }
+  "gate_instance": "<eco_gate>", "pin": "<input_pin>",
+  "old_net": "<cts_merged_cell_driven_net>",
+  "new_net": "<primary_input_port_for_same_signal>",
+  "rationale": "CTS merged cell black-boxed by FM. Use primary input port (single driver, FM-traceable) instead." }
 ```
-Find primary input port by: `grep "input.*\b<base_signal>\b" <Route_module_header>` — pick the version without `_MB_` suffix.
+Find primary input port by: `grep "input.*\b<base_signal_name>\b" <Route_module_header>` — the declared input port for the same functional signal.
 
 ### Mode G — Structural stage mismatch
 
