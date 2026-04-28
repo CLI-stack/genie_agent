@@ -902,7 +902,7 @@ modules_arg = list(touched_modules)
 validator_errors = []
 # MANDATORY existence check — SKIPPED is NOT an option if the script exists
 import os
-_validator_path = os.path.join(BASE_DIR, "script", "validate_verilog_netlist.py")
+_validator_path = os.path.join(BASE_DIR, "script/eco_scripts", "validate_verilog_netlist.py")
 if not os.path.isfile(_validator_path):
     raise RuntimeError(
         f"CRITICAL: validate_verilog_netlist.py not found at {_validator_path}. "
@@ -914,7 +914,7 @@ validator_result_synth = validator_result_pplace = validator_result_route = "FAI
 try:
     import subprocess, json as _json
     result_c8 = subprocess.run(
-        ["python3", "script/validate_verilog_netlist.py",
+        ["python3", "script/eco_scripts/validate_verilog_netlist.py",
          "--modules"] + modules_arg + ["--",
          f"{REF_DIR}/data/PostEco/Synthesize.v.gz",
          f"{REF_DIR}/data/PostEco/PrePlace.v.gz",
@@ -1017,7 +1017,7 @@ try:
         # Re-run validator after fixes to confirm all resolved
         if issues_fixed and not issues_critical:
             recheck = subprocess.run(
-                ["python3", "script/validate_verilog_netlist.py",
+                ["python3", "script/eco_scripts/validate_verilog_netlist.py",
                  "--modules"] + modules_arg + ["--",
                  f"{REF_DIR}/data/PostEco/Synthesize.v.gz",
                  f"{REF_DIR}/data/PostEco/PrePlace.v.gz",
@@ -1037,7 +1037,7 @@ except subprocess.TimeoutExpired:
                                    ("Route",      f"{REF_DIR}/data/PostEco/Route.v.gz")]:
         try:
             r = subprocess.run(
-                ["python3", "script/validate_verilog_netlist.py",
+                ["python3", "script/eco_scripts/validate_verilog_netlist.py",
                  "--strict", "--modules"] + list(scan_modules) + ["--", stage_gz],
                 capture_output=True, text=True, timeout=120
             )

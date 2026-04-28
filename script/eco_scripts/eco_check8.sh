@@ -23,7 +23,7 @@ TAG=$3
 ROUND=$4
 APPLIED_JSON=$5
 
-SCRIPT="${BASE_DIR}/script/validate_verilog_netlist.py"
+SCRIPT="${BASE_DIR}/script/eco_scripts/validate_verilog_netlist.py"
 OUT_JSON="${BASE_DIR}/data/${TAG}_eco_check8_round${ROUND}.json"
 TMP_LOG="/tmp/eco_check8_${TAG}_${ROUND}.txt"
 

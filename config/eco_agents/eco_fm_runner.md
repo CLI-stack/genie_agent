@@ -191,7 +191,7 @@ Two abort types allow a single inline fix attempt followed by immediate FM re-su
 3. Extract touched modules from `data/<TAG>_eco_applied_round<ROUND>.json`.
 4. Run validator with `--strict` on all three PostEco stages:
    ```bash
-   python3 script/validate_verilog_netlist.py --strict \
+   python3 script/eco_scripts/validate_verilog_netlist.py --strict \
      --modules <touched_modules> \
      -- <REF_DIR>/data/PostEco/Synthesize.v.gz \
         <REF_DIR>/data/PostEco/PrePlace.v.gz \
