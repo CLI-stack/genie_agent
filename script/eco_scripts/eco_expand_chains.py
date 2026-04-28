@@ -153,8 +153,10 @@ def main():
         f"  output: {args.output}"
     )
     print(f"\n{marker}")
-    # Write marker sidecar
-    Path(args.output.replace('_eco_preeco_study.json', '_eco_expand_chains_marker.txt')).write_text(marker + '\n')
+    # Write marker sidecar — derive path from output by replacing extension, not filename pattern
+    out_path = Path(args.output)
+    marker_path = out_path.parent / (out_path.stem + '_eco_expand_chains_marker.txt')
+    marker_path.write_text(marker + '\n')
     return 0
 
 
