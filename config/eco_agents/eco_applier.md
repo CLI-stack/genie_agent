@@ -173,18 +173,28 @@ for entry in confirmed_new_logic_entries:
             goto next_entry
 
     # wire_decls: OUTPUT net only — AND only if not referenced by any Pass 4 rewire in same module
-    # If the output net is used as new_net in a rewire entry for the same module, that rewire
-    # reference appears BEFORE the Perl insertion point (endmodule) and creates an implicit wire
-    # declaration. Adding an explicit wire decl would then be a DUPLICATE → SVR-9.
+    # MANDATORY: run this bash check BEFORE adding any net to wire_decls:
     output_net = stage_ports[output_pin_key]
+
+    # Step 1 — collect all new_net values from rewire entries in the same module
     rewire_nets_in_module = {e.get("new_net") for e in all_entries
                              if e.get("change_type") == "rewire"
                              and e.get("module_name") == mod}
-    if entry.get("needs_explicit_wire_decl") and output_net not in rewire_nets_in_module:
+
+    # Step 2 — MANDATORY bash verification (run this, do not skip):
+    # zcat <REF_DIR>/data/PostEco/<Stage>.v.gz | grep -c "\.<output_net>\s*)" → count existing refs
+    # If count > 0 → output_net is already referenced in the stage file (by a rewired cell)
+    # → that reference creates an implicit wire decl → adding explicit wire N; = SVR-9
+    existing_ref_count = int(bash(
+        f'zcat <REF_DIR>/data/PostEco/<Stage>.v.gz | grep -cw "{output_net}" || echo 0'
+    ))
+
+    if entry.get("needs_explicit_wire_decl") and output_net not in rewire_nets_in_module and existing_ref_count == 0:
         perl_spec[mod]["wire_decls"].append(output_net)
-    elif output_net in rewire_nets_in_module:
-        log(f"wire_decl_skipped_rewire_ref: true  net={output_net}  "
-            f"(referenced by Pass 4 rewire in {mod} — implicit decl already created)")
+    else:
+        # SKIP wire_decl — either it's a rewire target OR already referenced in the file
+        reason = "rewire_ref" if output_net in rewire_nets_in_module else f"existing_ref_count={existing_ref_count}"
+        log(f"wire_decl_SKIPPED: net={output_net} reason={reason} → DO NOT add to wire_decls")
 
     # wire_removes: remove_wire_decl entries
     if entry["change_type"] == "remove_wire_decl":
@@ -732,7 +742,12 @@ Write `<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`. Every entry MUST in
 11. **ALREADY_APPLIED for new_logic requires pin verification** — instance existence alone is insufficient; verify each input pin connection matches study JSON; if any pin differs → `force_reapply: true`.
 12. **Always use real RTL-named net, not P&R alias, when both exist** — before writing any net name into a port connection or rewire, check if it is a P&R alias: `grep -rw "<net_name>" data/PreEco/SynRtl/ → count = 0` means P&R alias. If alias, grep for the real RTL net from the study JSON; if found (count >= 1) use the real net and record `net_upgraded_from_alias: true`. Prevents P&R aliases from breaking subsequent rounds.
 13. **Pass 1 uses Perl streaming — no in-memory buffer for gate insertions.** All `new_logic_gate`, `new_logic_dff`, and `remove_wire_decl` operations are encoded in a Perl script and executed via `zcat | perl | gzip` pipe. This eliminates endmodule boundary drift (SVR-4) by design — the Perl engine buffers each target module and inserts ALL its gates as a single batch before `endmodule`. Never revert to in-memory Python buffer manipulation for gate insertions.
-14. **NEVER add `wire N;` for INPUT nets OR for rewire-referenced output nets.** Two cases that cause SVR-9:
+14. **NEVER add `wire N;` for INPUT nets OR for rewire-referenced output nets. MANDATORY check before every wire_decl addition:**
+    ```bash
+    zcat <REF_DIR>/data/PostEco/<Stage>.v.gz | grep -cw "<output_net>"
+    # If count > 0 → net already referenced in file → DO NOT add wire decl → SVR-9
+    # If count = 0 AND net not in rewire new_nets → safe to add
+    ``` Two cases that cause SVR-9:
     - *Input nets*: `wire_decls` accepts ONLY the gate's OUTPUT net (ZN/Z/Q). Input nets already exist as driven nets — explicit wire decl + pre-existing driver = SVR-9.
     - *Rewire-referenced output nets*: If the eco gate's output net is also used as `new_net` in a Pass 4 rewire entry for the same module, that rewired cell appears BEFORE the Perl insertion point in the file. FM sees the rewire reference as an implicit wire declaration; the explicit `wire N;` in the Perl batch is then a duplicate → SVR-9. Always check `rewire_new_nets` before adding to `wire_decls`.
 15. **ALWAYS populate identifier fields in every JSON entry** — every entry (APPLIED, INSERTED, ALREADY_APPLIED, SKIPPED, VERIFY_FAILED) MUST include at least one of: `instance_name`, `cell_name`, `signal_name`, or `port_name`. Copy the identifier from the study JSON. An entry with no identifier produces `?` in the RPT — this is a schema violation.
