@@ -582,6 +582,7 @@ eco_applier reads the `needs_explicit_wire_decl` flag to implement this rule. ec
 | G | `G` | Structural P&R stage mismatch (HFS cone divergence) | fix_named_wire or set_dont_verify | Sometimes |
 | H | `H` | Gate input driven only through hierarchical submodule bus | fix_named_wire | No |
 | `INCOMPLETE_AND_TERM` | — | and_term gate drove new net instead of port directly (GAP-15) | Re-study with module_port_direct_gating | No |
+| `INTENTIONAL_CASCADE` | — | DFF downstream of gated port — value intentionally changed by ECO | manual_only immediately (Round 1); engineer applies set_dont_verify | Yes — engineer |
 
 ECO-inserted DFFs (`eco_<jira>_` pattern) are **never** Mode E or subject to `set_dont_verify`.
 

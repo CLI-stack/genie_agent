@@ -372,6 +372,32 @@ Grep `<eco_instance>` in PostEco for this stage; read actual pin connections; up
 >
 > **HARD RULE — `set_dont_verify` is NEVER a substitute for `fix_named_wire`.** When an ECO DFF fails in P&R only due to HFS-renamed nets, the correct action is `fix_named_wire` (Mode H).
 
+**Condition -1 — INTENTIONAL_CASCADE check (runs BEFORE Mode E proof):**
+
+Read `eco_preeco_study.json`. For each `and_term` change entry that has `expected_cascade_dffs`:
+```python
+for change in study_changes:
+    if change.get("and_term_strategy") == "module_port_direct_gating":
+        cascade_dffs = change.get("expected_cascade_dffs", [])
+        cascade_net  = change.get("expected_cascade_net", "")
+        if failing_dff_instance in cascade_dffs:
+            classify_as("INTENTIONAL_CASCADE",
+                reason=f"{failing_dff_instance} is a downstream DFF whose D-input "
+                       f"cone reaches {cascade_net}. The ECO intentionally changed "
+                       f"the gating of {cascade_net} — this DFF's behavior change "
+                       f"is a correct ECO consequence, not a bug.",
+                action="manual_only",
+                svf_guidance="set_dont_verify for this DFF (expected value change from ECO)"
+            )
+            return  # STOP — do NOT evaluate Mode E or other modes
+```
+
+**INTENTIONAL_CASCADE vs Mode E distinction:**
+- Mode E: DFF was NEVER affected by the ECO — pre-existing structural divergence
+- INTENTIONAL_CASCADE: DFF IS affected by the ECO — its behavior intentionally changed because it depends on a gated port. FM vs OLD SynRtl correctly detects this. No netlist fix possible. Engineer applies `set_dont_verify`.
+
+Both result in `action: manual_only`, but INTENTIONAL_CASCADE should be reached in Round 1 (no wasted rounds trying to fix it), while Mode E requires the 5-condition proof.
+
 **PROOF required — ALL five conditions must be satisfied. One failure → not Mode E:**
 
 **Condition 0:** If `<failing_dff_instance>` matches `eco_<jira>_` → STOP. Cannot be Mode E.

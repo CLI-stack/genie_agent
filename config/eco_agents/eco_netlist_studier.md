@@ -243,9 +243,29 @@ if is_output_port:
     # VERIFICATION: after building entries, confirm:
     assert output_net == old_token, f"FATAL: module_port_direct_gating must use output_net=old_token, got {output_net}"
 
+    # MANDATORY — Identify expected cascade DFFs:
+    # Any DFF in the declaring module whose D-input cone reaches <old_token> will
+    # intentionally see a different value after this ECO. FM vs OLD SynRtl baseline
+    # will correctly flag them as non-equivalent. They are NOT bugs — they are the
+    # expected downstream effect of gating <old_token>. Record them so eco_fm_analyzer
+    # can classify them as INTENTIONAL_CASCADE immediately (no rounds wasted).
+    expected_cascade_dffs = []
+    for dff_instance in grep_all_dffs_in_module(declaring_module_lines):
+        d_input_cone = trace_D_input_cone(dff_instance, declaring_module_lines, max_hops=10)
+        if old_token in d_input_cone or f"{old_token}_orig" in d_input_cone:
+            expected_cascade_dffs.append(dff_instance)
+
+    # Write to study JSON on the and_term change entry:
+    and_term_change["expected_cascade_dffs"] = expected_cascade_dffs
+    and_term_change["expected_cascade_net"] = old_token
+    and_term_change["expected_cascade_reason"] = (
+        f"{old_token} is now gated by the and_term ECO. All DFFs whose D-input "
+        f"cone reaches {old_token} will have different values vs OLD SynRtl — "
+        f"this is intentional. eco_fm_analyzer must classify these as INTENTIONAL_CASCADE."
+    )
+    log(f"EXPECTED_CASCADE: {len(expected_cascade_dffs)} DFFs identified downstream of {old_token}")
+
     # HARD RETURN — no further strategy evaluation
-    # If you find yourself evaluating parent_scope or direct_rewire after this block,
-    # you have violated this rule. STOP and re-read STEP 0.
     return and_term_entries  # EXIT and_term processing
 
 # ── Only reaches here when is_output_port is definitively False ──
