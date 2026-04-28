@@ -539,38 +539,37 @@ For each candidate gate found:
 
 **Step A-BUILD — If structural insertion gate found:**
 - Create rewire entry: `<intermediate_gate>.<pin>: <old_net> → <eco_condition_output>`
-- Create new_logic_gate entries for conditions using **OA12/OAI21/AND3/ND3** that match RTL boolean structure:
-  - `(A | B) & C` → use `OA12` (one OR-AND-2-1 gate, not INV+OR+AND)
-  - `~(A & B & C)` → use `ND3`
-  - `A & ~B & C` → use `AN3` with B inverted by `INV`
+- Create new_logic_gate entries using **compound gates discovered from PreEco** that implement the same boolean pattern as the RTL condition expression:
+  - Search PreEco for gates whose port structure matches the RTL boolean (e.g. for `(A|B)&C`, find a gate with 3 inputs and compound AND-OR structure)
+  - Use `grep -m1 "<gate_function_prefix>[0-9]" PreEco/Synthesize.v.gz` to find an existing instance of that gate function in the technology library — this is the authoritative source for which gates are available
+  - PREFER compound gates (OR-AND, AND-NOR, OR-AND-INVERT combinations) that implement the boolean in one or two gates rather than decomposing into a chain of simple INV/AND/OR
 - Record: `intermediate_net_strategy: "structural_insertion"`
-- **No MUX2 gates** — MUX2 cascade creates structural divergence FM cannot verify
+- **No MUX2 gates for priority conditions** — MUX2 cascade creates a structurally non-equivalent implementation compared to RTL synthesis output; FM cannot verify it stage-to-stage without SVF
 
 **Step A-VERIFY FM compatibility:**
-After building entries, verify gate types match what RTL synthesis would produce:
+After building entries, verify gate types match what RTL synthesis would produce for the same boolean expression:
 ```bash
-# Check if similar OA12/OAI21 exist in PreEco (confirms library supports them)
-zcat PreEco/Synthesize.v.gz | grep -cm1 "OA12\|OAI21" → must be > 0
+# Grep PreEco for any gate implementing a similar compound boolean function
+# The gate type MUST exist in PreEco — this proves the library supports it
+zcat PreEco/Synthesize.v.gz | grep -cm1 "<discovered_gate_type>" → must be > 0
 ```
 
 **Strategy B — PIVOT APPROACH (fallback — use ONLY when Strategy A fails):**
 
 When no structural insertion gate found after Strategy A search, use the DFF D-input pivot. Decision: always try Strategy A first; only use B if A search exhausted.
 
-**CRITICAL — Even in Strategy B: use OA12/OAI21/AND3/ND3 gate types for condition chain — never use MUX2 cascade.** MUX2 cascade produces structural non-equivalence that requires set_dont_verify. OA12/OAI21 directly translate RTL boolean expressions and FM can verify them automatically.
+**CRITICAL — Even in Strategy B: use compound gate types discovered from PreEco — never use MUX2 cascade.** MUX2 cascade produces structural non-equivalence that requires SVF. Compound gates that directly implement the RTL boolean produce FM-verifiable structures automatically.
 
 ```python
 # When building condition gates for ANY strategy:
-# Use compound gates matching RTL boolean structure:
-preferred_gate_types = {
-    "(A | B) & C":    "OA12",   # one gate replaces INV+OR+AND
-    "(~A & B)":       "IND2",   # inverted-AND
-    "~(A | B) & C":  "AOI12 → INV", # or OAI21
-    "A & B & C":      "AN3",
-    "~(A & B & C)":   "ND3",
-}
-# NEVER use MUX2 for priority selection — it creates unverifiable structure
-# NEVER decompose compound boolean into multi-level INV+AND+OR chains
+# Discover appropriate gate types from PreEco — do NOT prescribe them:
+# 1. Parse RTL condition expression into boolean sub-expressions
+# 2. For each sub-expression, search PreEco for an existing gate that matches:
+#    zcat PreEco/Synthesize.v.gz | grep -m1 ".<output_pin>(" | head line → extract cell_type
+# 3. Use that cell_type — it is library-correct and FM-verifiable
+# 4. NEVER use MUX2 to encode priority selection logic
+# 5. NEVER decompose a compound boolean into a long chain of simple 2-input gates
+#    when a single compound gate exists in the library that implements it directly
 ```
 
 **Step 0c-1 — Find the pivot net (Strategy B):** Trace backward from `target_register.D` (up to 5 hops). Stop at first net whose driver has fanout ≥ 2 (`grep -c "( <net> )" /tmp/eco_study_<TAG>_Synthesize.v` ≥ 2). Record as `<pivot_net>`.

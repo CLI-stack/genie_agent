@@ -540,7 +540,7 @@ Classify as Mode A targeting the specific ECO gate that is wrong. Run Check D (p
 2. Failing DFFs are all in the same module scope as the `intermediate_net_insertion` change
 3. At least one `MUX2` gate appears in `eco_preeco_study.json` for this change (as `fn=MUX2`)
 
-**Root cause:** MUX2 cascade does not match the structural form RTL synthesis would produce for priority expressions. PrePlace has a different synthesis of the same RTL (different gate topology), so FM structural comparison fails. The engineer's solution uses `OA12`/`OAI21`/`AN3`/`ND3` compound gates that directly translate the RTL boolean and match RTL synthesis output.
+**Root cause:** MUX2 cascade does not match the structural form RTL synthesis would produce for priority expressions. PrePlace has a different synthesis of the same RTL (different gate topology), so FM structural comparison fails. The correct approach uses compound gates discovered from PreEco that directly implement the RTL boolean, matching the synthesis output structure — FM can then auto-verify without SVF.
 
 **Diagnosis:**
 ```python
@@ -557,13 +557,13 @@ if mux2_gates and ppvssynth_failing_count > 50:
   "stage": "ALL",
   "action": "try_structural_insertion",
   "failure_mode": "WRONG_GATE_STRUCTURE",
-  "rationale": "MUX2 cascade produces structural non-equivalence in PPvsSynth. Re-study with Strategy A: find existing compound gate (OA12/OAI21) in priority chain for structural insertion. Use OA12/OAI21/AND3/ND3 gate types for condition chain — not MUX2.",
+  "rationale": "MUX2 cascade produces structural non-equivalence in PPvsSynth. Re-study with Strategy A: search PreEco for an existing compound gate in the priority chain whose input can accept the new condition. Discover appropriate gate types from PreEco library — do NOT prescribe gate names. Never use MUX2 for priority encoding.",
   "eco_preeco_study_update": {
     "action": "re_study_intermediate_net_insertion",
     "preferred_strategy": "structural_insertion",
-    "preferred_gate_types": ["OA12", "OAI21", "AN3", "ND3", "IND2"],
+    "preferred_gate_discovery": "Search PreEco for compound gates (gates with 3+ inputs implementing AND-OR or OR-AND boolean combinations) that exist in the priority chain cone. Use discovered gate types — they are library-correct and FM-verifiable.",
     "forbidden_gate_types": ["MUX2"],
-    "note": "Find existing compound gate in priority chain and feed new conditions into its inputs instead of building a new parallel MUX cascade"
+    "note": "Feed new conditions into an existing compound gate in the priority chain rather than building a new parallel MUX cascade alongside the existing logic"
   }
 }
 ```
