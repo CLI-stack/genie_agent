@@ -311,11 +311,47 @@ For every input net of any `new_logic_gate` entry (including `and_term` gates), 
 
 | Priority | Method |
 |----------|--------|
+| 0 | **RTL-named primary input port** — `grep -cw "input.*\b<net_name>\b" /tmp/eco_study_<TAG>_<Stage>.v` — if declared as `input <net_name>;` in the target module → use directly. **HIGHEST PRIORITY — takes precedence over all other methods.** Primary input ports are visible to FM in ALL stages by name. |
 | 1 | Direct name match in stage PreEco — use directly |
 | 2 | Trace driver cell in Synthesize → find same cell output in this stage |
 | 3 | P&R alias search (partial name, exclude declarations) |
 | 4 | Backward cone trace from target DFF `.D(<net>)` — walk driver chain up to 10 hops; check gate inputs by instance name across stages |
 | — | Unresolved → `UNRESOLVED_IN_<Stage>:<net>` |
+
+**GAP-NEW — Scan alias must NEVER be used when a primary input port exists:**
+P&R stages introduce `test_so*` and `dftopt*` nets in the scan chain. These are scan outputs/test nets — they are NOT valid functional inputs even if they appear to be connected to the same DFF family as the RTL signal. Using a `test_so*` net as a gate input causes FM stage-to-stage mismatch (`FmEqvEcoRouteVsEcoPrePlace`) when the same gate uses a different alias in another stage.
+
+**Before accepting any resolved net for a P&R stage, validate it is NOT a scan alias:**
+```python
+scan_alias_patterns = [r'^test_so\d+', r'^dftopt\d+', r'^scan_\w+', r'^si_\w+']
+if any(re.match(p, resolved_net) for p in scan_alias_patterns):
+    # REJECT — scan alias is not a valid functional input
+    # Fall back to next priority or look for primary input port first
+    log(f"REJECTED scan alias {resolved_net} — not a valid functional input")
+    resolved_net = None  # force next priority
+```
+
+**Cross-stage consistency check (MANDATORY after resolving all stages):**
+After resolving all 3 stages, verify the resolved nets across stages are functionally consistent:
+```python
+# If the same signal resolves to different names across stages, check if they share
+# a common primary input port name that exists in ALL stages:
+if resolved_nets["PrePlace"] != resolved_nets["Route"]:
+    common_input = None
+    for candidate in grep_all_input_ports(module_lines["PrePlace"]):
+        if (grep_count(candidate, preplace_lines) >= 1 and
+            grep_count(candidate, route_lines) >= 1):
+            # candidate input port exists in both stages
+            if is_same_rtl_signal(candidate, original_rtl_net, preeco_synrtl):
+                common_input = candidate
+                break
+    if common_input:
+        # Use the common primary input port for ALL stages where it exists
+        for stage in ["PrePlace", "Route"]:
+            resolved_nets[stage] = common_input
+        log(f"CROSS_STAGE_NORMALIZE: {resolved_nets['PrePlace']} / {resolved_nets['Route']} → {common_input}")
+```
+This prevents the failure mode where PrePlace uses `test_so4927` and Route uses `IReset_m1` for the same functional signal — FM sees different D-input cones → NeedFreqAdj_reg non-equivalent.
 
 > **GAP-13 — UNRESOLVABLE vs manual_only distinction:**
 > - `UNRESOLVABLE`: signal and its entire driver cone are genuinely absent from the failing stage PreEco after all 4 priorities — P&R eliminated the cone. Use `1'b0` as a conservative placeholder if the gate still has valid other inputs.
