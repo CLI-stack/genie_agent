@@ -157,6 +157,23 @@ def validate_module(mod_name, mod_lines, start_lineno):
                         })
                 in_instance = False
 
+    # F7: Bare ')' without ';' closing the module port list → FM SVR-4 → FM-599
+    # eco_passes_2_4.py port_declaration can produce ') \n' without ';' when the original
+    # close line has a different format. FM's Verilog parser requires ') ;' to end the port list.
+    for i, line in enumerate(mod_lines[:500]):  # port list always in first ~500 lines
+        stripped = line.strip()
+        if stripped == ')':
+            # Bare ')' on its own line — check if next non-empty line is NOT ';' or ') ;'
+            next_lines = [l.strip() for l in mod_lines[i+1:i+4] if l.strip()]
+            if not next_lines or not next_lines[0].startswith(';'):
+                errors.append({
+                    'check': 'SVR4_bare_paren',
+                    'module': mod_name,
+                    'msg': f"Bare ')' without ';' at line {start_lineno+i} — module port list not properly closed → FM SVR-4 → FM-599",
+                    'line': start_lineno + i
+                })
+            break  # only need first occurrence
+
     # Check 9: direction declaration not in port list header
     errors.extend(check_declaration_not_in_header(mod_lines, mod_name, start_lineno))
 

@@ -76,8 +76,34 @@ ROUTE=$(parse_stage "Route" "${TMP_LOG}")
 [ -z "$PPLACE" ] && PPLACE="FAIL"
 [ -z "$ROUTE"  ] && ROUTE="FAIL"
 
+# Inline fix for SVR4_bare_paren: replace bare ')' with ') ;' in all stages
+if grep -q "SVR4_bare_paren" "${TMP_LOG}" 2>/dev/null; then
+    for STAGE_GZ in "${REF_DIR}/data/PostEco/Synthesize.v.gz" \
+                    "${REF_DIR}/data/PostEco/PrePlace.v.gz" \
+                    "${REF_DIR}/data/PostEco/Route.v.gz"; do
+        TMP_FIX="/tmp/eco_svr4fix_$(basename ${STAGE_GZ} .v.gz).v"
+        # Replace lines that are exactly ')' (bare paren) with ') ;'
+        zcat "${STAGE_GZ}" | awk '{if(/^\s*\)\s*$/ && prev_was_port){print ") ;"} else{print} prev_was_port=($0 ~ /\.\w+\s*\(/)}' > "${TMP_FIX}"
+        gzip -c "${TMP_FIX}" > "${STAGE_GZ}.fixed" && mv "${STAGE_GZ}.fixed" "${STAGE_GZ}"
+        rm -f "${TMP_FIX}"
+        echo "SVR4_bare_paren: fixed in $(basename ${STAGE_GZ})"
+    done
+    # Re-run validator after fix
+    python3 "${SCRIPT}" --strict ${MODS_ARGS[@]} -- \
+        "${REF_DIR}/data/PostEco/Synthesize.v.gz" \
+        "${REF_DIR}/data/PostEco/PrePlace.v.gz" \
+        "${REF_DIR}/data/PostEco/Route.v.gz" \
+        2>&1 > "${TMP_LOG}"
+    SYNTH=$(parse_stage "Synthesize" "${TMP_LOG}")
+    PPLACE=$(parse_stage "PrePlace" "${TMP_LOG}")
+    ROUTE=$(parse_stage "Route" "${TMP_LOG}")
+    [ -z "$SYNTH"  ] && SYNTH="FAIL"
+    [ -z "$PPLACE" ] && PPLACE="FAIL"
+    [ -z "$ROUTE"  ] && ROUTE="FAIL"
+fi
+
 # Collect error lines
-ERRORS=$(grep -E "^\s+\[F[0-9]|Error:|SVR-[0-9]" "${TMP_LOG}" 2>/dev/null | head -20 | python3 -c "
+ERRORS=$(grep -E "^\s+\[F[0-9]|\[SVR|Error:|SVR-[0-9]" "${TMP_LOG}" 2>/dev/null | head -20 | python3 -c "
 import sys, json
 lines = [l.rstrip() for l in sys.stdin]
 print(json.dumps(lines))
