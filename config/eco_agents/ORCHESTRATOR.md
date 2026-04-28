@@ -629,6 +629,18 @@ python3 script/eco_scripts/eco_expand_chains.py \
 
 Check output for `ECO_SCRIPT_LAUNCHED: eco_expand_chains.py` and `chains_expanded: N`. If N=0, no chains were missing (OK). If N>0, gates were injected — verify the study JSON now has the correct chain entries before proceeding.
 
+**MANDATORY post-Step 3: Run eco_validate_step3.py to enforce completeness contract:**
+```bash
+cd <BASE_DIR>
+python3 script/eco_scripts/eco_validate_step3.py \
+    --study    data/<TAG>_eco_preeco_study.json \
+    --rtl-diff data/<TAG>_eco_rtl_diff.json \
+    --ref-dir  <REF_DIR> \
+    --tag      <TAG> \
+    --output   data/<TAG>_eco_validate_step3.json
+```
+If exit code = 1 → issues found → fix before proceeding. Read `data/<TAG>_eco_validate_step3.json` for specific issues. Common fixes: re-run eco_expand_chains.py, re-spawn eco_netlist_studier for incomplete entries.
+
 **Generate Step 3 RPT from JSON (ORCHESTRATOR responsibility):**
 
 Read `data/<TAG>_eco_preeco_study.json` and write `data/<TAG>_eco_step3_netlist_study_round1.rpt`:

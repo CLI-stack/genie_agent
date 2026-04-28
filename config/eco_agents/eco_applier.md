@@ -170,7 +170,20 @@ Where `PREV_APPLIED=data/<TAG>_eco_applied_round<ROUND-1>.json` for Round 2+ (om
 
 Read each `data/<TAG>_eco_perl_spec_<Stage>.json` to see INSERTED/SKIPPED/ALREADY_APPLIED decisions.
 
-**Verify script ran:** Each script run prints `ECO_SCRIPT_LAUNCHED: eco_perl_spec.py` and writes a `_marker.txt` sidecar. The Step 4 RPT MUST contain `ECO_SCRIPT_LAUNCHED: eco_perl_spec.py` for each stage. If absent — script was NOT called — re-run before proceeding to Passes 2-4. The script handles:
+**Verify script ran:** Each script run prints `ECO_SCRIPT_LAUNCHED: eco_perl_spec.py` and writes a `_marker.txt` sidecar. The Step 4 RPT MUST contain `ECO_SCRIPT_LAUNCHED: eco_perl_spec.py` for each stage. If absent — script was NOT called — re-run before proceeding to Passes 2-4.
+
+**MANDATORY after all 3 stages complete: Run eco_validate_step4.py:**
+```bash
+cd <BASE_DIR>
+python3 script/eco_scripts/eco_validate_step4.py \
+    --applied  data/<TAG>_eco_applied_round<ROUND>.json \
+    --study    data/<TAG>_eco_preeco_study.json \
+    --ref-dir  <REF_DIR> --tag <TAG> --round <ROUND> \
+    --output   data/<TAG>_eco_validate_step4_round<ROUND>.json
+```
+If exit code = 1 → VERIFY_FAILED entries or PostEco MD5 unchanged → do NOT proceed to Step 5. Fix the issue first. Check `eco_validate_step4_round<ROUND>.json` for specific problems.
+
+The script handles:
 - ALREADY_APPLIED detection via `grep -cw <inst_name> PostEco/<Stage>.v.gz`
 - SKIPPED checks (missing input nets)
 - wire_decls exclusion (SVR-9 prevention via grep + buffer check in Perl)
