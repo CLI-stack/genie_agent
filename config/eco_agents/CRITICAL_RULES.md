@@ -584,6 +584,8 @@ eco_applier reads the `needs_explicit_wire_decl` flag to implement this rule. ec
 | `INCOMPLETE_AND_TERM` | — | and_term gate drove new net instead of port directly (GAP-15) | Re-study with module_port_direct_gating | No |
 | `INTENTIONAL_CASCADE` | — | DFF downstream of gated port — value intentionally changed by ECO | manual_only immediately (Round 1); engineer applies set_dont_verify | Yes — engineer |
 | `WRONG_GATE_STRUCTURE` | — | MUX2 cascade in d_input_decompose_failed creates FM-unverifiable structure vs RTL synthesis | Re-study with structural_insertion; discover compound gate types from PreEco — never MUX2 | No — netlist fixable |
+| `CTS_CLOCK_RENAMED` | — | ECO DFF CP pin renamed by CTS in Route (pre-CTS net → FxCts_ZCTSNET) | Rewire CP to CTS net found in neighbour DFF of same clock domain in Route PostEco | No — netlist fix |
+| `CTS_BBNET_INPUT` | — | ECO gate input passes through CTS BBNet merged cell → FM black-boxes it → DFF0X | Rewire gate input to primary input port (`<signal>_m1`) which is single-driver and FM-traceable | No — netlist fix |
 
 ECO-inserted DFFs (`eco_<jira>_` pattern) are **never** Mode E or subject to `set_dont_verify`.
 

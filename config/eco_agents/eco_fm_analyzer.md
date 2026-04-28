@@ -570,6 +570,36 @@ if mux2_gates and ppvssynth_failing_count > 50:
 
 **HARD RULE: Do NOT classify WRONG_GATE_STRUCTURE as Mode E.** The engineer's pure netlist solution (no SVF) proves these failures are fixable. The correct fix is changing the gate structure, not adding set_dont_verify.
 
+### Mode CTS_CLOCK_RENAMED — ECO DFF clock pin renamed by CTS in Route
+
+**Trigger:** ECO-inserted DFF fails only in `FmEqvEcoRouteVsEcoPrePlace` AND `cts_clock_renamed: true` in study JSON AND DFF type is DFF (not DFF0X).
+
+**Diagnosis:** Clock tree synthesis renamed the DFF's CP net from the PrePlace value (e.g. `wrp_clk_1`) to a CTS-generated net (e.g. `FxCts_ZCTSNET_<N>`) in Route. FM sees mismatched clock connections → non-equivalent.
+
+**Fix:**
+```json
+{ "stage": "Route", "action": "rewire_cp",
+  "instance": "<eco_dff_instance>", "pin": "CP",
+  "old_net": "<preplace_cp_net>", "new_net": "<route_cts_cp_net>",
+  "rationale": "CTS renamed clock net in Route. Rewire CP to CTS-generated equivalent." }
+```
+Find `<route_cts_cp_net>` by: grep a neighbour DFF of same clock domain in Route PostEco and read its CP pin value.
+
+### Mode CTS_BBNET_INPUT — ECO gate input passes through CTS BBNet merged cell
+
+**Trigger:** ECO-inserted DFF is DFF0X in Route (passes PrePlace) AND the gate feeding its D-input has an input that traces to a `_MB_` merged cell in Route.
+
+**Diagnosis:** CTS creates multi-bit merged (BBNet) cells for reset/test signals. FM black-boxes the merged cell → gate input appears undriven → DFF0X. The signal has a primary input port version (e.g. `<signal>_m1`) that FM can trace directly.
+
+**Fix:**
+```json
+{ "stage": "Route", "action": "rewire_gate_input",
+  "gate_instance": "<eco_gate>", "pin": "<I_or_A_pin>",
+  "old_net": "<bbnet_signal>", "new_net": "<primary_input_port_version>",
+  "rationale": "BBNet merged cell black-boxed by FM. Use primary input port (single driver)." }
+```
+Find primary input port by: `grep "input.*\b<base_signal>\b" <Route_module_header>` — pick the version without `_MB_` suffix.
+
 ### Mode G — Structural stage mismatch
 
 Apply `set_dont_verify` scoped to common hierarchy prefix only when Priority 3 structural trace confirms no fixable net exists.

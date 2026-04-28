@@ -388,6 +388,17 @@ For every input net of any `new_logic_gate` entry (including `and_term` gates), 
 | 4 | Backward cone trace from target DFF `.D(<net>)` — walk driver chain up to 10 hops; check gate inputs by instance name across stages |
 | — | Unresolved → `UNRESOLVED_IN_<Stage>:<net>` |
 
+**GAP-CTS-2 — BBNet signal NEVER valid as gate input in Route — use primary input port instead:**
+CTS creates multi-driver merged cells (`_MB_` suffix) for reset/test signals in Route stage. FM treats merged cells as black-box — a gate whose input feeds from a BBNet driver appears undriven → DFF0X failure. Detection and fix:
+```bash
+# After resolving any net for Route stage — check if it feeds from a BBNet merged cell
+zcat <REF_DIR>/data/PostEco/Route.v.gz | grep "\.<output_pin>(\s*<resolved_net>\s*)" | grep "_MB_"
+# If matched → <resolved_net> is a BBNet output → REJECT, use primary input port instead
+# Primary input port is always single-driver and FM-traceable
+grep -m1 "input.*\b<base_signal_name>_m1\b\|input.*\b<base_signal_name>\b" <Route_module_header>
+```
+Apply same logic as scan alias rejection: if BBNet detected → fall back to Priority 0 (primary input port).
+
 **GAP-NEW — Scan alias must NEVER be used when a primary input port exists:**
 P&R stages introduce `test_so*` and `dftopt*` nets in the scan chain. These are scan outputs/test nets — they are NOT valid functional inputs even if they appear to be connected to the same DFF family as the RTL signal. Using a `test_so*` net as a gate input causes FM stage-to-stage mismatch (`FmEqvEcoRouteVsEcoPrePlace`) when the same gate uses a different alias in another stage.
 
@@ -441,6 +452,16 @@ Record `port_connections_per_stage`. **Do NOT use Synthesize nets for all stages
 - Priority 3 — Structural driver trace (only if P1 and P2 both fail)
 
 **Step C — For each stage, resolve auxiliary pin net names from a neighbour DFF** in same module scope (widen to parent if needed). Do NOT fall back to hardcoded constants without a neighbour.
+
+**GAP-CTS-1 — CTS renames clock nets in Route: verify CP exists before recording:**
+After resolving the clock (CP) net for Route, verify it actually exists in the Route netlist:
+```bash
+grep -cw "<resolved_cp_net>" /tmp/eco_study_<TAG>_Route.v
+# If count = 0 → CP net was renamed by CTS → search for CTS equivalent:
+grep -m1 "FxCts_\w*\|ZCTSNET_\w*" <module_lines_near_neighbour_DFF> | head -3
+# Use the CTS-renamed clock net found in the neighbour DFF of the same scope
+```
+Record `cts_clock_renamed: true` when CP differs between PrePlace and Route. eco_fm_analyzer can then prescribe `CTS_CLOCK_RENAMED` fix (rewire CP to Route CTS net).
 
 **Step D — Write `port_connections_per_stage`** combining functional + auxiliary pins. Keep flat `port_connections` (Synthesize values) for backward compatibility.
 
