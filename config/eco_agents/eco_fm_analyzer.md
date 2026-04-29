@@ -332,7 +332,11 @@ Use Step 2 results to classify:
 1. **SKIPPED** — status=SKIPPED in eco_applied → find reason and fix
 2. **Wrong gate polarity** — inserted gate implements inverse of required logic → replace gate
 3. **Wrong net name** — new_net connected to cell is wrong → grep PostEco for correct net
-4. **Port missing** — port declaration/connection not applied → check RULE 15
+4. **Port missing** — port declaration/connection not applied. Before prescribing fix, check `eco_rtl_diff.json` for this signal:
+
+   - If `implicit_wire: true` or `no_wire_decl_needed: true` → signal is an **internal wire within the declaring module** (connects two child instances inside, not a cross-boundary port). **Fix: force_reapply the existing port_connection entries within that module + add explicit `wire <signal>;` decl. NEVER add as input port to parent or connect from grandparent** — the driver is inside the module, not outside.
+   - If neither flag → signal is a genuine missing port. Fix: `force_port_decl` + `force_reapply`.
+
 5. **Module output port cascade (GAP-16):** When 3000+ failures cascade from one module scope, check if `<old_token>` is a module output port in `port_promotion` or `and_term` RTL diff changes. If yes, the `and_term` gate must drive the port name directly ("Module Port Direct Gating"). Do NOT propose an internal `<old_token>_orig` intermediate wire — this creates P&R cell type mismatches. Set `and_term_strategy: "module_port_direct_gating"` in revised_changes.
 
 ### Mode B — Regression: new failing points not in RTL diff
