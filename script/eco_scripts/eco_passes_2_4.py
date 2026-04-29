@@ -164,10 +164,11 @@ def apply_port_connection(lines, entry, gz_path=None):
     if inst_start < 0:
         return lines, 'SKIPPED', f'instance {inst_name} not found'
 
-    # Find instance close — depth track from inst_start (max 5000 lines)
+    # Find instance close — depth track from inst_start
+    # Search limit: scan to end of lines (no fixed cap — large instances like ARB can span 100k+ lines)
     depth = 0
     inst_close = -1
-    for i in range(inst_start, min(inst_start + 20000, len(lines))):
+    for i in range(inst_start, len(lines)):
         clean = lines[i].split('//')[0]
         for ch in clean:
             if ch == '(': depth += 1
@@ -179,7 +180,7 @@ def apply_port_connection(lines, entry, gz_path=None):
         if inst_close >= 0:
             break
     if inst_close < 0:
-        for i in range(inst_start + 1, min(inst_start + 20000, len(lines))):
+        for i in range(inst_start + 1, len(lines)):
             if re.match(r'^\)\s*;', lines[i].strip()):
                 inst_close = i
                 break

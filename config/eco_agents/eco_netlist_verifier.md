@@ -490,11 +490,27 @@ If found → set `driven_by_submodule: true`, `driver_type: "submodule_bus_outpu
 
 For every entry where any input net is still `PENDING_FM_RESOLUTION:<signal>`:
 
-1. Check SPEC_SOURCES for rerun fenets result — if resolved → use directly
-2. If rerun returned FM-036 or no rerun: run Priority 3 structural driver trace
-3. Still unresolved → mark `UNRESOLVABLE:<signal>` (NOT `PENDING_FM_RESOLUTION`)
+1. **Check condition_input_resolutions** from SPEC_SOURCES — if `resolved_gate_level_net` set for Synthesize, use it. Record `synth_net = resolved_gate_level_net`.
+2. **For P&R stages** (not Synthesize): do NOT use the RTL signal name — use Priority 3 structural trace from the Synthesize-confirmed net:
+   ```bash
+   # Find driver cell of synth_net in Synthesize PreEco
+   grep -n "\.<output_pin>( <synth_net> )" /tmp/eco_verify_<TAG>_Synthesize.v | head -1
+   driver_cell = extract_instance_name(that_line)
 
-**CRITICAL: Do NOT leave `PENDING_FM_RESOLUTION` after a rerun returned FM-036.** After the first FM-036, mark `UNRESOLVABLE` and let eco_fm_analyzer decide.
+   # Search driver_cell in P&R stage
+   grep -cw "<driver_cell>" /tmp/eco_verify_<TAG>_<Stage>.v
+   ```
+   - If driver cell found → read its output net → use as P&R alias ✓
+   - If driver cell **absent** in P&R (P&R renamed/merged it) → **search one level deeper**:
+     ```bash
+     # Find what drives driver_cell's inputs in Synthesize
+     # grep driver_cell's input pins in Synthesize → get input nets → find their drivers
+     # Search those upstream driver cells in P&R → read their outputs
+     ```
+     This handles P&R cell renaming where the instance itself is gone but its logical source still exists under a different name.
+3. **Still not found after upstream search** → mark `UNRESOLVABLE:<signal>`. **Do NOT use `1'b0` as a constant** — substituting a constant changes the ECO logic and may be architecturally wrong (P&R may have optimized away the cell for reasons unrelated to the signal being constant).
+
+**CRITICAL: Do NOT leave `PENDING_FM_RESOLUTION` after a rerun returned FM-036.** Resolve via structural trace or mark `UNRESOLVABLE` — never leave as PENDING.
 
 ---
 
