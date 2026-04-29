@@ -207,7 +207,9 @@ Two abort types allow a single inline fix attempt followed by immediate FM re-su
 
    Additionally, parse **FM log** for SVR-4/SVR-14 errors not caught by the validator:
 
-   - **`SVR-4` double comma** (`Expected '.' but found ','`): port connection inserted as `, .port(net)` when previous line already ended with `,` → double comma `..., , .port`. Fix: in the affected stage at the reported line, find the double `, ,` pattern and remove the first comma: `re.sub(r',\s*,\s*\.', ', .', line_content)`. Verify fix: `grep -c ', ,' stage.v.gz → 0`.
+   - **`SVR-4` double comma** (`Expected '.' but found ','`): port connection inserted as `, .port(net)` when previous line already ended with `,` → double comma `..., , .port`. Fix: find the double `, ,` pattern and remove the first comma: `re.sub(r',\s*,\s*\.', ', .', line_content)`. Verify: `grep -c ', ,' stage.v.gz → 0`.
+
+   - **`SVR-4` trailing comma before `) ;`** (`mixed ordered and named port connections`): a port connection line was removed but its predecessor still ends with `,` before the instance `);`. FM interprets the trailing comma as implying another (positional) port. Fix: for each stage, find lines matching `.*,\s*$` immediately followed by `\s*\)\s*;` and strip the trailing comma. Verify: no such pattern remains.
 
    - **`SVR-4` missing cell type** (`Expected identifier but found '('`): gate inserted as `  eco_<jira>_<seq> ( .pin(net) ... )` without cell type prefix. Fix: grep PreEco Synthesize for the instance name `grep -m1 "<instance_name>" PreEco/Synthesize.v.gz` → extract cell type (first token) → prepend to the affected line: `cell_type + ' ' + line`. Verify: instance line now starts with uppercase cell type.
 
