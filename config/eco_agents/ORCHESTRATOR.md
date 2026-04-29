@@ -42,6 +42,12 @@
 ls data/<TAG>_round_handoff.json 2>/dev/null && echo EXISTS
 ```
 
+**Check for pending_spawn sentinel FIRST** — this means a previous agent claimed to spawn but context ran out before the spawn executed:
+```bash
+ls data/<TAG>_pending_spawn.txt 2>/dev/null && cat data/<TAG>_pending_spawn.txt
+```
+If sentinel exists → the spawn was never executed → spawn the agent indicated in the sentinel NOW → delete sentinel → HARD STOP.
+
 **If `round_handoff.json` EXISTS:**
 
 Read it and branch immediately:
@@ -1016,7 +1022,26 @@ This path is triggered when eco_pre_fm_checker returned `passed: false` after MA
 >
 > The difference between FAIL and ABORT only matters to eco_fm_analyzer (Step 0). To ORCHESTRATOR's spawn decision, both are the same: → ROUND_ORCHESTRATOR.
 
-Initialize and write `<BASE_DIR>/data/<TAG>_eco_fixer_state`:
+**SPAWN FIRST, THEN write eco_fixer_state — context pressure protection:**
+
+> The spawn MUST happen before any other tool calls. Context is lowest at this point.
+> Writing eco_fixer_state AFTER the spawn is intentional — ROUND_ORCHESTRATOR reads it on startup and handles missing-file gracefully via RESUMPTION CHECK.
+
+**Write pending spawn sentinel BEFORE spawn** (so RESUMPTION CHECK can recover if spawn fails):
+```bash
+echo "PENDING_SPAWN:ROUND_ORCHESTRATOR:round=1" > <BASE_DIR>/data/<TAG>_pending_spawn.txt
+```
+
+**Spawn ROUND_ORCHESTRATOR agent IMMEDIATELY:**
+Spawn with content of `config/eco_agents/ROUND_ORCHESTRATOR.md` prepended. Pass:
+- `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`
+- `ROUND_HANDOFF_PATH`: `<BASE_DIR>/data/<TAG>_round_handoff.json`
+
+**After spawn succeeds → delete sentinel and write eco_fixer_state:**
+```bash
+rm -f <BASE_DIR>/data/<TAG>_pending_spawn.txt
+```
+Then write `<BASE_DIR>/data/<TAG>_eco_fixer_state`:
 ```json
 {
   "round": 1,
@@ -1038,10 +1063,6 @@ Initialize and write `<BASE_DIR>/data/<TAG>_eco_fixer_state`:
   ]
 }
 ```
-
-**Spawn ROUND_ORCHESTRATOR agent** with content of `config/eco_agents/ROUND_ORCHESTRATOR.md` prepended. Pass:
-- `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`
-- `ROUND_HANDOFF_PATH`: `<BASE_DIR>/data/<TAG>_round_handoff.json`
 
 ### Mandatory Step C — HARD STOP
 

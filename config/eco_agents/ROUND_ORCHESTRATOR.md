@@ -509,25 +509,33 @@ Update `<BASE_DIR>/data/<TAG>_round_handoff.json`:
 
 ### If FM RESULT = PASS
 
+Write pending spawn sentinel, then spawn:
+```bash
+echo "PENDING_SPAWN:FINAL_ORCHESTRATOR:round=<NEXT_ROUND>" > <BASE_DIR>/data/<TAG>_pending_spawn.txt
+```
 **Spawn FINAL_ORCHESTRATOR agent** with `config/eco_agents/FINAL_ORCHESTRATOR.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`
 - `ROUND_HANDOFF_PATH`: `<BASE_DIR>/data/<TAG>_round_handoff.json`
 - `TOTAL_ROUNDS`: `<NEXT_ROUND>`
 
-**Then EXIT — your work is done.**
+After spawn: `rm -f <BASE_DIR>/data/<TAG>_pending_spawn.txt` → **EXIT.**
 
 ### If FM RESULT = FAIL and NEXT_ROUND ≤ 6
 
-> **GUARD:** Before spawning, verify `NEXT_ROUND ≤ max_rounds (6)`. If `NEXT_ROUND > 6` — this should never happen, but if it does: do NOT spawn another ROUND_ORCHESTRATOR. Treat as MAX_ROUNDS exceeded → spawn FINAL_ORCHESTRATOR with `status: MAX_ROUNDS`.
+> **GUARD:** Before spawning, verify `NEXT_ROUND ≤ max_rounds (6)`. If `NEXT_ROUND > 6` → treat as MAX_ROUNDS exceeded → spawn FINAL_ORCHESTRATOR with `status: MAX_ROUNDS`.
 
 Update `eco_fixer_state.fm_results_per_round` with this round's result.
 
+Write pending spawn sentinel, then spawn:
+```bash
+echo "PENDING_SPAWN:ROUND_ORCHESTRATOR:round=<NEXT_ROUND>" > <BASE_DIR>/data/<TAG>_pending_spawn.txt
+```
 **Spawn ROUND_ORCHESTRATOR agent** (fresh instance) with `config/eco_agents/ROUND_ORCHESTRATOR.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`
 - `ROUND_HANDOFF_PATH`: `<BASE_DIR>/data/<TAG>_round_handoff.json`
-- `AI_ECO_FLOW_DIR`: `<AI_ECO_FLOW_DIR>` (pass explicitly so the new instance has it without needing to read handoff first)
+- `AI_ECO_FLOW_DIR`: `<AI_ECO_FLOW_DIR>`
 
-**Then EXIT — your work is done.**
+After spawn: `rm -f <BASE_DIR>/data/<TAG>_pending_spawn.txt` → **EXIT.**
 
 ### If FM RESULT = FAIL and NEXT_ROUND > 6 (max rounds exceeded)
 
