@@ -86,8 +86,11 @@ for i, line in enumerate(lines):
     elif re.search(r'Validating:', line) and in_stage:
         break
     if in_stage:
-        # Only these patterns cause FM-599 abort
-        if re.search(r'SVR4_bare_paren|SVR9_dup_wire', line):
+        # These patterns all cause FM-599 abort:
+        # SVR4_bare_paren: bare ) without ; in port list
+        # SVR9_dup_wire: two explicit wire declarations for same net (F1)
+        # F2_implicit_wire_conflict: explicit wire decl + implicit wire from port connection (also SVR-9)
+        if re.search(r'SVR4_bare_paren|SVR9_dup_wire|F2_implicit_wire_conflict', line):
             print("FAIL")
             sys.exit()
 
