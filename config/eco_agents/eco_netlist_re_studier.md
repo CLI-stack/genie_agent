@@ -161,4 +161,4 @@ Write `<BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt` with
 cp <BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt <AI_ECO_FLOW_DIR>/
 ```
 
-**Exit after writing and copying the RPT.** ORCHESTRATOR then spawns eco_netlist_verifier to re-enrich updated entries.
+**Exit after writing and copying the RPT. Do NOT spawn eco_netlist_verifier yourself — ROUND_ORCHESTRATOR spawns it next as Pass 6f-B.** Your job ends here.

@@ -611,19 +611,32 @@ Format of output (each stage array may contain both wire_swap rewire entries AND
 }
 ```
 
-**CHECKPOINT:** Verify `data/<TAG>_eco_preeco_study.json` exists and has non-empty arrays for all 3 stages (Synthesize, PrePlace, Route) before proceeding. If missing or all stages empty — the sub-agent failed. Do NOT continue.
+**CHECKPOINT 3a (MANDATORY — verify before spawning verifier):**
+```bash
+ls -la <BASE_DIR>/data/<TAG>_eco_preeco_study.json
+python3 -c "import json; d=json.load(open('data/<TAG>_eco_preeco_study.json')); assert any(d.get(s) for s in ['Synthesize','PrePlace','Route']), 'all stages empty'"
+ls <BASE_DIR>/data/<TAG>_eco_step3_collect.rpt
+```
+If any check fails — eco_netlist_studier failed. Do NOT spawn verifier. Re-spawn eco_netlist_studier first.
 
 **MANDATORY Step 3b — Spawn eco_netlist_verifier (Deep Verify + Enrich Pass):**
+
+> **Sequential contract:** eco_netlist_studier MUST complete and write `eco_preeco_study.json` before eco_netlist_verifier is spawned. They run sequentially — verifier reads the JSON studier produced. Never spawn both in parallel.
 
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_netlist_verifier.md` prepended. Pass:
 - `REF_DIR`, `TAG`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
 - `GAP15_CHECK_PATH=data/<TAG>_eco_gap15_check.json`
-- `SPEC_SOURCES` (same mapping passed to eco_netlist_studier)
-- Task: Enrich every entry in `eco_preeco_study.json` with per-stage net resolution, GAP-15 re-check, port boundary, consumer cascade, CTS checks, cone verification, missing entry detection
+- `SPEC_SOURCES` (same mapping passed to eco_netlist_studier — verifier uses it for per-stage net resolution in Check 2 and cone verification in Check 10)
+- Task: Enrich every entry in `eco_preeco_study.json` — 14 checks covering GAP-15, per-stage nets, port boundary, consumer cascade, CTS, cone verification, missing entry detection
 
 Wait for eco_netlist_verifier to complete.
 
-**CHECKPOINT:** Verify `data/<TAG>_eco_step3_netlist_verify.rpt` exists. If missing — verifier failed. Re-spawn before continuing.
+**CHECKPOINT 3b (MANDATORY — verify both verifier outputs before continuing):**
+```bash
+ls <BASE_DIR>/data/<TAG>_eco_step3_netlist_verify.rpt
+ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_verify.rpt
+```
+If either missing — verifier failed. Re-spawn before continuing to eco_expand_chains.py. Do NOT proceed to Step 4 without a passing verifier.
 
 **MANDATORY post-Step 3: Run eco_expand_chains.py to inject missing D-input gate chains:**
 
@@ -711,7 +724,7 @@ ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round1.rpt
 
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_applier.md` prepended. Pass:
 - `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `ROUND` (current round number — 1 for initial run, 2/3/... for fixer loop), `AI_ECO_FLOW_DIR`
-- The PreEco study JSON from Step 3
+- The PreEco study JSON from Step 3: `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` — this is the **fully enriched** JSON written by eco_netlist_verifier (not the initial skeleton from eco_netlist_studier). It contains `port_connections_per_stage` for all 3 stages, auto-added port_declaration and consumer rewire entries, and all GAP-15 corrections.
 - Task: For each confirmed cell, backup PostEco netlist (using `bak_<TAG>_round<ROUND>` naming), locate same cell, verify old_net on pin, replace with new_net (rewire) or auto-insert inverter (new_logic), recompress, verify
 - Output: `<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`
 

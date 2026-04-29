@@ -230,21 +230,23 @@ Wait for eco_netlist_re_studier to complete and verify `eco_step3_netlist_study_
 **Pass 6f-B — Spawn eco_netlist_verifier** with `config/eco_agents/eco_netlist_verifier.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
 - `GAP15_CHECK_PATH=data/<TAG>_eco_gap15_check.json`
-- `SPEC_SOURCES` (same mapping)
+- `SPEC_SOURCES` (same mapping — verifier uses it for per-stage net resolution in Check 2)
 - Task: re-enrich ALL entries in `eco_preeco_study.json` with per-stage nets, gap checks, port boundary, consumer cascade, CTS checks
 
-Wait for eco_netlist_verifier to complete and verify `eco_step3_netlist_verify.rpt` exists.
+Wait for eco_netlist_verifier to complete.
 
-Wait for sub-agent to complete.
-
-**CHECKPOINT:**
+**CHECKPOINT 6f (MANDATORY — verify ALL four outputs before continuing):**
 ```bash
 ls <BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt
 ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt
+ls <BASE_DIR>/data/<TAG>_eco_step3_netlist_verify.rpt
+ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_verify.rpt
 ```
-Verify `eco_preeco_study.json` modified time is after Step 6d completed. Do NOT proceed to Step 4 without both.
+If re_studier RPT missing → re_studier failed. Re-spawn Pass 6f-A.
+If verifier RPT missing → verifier failed. Re-spawn Pass 6f-B.
+Verify `eco_preeco_study.json` modified time is after Step 6d completed. Do NOT proceed to eco_expand_chains without all four.
 
-**MANDATORY: Run eco_expand_chains.py after every re-study to inject any missing D-input gate chains:**
+**MANDATORY: Run eco_expand_chains.py after verifier to inject any missing D-input gate chains:**
 ```bash
 cd <BASE_DIR>
 python3 script/eco_scripts/eco_expand_chains.py \
@@ -253,12 +255,13 @@ python3 script/eco_scripts/eco_expand_chains.py \
     --ref-dir  <REF_DIR> --jira <JIRA> \
     --output   data/<TAG>_eco_preeco_study.json
 ```
+eco_expand_chains runs AFTER verifier (not just after re_studier) because verifier may have added new entries that reference d_input chains not yet injected.
 
-**MANDATORY: Re-load study JSON before exit check** — the file was just updated by eco_netlist_studier. Do NOT use any in-memory study JSON from earlier in this instance. Always load fresh from disk:
+**MANDATORY: Re-load study JSON before exit check** — the file was just updated by verifier + eco_expand_chains. Do NOT use any in-memory study JSON from earlier in this instance. Always load fresh from disk:
 
 **MANUAL_ONLY RE-CHECK (after Step 6f) — SINGLE UNIFIED EXIT RULE:**
 
-After eco_netlist_studier_round_N completes, re-load `eco_preeco_study.json` from disk and check for entries with `force_reapply: true AND NOT manual_only`:
+After eco_netlist_verifier (Pass 6f-B) completes, re-load `eco_preeco_study.json` from disk and check for entries with `force_reapply: true AND NOT manual_only`:
 
 ```python
 # MANDATORY: load fresh from disk — do NOT reuse in-memory copy
@@ -282,7 +285,7 @@ if not reapply_entries and NEXT_ROUND >= max_rounds:
 # Do NOT exit early. Always use available rounds.
 ```
 
-**Why unified:** The Step 6d check (eco_fm_analyzer output) and the Step 6f check (eco_netlist_studier output) must agree on exit conditions. The single rule `not reapply_entries AND NEXT_ROUND >= max_rounds` covers both cases consistently — if the studier found no work AND rounds are exhausted → MANUAL_LIMIT. Otherwise always continue to eco_applier.
+**Why unified:** The Step 6d check (eco_fm_analyzer output) and the Step 6f check (eco_netlist_verifier output) must agree on exit conditions. The single rule `not reapply_entries AND NEXT_ROUND >= max_rounds` covers both cases consistently — if the studier found no work AND rounds are exhausted → MANUAL_LIMIT. Otherwise always continue to eco_applier.
 
 ---
 
@@ -290,7 +293,7 @@ if not reapply_entries and NEXT_ROUND >= max_rounds:
 
 **Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_applier.md` prepended. Pass:
 - `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `ROUND=<NEXT_ROUND>`, `AI_ECO_FLOW_DIR`
-- PreEco study JSON: `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` (updated by Step 6f)
+- PreEco study JSON: `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` — **fully enriched** by eco_netlist_verifier (Pass 6f-B), contains `port_connections_per_stage` for all stages and all auto-added entries
 - Output: `<BASE_DIR>/data/<TAG>_eco_applied_round<NEXT_ROUND>.json`
 
 This agent is `eco_apply_fix_round_N` — it applies the fix strategy identified by eco_fm_analyzer and refined by eco_netlist_studier_round_N. It reads `force_reapply: true` flags and applies port declarations unconditionally when set.

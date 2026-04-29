@@ -4,10 +4,28 @@
 
 **Role:** Reads the initial `eco_preeco_study.json` written by eco_netlist_studier (collect pass) and enriches every entry with per-stage net resolution, gap checks, missing entry detection, and cross-entry validation. This agent is the quality gate before eco_applier runs — every gap caught here prevents a wasted round.
 
-**Inputs:** REF_DIR, TAG, BASE_DIR, GAP15_CHECK_PATH, SPEC_SOURCES (same as passed to studier).
+**Inputs:** REF_DIR, TAG, BASE_DIR, GAP15_CHECK_PATH, SPEC_SOURCES (same as passed to studier), AI_ECO_FLOW_DIR.
+
+**SPEC_SOURCES usage:** Used in Check 2 (per-stage net resolution) and Check 10 (cone verification) when resolving FM fenets spec results per stage. Each stage reads from its designated spec file path, NOT from the initial run spec for all stages:
+```
+SPEC_SOURCES:
+  Synthesize: <path>  ← spec file whose results apply to Synthesize stage
+  PrePlace:   <path>  ← spec file whose results apply to PrePlace stage
+  Route:      <path>  ← spec file whose results apply to Route stage
+```
+If a stage has `SPEC_SOURCES[stage] = "FALLBACK"` → no FM results exist for that stage → apply Stage Fallback (GAP-5) in Check 10 instead of reading the spec.
 
 **Input file:** `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` (written by eco_netlist_studier)
-**Output file:** Same path — enriched in-place. Verify `wc -l` ≥ input line count after writing.
+**Output files:**
+- `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` — same path, enriched in-place. Verify `wc -l` ≥ input line count.
+- `<BASE_DIR>/data/<TAG>_eco_step3_netlist_verify.rpt` — verification report (MANDATORY — ORCHESTRATOR checkpoints this)
+- Both files MUST be copied to `AI_ECO_FLOW_DIR/` before exit.
+
+**CHECK EXECUTION ORDER — MANDATORY:**
+Checks MUST run in this sequence to avoid stale data:
+1 → 5 → 6 → 2 → 3 → 4 → 7 → 8 → 9 → 11 → 12 → 13 → 10 → 14
+
+Rationale: Check 1 (GAP-15) corrects `and_term_strategy` first. Check 5 propagates `mode_H_risk`. Check 6 reads corrected `and_term` entries for cascade DFFs. Checks 2/3 resolve per-stage nets (needed by cone verify). Checks 7/8/9 auto-add entries. Check 10 (cone verify) runs last on rewire entries so it sees all auto-added entries. Check 14 (decompose fallback) runs after per-stage resolution is complete.
 
 ---
 
@@ -420,7 +438,7 @@ Verify gate types exist in PreEco: `grep -cm1 "<gate_type>" PreEco/Synthesize.v.
 
 ## Step Final — Write Enriched JSON and RPT
 
-**Sort all entries by PASS_ORDER before writing:**
+**Sort all entries by PASS_ORDER before writing (including auto-added entries from Checks 7/8/9):**
 ```python
 PASS_ORDER = {
     "new_logic": 1, "new_logic_dff": 1, "new_logic_gate": 1,
@@ -431,6 +449,7 @@ PASS_ORDER = {
 for stage in ["Synthesize", "PrePlace", "Route"]:
     study[stage].sort(key=lambda e: PASS_ORDER.get(e.get("change_type", "rewire"), 4))
 ```
+**NOTE:** Auto-added `port_declaration` entries (Check 7) sort before `rewire` entries (Check 8) by design — eco_applier must declare ports before applying rewires that reference them. The PASS_ORDER guarantees this.
 
 Write enriched JSON back to `<BASE_DIR>/data/<TAG>_eco_preeco_study.json`.
 Verify `wc -l` ≥ original line count.
@@ -460,11 +479,16 @@ FORCE_REAPPLY:   <N> entries flagged
 WARNINGS:        <list any remaining UNRESOLVED or UNRESOLVABLE nets>
 ```
 
-Copy RPT to `AI_ECO_FLOW_DIR/`.
+**Copy BOTH outputs to AI_ECO_FLOW_DIR (MANDATORY — ORCHESTRATOR checkpoints both):**
+```bash
+cp <BASE_DIR>/data/<TAG>_eco_preeco_study.json      <AI_ECO_FLOW_DIR>/
+cp <BASE_DIR>/data/<TAG>_eco_step3_netlist_verify.rpt <AI_ECO_FLOW_DIR>/
+ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_verify.rpt  # verify copy succeeded
+```
 
-**Cleanup temp files:**
+**Cleanup temp files** (created in Step 0 — `-f` flag handles cases where decompression failed):
 ```bash
 rm -f /tmp/eco_verify_<TAG>_Synthesize.v /tmp/eco_verify_<TAG>_PrePlace.v /tmp/eco_verify_<TAG>_Route.v
 ```
 
-**Exit after writing and copying RPT.**
+**Exit after writing and copying. Do NOT spawn any further agents — ORCHESTRATOR or ROUND_ORCHESTRATOR handles what comes next.**
