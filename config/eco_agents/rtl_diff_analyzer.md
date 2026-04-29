@@ -590,9 +590,36 @@ Add a fenets query on `target_register` (the DFF output Q signal) to `nets_to_qu
 }
 ```
 
-#### E4d — Decompose the new prepended conditions into a gate chain (MANDATORY when E4a succeeds)
+#### E4c — PreEco Compound Gate Discovery (PRIORITY 1 — run before E4d RTL decomposition)
 
-When `fallback_strategy: "intermediate_net_insertion"` is set, the new conditions that are prepended before the old expression must be synthesized as a gate chain. The eco_netlist_studier Step 0c-4 Entry B inserts these gates at the pivot net — but it needs a concrete gate chain to insert.
+**Before decomposing conditions into simple gates from RTL, search the PreEco backward cone of the pivot net for existing compound gates.** This is always more reliable than RTL-decomposed simple gates because:
+- Compound gates already exist in the library and in the PreEco netlist → cell types confirmed valid
+- Compound gate inputs are already connected to the correct signal cones → no PENDING_FM_RESOLUTION
+- FM verifies them as structurally equivalent stage-to-stage without SVF
+
+**Search procedure:**
+```bash
+# 1. Find the pivot net's driver and the backward cone (up to 8 hops from target_register.D)
+# 2. Look for compound gates in that cone whose inputs partially match the new conditions
+#    (compound = cell with ≥3 inputs combining AND+OR or AND+NOT patterns: OA, OAI, AN3, ND3, etc.)
+zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | \
+  awk "/\b<target_register>_reg\b/,/\) ;/" | \
+  grep -E "^\s+[A-Z][A-Z0-9]+[0-9]\s+[a-z]" | \
+  grep -v "^\s*DFF\|^\s*SDF\|^\s*MUX" | head -10
+# For each candidate gate: check if one of its inputs is replaceable with a new condition expression
+```
+
+**If compound gate found in backward cone:**
+1. Record as `compound_gate_target`: instance name, cell type, replaceable input pin
+2. Set `intermediate_net_strategy: "compound_gate_insertion"`
+3. The condition chain becomes: new condition gates → compound gate's replaceable pin (rewire)
+4. Set `condition_inputs_use_preeco_nets: true` — inputs come from EXISTING PreEco nets, not RTL names → no PENDING_FM_RESOLUTION risk in P&R stages
+
+**If no compound gate found:** fall through to E4d (RTL decomposition with simple gates).
+
+#### E4d — Decompose the new prepended conditions into a gate chain (FALLBACK when E4c finds nothing)
+
+When `fallback_strategy: "intermediate_net_insertion"` is set AND E4c compound gate discovery found nothing, the new conditions must be synthesized as a gate chain from RTL. The eco_netlist_studier Step 0c-4 Entry B inserts these gates at the pivot net — but it needs a concrete gate chain to insert.
 
 Parse each new condition from `context_line` independently (these are the cases BEFORE the last/default old expression) and decompose each into a sub-gate chain using the same E3 table rules. Assign sequence numbers starting from `c001` (condition gates), separate from the D-input chain `d001` numbering.
 

@@ -533,16 +533,17 @@ If 0 → check PrePlace and Route. Record per-stage `instance_confirmed` flags. 
 
 For every entry with `d_input_decompose_failed: true` that has no `intermediate_net_strategy` set:
 
-**Strategy A — Structural insertion (preferred):**
+**Strategy A — Compound gate insertion from PreEco (PRIORITY 1 — always try first):**
+
+Search the backward cone of `target_register.D` for existing compound gates (multi-input AND+OR combinations, NOT MUX2) whose inputs are already connected to the relevant signal cones:
 ```bash
-# Trace backward from target_register.D (up to 8 hops)
-# Look for compound gates with at least one replaceable input
 zcat PreEco/Synthesize.v.gz | awk "/\b<target_register>_reg\b/,/\) ;/" | \
-  grep -E "[A-Z]+[0-9]" | head -5
+  grep -E "^\s+[A-Z][A-Z0-9]+[0-9]\s+[a-z]" | grep -v "DFF\|SDF\|MUX" | head -10
 ```
-- If found → create rewire + new_logic_gate entries using compound gates discovered from PreEco
-- Never use MUX2 — causes structural non-equivalence
-- Set `intermediate_net_strategy: "structural_insertion"`
+- If compound gate found → use it: rewire one of its replaceable inputs to the new condition output
+- Gate inputs use EXISTING PreEco nets (already in the netlist, no PENDING_FM_RESOLUTION risk in P&R)
+- Never use MUX2 — structural non-equivalence in FM
+- Set `intermediate_net_strategy: "compound_gate_insertion"`
 
 **Strategy B — Pivot approach (fallback when A fails):**
 - Trace backward from `target_register.D` (max 5 hops) to first net with fanout ≥ 2
