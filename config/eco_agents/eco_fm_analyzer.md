@@ -8,6 +8,20 @@
 
 ---
 
+## ABSOLUTE RULE — `manual_only` is ABOLISHED
+
+**Never prescribe `action: manual_only`.** The flow always tries its best — all 6 rounds. For every failure, prescribe a progressive action:
+
+| Instead of manual_only | Use |
+|------------------------|-----|
+| Route net unresolvable | `conservative_constant` (1'b0 for condition gate inputs as last resort) |
+| Structural stage mismatch | `fix_named_wire` → `move_gate_to_submodule` → `conservative_constant` |
+| Pre-existing failure (Mode E) | `try_structural_insertion` → `conservative_constant` |
+| Decomposition failed (Mode F2) | `try_alternative_decomposition` → `try_alternative_pivot` |
+| INTENTIONAL_CASCADE | `cascade_verified_skip` (not manual_only — just skip that DFF) |
+
+The only valid exit is MAX_ROUNDS (6 rounds). ROUND_ORCHESTRATOR will never early-exit for manual_only.
+
 ## GOLDEN RULE — Always Cross-Reference RTL Diff Before Prescribing Any Fix
 
 **Load these two files ONCE at the start and keep them in memory throughout all analysis:**
@@ -344,7 +358,7 @@ Use Step 2 results to classify:
 | Gate polarity wrong (Check D) | A | Replace gate with correct type |
 | ECO-inserted DFF is DFF0X AND gate input has no direct primitive driver (Check E) | H | Gate input driven only through hierarchical port bus |
 | `d_input_decompose_failed` in RTL diff | F | See Mode F below |
-| `FmEqvEcoRouteVsEcoPrePlace` PASS, `FmEqvEcoPrePlaceVsEcoSynthesize` FAIL ≥ 10, no failing DFF matches target_register | G | Structural HFS mismatch — attempt fix_named_wire; if Priority 3 trace confirms no fixable net → manual_only |
+| `FmEqvEcoRouteVsEcoPrePlace` PASS, `FmEqvEcoPrePlaceVsEcoSynthesize` FAIL ≥ 10, no failing DFF matches target_register | G | Structural HFS mismatch — attempt fix_named_wire using cell_name_per_stage; if P&R cell found → use it; if absent → try move_gate_to_submodule; if still stuck → use conservative_constant (1'b0) as last resort |
 | 3000+ cascade failures from one module scope where `<old_token>` was a module output port | `Mode_A_module_port_direct_gating` | Set `and_term_strategy: "module_port_direct_gating"` |
 | Pre-existing DFF downstream of `and_term` old_token, and_term gate drove new net NOT the port | `INCOMPLETE_AND_TERM` | Re-study with `module_port_direct_gating`; new gate output = old_token; rename original driver; remove individual rewires |
 | Newly inserted DFF fails with globally unmatched SE/SI cone nets (HFS aliases differ between stages) | `SCAN_CHAIN_MISMATCH` | Auto-fixable via tune file entries (GAP-20) |
@@ -415,8 +429,8 @@ for change in study_changes:
                        f"cone reaches {cascade_net}. The ECO intentionally changed "
                        f"the gating of {cascade_net} — this DFF's behavior change "
                        f"is a correct ECO consequence, not a bug.",
-                action="manual_only",
-                svf_guidance="set_dont_verify for this DFF (expected value change from ECO)"
+                action="cascade_verified_skip",
+                note="INTENTIONAL_CASCADE — ECO correctly changed this DFF. Skip in FM comparison scope or use set_case_analysis if available."
             )
             return  # STOP — do NOT evaluate Mode E or other modes
 ```
@@ -425,7 +439,7 @@ for change in study_changes:
 - Mode E: DFF was NEVER affected by the ECO — pre-existing structural divergence
 - INTENTIONAL_CASCADE: DFF IS affected by the ECO — its behavior intentionally changed because it depends on a gated port. FM vs OLD SynRtl correctly detects this. No netlist fix possible. Engineer applies `set_dont_verify`.
 
-Both result in `action: manual_only`, but INTENTIONAL_CASCADE should be reached in Round 1 (no wasted rounds trying to fix it), while Mode E requires the 5-condition proof.
+INTENTIONAL_CASCADE uses `action: cascade_verified_skip` (ECO correct, value intentionally changed). Mode E uses `action: try_structural_insertion` (attempt alternative gate topology before accepting failure). Neither uses manual_only.
 
 **PROOF required — ALL five conditions must be satisfied. One failure → not Mode E:**
 
@@ -463,13 +477,13 @@ for token in and_term_tokens:
 **Condition 5 — Cascade count is not suspiciously large:**
 If `cascade_count >= 100` and all failing DFFs share a common module scope related to an `and_term` change → the cascade strongly suggests GAP-15 was not applied (not a pre-existing divergence). Do NOT classify as Mode E; classify as `INCOMPLETE_AND_TERM` and prescribe GAP-15 fix.
 
-Only after ALL five conditions confirmed → classify Mode E → `action: manual_only`.
+Only after ALL five conditions confirmed → classify Mode E → `action: try_structural_insertion` (attempt alternative gate structure that avoids the pre-existing mismatch; if no structural fix exists → `action: conservative_constant` as last resort to make the gate functional).
 
 ### Mode F — d_input_decompose_failed
 
 Check `fallback_strategy` in eco_rtl_diff.json:
 
-- **`intermediate_net_insertion`** → Mode F1: check if eco_preeco_study has `source: "intermediate_net_fallback"`. If present → classify Mode A (re-apply). If absent → studier did NOT run Step 0c → `action: manual_only`.
+- **`intermediate_net_insertion`** → Mode F1: check if eco_preeco_study has `source: "intermediate_net_fallback"`. If present → classify Mode A (re-apply). If absent → studier did NOT run Step 0c → `action: try_alternative_pivot` (find a different pivot net in the backward cone, max 3 hops deeper).
 
   When `intermediate_net_insertion` was applied and failing count is identical across 2+ consecutive rounds, try progressive fixes in order:
   ```python
@@ -485,11 +499,11 @@ Check `fallback_strategy` in eco_rtl_diff.json:
   elif "try_alternative_pivot" not in strategies_tried:
       action = "try_alternative_pivot"   # Find alternative pivot net
   else:
-      action = "manual_only" if current_round >= max_rounds - 1 else "try_alternative_pivot"
+      action = "try_alternative_pivot"  # Always try — never manual_only
   ```
   Also check `pivot_driver_cell_type` — if INVERTING (NOR, NAND, INV) and constants not yet flipped → `invert_cmux_constants` first. Run proactive Check D on ALL c_mux gates.
 
-- **`null`** → Mode F2: set all revised_changes to `action: manual_only`. ROUND_ORCHESTRATOR exits loop early.
+- **`null`** → Mode F2: `action: try_alternative_decomposition` — re-study with a different gate approach (compound gates from PreEco, different pivot net, or conservative_constant for unresolvable inputs).
 
 ### Mode INCOMPLETE_AND_TERM — and_term gate did not drive port directly (GAP-15 violation)
 

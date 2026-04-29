@@ -259,33 +259,25 @@ eco_expand_chains runs AFTER verifier (not just after re_studier) because verifi
 
 **MANDATORY: Re-load study JSON before exit check** — the file was just updated by verifier + eco_expand_chains. Do NOT use any in-memory study JSON from earlier in this instance. Always load fresh from disk:
 
-**MANUAL_ONLY RE-CHECK (after Step 6f) — SINGLE UNIFIED EXIT RULE:**
-
-After eco_netlist_verifier (Pass 6f-B) completes, re-load `eco_preeco_study.json` from disk and check for entries with `force_reapply: true AND NOT manual_only`:
+**EXIT RULE — MAX_ROUNDS ONLY (no MANUAL_LIMIT early exit):**
 
 ```python
-# MANDATORY: load fresh from disk — do NOT reuse in-memory copy
+# MANDATORY: load fresh from disk
 study = load(f"data/{TAG}_eco_preeco_study.json")
-reapply_entries = [
-    e for stage_entries in study.values() if isinstance(stage_entries, list)
-    for e in stage_entries
-    if e.get("force_reapply") and not e.get("manual_only")
-]
 
-# UNIFIED EXIT RULE — only one condition triggers MANUAL_LIMIT:
-if not reapply_entries and NEXT_ROUND >= max_rounds:
-    # ALL strategies exhausted AND max rounds reached
-    update_handoff(status="MANUAL_LIMIT")
+# NEVER exit early due to manual_only — the flow must always try its best.
+# Exit ONLY when MAX_ROUNDS is reached.
+if NEXT_ROUND > max_rounds:
+    update_handoff(status="MAX_ROUNDS")
     spawn FINAL_ORCHESTRATOR with TOTAL_ROUNDS=<NEXT_ROUND>
     EXIT
 
-# All other cases: continue to Step 4 (eco_applier)
-# - No fixable work BUT rounds remain → eco_fm_analyzer queued progressive strategy
-# - Some fixable work → apply it normally
-# Do NOT exit early. Always use available rounds.
+# Always continue to eco_applier — even if revised_changes are all manual_only.
+# eco_applier handles already_applied entries gracefully.
+# eco_fm_analyzer will try progressive strategies each round until max_rounds.
 ```
 
-**Why unified:** The Step 6d check (eco_fm_analyzer output) and the Step 6f check (eco_netlist_verifier output) must agree on exit conditions. The single rule `not reapply_entries AND NEXT_ROUND >= max_rounds` covers both cases consistently — if the studier found no work AND rounds are exhausted → MANUAL_LIMIT. Otherwise always continue to eco_applier.
+**CRITICAL — MANUAL_ONLY is abolished:** Do NOT exit early because eco_fm_analyzer classified something as manual_only. The analyzer must always prescribe a progressive strategy (try_structural_insertion, try_alternative_pivot, conservative_constant, move_gate_to_submodule, etc.) rather than giving up. Use all 6 rounds.
 
 ---
 

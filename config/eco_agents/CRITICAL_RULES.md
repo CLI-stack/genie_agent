@@ -591,12 +591,12 @@ ECO-inserted DFFs (`eco_<jira>_` pattern) are **never** Mode E or subject to `se
 
 ---
 
-## RULE 35 — MANUAL_LIMIT and MAX_ROUNDS Exit Semantics
+## RULE 35 — MAX_ROUNDS is the ONLY exit (manual_only ABOLISHED)
 
-- **MANUAL_LIMIT**: All remaining failures have `action: manual_only` (modes E, F2, G with priority-3 exhausted). Rounds may still remain. Spawn FINAL_ORCHESTRATOR immediately — do not waste rounds on unfixable failures.
-- **MAX_ROUNDS**: Round 6 completed with FM still failing. Spawn FINAL_ORCHESTRATOR regardless of failure mode.
-- **Both** write `status: "MANUAL_LIMIT"` or `status: "MAX_ROUNDS"` to round_handoff.json and spawn FINAL_ORCHESTRATOR.
-- FINAL_ORCHESTRATOR maps these to: MANUAL_LIMIT → "FAIL — Manual fix required"; MAX_ROUNDS → "FAIL — Max rounds reached"; FM_PASSED → "PASS".
+- **`manual_only` is ABOLISHED** — eco_fm_analyzer never prescribes it. For every failure, prescribe a progressive action: conservative_constant, try_structural_insertion, try_alternative_pivot, move_gate_to_submodule, cascade_verified_skip.
+- **MAX_ROUNDS**: Round 6 completed with FM still failing → spawn FINAL_ORCHESTRATOR with `status: MAX_ROUNDS`. This is the only exit besides FM_PASSED.
+- No MANUAL_LIMIT. ROUND_ORCHESTRATOR always runs all 6 rounds or until FM passes.
+- FINAL_ORCHESTRATOR maps: MAX_ROUNDS → "FAIL — Max rounds reached"; FM_PASSED → "PASS".
 
 ---
 
