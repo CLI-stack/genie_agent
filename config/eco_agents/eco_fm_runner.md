@@ -204,6 +204,23 @@ Two abort types allow a single inline fix attempt followed by immediate FM re-su
    - `F3_decl_inside_instance`, `F5_corrupted_port_value` → remove the offending line from the gzipped netlist; verify the line is gone after removal.
    - `F1_dup_wire` → remove the explicit wire declaration; verify removal.
    - Any timeout during fix → **restore all 3 stages from their pre-fix MD5** (copy backup back) → treat as fix-failed → exit.
+
+   Additionally, parse **FM log** (not just validator output) for SVR-14 errors not caught by the validator:
+   - **`SVR-14` (bus indexing on non-array):** `Error: Indexing into non-array '<base>' is not allowed at line N in <file> (SVR-14)`
+     1. Extract `base_name` and `line_number` from the error.
+     2. Read the PostEco stage file at that line — find which pin of which gate uses `base_name[N]`.
+     3. Extract the declaring module (scan backwards from that line for `^module <name>`).
+     4. Extract module scope (lines between `module <name>` and its `endmodule`).
+     5. Check if `base_name` is declared as a bus (`wire/input/output [...]`) in that scope. If YES → SVR-14 is a false alarm (shouldn't happen) → skip.
+     6. If NOT a bus in scope → find the scalar wire at bit position `[N]` via port bus concatenation in the module scope (use `find_scalar_for_bus_bit` logic: parse `{ w_N, ..., w_1, w_0 }` where index 0 = last element):
+        ```python
+        # Find concatenation block containing base_name in module scope
+        # Extract { ... } content, split by comma, strip whitespace
+        # bit[N] = elements[len(elements) - 1 - N]  (MSB→LSB order)
+        ```
+     7. Replace `base_name[N]` with the scalar wire in ALL 3 PostEco stages at every occurrence.
+     8. Verify replacement: `grep -c "base_name\[N\]"` in each stage → must be 0.
+     9. If scalar wire not found → treat as fix-failed → escalate.
 7. Compute MD5 of all three PostEco netlists before and after. If unchanged → fix did nothing → treat as fix-failed.
 8. Re-run validator (without `--strict`). If `returncode == 0` → re-submit FM at STEP B. If still failing → treat as fix-failed.
 
