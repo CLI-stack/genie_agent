@@ -486,7 +486,30 @@ For every `new_logic` change that declares a new DFF register, parse its D-input
 From the `context_line` always block:
 - Locate the `else` clause: `else <target> <= <expression>;`
 - The expression is the D-input logic
-- Detect **synchronous reset**: if `if (<RST_signal>) <target> <= 1'b0;` is present, prepend `~<RST_signal> &` to the expression (sync reset baked into D-input since SDFQ cells have no RN pin)
+
+**Synchronous reset detection — DO NOT bake into D-input immediately:**
+
+If `if (<rst_signal>) <target> <= 1'b0;` (or `1'b1` for active-low) is present:
+1. Extract `reset_signal = <rst_signal>` and `reset_polarity = "active_high"` (active_low if `~<rst_signal>`)
+2. Set `has_sync_reset: true` in the change JSON
+3. **Remove the reset term from the D-input expression** — record it separately
+4. The D-input expression becomes only the `else` clause logic (no `~<rst_signal>` term)
+5. eco_netlist_studier will decide in Step 0c whether to:
+   - **Use a DFF cell with explicit reset pin** (preferred — reset signal stays out of combinational cone → immune to CTS BBNet issues on reset nets)
+   - **Fall back to baking into D-input** (only if no reset-pin cell exists in PreEco)
+
+```
+# CORRECT: separate reset from D-input
+has_sync_reset: true
+reset_signal:   <rst_signal>
+reset_polarity: "active_high"        # or "active_low"
+d_input_expr:   <sig_A> & ~<sig_B>  # reset term NOT included
+
+# WRONG (old approach): always bake reset in
+d_input_expr:   ~<rst_signal> & <sig_A> & ~<sig_B>  # exposes reset to CTS BBNet
+```
+
+**Why this matters:** Reset signals (IReset, rst_n, etc.) are heavily replicated by CTS in Route stage. When a reset net is used in combinational logic (D-input cone), FM cannot trace through the CTS-merged BBNet drivers → DFF appears non-equivalent in Route → MANUAL_ONLY failure. Using the DFF cell's dedicated reset pin bypasses combinational cone entirely — FM handles it as a structural equivalence, not logic.
 
 ```
 Example always block (generic):

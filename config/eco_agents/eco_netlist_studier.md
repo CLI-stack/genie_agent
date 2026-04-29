@@ -142,7 +142,57 @@ After all chain gates: set DFF entry `port_connections.D = "n_eco_<jira>_d<last>
 
 ### 0c — Find suitable cell type from PreEco netlist
 
-**For DFF:** `zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -E "^[[:space:]]*(DFF|DFQD|SDFQD|SDFFQ|DFFR|DFFRQ)[A-Z0-9]* [a-z]" | head -5`
+**For DFF with `has_sync_reset: true` — try reset-pin cell FIRST (preferred):**
+
+When the RTL diff flags `has_sync_reset: true` and provides `reset_signal` + `reset_polarity`, search PreEco for a DFF cell that has an **explicit reset/clear pin** (RN, SN, CDN, SDN, etc.):
+
+```bash
+# Search for reset-capable DFF cells in same module scope as the neighbour DFF
+# Generic: search for any DFF-family cell with a reset-style pin
+zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | \
+  awk '/^module <declaring_module>/,/^endmodule/' | \
+  grep -E "^[[:space:]]*(DFF|SDFQ|DFFRQ|DFFR|DFN|SDFF)[A-Z0-9]*[[:space:]]" | \
+  head -10
+
+# For each candidate, check if it has a reset/clear pin:
+# Active-low reset: .RN( or .SN( or .CDN( or .SDN(
+# Active-high reset: .RST( or .CLR( or .R(
+grep -m1 "<candidate_cell_type>" /tmp/eco_study_<TAG>_Synthesize.v | \
+  grep -E "\.RN\s*\(|\.SN\s*\(|\.CDN\s*\(|\.SDN\s*\(|\.RST\s*\(|\.CLR\s*\("
+```
+
+**If a reset-pin cell is found:**
+1. Use it as the DFF cell type
+2. Set `reset_pin_used: true`, `reset_pin_name: <pin>`, `reset_signal: <from rtl_diff>`
+3. Connect `reset_signal` → `reset_pin` in `port_connections`
+4. **Remove reset term from `d_input_gate_chain`** — the reset gates (e.g., `INV(<rst>)`, `AND...(n_d_last, ~<rst>)`) are no longer needed
+5. Shorten `d_input_gate_chain` accordingly — D-input now feeds functional logic only
+
+```json
+{
+  "dff_cell_type": "<reset_capable_cell>",
+  "reset_pin_used": true,
+  "reset_pin_name": "RN",
+  "reset_signal": "<rst_signal>",
+  "reset_polarity": "active_high",
+  "port_connections": {
+    "<data_pin>": "n_eco_<jira>_d<last_functional_gate>",
+    "<clk_pin>":  "<clk_net>",
+    "<reset_pin>":"<rst_signal>",
+    "<q_pin>":    "<target_register>"
+  },
+  "note": "Sync reset connected to cell RN pin — NOT in D-input cone. Immune to CTS BBNet on reset net."
+}
+```
+
+**Why this is strongly preferred:** Reset signals are heavily replicated by CTS in Route. When baked into the D-input combinational cone, FM cannot trace through the CTS-merged BBNet driver → DFF appears non-equivalent in Route (GAP-CTS-2) → MANUAL_ONLY failure that no netlist fix can resolve. Using the DFF reset pin bypasses the combinational cone entirely.
+
+**If no reset-pin cell found in PreEco scope:** Fall back to current approach — bake reset into D-input gate chain. Set `reset_pin_used: false`, retain all d_input_gate_chain gates including the reset INV gate. Log: `"RESET_PIN_FALLBACK: no reset-capable DFF found in scope <module> — reset baked into D-input chain (GAP-CTS-2 risk in Route)"`
+
+**For DFF without sync reset (or fallback):**
+```bash
+zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -E "^[[:space:]]*(DFF|DFQD|SDFQD|SDFFQ|DFFR|DFFRQ)[A-Z0-9]* [a-z]" | head -5
+```
 
 **For combinational gate:** Determine function from RTL expression (`A & B` → AND2, `~A` → INV, etc.), then search PreEco for matching cell pattern.
 
