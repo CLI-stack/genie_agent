@@ -214,16 +214,26 @@ python3 script/eco_scripts/eco_gap15_check.py \
 ```
 Pass `GAP15_CHECK_PATH=data/<TAG>_eco_gap15_check.json` to the studier sub-agent prompt.
 
-**ALWAYS spawn eco_netlist_studier in RE_STUDY_MODE regardless of failure mode.** The studier reads the eco_fm_analyzer output, inspects the actual PostEco netlist, and updates `eco_preeco_study.json` with corrected/forced entries. This replaces the previous approach of manually patching the study JSON in ROUND_ORCHESTRATOR.
+**Step 6f has two sequential passes — re_studier fixes failing entries, verifier enriches ALL entries:**
 
-**Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_netlist_studier.md` prepended. Pass:
+**Pass 6f-A — Spawn eco_netlist_re_studier** with `config/eco_agents/eco_netlist_re_studier.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `TILE`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
 - `RE_STUDY_MODE=true`
-- `ROUND=<ROUND>` (the round that just failed — studier reads `<TAG>_eco_fm_analysis_round<ROUND>.json`)
+- `ROUND=<ROUND>` (the round that just failed)
 - `FM_ANALYSIS_PATH=<BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json`
 - `FENETS_RERUN_PATH=<BASE_DIR>/data/<TAG>_eco_fenets_rerun_round<ROUND>.json` if Step 6f-FENETS ran, otherwise `null`
-- `SPEC_SOURCES`: extract from `<BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt` footer (same algorithm as ORCHESTRATOR Step 2) and pass so studier reads the correct FM spec file per stage
-- Task: update `eco_preeco_study.json` for failing entries only; write `eco_step3_netlist_study_round<NEXT_ROUND>.rpt`
+- `SPEC_SOURCES`: extract from `<BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt` footer
+- Task: fix failing entries only in `eco_preeco_study.json`; write `eco_step3_netlist_study_round<NEXT_ROUND>.rpt`
+
+Wait for eco_netlist_re_studier to complete and verify `eco_step3_netlist_study_round<NEXT_ROUND>.rpt` exists.
+
+**Pass 6f-B — Spawn eco_netlist_verifier** with `config/eco_agents/eco_netlist_verifier.md` prepended. Pass:
+- `TAG`, `REF_DIR`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
+- `GAP15_CHECK_PATH=data/<TAG>_eco_gap15_check.json`
+- `SPEC_SOURCES` (same mapping)
+- Task: re-enrich ALL entries in `eco_preeco_study.json` with per-stage nets, gap checks, port boundary, consumer cascade, CTS checks
+
+Wait for eco_netlist_verifier to complete and verify `eco_step3_netlist_verify.rpt` exists.
 
 Wait for sub-agent to complete.
 

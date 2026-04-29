@@ -611,7 +611,19 @@ Format of output (each stage array may contain both wire_swap rewire entries AND
 }
 ```
 
-**CHECKPOINT:** Verify `data/<TAG>_eco_preeco_study.json` exists and has non-empty arrays for all 3 stages (Synthesize, PrePlace, Route) before proceeding. If missing or all stages empty — the sub-agent failed. Do NOT continue to Step 4.
+**CHECKPOINT:** Verify `data/<TAG>_eco_preeco_study.json` exists and has non-empty arrays for all 3 stages (Synthesize, PrePlace, Route) before proceeding. If missing or all stages empty — the sub-agent failed. Do NOT continue.
+
+**MANDATORY Step 3b — Spawn eco_netlist_verifier (Deep Verify + Enrich Pass):**
+
+**Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_netlist_verifier.md` prepended. Pass:
+- `REF_DIR`, `TAG`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
+- `GAP15_CHECK_PATH=data/<TAG>_eco_gap15_check.json`
+- `SPEC_SOURCES` (same mapping passed to eco_netlist_studier)
+- Task: Enrich every entry in `eco_preeco_study.json` with per-stage net resolution, GAP-15 re-check, port boundary, consumer cascade, CTS checks, cone verification, missing entry detection
+
+Wait for eco_netlist_verifier to complete.
+
+**CHECKPOINT:** Verify `data/<TAG>_eco_step3_netlist_verify.rpt` exists. If missing — verifier failed. Re-spawn before continuing.
 
 **MANDATORY post-Step 3: Run eco_expand_chains.py to inject missing D-input gate chains:**
 
