@@ -205,7 +205,13 @@ Two abort types allow a single inline fix attempt followed by immediate FM re-su
    - `F1_dup_wire` → remove the explicit wire declaration; verify removal.
    - Any timeout during fix → **restore all 3 stages from their pre-fix MD5** (copy backup back) → treat as fix-failed → exit.
 
-   Additionally, parse **FM log** (not just validator output) for SVR-14 errors not caught by the validator:
+   Additionally, parse **FM log** for SVR-4/SVR-14 errors not caught by the validator:
+
+   - **`SVR-4` double comma** (`Expected '.' but found ','`): port connection inserted as `, .port(net)` when previous line already ended with `,` → double comma `..., , .port`. Fix: in the affected stage at the reported line, find the double `, ,` pattern and remove the first comma: `re.sub(r',\s*,\s*\.', ', .', line_content)`. Verify fix: `grep -c ', ,' stage.v.gz → 0`.
+
+   - **`SVR-4` missing cell type** (`Expected identifier but found '('`): gate inserted as `  eco_<jira>_<seq> ( .pin(net) ... )` without cell type prefix. Fix: grep PreEco Synthesize for the instance name `grep -m1 "<instance_name>" PreEco/Synthesize.v.gz` → extract cell type (first token) → prepend to the affected line: `cell_type + ' ' + line`. Verify: instance line now starts with uppercase cell type.
+
+   - **`SVR-14` (bus indexing on non-array):** `Error: Indexing into non-array '<base>' is not allowed at line N in <file> (SVR-14)`
    - **`SVR-14` (bus indexing on non-array):** `Error: Indexing into non-array '<base>' is not allowed at line N in <file> (SVR-14)`
      1. Extract `base_name` and `line_number` from the error.
      2. Read the PostEco stage file at that line — find which pin of which gate uses `base_name[N]`.
