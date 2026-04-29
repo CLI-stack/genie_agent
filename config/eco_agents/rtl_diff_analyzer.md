@@ -758,9 +758,40 @@ Set `fallback_strategy: null` when ANY of the following is true:
 
 When `fallback_strategy: null`, the eco_netlist_studier marks this change as MANUAL_ONLY — an engineer must synthesize the full D-input expression from scratch using synthesis tools.
 
+### E4b — Submodule Input Scope Check (MANDATORY after decomposition)
+
+For each resolved input signal in the gate chain, verify it is **directly accessible** in the declaring module's scope — not only reachable by crossing a child submodule boundary.
+
+**Why this matters:** If a gate chain input comes from a child submodule's output port bus (e.g., a register block output), FM black-boxes that submodule in P&R stages → the wire appears undriven (DFF0X) even when correctly renamed. Inserting the gate chain INSIDE the child submodule avoids this entirely — FM can trace internal signals without black-boxing.
+
+**Detection:**
+```bash
+# For each input signal in the gate chain:
+# Step 1: is it declared in the declaring module's own RTL file?
+grep -n "^\s*\(reg\|wire\|input\|output\)\b.*\b<signal>\b" <declaring_module_rtl_file>
+# count = 0 → NOT in declaring module scope
+
+# Step 2: if not found, is it declared as an output of a child module?
+grep -rn "^\s*output\b.*\b<signal>\b" <REF_DIR>/data/SynRtl/*.v
+# If match found in a DIFFERENT module → signal comes from a child submodule
+
+# Step 3: if from child submodule, which instance in the declaring module?
+grep -n "<child_module_type>\s\+<instance_name>" <declaring_module_rtl_file>
+```
+
+**If any gate chain input comes from a child submodule output:**
+1. Set `preferred_insertion_scope: "<child_instance_path>"` — insert gate chain INSIDE the child, not at parent
+2. Set `input_from_submodule: true`, `submodule_instance: "<instance>"`, `submodule_type: "<module_type>"`
+3. The gate chain output net becomes a **new output port** of the child module:
+   - Add `port_declaration` for `n_eco_<jira>_d<last>` (output) from child module
+   - DFF at parent scope connects to this new port via child's instance connection
+4. Record `preferred_insertion_reason: "input <signal> is output of <child_module> — black-boxed by FM in P&R; insert inside child to avoid DFF0X"`
+
+**If inputs are all directly accessible in declaring module scope:** `preferred_insertion_scope: null` (default — insert at declaring module level as before).
+
 ### E5 — Record in JSON
 
-Add `d_input_gate_chain`, `d_input_net`, `d_input_decompose_failed`, `fallback_strategy`, and `new_condition_gate_chain` to the `new_logic` change entry. Eco_netlist_studier Phase 0 reads this to plan gate insertions (D-input chain or intermediate net with condition gates).
+Add `d_input_gate_chain`, `d_input_net`, `d_input_decompose_failed`, `fallback_strategy`, `new_condition_gate_chain`, `preferred_insertion_scope`, `input_from_submodule` to the `new_logic` change entry. Eco_netlist_studier Phase 0 reads this to plan gate insertions (D-input chain or intermediate net with condition gates).
 
 ---
 
@@ -796,7 +827,11 @@ Write to `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json` (always use the full absolute
       "mux_select_branch_true_on": null,
       "mux_select_reasoning": null,
       "has_sync_reset": false,
-      "reset_signal": null
+      "reset_signal": null,
+      "preferred_insertion_scope": null,
+      "input_from_submodule": false,
+      "submodule_instance": null,
+      "submodule_type": null
     }
   ],
   "nets_to_query": [

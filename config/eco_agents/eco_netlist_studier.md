@@ -259,6 +259,29 @@ Parse every `.<PIN>(` — these are the ONLY valid pin names. Never assume pin n
 
 Verify output pin by examining an actual instance from PreEco — always authoritative over this table.
 
+### 0c-SCOPE — Use preferred_insertion_scope when set (MANDATORY check)
+
+Before assigning `instance_scope` for any gate chain entry, check `preferred_insertion_scope` from the RTL diff change JSON:
+
+```python
+preferred_scope = change.get("preferred_insertion_scope")
+if preferred_scope:
+    # Gate chain goes INSIDE the child submodule, not at declaring module level
+    # instance_scope = preferred_scope (child instance path)
+    # The last gate's output net becomes a new OUTPUT PORT of the child module:
+    #   → add port_declaration entry for n_eco_<jira>_d<last> from child module
+    #   → add port_connection entry: child_instance.n_eco_<jira>_d<last> at parent level
+    # The DFF stays at parent (declaring module) level, D-input = the new port
+    instance_scope = preferred_scope
+    log(f"PREFERRED_SCOPE: inserting gate chain inside {preferred_scope} "
+        f"(submodule input — avoids FM black-box DFF0X in P&R stages)")
+else:
+    # Default: insert at declaring module level
+    instance_scope = change.get("instance_scope", "")
+```
+
+**Why:** When `input_from_submodule: true`, the gate chain inputs are only accessible inside the child submodule. FM black-boxes the child in P&R → inputs appear undriven (DFF0X) if gates are at parent. Moving gates inside the child bypasses black-boxing.
+
 ### 0d — Assign instance and output net names
 
 **For `new_logic_dff`:**
