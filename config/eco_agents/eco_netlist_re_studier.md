@@ -171,4 +171,25 @@ Write `<BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt` with
 cp <BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt <AI_ECO_FLOW_DIR>/
 ```
 
+**When making DIRECT PostEco netlist edits** (removing lines from PostEco stages), always check and fix trailing comma:
+```python
+def remove_line_and_fix_trailing_comma(lines, line_idx):
+    """Remove line at line_idx. If preceding non-empty line ends with comma
+    and next non-empty line is ') ;', strip the trailing comma."""
+    lines.pop(line_idx)
+    # Find preceding non-empty line
+    for prev in range(line_idx-1, -1, -1):
+        if lines[prev].strip():
+            if lines[prev].rstrip().endswith(','):
+                # Check if next non-empty line is ') ;'
+                for nxt in range(line_idx, min(line_idx+5, len(lines))):
+                    if lines[nxt].strip():
+                        if re.match(r'^\)\s*;', lines[nxt].strip()):
+                            lines[prev] = lines[prev].rstrip().rstrip(',') + '\n'
+                        break
+            break
+    return lines
+```
+This prevents SVR-4 "mixed ordered/named" errors from dangling trailing commas.
+
 **Exit after writing and copying the RPT. Do NOT spawn eco_netlist_verifier yourself — ROUND_ORCHESTRATOR spawns it next as Pass 6f-B.** Your job ends here.

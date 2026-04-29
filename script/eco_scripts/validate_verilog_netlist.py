@@ -158,21 +158,60 @@ def validate_module(mod_name, mod_lines, start_lineno):
                 in_instance = False
 
     # F7: Bare ')' without ';' closing the module port list → FM SVR-4 → FM-599
-    # eco_passes_2_4.py port_declaration can produce ') \n' without ';' when the original
-    # close line has a different format. FM's Verilog parser requires ') ;' to end the port list.
-    for i, line in enumerate(mod_lines[:500]):  # port list always in first ~500 lines
+    for i, line in enumerate(mod_lines[:500]):
         stripped = line.strip()
         if stripped == ')':
-            # Bare ')' on its own line — check if next non-empty line is NOT ';' or ') ;'
             next_lines = [l.strip() for l in mod_lines[i+1:i+4] if l.strip()]
             if not next_lines or not next_lines[0].startswith(';'):
                 errors.append({
                     'check': 'SVR4_bare_paren',
                     'module': mod_name,
-                    'msg': f"Bare ')' without ';' at line {start_lineno+i} — module port list not properly closed → FM SVR-4 → FM-599",
+                    'msg': f"Bare ')' without ';' at line {start_lineno+i} → FM SVR-4 → FM-599",
                     'line': start_lineno + i
                 })
-            break  # only need first occurrence
+            break
+
+    # SVR4_trailing_comma: port line ends with ',' then next non-empty line is ') ;'
+    # → "mixed ordered and named port connections" in FM
+    for i, line in enumerate(mod_lines):
+        if line.rstrip().endswith(','):
+            # find next non-empty line
+            for j in range(i+1, min(i+5, len(mod_lines))):
+                nxt = mod_lines[j].strip()
+                if nxt:
+                    if re.match(r'^\)\s*;', nxt):
+                        errors.append({
+                            'check': 'SVR4_trailing_comma',
+                            'module': mod_name,
+                            'msg': f"Trailing comma on line {start_lineno+i} before ') ;' — FM 'mixed ordered/named port connections' → FM-599",
+                            'line': start_lineno + i
+                        })
+                    break
+
+    # SVR4_double_comma: ', ,' pattern in port connections → FM-599
+    for i, line in enumerate(mod_lines):
+        if re.search(r',\s*,', line):
+            errors.append({
+                'check': 'SVR4_double_comma',
+                'module': mod_name,
+                'msg': f"Double comma at line {start_lineno+i}: '{line.strip()[:60]}' → FM SVR-4 → FM-599",
+                'line': start_lineno + i
+            })
+
+    # SVR4_missing_cell_type: instance line starts with identifier but no cell type prefix
+    # Pattern: leading whitespace then instance_name ( .pin — missing CELLTYPE before instance_name
+    for i, line in enumerate(mod_lines):
+        m = re.match(r'^\s+(\w+)\s*\(', line)
+        if m and not re.match(r'^\s*(module|input|output|wire|reg|inout|assign|parameter|localparam|endmodule)', line):
+            name = m.group(1)
+            # If the identifier looks like an eco instance (eco_<jira>_*) but no cell type before it → error
+            if re.match(r'^eco_\w+$', name):
+                errors.append({
+                    'check': 'SVR4_missing_cell_type',
+                    'module': mod_name,
+                    'msg': f"Missing cell type before instance '{name}' at line {start_lineno+i} → FM SVR-4 → FM-599. eco_perl_spec generated gate without cell type.",
+                    'line': start_lineno + i
+                })
 
     # Check 9: direction declaration not in port list header
     errors.extend(check_declaration_not_in_header(mod_lines, mod_name, start_lineno))

@@ -86,13 +86,13 @@ for i, line in enumerate(lines):
     elif re.search(r'Validating:', line) and in_stage:
         break
     if in_stage:
-        # These patterns all cause FM-599 abort:
-        # SVR4_bare_paren: bare ) without ; in port list
-        # SVR9_dup_wire: two explicit wire declarations for same net (F1)
-        # F2_implicit_wire_conflict: explicit wire decl + implicit wire from port connection (also SVR-9)
-        if re.search(r'SVR4_bare_paren|SVR9_dup_wire|F2_implicit_wire_conflict', line):
+        # SVR4_bare_paren and SVR9_dup_wire always FAIL (never pre-existing in gate-level P&R netlists)
+        if re.search(r'SVR4_bare_paren|SVR9_dup_wire', line):
             print("FAIL")
             sys.exit()
+        # F2_implicit_wire_conflict: compare against PreEco baseline — only FAIL if count is HIGHER
+        # Pre-existing F2s are normal in P&R netlists and FM handles them internally
+        # This check is done separately after stage loop via F2_COUNT comparison
 
 print("PASS")
 PYEOF

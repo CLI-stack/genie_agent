@@ -623,9 +623,21 @@ When `fallback_strategy: "intermediate_net_insertion"` is set AND E4c compound g
 
 Parse each new condition from `context_line` independently (these are the cases BEFORE the last/default old expression) and decompose each into a sub-gate chain using the same E3 table rules. Assign sequence numbers starting from `c001` (condition gates), separate from the D-input chain `d001` numbering.
 
+**PRIORITY: Use compound gate types from PreEco before simple gates.**
+
+For each boolean sub-expression, search PreEco for a COMPOUND gate that implements it in one cell rather than decomposing into simple INV/AND2/OR2 chains. Compound gates (OA12, OAI21, AN3, ND3, NR3, INR3, IAOI21, etc.) that exist in the library are FM-verifiable stage-to-stage without SVF:
+```bash
+# For expression like (A & ~B | C): search PreEco for OA-type cells in the backward cone
+zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | \
+  awk "/^module <declaring_module>/,/^endmodule/" | \
+  grep -E "^\s+(OA|OAI|AN|ND|NR|INR|IAOI)[A-Z0-9]" | head -10
+# Use the discovered cell type — do NOT invent simple gate chains if a compound exists
+```
+Record `cell_type_from_preeco: true` when using a discovered compound type.
+
 **For each new condition `<cond_expr> ? <val> : <next_condition>`:**
 
-1. Decompose `<cond_expr>` into a gate chain using the E3 table (`~A` → INV, `A & B` → AND2, `A | B` → OR2, `A[N:0] == K` → per-bit logic, etc.)
+1. Decompose `<cond_expr>` into a gate chain — prefer compound gates from PreEco that implement the boolean in fewer cells; use E3 table simple gates only as last resort
 2. Each gate gets instance name `eco_<jira>_c<seq>` and output net `n_eco_<jira>_c<seq>`
 3. The final gate of the condition sub-chain produces a 1-bit signal: condition is true or false
 4. The condition value (`<val>`: `1'b0` or `1'b1`) determines what the MUX should output when this condition matches
