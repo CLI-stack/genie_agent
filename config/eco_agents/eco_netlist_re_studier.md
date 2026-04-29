@@ -137,6 +137,16 @@ for change in rtl_diff.get("changes", []):
                     entry["force_reapply"] = True
 ```
 
+**For `action: move_gate_to_submodule`:** (persistent DFF0X after rename_wire — GAP-18 submodule black-box)
+
+1. Find all study entries for `gate_instance` (across all 3 stages)
+2. Change `instance_scope` to `preferred_insertion_scope` (the child instance path)
+3. Add `scope_is_submodule_insertion: true`
+4. Auto-add a `port_declaration` entry for the gate's output net from the child module (direction=output)
+5. Auto-add a `port_connection` entry at the parent scope: `<child_instance>.<output_net> = <output_net>`
+6. Set `force_reapply: true` on all affected entries
+7. `re_study_note: "move_gate_to_submodule: gate chain moved inside <child_module> — FM can trace signal without submodule black-box"`
+
 **For `action: update_gate_function`:**
 - **GF-1** — Find correct cell in PreEco Synthesize (same port-structure search)
 - **GF-2** — Update `gate_function`, `cell_type`, `re_study_note` for ALL stages

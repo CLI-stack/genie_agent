@@ -666,6 +666,43 @@ Apply only to stages where DFF is DFF0X. Do NOT flag Synthesize if it passes.
 ```python
 re.search(r'\.\s*\w+\s*\(\s*\{[^}]*\b<signal>\b', <failing_stage_module_lines>)
 ```
+
+**PERSISTENT DFF0X check — MANDATORY before prescribing fix_named_wire:**
+
+Check if a `rename_wire: true` fix was already applied for this gate+pin in a previous round:
+```python
+prev_analysis = load(f"data/{TAG}_eco_fm_analysis_round{ROUND-1}.json") if ROUND > 1 else None
+rename_already_tried = (
+    prev_analysis and
+    any(c.get("action") == "fix_named_wire" and c.get("rename_wire") and
+        c.get("gate_instance") == gate_instance
+        for c in prev_analysis.get("revised_changes", []))
+)
+```
+
+**If `rename_already_tried = True` AND DFF0X still fails this round:**
+The submodule is black-boxed by FM in P&R — renaming the wire doesn't help because FM cannot trace through the submodule boundary regardless of wire name. Prescribe **submodule insertion** instead:
+```python
+# Find which child submodule drives the signal (from submodule bus match)
+child_module_type = extract_module_type_from_bus_driver(bus_match, failing_stage_lines)
+child_instance    = find_instance_of_module(child_module_type, declaring_module_lines)
+
+add_to_revised_changes({
+    "action": "move_gate_to_submodule",
+    "gate_instance": gate_instance,
+    "preferred_insertion_scope": child_instance,
+    "submodule_type": child_module_type,
+    "rationale": (f"rename_wire already applied in Round {ROUND-1} but DFF0X persists. "
+                  f"Child module {child_module_type} is black-boxed by FM in P&R — "
+                  f"wire renaming cannot fix submodule black-box boundary. "
+                  f"Move gate chain inside {child_instance} where signal is directly accessible. "
+                  f"Gate chain output becomes new output port of {child_module_type}; "
+                  f"DFF at parent uses this port as D-input.")
+})
+```
+eco_netlist_re_studier reads `action: move_gate_to_submodule` and uses `preferred_insertion_scope` when updating the study JSON.
+
+**If `rename_already_tried = False` (first time seeing this failure):** prescribe `fix_named_wire` as before.
 When matched → `driven_by_submodule: true`. The net is NOT absent — it has no direct primitive driver. Never declare it absent or undriven.
 
 **Fix:** Rename the net to a meaningful eco name; keep the existing port bus connection.
