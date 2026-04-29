@@ -266,6 +266,32 @@ for stage in ["Synthesize", "PrePlace", "Route"]:
 
 Verify output is non-empty with at least one confirmed entry.
 
+**Write collect RPT** to `<BASE_DIR>/data/<TAG>_eco_step3_collect.rpt`:
+```
+ECO NETLIST STUDIER — COLLECT PASS
+TAG=<TAG>  |  JIRA=<JIRA>  |  TILE=<TILE>
+================================================================================
+PHASE 0 — new_logic / port entries:
+  new_logic_gate:   <N>  (confirmed: <N>  excluded: <N>)
+  new_logic_dff:    <N>  (confirmed: <N>  excluded: <N>)
+  port_declaration: <N>  (confirmed: <N>  excluded: <N>)
+  port_connection:  <N>  (confirmed: <N>  excluded: <N>)
+  d_input_chains:   <N> chains  <N> gates total  (<N> decompose_failed)
+
+PHASE 1 — wire_swap rewire entries:
+  [Synthesize]  <N> qualifying cells  confirmed: <N>  excluded: <N>
+  [PrePlace]    <N> qualifying cells  confirmed: <N>  excluded: <N>
+  [Route]       <N> qualifying cells  confirmed: <N>  excluded: <N>
+
+EXCLUDED entries (need verifier or manual fix):
+  <cell/signal>: <reason>
+  ...
+
+NOTE: port_connections_per_stage not yet resolved — eco_netlist_verifier handles this.
+================================================================================
+```
+Copy RPT to `AI_ECO_FLOW_DIR/`.
+
 **After writing, exit immediately.** eco_netlist_verifier is spawned by ORCHESTRATOR next.
 
 ---
