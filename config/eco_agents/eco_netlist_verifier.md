@@ -563,6 +563,8 @@ ECO NETLIST VERIFIER REPORT — TAG=<TAG>
 CHECK 1  GAP-15:        <N> entries checked, <N> corrected
 CHECK 2  Per-stage nets: <N> gate entries enriched, <N> UNRESOLVED remaining
 CHECK 3  DFF pins:       <N> DFF entries enriched, <N> CTS clock renames found
+         Reset pin approach: <N> DFFs used reset pin (GAP-CTS-2 avoided), <N> fell back to D-input baking
+         [for each DFF: reset_pin_used=YES → cell=<type> pin=<name> | NO → GAP-CTS-2 risk]
 CHECK 4  Wire decls:     <N> needs_explicit_wire_decl flags set
 CHECK 5  mode_H_risk:    <N> entries updated
 CHECK 6  Cascade DFFs:   <N> and_term entries populated

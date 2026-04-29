@@ -405,6 +405,22 @@ PHASE 0 — new_logic / port entries:
   port_connection:  <N>  (confirmed: <N>  excluded: <N>)
   d_input_chains:   <N> chains  <N> gates total  (<N> decompose_failed)
 
+SYNC RESET HANDLING (per DFF with has_sync_reset=true):
+  <target_register>:
+    reset_signal:    <rst_signal>
+    reset_polarity:  active_high | active_low
+    reset_pin_used:  YES | NO (FALLBACK)
+    [if YES]
+      cell_type:     <discovered_cell_type>  (from find_reset_capable_dff)
+      reset_pin:     <discovered_pin_name>   (from find_reset_capable_dff)
+      d_input_gates: <N> gates (reset gate removed — functional gates only)
+      GAP-CTS-2:     AVOIDED — reset signal not in combinational cone
+    [if NO — FALLBACK]
+      reason:        no DFF found in scope <module> using <rst_signal>
+      d_input_gates: <N> gates (includes reset INV gate)
+      GAP-CTS-2:     RISK — reset in D-input cone, may fail in Route FM
+  <repeat per DFF>
+
 PHASE 1 — wire_swap rewire entries:
   [Synthesize]  <N> qualifying cells  confirmed: <N>  excluded: <N>
   [PrePlace]    <N> qualifying cells  confirmed: <N>  excluded: <N>
