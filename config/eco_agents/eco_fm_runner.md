@@ -230,6 +230,7 @@ Two abort types allow a single inline fix attempt followed by immediate FM re-su
 
 ### STEP F.2 — ABORT_LINK Inline Fix (FE-LINK-7 Wrong ECO Cell Pin Name)
 
+
 **Trigger:** `overall_status == "ABORT"` AND any target has `abort_type == "ABORT_LINK"` AND FM log contains `FE-LINK-7` on an ECO-inserted cell AND `link_fix_attempts == 0`.
 
 **Fixes:** ECO-inserted cells (instance leaf names starting with `eco_`) where eco_applier used the wrong output pin name. Corrects pin name in all three PostEco stage netlists.
@@ -250,6 +251,55 @@ Two abort types allow a single inline fix attempt followed by immediate FM re-su
 8. If fix applied to all 3 stages and MD5 changed → re-submit FM at STEP B.
 
 **When NOT attempted / escalate:** No FE-LINK-7 on ECO cells, second attempt, cannot determine correct pin, partial fix (reverted), any timeout, MD5 unchanged. Write `eco_fm_verify.json` with `abort_type: "ABORT_LINK"` and EXIT 0.
+
+---
+
+### STEP F.3 — ABORT_SVF Inline Fix (SVF Guidance Error)
+
+**Trigger:** `overall_status == "ABORT"` AND any target has `abort_type == "ABORT_SVF"` AND `svf_fix_attempts == 0`.
+
+**Root cause:** FM is loading a pre-existing SVF guidance file that conflicts with the current ECO netlist. The AI flow always sets `RUN_SVF_GEN=0` — ABORT_SVF means a stale SVF from a prior run is being sourced.
+
+**Procedure:**
+1. Increment `svf_fix_attempts`.
+2. Parse FM log for the SVF error line: `CMD-010: ... guide_eco_change ... not found` or similar.
+3. Add `set_svf_ignore_errors true` to `<REF_DIR>/data/eco_fm_config` before re-submitting:
+   ```bash
+   echo "set_svf_ignore_errors true" >> <REF_DIR>/data/eco_fm_config
+   ```
+4. Re-submit FM at STEP B with the updated config.
+
+**When NOT attempted / escalate:** Second attempt, cannot write eco_fm_config. Write result with `abort_type: "ABORT_SVF"` and EXIT 0.
+
+---
+
+### STEP F.4 — ABORT_OTHER Inline Fix (Generic FM Error)
+
+**Trigger:** `overall_status == "ABORT"` AND any target has `abort_type == "ABORT_OTHER"` AND `other_fix_attempts == 0`.
+
+**Procedure:**
+1. Increment `other_fix_attempts`.
+2. Parse FM log for the first `Error:` line in each aborting target. Extract the error code and message.
+3. Match against known fixable patterns:
+
+   | Pattern in log | Fix |
+   |---------------|-----|
+   | `module.*not found` or `cannot find design` | Check if PostEco netlist has correct module name — likely a module was renamed by P&R. Cannot fix inline. → escalate. |
+   | `Cannot open file.*\.v` or `file not found` | PostEco netlist file missing or unreadable. Verify file exists and is readable. If missing → restore from backup (`bak_<TAG>_round<ROUND>`). |
+   | `Duplicate design.*already exists` | FM has stale designs in workspace. Add `reset_design` workaround to config — cannot fix inline. → escalate. |
+   | `Timeout` | FM infrastructure issue, not a netlist problem. → escalate. |
+   | Any other error | Cannot determine safe inline fix. → escalate. |
+
+4. If a fix was applied → re-submit FM at STEP B.
+5. If no known pattern matched → escalate immediately.
+
+**When NOT attempted / escalate:** Second attempt, unknown error pattern, any timeout. Write result with `abort_type: "ABORT_OTHER"` and EXIT 0.
+
+---
+
+### STEP F — Exit Rule (All Abort Types)
+
+If ALL inline fix attempts for all triggered abort types have been exhausted without re-submitting FM successfully → write `eco_fm_verify.json` with the appropriate `abort_type` and **EXIT 0**. Do NOT loop indefinitely. Each abort type has exactly ONE fix attempt per FM submission.
 
 ---
 

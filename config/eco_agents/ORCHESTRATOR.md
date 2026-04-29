@@ -836,17 +836,46 @@ if check["passed"]:
     # All checks passed (including any inline fixes applied) → proceed to Step 6
     pass
 else:
-    # Issues remained after MAX_RETRIES inline fix attempts
-    # eco_pre_fm_checker exhausted its fix attempts — escalate to ROUND_ORCHESTRATOR
-    write_round_handoff({
-        "status": "FM_FAILED",
-        "eco_fm_tag": "NOT_RUN_PRE_FM_CHECK_FAILED",
-        "pre_fm_check_failed": True,
-        "pre_fm_check_path": f"data/{TAG}_eco_pre_fm_check_round1.json"
-    })
-    write_eco_fixer_state(round=1)
-    spawn ROUND_ORCHESTRATOR
-    HARD STOP  # Step 6 skipped — FM never submitted
+    # Issues remained after eco_pre_fm_checker inline attempts.
+    # DO NOT pass to ROUND_ORCHESTRATOR yet — attempt self-healing within this round:
+    #
+    # Step 5 Self-Healing Loop (one attempt):
+    #   1. Read issues_unresolved from pre_fm_check JSON — these are the gaps
+    #   2. Re-spawn eco_netlist_verifier to re-enrich study JSON addressing the gaps
+    #      (verifier checks 7/8/9 auto-add missing port_declaration/rewire entries)
+    #   3. Re-spawn eco_applier (ROUND=1, force_reapply entries re-applied)
+    #   4. Re-run eco_check8.sh
+    #   5. Re-spawn eco_pre_fm_checker (fresh full attempt)
+    #   6. If passed=true → proceed to Step 6
+    #   7. If still passed=false → THEN escalate to ROUND_ORCHESTRATOR
+
+    # Step 5a: Re-enrich study JSON with verifier
+    spawn eco_netlist_verifier (same inputs as Step 3b)
+
+    # Step 5b: Re-apply with eco_applier (force_reapply entries)
+    spawn eco_applier (ROUND=1, study JSON just re-enriched)
+
+    # Step 5c: Re-run eco_check8.sh
+    bash script/eco_scripts/eco_check8.sh <BASE_DIR> <REF_DIR> <TAG> 1 data/<TAG>_eco_applied_round1.json
+    CHECK8_RESULT_PATH=data/<TAG>_eco_check8_round1.json
+
+    # Step 5d: Re-run eco_pre_fm_checker
+    spawn eco_pre_fm_checker (CHECK8_RESULT_PATH=<rerun_result>)
+    check2 = load(f"data/{TAG}_eco_pre_fm_check_round1.json")
+
+    if check2["passed"]:
+        pass  # self-healing succeeded → proceed to Step 6
+    else:
+        # Self-healing failed — true escalation to ROUND_ORCHESTRATOR
+        write_round_handoff({
+            "status": "FM_FAILED",
+            "eco_fm_tag": "NOT_RUN_PRE_FM_CHECK_FAILED",
+            "pre_fm_check_failed": True,
+            "pre_fm_check_path": f"data/{TAG}_eco_pre_fm_check_round1.json"
+        })
+        write_eco_fixer_state(round=1)
+        spawn ROUND_ORCHESTRATOR
+        HARD STOP  # Step 6 skipped — FM never submitted
 ```
 
 > **Why before FM:** FM stage-to-stage comparisons (PrePlace vs Synthesize, Route vs PrePlace) fail when stages have different ECO changes applied — e.g., a port added to Synthesize but SKIPPED in PrePlace causes thousands of non-equivalent DFFs. This check takes seconds. FM takes 1-2 hours.
@@ -983,9 +1012,7 @@ This path is triggered when eco_pre_fm_checker returned `passed: false` after MA
 
 #### If FM RESULT = FAIL or ABORT → Spawn ROUND_ORCHESTRATOR
 
-> **CRITICAL: ABORT is treated IDENTICALLY to FAIL here.** When eco_fm_runner returns with any non-PASS result — whether FM ran comparison (FAIL) or crashed before comparison (ABORT with N/A) — the action is the same: write fixer_state, write round_handoff, spawn ROUND_ORCHESTRATOR, HARD STOP.
->
-> Do NOT attempt to diagnose the ABORT. Do NOT re-apply ECO. Do NOT re-submit FM. Do NOT try to fix the netlist yourself. ROUND_ORCHESTRATOR's eco_fm_analyzer will diagnose the abort type (ABORT_NETLIST, ABORT_LINK, etc.) and produce the correct fix.
+> **ABORT vs FAIL:** eco_fm_runner STEP F already attempted inline fixes for all 4 abort types (ABORT_NETLIST: SVR-14/9/4, ABORT_LINK: wrong pin, ABORT_SVF: svf_ignore_errors, ABORT_OTHER: known patterns) and reran FM before returning ABORT. If ABORT reaches ORCHESTRATOR, STEP F was exhausted. Both ABORT and FAIL → spawn ROUND_ORCHESTRATOR. eco_fm_analyzer in Step 6d handles them differently but the spawn decision is the same.
 >
 > The difference between FAIL and ABORT only matters to eco_fm_analyzer (Step 0). To ORCHESTRATOR's spawn decision, both are the same: → ROUND_ORCHESTRATOR.
 

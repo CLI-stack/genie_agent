@@ -407,14 +407,42 @@ if check["passed"]:
     # All checks passed (fixes applied inline if needed) → proceed to Step 6
     pass
 else:
-    # Inline fixes exhausted after MAX_RETRIES — escalate to next ROUND_ORCHESTRATOR
-    update_round_handoff(status="FM_FAILED", pre_fm_check_failed=True)
-    update_eco_fixer_state(strategies_tried=[{
-        "round": NEXT_ROUND, "failure_mode": "PRE_FM_CHECK_UNRESOLVED",
-        "unresolved_issues": check["issues_unresolved"]
-    }])
-    spawn ROUND_ORCHESTRATOR (next instance)
-    EXIT  # Step 6 skipped — FM never submitted this round
+    # Inline fixes exhausted — attempt self-healing within this same round before escalating:
+    #
+    # Step 5 Self-Healing Loop (one attempt):
+    #   1. Re-spawn eco_netlist_verifier (re-enrich study JSON — checks 7/8/9 auto-add missing entries)
+    #   2. Re-spawn eco_applier (re-apply force_reapply entries with re-enriched study)
+    #   3. Re-run eco_check8.sh
+    #   4. Re-spawn eco_pre_fm_checker (fresh full attempt)
+    #   5. If passed=true → proceed to Step 6
+    #   6. If still passed=false → THEN escalate to next ROUND_ORCHESTRATOR
+
+    # Step 5a: Re-enrich
+    spawn eco_netlist_verifier (TAG, REF_DIR, BASE_DIR, AI_ECO_FLOW_DIR, SPEC_SOURCES, GAP15_CHECK_PATH)
+
+    # Step 5b: Re-apply
+    spawn eco_applier (ROUND=NEXT_ROUND, study JSON re-enriched)
+
+    # Step 5c: Re-run check8
+    bash script/eco_scripts/eco_check8.sh <BASE_DIR> <REF_DIR> <TAG> <NEXT_ROUND> \
+        data/<TAG>_eco_applied_round<NEXT_ROUND>.json
+    CHECK8_RESULT_PATH = data/<TAG>_eco_check8_round<NEXT_ROUND>.json
+
+    # Step 5d: Re-run pre_fm_checker
+    spawn eco_pre_fm_checker (CHECK8_RESULT_PATH=<above>)
+    check2 = load(f"data/{TAG}_eco_pre_fm_check_round{NEXT_ROUND}.json")
+
+    if check2["passed"]:
+        pass  # self-healing succeeded → proceed to Step 6
+    else:
+        # True escalation — cannot fix within this round
+        update_round_handoff(status="FM_FAILED", pre_fm_check_failed=True)
+        update_eco_fixer_state(strategies_tried=[{
+            "round": NEXT_ROUND, "failure_mode": "PRE_FM_CHECK_UNRESOLVED",
+            "unresolved_issues": check2["issues_unresolved"]
+        }])
+        spawn ROUND_ORCHESTRATOR (next instance)
+        EXIT  # Step 6 skipped — FM never submitted this round
 ```
 
 ---
@@ -440,7 +468,7 @@ If this file does NOT exist → Step 5 was never run → ABORT. Re-spawn eco_pre
 
 Wait for the sub-agent to complete. **Do NOT spawn another eco_fm_runner if results are not what you expected — read them as-is and hand off.**
 
-> **CRITICAL: When eco_fm_runner returns — regardless of PASS, FAIL, or ABORT — go directly to "After Step 6" and spawn the correct next agent. NEVER attempt to diagnose, patch, or re-submit FM within this same ROUND_ORCHESTRATOR instance. ABORT results (N/A, no matching/failing points) go to the NEXT ROUND_ORCHESTRATOR, not handled inline.**
+> **CRITICAL: When eco_fm_runner returns — ABORT is NOT the same as FAIL. eco_fm_runner STEP F already attempted inline fixes for all 4 abort types (ABORT_NETLIST, ABORT_LINK, ABORT_SVF, ABORT_OTHER) before returning ABORT to you. If ABORT reaches ROUND_ORCHESTRATOR, STEP F fix was exhausted — eco_fm_analyzer diagnoses and re_studier fixes the root cause in this round before next FM submission.**
 
 **CHECKPOINT:** Verify ALL of the following:
 ```bash
