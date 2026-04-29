@@ -79,15 +79,6 @@ If any assertion fails — **complete the missing sections before writing**. Do 
 
 ---
 
-## Why This Exists
-
-FM stage-to-stage comparisons fail when stages have different ECO changes applied. Examples:
-- A cell SKIPPED in Synthesize but APPLIED in PrePlace → thousands of FM stage-to-stage non-equiv DFFs
-- A signal declared twice in a module port list → FM-599 (Verilog syntax abort)
-- A gate inserted with wrong cell type (wrong port names) → FM FE-LINK-7 (port not defined abort)
-
-These are fixable in seconds without a full round cycle.
-
 ---
 
 ## STEP 0 — Verify eco_applier Completed Successfully
@@ -389,103 +380,12 @@ for err in errors:
 
 This validator catches F1 (duplicate wire), F3 (declaration inside cell instance), F4 (duplicate port connection), and F5 (corrupted port value). Runs in seconds when `--modules` is used. Without `--modules` it scans the entire netlist which is too slow.
 
-If the validator script is unavailable, run the manual checks below.
+If the validator script is unavailable, run manual fallback checks on each stage:
+- **F1** (dup wire): `re.findall(r'^\s*wire\s+(\w+)\s*;', mod_block)` → find names with count > 1 → remove second occurrence
+- **F2** (explicit wire + implicit conflict): `wire_decls_only & port_conn_nets` → remove explicit `wire X;`
+- **F3** (dup port connection): find `.pin(` appearing twice in instance block → remove second
 
-These are FM-599 abort triggers that eco_applier's Check 5/6 may have missed (e.g., in modules not directly touched by eco_applier, or when the conflict was introduced via port_promotion interaction).
-
-```python
-import re, gzip
-
-for stage in ["Synthesize", "PrePlace", "Route"]:
-    content = gzip.open(f"PostEco/{stage}.v.gz", 'rt').read()
-    for mod_block in re.split(r'^module\s+', content, flags=re.MULTILINE)[1:]:
-        mod_name = mod_block.split('(')[0].strip()
-
-        # F1: Duplicate explicit wire declarations
-        wire_decls = re.findall(r'^\s*wire\s+(\w+)\s*;', mod_block, re.MULTILINE)
-        seen = {}
-        for w in wire_decls:
-            seen[w] = seen.get(w, 0) + 1
-        dups = [w for w, c in seen.items() if c > 1]
-        if dups:
-            issues_F.append({
-                "stage": stage, "module": mod_name,
-                "sub_check": "F1_dup_wire",
-                "wires": dups, "severity": "CRITICAL"
-            })
-
-        # F2: Explicit WIRE declaration for net X where .anypin(X) port connection ALSO
-        # creates an implicit wire X — dual wire declaration = FM SVR-9 → FM-599.
-        # NOTE: input/output declarations do NOT conflict with port connections — that is
-        # normal Verilog (a port being passed to a submodule). Only 'wire' conflicts.
-        wire_decls_only = set(re.findall(
-            r'^\s*wire\s+(?:\[\s*\d+\s*:\s*\d+\s*\]\s+)?(\w+)\s*;',
-            mod_block, re.MULTILINE))
-        # Collect ALL net names used in ANY port connection .anypin(N)
-        port_conn_nets = set(re.findall(r'\.\s*\w+\s*\(\s*(\w+)\s*\)', mod_block))
-        conflict = wire_decls_only & port_conn_nets  # explicit wire + implicit = FM-599
-        if conflict:
-            issues_F.append({
-                "stage": stage, "module": mod_name,
-                "sub_check": "F2_implicit_wire_conflict",
-                "wires": list(conflict), "severity": "CRITICAL"
-            })
-
-        # F3: Duplicate port connections in instance blocks (.pin used twice)
-        for inst_match in re.finditer(r'(\w+)\s+(\w+)\s*\((.*?)\)\s*;', mod_block, re.DOTALL):
-            inst_name = inst_match.group(2)
-            pins = re.findall(r'\.\s*(\w+)\s*\(', inst_match.group(3))
-            pin_seen = {}
-            for pin in pins:
-                pin_seen[pin] = pin_seen.get(pin, 0) + 1
-            dup_pins = [p for p, c in pin_seen.items() if c > 1]
-            if dup_pins:
-                issues_F.append({
-                    "stage": stage, "module": mod_name, "instance": inst_name,
-                    "sub_check": "F3_dup_port_connection",
-                    "pins": dup_pins, "severity": "CRITICAL"
-                })
-```
-
-**Inline fix for Check F:**
-
-- **F1 (duplicate wire decl)**: Keep the first occurrence, remove all subsequent `wire X;` lines for the duplicated name in that module.
-- **F2 (explicit wire conflicts with implicit)**: Remove the explicit `wire X;` declaration — the implicit wire from the port connection is sufficient and the explicit one causes FM-599.
-- **F3 (duplicate port connection)**: In the instance block, remove the duplicate `.pin(...)` entry (keep the first; the duplicate is from eco_applier inserting a port connection that was already present).
-
-```python
-def fix_F1_F2(lines, module_name, wire_name, sub_check):
-    in_module = False
-    wire_seen = False
-    result = []
-    for line in lines:
-        if re.match(rf'^module\s+{re.escape(module_name)}\b', line):
-            in_module = True
-        elif re.match(r'^endmodule\b', line):
-            in_module = False
-        if in_module and re.match(rf'^\s*wire\s+{re.escape(wire_name)}\s*;', line):
-            if wire_seen:
-                continue  # drop duplicate (F1) or drop conflicting explicit wire (F2)
-            wire_seen = True
-        result.append(line)
-    return result
-
-def fix_F3(lines, module_name, instance_name, dup_pin):
-    in_inst = False
-    pin_seen = False
-    result = []
-    for line in lines:
-        if re.search(rf'\b{re.escape(instance_name)}\s*\(', line):
-            in_inst = True
-        if in_inst and re.search(rf'\.\s*{re.escape(dup_pin)}\s*\(', line):
-            if pin_seen:
-                continue  # drop duplicate port connection
-            pin_seen = True
-        if in_inst and re.search(r'\)\s*;', line):
-            in_inst = False
-        result.append(line)
-    return result
-```
+**Inline fixes:** F1/F2 → remove the duplicate/conflicting `wire X;` line in module scope. F3 → remove second `.pin(...)` occurrence in instance block.
 
 ### Check G — Every ECO-added port in module header has a direction declaration in body
 
@@ -604,50 +504,9 @@ for issue in issues_H:
 This fix is always safe — only modifies the named ECO cell instance's output pin connection. Re-run Check H after fixing to confirm.
 
 **Check H extension — input pin names validation:**
-After verifying the output pin, also verify all INPUT pin names in `port_connections`:
-1. Grep PreEco for an existing usage of `<cell_type>`: `grep -m1 "<cell_type>" <REF_DIR>/data/PreEco/Synthesize.v.gz`
-2. Parse all `.<PIN>(` from that instantiation → collect valid_pins set
-3. For each pin in `port_connections` that is NOT the output pin: verify it appears in valid_pins
-4. If any input pin NOT in valid_pins → `H_wrong_input_pin_name` error:
-   - Find correct name from valid_pins (same position/role)
-   - Replace in PostEco: `sed -i "s/\\.{wrong_pin}(/{correct_pin}(/g"` within cell instance block
-   - Re-validate
-5. This catches FE-LINK-7 on wrong input pin names BEFORE FM submission
-
-```python
-    # Check H extension: input pin name validation
-    preeco_example = grep_cell_type_example(f"PreEco/Synthesize.v.gz", cell_type)
-    if preeco_example:
-        valid_pins = set(re.findall(r'\.\s*(\w+)\s*\(', preeco_example))
-        output_pin_key = identify_output_pin(entry)  # the pin whose net = n_eco_* or Q-output
-        for pin in entry.get("port_connections", {}):
-            if pin == output_pin_key:
-                continue  # output pin already validated above
-            if valid_pins and pin not in valid_pins:
-                # Find best candidate from valid_pins (same position in pin list)
-                issues_H.append({
-                    "check": "H_wrong_input_pin_name",
-                    "stage": stage, "instance": inst_name, "cell_type": cell_type,
-                    "wrong_pin": pin, "valid_pins": list(valid_pins),
-                    "severity": "CRITICAL"
-                })
-```
-
-**Inline fix for `H_wrong_input_pin_name`:**
-```python
-    if issue["check"] == "H_wrong_input_pin_name":
-        # Determine correct pin name (same positional role from valid_pins)
-        correct_pin = resolve_correct_input_pin(issue["wrong_pin"], issue["valid_pins"])
-        if correct_pin:
-            fix_applied |= replace_pin_in_instance(
-                stage_gz=f"{REF_DIR}/data/PostEco/{issue['stage']}.v.gz",
-                instance_name=issue["instance"],
-                wrong_pin=issue["wrong_pin"],
-                correct_pin=correct_pin
-            )
-```
-
-`H_wrong_input_pin_name` is treated as a fixable check type in the inline fix loop, alongside F3/F5/F6. Re-run Check H after applying the fix to confirm the input pin name is now valid.
+1. Grep PreEco for existing `<cell_type>` usage → parse all `.<PIN>(` → build `valid_pins` set
+2. For each `port_connections` pin that is NOT the output pin: verify it appears in `valid_pins`
+3. If wrong → `H_wrong_input_pin_name` → find correct pin (same position in valid_pins) → replace in PostEco instance block → re-validate
 
 ### Check F2-POSITION — Cross-Position Wire Declaration Conflict (SVR-9 prevention)
 
@@ -1031,34 +890,23 @@ try:
                     "detail": "Verilog errors persist after inline fix. Revert PostEco to PreEco and re-run eco_applier."
                 })
 except subprocess.TimeoutExpired:
-    # Timeout with full netlist scan — retry with per-stage individual runs
+    # Retry per-stage individually with 120s timeout each
     for stage_name, stage_gz in [("Synthesize", f"{REF_DIR}/data/PostEco/Synthesize.v.gz"),
-                                   ("PrePlace",   f"{REF_DIR}/data/PostEco/PrePlace.v.gz"),
-                                   ("Route",      f"{REF_DIR}/data/PostEco/Route.v.gz")]:
+                                   ("PrePlace", f"{REF_DIR}/data/PostEco/PrePlace.v.gz"),
+                                   ("Route", f"{REF_DIR}/data/PostEco/Route.v.gz")]:
         try:
-            r = subprocess.run(
-                ["python3", "script/eco_scripts/validate_verilog_netlist.py",
-                 "--strict", "--modules"] + list(scan_modules) + ["--", stage_gz],
-                capture_output=True, text=True, timeout=120
-            )
+            r = subprocess.run(["python3", "script/eco_scripts/validate_verilog_netlist.py",
+                                 "--strict", "--modules"] + list(scan_modules) + ["--", stage_gz],
+                               capture_output=True, text=True, timeout=120)
             stage_result = "PASS" if r.returncode == 0 else "FAIL"
         except Exception:
-            stage_result = "FAIL"  # timeout or error → treat as FAIL, never SKIPPED
+            stage_result = "FAIL"
         if stage_name == "Synthesize": validator_result_synth = stage_result
         elif stage_name == "PrePlace": validator_result_pplace = stage_result
         else: validator_result_route = stage_result
 except Exception as e:
-    # ANY exception → FAIL, never SKIPPED
-    # SKIPPED is not a valid state — it means we don't know the netlist is clean
-    # Do NOT proceed to FM with unknown netlist validity
     validator_result_synth = validator_result_pplace = validator_result_route = "FAIL"
-    issues_critical.append({
-        "check": "check8_verilog_validator",
-        "severity": "CRITICAL",
-        "error": str(e),
-        "detail": "Validator raised exception. Netlist validity unknown. FM submission BLOCKED. "
-                  "Fix the validator invocation before proceeding."
-    })
+    issues_critical.append({"check": "check8_verilog_validator", "severity": "CRITICAL", "error": str(e)})
 # MANDATORY SELF-CHECK before writing — verify all required fields present
 assert "check_summary" in result, "BUG: check_summary missing from result"
 assert "check8_verilog_validator" in result["check_summary"], "BUG: validator result missing"
@@ -1084,33 +932,9 @@ write_json(f"data/{TAG}_eco_pre_fm_check_round{ROUND}.json", result)
 assert os.path.getsize(f"data/{TAG}_eco_pre_fm_check_round{ROUND}.json") > 10, "JSON write failed"
 ```
 
-**EXIT immediately. Do NOT modify study JSON beyond what was needed for inline fixes.**
+**EXIT immediately after writing JSON.**
 
-**Inline fix side effects:** eco_pre_fm_checker DOES modify `PostEco/{Synthesize,PrePlace,Route}.v.gz` in-place during inline fixes (wire removal, port addition, duplicate removal). These edits are tracked in `issues_fixed[]` in the JSON output. eco_applier in the NEXT round must read `eco_pre_fm_check_round<ROUND>.json` and treat `FIXED` entries as ALREADY_APPLIED — do NOT re-apply them.
-
-**Retry semantics:** MAX_RETRIES=3 is a TOTAL budget across all checks in one Step 5 invocation. Each attempt runs the full check suite. A single fix that resolves all issues in one attempt counts as attempt 1 of 3. If attempt 3 still has critical issues → `passed: false` → escalate.
-
----
-
-## Chain: Step 4 → Step 5 → Step 6
-
-```
-eco_applier (Step 4) completes
-       ↓
-eco_pre_fm_checker (Step 5)  ← checks + inline fixes (no new round spawned)
-       ↓
-  passed: true ─────────────────────────────────→ Step 6: FM submission
-       │
-  passed: false after MAX_RETRIES
-       │  (inline fixes exhausted — remaining issues need deeper diagnosis)
-       ↓
-  ORCHESTRATOR/ROUND_ORCHESTRATOR:
-    write round_handoff (status=FM_FAILED, pre_fm_check_failed=true)
-    spawn ROUND_ORCHESTRATOR → HARD STOP
-    (eco_fm_analyzer reads pre_fm_check JSON, next round fixes properly)
-```
-
-**No new round is spawned for fixable issues — only for issues that couldn't be fixed inline after 3 attempts.**
+**Notes:** Inline fixes modify `PostEco/*.v.gz` in-place — tracked in `issues_fixed[]`. MAX_RETRIES=3 is a total budget across all checks per invocation. If attempt 3 still has critical issues → `passed: false` → ORCHESTRATOR escalates to ROUND_ORCHESTRATOR.
 
 ---
 
