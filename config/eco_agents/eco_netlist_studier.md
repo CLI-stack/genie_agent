@@ -82,9 +82,46 @@ From RTL diff `context_line`:
 
 ### 0b — Identify input signals (basic)
 
-Parse `context_line` to extract clock, reset, data expression (DFF) or input signals (combinational). Verify each in Synthesize PreEco: `grep -cw "<input_signal>" /tmp/eco_study_<TAG>_Synthesize.v`. If count = 0 → record `input_from_change: <N>`.
+Parse `context_line` to extract clock, reset, data expression (DFF) or input signals (combinational).
 
-**Note:** Full per-stage resolution (Priority 0–4) is handled by eco_netlist_verifier. Record what you can from Synthesize here.
+**CRITICAL — MODULE-SCOPE net verification (NOT whole-file grep):**
+
+When verifying any input net exists, scope the search to the declaring module of the gate (`entry["module_name"]`), not the entire stage file. A net found in a child module definition is inaccessible in the parent module where the ECO gate is inserted — using it causes SVR-14 and FM-599 ABORT on all 3 targets.
+
+```bash
+# WRONG — global grep also matches nets in child module definitions:
+grep -cw "<net>" /tmp/eco_study_<TAG>_Synthesize.v
+
+# CORRECT — scope to declaring module only:
+awk '/^module <module_name>\b/,/^endmodule/' \
+    /tmp/eco_study_<TAG>_Synthesize.v | grep -cw "<net>"
+```
+
+Use `<module_name>` from the RTL diff change entry (`declaring_module` field or derived from `instance_scope`).
+
+**BUS INDEXING SCOPE CHECK — for any net containing `[N]`:**
+
+If a resolved net uses array indexing (`name[N]`), verify the base name is declared as a multi-bit type within the declaring module scope. If not, `[N]` indexing causes SVR-14:
+
+```bash
+# Check if base declared as bus within module scope:
+awk '/^module <module_name>\b/,/^endmodule/' \
+    /tmp/eco_study_<TAG>_Synthesize.v | \
+    grep -E "(wire|input|output)\s+\[.*<base_name>"
+
+# If count=0 → SVR-14 risk → find the scalar wire at bit[N] in the port bus:
+# Port buses look like: .any_port( { wire_a, wire_b, wire_c } )
+# where element order is MSB→LSB, so bit[0]=last element, bit[1]=second-to-last, etc.
+awk '/^module <module_name>\b/,/^endmodule/' \
+    /tmp/eco_study_<TAG>_Synthesize.v | \
+    awk "/<base_name>/,/\)/" | \
+    grep -oP '\{\K[^}]+' | tr ',' '\n' | sed 's/\s//g' | \
+    awk "NR==(total_bits - N)"  # bit[N] → position from end
+```
+
+If count = 0 → record `input_from_change: <N>`.
+
+**Note:** Full per-stage resolution (Priority 0–4) and bus validation are handled by eco_netlist_verifier. Record what you can from Synthesize here, using module-scoped grep.
 
 ### 0b-DFF — Process `d_input_gate_chain` (MANDATORY when present)
 

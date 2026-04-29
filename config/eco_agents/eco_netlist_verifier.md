@@ -86,16 +86,118 @@ CHECK 1 GAP-15: <old_token>  is_output_port=<True/False>  strategy=<result>
 
 For every `new_logic_gate` entry, resolve ALL input nets for ALL 3 stages using the priority table. Studier-1 only recorded Synthesize values — this check fills PrePlace and Route.
 
+**CRITICAL — MODULE-SCOPE NET VALIDATION (MANDATORY before accepting any net):**
+
+All net existence checks MUST be scoped to the **declaring module** of the gate entry (`entry["module_name"]`), not the entire stage file. A net present in a child module definition is NOT accessible in the declaring module — using it there causes SVR-14 and FM-599 ABORT on all targets.
+
+```python
+def extract_module_scope(module_name, stage_lines):
+    """Extract only lines between 'module <module_name>' and its matching endmodule."""
+    in_module = False
+    result = []
+    for line in stage_lines:
+        if re.match(rf'^module\s+{re.escape(module_name)}\b', line):
+            in_module = True
+        if in_module:
+            result.append(line)
+            if re.match(r'^endmodule', line):
+                break
+    return result
+
+def net_in_scope(net_name, module_scope_lines):
+    """Return True only if net_name appears within the already-extracted module scope."""
+    return any(re.search(rf'\b{re.escape(net_name)}\b', l) for l in module_scope_lines)
+```
+
+**Extract module scope ONCE per entry, reuse for all pin checks:**
+```python
+module_scope = extract_module_scope(entry["module_name"], stage_lines)
+```
+
+**BUS INDEXING SCOPE CHECK — for any net containing `[N]`:**
+
+If a resolved net uses array indexing (`name[N]`), verify the base name is declared as a multi-bit type within the declaring module scope. If not declared as a bus there, `[N]` indexing will cause SVR-14.
+
+```python
+def validate_bus_net(net_name, module_scope_lines):
+    """
+    For nets like 'foo[2]', check that 'foo' is declared as a bus in module scope.
+    If not, find the scalar wire connected at bit [N] via port bus concatenation.
+    Returns the correct net name to use (may differ from the input net_name).
+    """
+    m = re.match(r'^(\w+)\[(\d+)\]$', net_name)
+    if not m:
+        return net_name  # not a bus-indexed net, no action needed
+
+    base, bit_idx = m.group(1), int(m.group(2))
+
+    # Check if base is declared as a bus in module scope
+    bus_declared = any(
+        re.search(rf'\b(wire|input|output)\s+\[', l) and
+        re.search(rf'\b{re.escape(base)}\b', l)
+        for l in module_scope_lines
+    )
+    if bus_declared:
+        return net_name  # valid bus indexing in this scope
+
+    # base is NOT a bus in this scope — [N] indexing causes SVR-14
+    # Find the scalar wire connected at bit position [N] via port bus concatenation.
+    # Port bus connections look like: .port_name( { wire_A, wire_B, wire_C, ... } )
+    # where the order is MSB→LSB and each element is a scalar wire name.
+    scalar = find_scalar_for_bus_bit(base, bit_idx, module_scope_lines)
+    if scalar:
+        log(f"SVR14_FIX: {net_name} not a bus in scope → using scalar wire '{scalar}' at bit[{bit_idx}]")
+        return scalar
+    else:
+        log(f"SVR14_RISK: {net_name} not a bus in scope and no scalar found → UNRESOLVED")
+        return f"UNRESOLVED_SVR14:{net_name}"
+
+def find_scalar_for_bus_bit(base_name, bit_idx, module_scope_lines):
+    """
+    Locate the scalar wire used at bit position [bit_idx] of a port bus connection
+    for base_name. Port bus: .any_port( { wire_N, ..., wire_1, wire_0 } ) where
+    the port carries base_name from a child module.
+    bit_idx=0 → last element in concatenation (LSB).
+    """
+    import re
+    # Find lines that reference base_name inside a port connection
+    for i, line in enumerate(module_scope_lines):
+        if re.search(rf'\b{re.escape(base_name)}\b', line) and '.' in line and '{' in line:
+            # Extract the concatenation block (may span multiple lines)
+            block = ''
+            depth = 0
+            for j in range(i, min(i + 20, len(module_scope_lines))):
+                block += module_scope_lines[j]
+                depth += module_scope_lines[j].count('{') - module_scope_lines[j].count('}')
+                if depth <= 0:
+                    break
+            # Extract elements inside { ... }
+            m = re.search(r'\{([^}]+)\}', block)
+            if m:
+                elements = [e.strip() for e in m.group(1).split(',')]
+                # elements[0] = MSB, elements[-1] = LSB
+                # bit_idx=0 → elements[-1], bit_idx=1 → elements[-2], etc.
+                pos = len(elements) - 1 - bit_idx
+                if 0 <= pos < len(elements):
+                    wire = elements[pos].strip()
+                    # Return only if it looks like a valid scalar identifier
+                    if re.match(r'^\w+$', wire):
+                        return wire
+    return None
+```
+
 For each input pin in `port_connections`:
 
 | Priority | Method |
 |----------|--------|
-| 0 | RTL-named primary input port — `grep -cw "input.*\b<net>\b" /tmp/eco_verify_<TAG>_<Stage>.v` — if declared as `input` in the target module → **HIGHEST PRIORITY** |
-| 1 | Direct name match in stage PreEco |
-| 2 | Trace driver cell in Synthesize → find same cell output in this stage |
-| 3 | P&R alias search (partial name, exclude declarations) |
-| 4 | Backward cone trace from target DFF `.D` (max 10 hops) |
+| 0 | RTL-named primary input — check `net_in_scope("input", module_scope)` → **HIGHEST** |
+| 1 | Direct name match within module scope — `net_in_scope(net, module_scope)` |
+| 2 | Trace driver cell in Synthesize → find same cell output in this stage, `net_in_scope` check |
+| 3 | P&R alias search, `net_in_scope` check |
+| 4 | Backward cone trace (max 10 hops), `net_in_scope` check |
 | — | Unresolved → `UNRESOLVED_IN_<Stage>:<net>` |
+
+**After resolving any net — run `validate_bus_net()` before recording in `port_connections_per_stage`.**
 
 **Scan alias rejection — MANDATORY before accepting any resolved net:**
 ```python
