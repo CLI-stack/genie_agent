@@ -183,69 +183,273 @@ cp <BASE_DIR>/data/<TAG>_eco_summary.rpt <AI_ECO_FLOW_DIR>/
 
 ## STEP 7b — Write Final HTML Report
 
-Write `<BASE_DIR>/data/<TAG>_eco_report.html` with these sections:
+Write `<BASE_DIR>/data/<TAG>_eco_report.html`. The HTML must contain the **same level of detail as eco_summary.rpt** — every step documented, not just a high-level summary. Read all step RPTs and JSON files and include their content.
 
-1. **ECO Summary** — tile, ref_dir, tag, final FM result (PASS/FAIL/MAX_ROUNDS), total rounds
-2. **RTL Diff Summary** — read from `data/<TAG>_eco_rtl_diff.json`
-3. **Net Analysis** — read from `data/<TAG>_eco_step2_fenets.rpt`. If 2nd iteration (No Equiv Nets retry) was performed, include a sub-section:
-   - *2nd Iteration (Step 2)*: for each stage that triggered retry, show original query result, retry tag(s), retry net path, and final outcome (found or fallback)
-4. **PreEco Netlist Study** — read from `data/<TAG>_eco_preeco_study.json`. If 2nd iteration (forward trace) was performed on any cell, include a sub-section:
-   - *2nd Iteration (Step 3)*: for each cell where forward trace ran, show backward cone result (NO), forward trace path, and final outcome (UPGRADED or CONFIRMED EXCLUDED)
-5. **ECO Actions Applied** — read from `data/<TAG>_eco_applied_round<ROUND>.json` for each round
-6. **Timing & LOL Impact** — from `timing_lol_analysis` in `_eco_preeco_study.json`
-7. **PostEco FM Verification** — read from `data/<TAG>_eco_fm_verify.json` and per-round step5 RPTs
-8. **Fix Loop History** (if TOTAL_ROUNDS > 1) — read from `data/<TAG>_eco_fm_analysis_round<ROUND>.json`
-9. **Final Status** — PASS / MANUAL FIX NEEDED / MAX ROUNDS with guidance
-10. **Step Reports** — file paths pointing to `AI_ECO_FLOW_DIR` under REF_DIR:
+**Content source for each section:**
 
-```html
-<h2>Step Reports</h2>
-<p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step1_rtl_diff.rpt</code></p>
-<p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step2_fenets.rpt</code></p>
-<p><code><AI_ECO_FLOW_DIR>/<fenets_tag>_find_equivalent_nets_raw.rpt</code></p>
-<!-- One line per FM-036 retry tag: -->
-<p><code><AI_ECO_FLOW_DIR>/<retry_tag>_find_equivalent_nets_raw.rpt</code></p>
-<!-- One line per No-Equiv-Nets retry tag (if 2nd iteration Step 2 was performed): -->
-<p><code><AI_ECO_FLOW_DIR>/<noequiv_retry1_tag>_find_equivalent_nets_raw.rpt</code></p>
-<p><code><AI_ECO_FLOW_DIR>/<noequiv_retry2_tag>_find_equivalent_nets_raw.rpt</code></p>
-<p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round1.rpt</code></p>
-<!-- One line per fix round (if TOTAL_ROUNDS > 1): -->
-<p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round<N>.rpt  <- N=2..TOTAL_ROUNDS</code></p>
-<!-- One line per round: -->
-<p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt</code></p>
-<!-- One line per round: -->
-<p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step5_pre_fm_check_round<ROUND>.rpt</code></p>
-<!-- One line per round: -->
-<p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step6_fm_verify_round<ROUND>.rpt</code></p>
-<p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_summary.rpt</code></p>
-```
+| Section | Read from |
+|---------|-----------|
+| Header | round_handoff.json, eco_analyze metadata |
+| Final Status | eco_fm_verify.json |
+| Step 1 — RTL Changes | eco_rtl_diff.json + eco_step1_rtl_diff.rpt |
+| Step 2 — Net Analysis | eco_step2_fenets.rpt (full content including retries) |
+| Step 3 — Netlist Study | eco_step3_collect.rpt + eco_step3_netlist_verify.rpt (all rounds) |
+| Step 4 — ECO Applied | eco_step4_eco_applied_roundN.rpt (all rounds) |
+| Step 5 — Pre-FM Check | eco_step5_pre_fm_check_roundN.rpt (all rounds) |
+| Step 6 — FM Results | eco_step6_fm_verify_roundN.rpt + eco_fm_analysis_roundN.json (all rounds) |
+| Statistics | eco_applied_roundN.json aggregated |
+| Timing/LOL | timing_lol_analysis in eco_preeco_study.json |
+| Step Reports | file paths to AI_ECO_FLOW_DIR |
 
-**HTML style — MUST be email-safe (Outlook/Exchange compatible):**
+**HTML structure — produce all sections below with full detail:**
 
 ```html
-<style>
-body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; color: #333; }
-h1 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
-h2 { color: #34495e; border-bottom: 1px solid #bdc3c7; padding-bottom: 6px; }
-h3 { color: #555; margin-top: 16px; }
-table { border-collapse: collapse; width: 100%; margin: 10px 0; background: white; }
-th { background: #3498db; color: white; padding: 8px 12px; text-align: left; }
-td { padding: 7px 12px; border-bottom: 1px solid #eee; }
-tr:hover { background: #f0f7ff; }
-.pass  { color: #27ae60; font-weight: bold; }
-.fail  { color: #e74c3c; font-weight: bold; }
-.warn  { color: #e67e22; font-weight: bold; }
-.info  { color: #2980b9; }
-.applied  { color: #27ae60; font-weight: bold; }
-.skipped  { color: #e74c3c; font-weight: bold; }
-.box   { background: white; border: 1px solid #ddd; padding: 15px; margin: 10px 0; }
-.alert { background: #fef3cd; border: 1px solid #ffc107; padding: 12px; margin: 10px 0; }
-.error { background: #f8d7da; border: 1px solid #f5c6cb; padding: 12px; margin: 10px 0; }
-.success { background: #d4edda; border: 1px solid #c3e6cb; padding: 12px; margin: 10px 0; }
-code { background: #f4f4f4; padding: 2px 5px; font-family: monospace; }
-pre  { background: #f4f4f4; padding: 10px; font-family: monospace; font-size: 12px; }
-</style>
+<!DOCTYPE html>
+<html><head><style>
+body{font-family:Arial,sans-serif;margin:20px;background:#f5f5f5;color:#333;max-width:1100px}
+h1{color:#2c3e50;border-bottom:3px solid #3498db;padding-bottom:10px}
+h2{color:#34495e;border-bottom:2px solid #bdc3c7;padding-bottom:6px;margin-top:24px}
+h3{color:#555;margin-top:16px;border-left:4px solid #3498db;padding-left:8px}
+table{border-collapse:collapse;width:100%;margin:10px 0;background:white}
+th{background:#3498db;color:white;padding:8px 12px;text-align:left;font-size:12px}
+td{padding:7px 12px;border-bottom:1px solid #eee;font-size:12px}
+.pass{color:#27ae60;font-weight:bold} .fail{color:#e74c3c;font-weight:bold}
+.warn{color:#e67e22;font-weight:bold} .abort{color:#e67e22;font-weight:bold}
+.applied{color:#27ae60} .skipped{color:#999} .inserted{color:#2980b9;font-weight:bold}
+.box{background:white;border:1px solid #ddd;padding:14px;margin:10px 0;border-radius:4px}
+.success{background:#d4edda;border:1px solid #c3e6cb;padding:12px;margin:10px 0}
+.alert{background:#fef3cd;border:1px solid #ffc107;padding:12px;margin:10px 0}
+.error{background:#f8d7da;border:1px solid #f5c6cb;padding:12px;margin:10px 0}
+pre,code{background:#f4f4f4;font-family:monospace;font-size:11px}
+pre{padding:10px;overflow-x:auto} code{padding:2px 5px}
+.section-meta{color:#666;font-size:11px;margin-bottom:4px}
+</style></head><body>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- HEADER -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h1>ECO Analysis Report — JIRA <JIRA> (<TILE>)</h1>
+<div class="box">
+<table><tr>
+  <td><b>Tag:</b> <TAG></td>
+  <td><b>Tile:</b> <TILE></td>
+  <td><b>JIRA:</b> <JIRA></td>
+  <td><b>Rounds:</b> <TOTAL_ROUNDS></td>
+  <td><b>Generated:</b> <YYYY-MM-DD HH:MM></td>
+</tr><tr>
+  <td colspan="5"><b>TileBuilder:</b> <REF_DIR></td>
+</tr></table>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- FINAL STATUS -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>Final Status</h2>
+<!-- Use .success for PASS, .alert for PARTIAL/MAX_ROUNDS, .error for FAIL -->
+<div class="[success|alert|error]">
+  <b>FINAL STATUS: [PASS | FAIL — MANUAL FIX NEEDED | MAX ROUNDS REACHED]</b><br>
+  <i>[1-2 sentence explanation of what passed, what failed, and why]</i>
+</div>
+
+<h3>FM Verification Results</h3>
+<table>
+<tr><th>Target</th><th>Status</th><th>Equiv Points</th><th>Failing Points</th><th>FM Tag</th></tr>
+<tr>
+  <td>FmEqvEcoSynthesizeVsSynRtl</td>
+  <td class="[pass|fail|abort]">[PASS|FAIL|ABORT]</td>
+  <td>[N]</td><td>[M]</td><td>[eco_fm_tag]</td>
+</tr>
+<tr>
+  <td>FmEqvEcoPrePlaceVsEcoSynthesize</td>
+  <td class="[pass|fail|abort]">[PASS|FAIL|ABORT]</td>
+  <td>[N]</td><td>[M]</td><td>[eco_fm_tag]</td>
+</tr>
+<tr>
+  <td>FmEqvEcoRouteVsEcoPrePlace</td>
+  <td class="[pass|fail|abort]">[PASS|FAIL|ABORT]</td>
+  <td>[N]</td><td>[M]</td><td>[eco_fm_tag]</td>
+</tr>
+</table>
+
+<!-- If any FAIL: show failing points + mode E proof if applicable -->
+<!-- [Failing points block — one row per failing DFF path, same detail as eco_summary.rpt] -->
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- STEP 1 — RTL CHANGES -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>Step 1 — RTL Diff Analysis</h2>
+<p class="section-meta">Source: eco_step1_rtl_diff.rpt | Files changed: [N] | Total changes: [N]</p>
+<!-- One sub-section per RTL change, same detail as eco_summary.rpt RTL CHANGE section -->
+<!-- For each change: File, Module, Change Type, Old/New Signal, Instances, Context line, Strategy -->
+<h3>Change [N/TOTAL]: [change_type] — [module_name]</h3>
+<table>
+<tr><td><b>File</b></td><td>[rtl_file.v]</td></tr>
+<tr><td><b>Module</b></td><td>[module_name] (instance: [INST_PATH])</td></tr>
+<tr><td><b>Change Type</b></td><td>[wire_swap | and_term | new_logic | new_port | port_connection]</td></tr>
+<tr><td><b>Old Signal</b></td><td>[old_token]</td></tr>
+<tr><td><b>New Signal</b></td><td>[new_token]</td></tr>
+<tr><td><b>Target Register</b></td><td>[target_register] (if applicable)</td></tr>
+<tr><td><b>Instances</b></td><td>[INST_A] ([flat_net_A]), [INST_B] ([flat_net_B])</td></tr>
+<tr><td><b>Strategy</b></td><td>[d_input decomposition | intermediate_net_insertion | module_port_direct_gating | direct_rewire]</td></tr>
+</table>
+<pre>[context_line from RTL diff]</pre>
+<!-- If new_logic with gate chain: show the decomposed gate chain -->
+<!-- eco_jira_d001: GATE_FUNCTION(inputs) → output_net, eco_jira_d002: ... -->
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- STEP 2 — FIND EQUIVALENT NETS -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>Step 2 — Find Equivalent Nets</h2>
+<p class="section-meta">Source: eco_step2_fenets.rpt | fenets_tag: [tag]</p>
+<!-- One sub-section per net queried -->
+<h3>Net [N/TOTAL]: [net_path]</h3>
+<table>
+<tr><th>Stage</th><th>Result</th><th>Qualifying Cells</th><th>Retries</th></tr>
+<tr><td>Synthesize</td><td>[N cells | No Equiv Nets | FM-036]</td><td>[cell/pin list]</td><td>[none | retry1: deeper_path → N cells]</td></tr>
+<tr><td>PrePlace</td><td>[N cells | FALLBACK]</td><td>[cell/pin list]</td><td>[none | fallback from Synthesize]</td></tr>
+<tr><td>Route</td><td>[N cells | FALLBACK]</td><td>[cell/pin list]</td><td>[none | fallback from Synthesize]</td></tr>
+</table>
+<!-- If FM-036 pivot: explain pivot strategy and target register used -->
+<!-- If No-Equiv-Nets retry: show original query, retry path, outcome -->
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- STEP 3 — NETLIST STUDY (all rounds) -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>Step 3 — PreEco Netlist Study</h2>
+<!-- Round 1: from eco_step3_collect.rpt + eco_step3_netlist_verify.rpt -->
+<h3>Round 1 — Collect Pass</h3>
+<p class="section-meta">Source: eco_step3_collect.rpt</p>
+<table>
+<tr><th>Entry Type</th><th>Count</th><th>Confirmed</th><th>Excluded</th></tr>
+<tr><td>new_logic_gate</td><td>[N]</td><td>[N]</td><td>[N]</td></tr>
+<tr><td>new_logic_dff</td><td>[N]</td><td>[N]</td><td>[N]</td></tr>
+<tr><td>port_declaration</td><td>[N]</td><td>[N]</td><td>[N] ([N] skipped implicit wire)</td></tr>
+<tr><td>port_connection</td><td>[N]</td><td>[N]</td><td>[N]</td></tr>
+<tr><td>rewire</td><td>[N]</td><td>[N]</td><td>[N]</td></tr>
+<tr><td>d_input_chains</td><td>[N chains, N gates]</td><td>—</td><td>[N decompose_failed]</td></tr>
+</table>
+<!-- Key notes from collect.rpt: per-stage net aliases, CTS clock renames, IReset BBNet etc. -->
+<h3>Round 1 — Verifier Enrich (14 Checks)</h3>
+<p class="section-meta">Source: eco_step3_netlist_verify.rpt</p>
+<table>
+<tr><th>Check</th><th>Description</th><th>Result</th></tr>
+<tr><td>1 GAP-15</td><td>and_term module_port_direct_gating</td><td>[N checked, N corrected]</td></tr>
+<tr><td>2 Per-stage nets</td><td>Gate input resolution all stages</td><td>[N enriched, N UNRESOLVED]</td></tr>
+<tr><td>3 DFF pins</td><td>Clock/scan/data per stage</td><td>[N enriched, N CTS renames]</td></tr>
+<tr><td>4 Wire decls</td><td>needs_explicit_wire_decl flags</td><td>[N set]</td></tr>
+<tr><td>5–14 ...</td><td>...</td><td>...</td></tr>
+<tr><td><b>TOTAL</b></td><td>Auto-added entries by verifier</td><td>[N new entries]</td></tr>
+</table>
+<!-- If Round 2+ re-study: show what changed per round -->
+<!-- [Round N re-study: failure_mode, entries updated, force_reapply entries] -->
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- STEP 4 — ECO APPLIED (all rounds) -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>Step 4 — ECO Changes Applied</h2>
+<!-- One sub-section per round -->
+<h3>Round [N] — [mode: Fresh | Surgical Patch]</h3>
+<p class="section-meta">Source: eco_step4_eco_applied_roundN.rpt | applied=[N] inserted=[N] skipped=[N] vf=[N]</p>
+<table>
+<tr><th>Stage</th><th>Cell / Signal</th><th>Type</th><th>Status</th><th>Detail</th></tr>
+<!-- One row per APPLIED/INSERTED/SKIPPED/VERIFY_FAILED entry -->
+<!-- ALREADY_APPLIED entries: group and show as "N entries ALREADY_APPLIED (carried from Round 1)" -->
+<tr><td>All</td><td>[instance_name]</td><td>[new_logic_gate|rewire|port_declaration...]</td>
+    <td class="[applied|inserted|skipped]">[APPLIED|INSERTED|SKIPPED]</td>
+    <td>[reason or detail]</td></tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- STEP 5 — PRE-FM CHECK (all rounds) -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>Step 5 — Pre-FM Quality Check</h2>
+<h3>Round [N]</h3>
+<p class="section-meta">Source: eco_step5_pre_fm_check_roundN.rpt</p>
+<table>
+<tr><th>Check</th><th>Result</th><th>Issues Found</th><th>Issues Fixed</th></tr>
+<tr><td>Check 8 — Verilog Validator</td><td class="[pass|fail]">[PASS|FAIL]</td>
+    <td>[Synth: PASS, PP: PASS, Route: PASS | errors]</td><td>[N fixed inline]</td></tr>
+<tr><td>Check A — Stage consistency</td><td class="pass">PASS</td><td>0</td><td>0</td></tr>
+<!-- All checks A-I with their result -->
+<tr><td><b>OVERALL</b></td><td class="[pass|fail]"><b>[PASS|FAIL]</b></td>
+    <td>[N total]</td><td>[N fixed, N unresolved]</td></tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- STEP 6 — FM VERIFICATION (all rounds) -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>Step 6 — PostEco Formality Verification</h2>
+<!-- One sub-section per round -->
+<h3>Round [N] — FM Tag: [eco_fm_tag]</h3>
+<p class="section-meta">Source: eco_step6_fm_verify_roundN.rpt</p>
+<table>
+<tr><th>Target</th><th>Status</th><th>Failing</th><th>Root Cause / Action</th></tr>
+<tr><td>FmEqvEcoSynthesizeVsSynRtl</td>
+    <td class="[pass|fail|abort]">[PASS|FAIL|ABORT]</td>
+    <td>[N | N/A]</td>
+    <td>[none | failure_mode: X — revised_changes: Y]</td></tr>
+<!-- ... -->
+</table>
+<!-- If ABORT: show abort_type and what STEP F attempted (SVR-14 fix, pin fix, etc.) -->
+<!-- If FAIL: show eco_fm_analysis diagnosis, failure_mode, sample failing points -->
+<!-- If FAIL round 2+: show what re_studier changed and why -->
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ECO STATISTICS -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>ECO Statistics</h2>
+<div class="box">
+<table>
+<tr><th>Metric</th><th>Synthesize</th><th>PrePlace</th><th>Route</th></tr>
+<tr><td>Cells Added</td><td>[N]</td><td>[N]</td><td>[N]</td></tr>
+<tr><td>Cells Removed</td><td>[N]</td><td>[N]</td><td>[N]</td></tr>
+<tr><td>Pins Applied (all rounds)</td><td>[N]</td><td>[N]</td><td>[N]</td></tr>
+<tr><td>Pins Skipped</td><td>[N]</td><td>[N]</td><td>[N]</td></tr>
+<tr><td>Verify Failed</td><td>[N]</td><td>[N]</td><td>[N]</td></tr>
+</table>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- TIMING & LOL -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>Timing & LOL Impact</h2>
+<p class="section-meta">LOL = Lines Of Logic: gate levels from ECO cell output to first register input</p>
+<!-- One row per ECO change with timing_lol_analysis -->
+<table>
+<tr><th>Signal</th><th>Old Driver</th><th>New Driver</th><th>LOL Added</th><th>Estimate</th><th>Reasoning</th></tr>
+<tr><td>[signal]</td><td>[cell (type)]</td><td>[eco_cell (type)]</td>
+    <td>[N levels]</td>
+    <td class="[pass|warn|fail]">[BETTER|NEUTRAL|RISK]</td>
+    <td>[1-sentence reasoning]</td></tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- PER-STEP REPORT INDEX -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>Per-Step Report Files</h2>
+<p class="section-meta">All files at: <AI_ECO_FLOW_DIR>/</p>
+<table>
+<tr><th>Step</th><th>File</th></tr>
+<tr><td>Step 1 RTL Diff</td><td><code>[TAG]_eco_step1_rtl_diff.rpt</code></td></tr>
+<tr><td>Step 2 Fenets</td><td><code>[TAG]_eco_step2_fenets.rpt</code></td></tr>
+<tr><td>Step 2 Raw FM</td><td><code>[fenets_tag]_find_equivalent_nets_raw.rpt</code></td></tr>
+<!-- [One row per retry rpt if any] -->
+<tr><td>Step 3 Collect R1</td><td><code>[TAG]_eco_step3_collect.rpt</code></td></tr>
+<tr><td>Step 3 Verify R1</td><td><code>[TAG]_eco_step3_netlist_verify.rpt</code></td></tr>
+<tr><td>Step 3 Study R1</td><td><code>[TAG]_eco_step3_netlist_study_round1.rpt</code></td></tr>
+<!-- [One row per round for steps 3-6] -->
+<tr><td>Summary RPT</td><td><code>[TAG]_eco_summary.rpt</code></td></tr>
+</table>
+
+</body></html>
 ```
+
+**Rules for content population:**
+- Every `[placeholder]` must be filled from actual data files — never leave placeholders in the output
+- ALREADY_APPLIED entries in Step 4: group as a single summary row per round (e.g., "75 entries ALREADY_APPLIED — carried from Round 1") rather than listing each one
+- If a check/step produced 0 issues → show "0 — PASS" not "N/A"
+- Round loop sections (Steps 3-6): repeat sub-sections for each round that ran
+- Failing points: show up to 10 sample paths; if more, show count and note "(see Step 6 RPT for full list)"
 
 **CHECKPOINT:** Verify `data/<TAG>_eco_report.html` written and non-empty before proceeding to Step 8.
 
