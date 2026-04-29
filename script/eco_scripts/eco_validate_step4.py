@@ -22,11 +22,13 @@ from pathlib import Path
 
 
 def md5(path):
+    """Return md5 hash of file, or None if command fails (file missing or error)."""
     try:
         r = subprocess.run(f'md5sum {path}', shell=True, capture_output=True, text=True)
-        return r.stdout.split()[0]
-    except:
-        return ''
+        parts = r.stdout.split()
+        return parts[0] if parts else None
+    except Exception:
+        return None
 
 
 def main():
@@ -65,7 +67,11 @@ def main():
         if has_changes:
             pre = f"{args.ref_dir}/data/PreEco/{stage}.v.gz"
             post = f"{args.ref_dir}/data/PostEco/{stage}.v.gz"
-            if md5(pre) == md5(post):
+            pre_md5  = md5(pre)
+            post_md5 = md5(post)
+            if pre_md5 is None or post_md5 is None:
+                issues.append(f"HIGH: {stage} MD5 check failed — PreEco or PostEco file missing/unreadable")
+            elif pre_md5 == post_md5:
                 issues.append(f"CRITICAL: {stage} PostEco MD5 unchanged from PreEco despite {sum(1 for e in stage_entries if e.get('status') in ('APPLIED','INSERTED'))} applied changes — writes may have failed")
 
     # ── 4. Every INSERTED entry has instance_name populated ─────────────────

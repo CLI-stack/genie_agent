@@ -64,7 +64,15 @@ parse_stage() {
     local stage=$1
     local log=$2
     # Find the section for this stage and check PASS/FAIL
-    awk "/Validating:.*${stage}/{found=1} found && /PASS:/{print \"PASS\"; exit} found && /FAIL:/{print \"FAIL\"; exit} found && /Validating:.*[^${stage}]/{exit}" "${log}"
+    # Use a string comparison to detect when a DIFFERENT stage section starts (not a character class)
+    awk -v tgt="${stage}" '
+        /Validating:/ {
+            if (index($0, tgt) > 0) { found=1 }
+            else if (found) { exit }
+        }
+        found && /PASS:/ { print "PASS"; exit }
+        found && /FAIL:/ { print "FAIL"; exit }
+    ' "${log}"
 }
 
 SYNTH=$(parse_stage "Synthesize" "${TMP_LOG}")
@@ -89,11 +97,11 @@ if grep -q "SVR4_bare_paren" "${TMP_LOG}" 2>/dev/null; then
         echo "SVR4_bare_paren: fixed in $(basename ${STAGE_GZ})"
     done
     # Re-run validator after fix
-    python3 "${SCRIPT}" --strict ${MODS_ARGS[@]} -- \
+    python3 "${SCRIPT}" --strict "${MODS_ARGS[@]}" -- \
         "${REF_DIR}/data/PostEco/Synthesize.v.gz" \
         "${REF_DIR}/data/PostEco/PrePlace.v.gz" \
         "${REF_DIR}/data/PostEco/Route.v.gz" \
-        2>&1 > "${TMP_LOG}"
+        > "${TMP_LOG}" 2>&1
     SYNTH=$(parse_stage "Synthesize" "${TMP_LOG}")
     PPLACE=$(parse_stage "PrePlace" "${TMP_LOG}")
     ROUTE=$(parse_stage "Route" "${TMP_LOG}")

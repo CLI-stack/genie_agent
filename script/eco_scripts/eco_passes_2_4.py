@@ -24,6 +24,7 @@ import argparse
 import gzip
 import json
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -46,7 +47,7 @@ def grep_lineno(pattern, gz_path, timeout=30):
     """Use zcat+grep to find first matching line number. Fast even on large files."""
     try:
         proc = subprocess.run(
-            f'zcat {gz_path} | grep -n {repr(pattern)} | head -1',
+            f'zcat {gz_path} | grep -n {shlex.quote(pattern)} | head -1',
             shell=True, capture_output=True, text=True, timeout=timeout
         )
         m = re.match(r'^(\d+):', proc.stdout.strip())
@@ -200,13 +201,16 @@ def apply_port_connection(lines, entry, gz_path=None):
             )
             return lines, 'APPLIED', f'rewired existing .{port_name} to ({net_name}) in {inst_name}'
 
-    # Insert before close paren
+    # Insert before close paren — preserve original close suffix (e.g. ') ;' or ');')
     close_line = lines[inst_close]
     last_paren = close_line.rfind(')')
     if last_paren < 0:
         return lines, 'SKIPPED', f'no ) on instance close line {inst_close}'
+    orig_suffix = close_line[last_paren:]       # e.g. ') ;' or ') ;\n'
+    if ';' not in orig_suffix:
+        orig_suffix = ') ;\n'                   # ensure semicolon always present
     lines[inst_close] = (close_line[:last_paren] +
-                         f' , .{port_name}( {net_name} )\n) ;\n')
+                         f' , .{port_name}( {net_name} )\n' + orig_suffix)
     return lines, 'APPLIED', f'added .{port_name}({net_name}) to {inst_name}'
 
 

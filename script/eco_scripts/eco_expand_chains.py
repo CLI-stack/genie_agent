@@ -108,16 +108,19 @@ def main():
                 port_connections = gate.get('port_connections') or gate.get('port_connections_per_stage', {}).get('Synthesize')
                 if not port_connections:
                     # Fallback: build from inputs list using generic A1/A2/... naming
-                    # Pin names will be corrected by eco_netlist_studier from actual PreEco example
+                    # Pin names will be corrected by eco_netlist_verifier from actual PreEco example
                     inputs = gate.get('inputs', [])
                     port_connections = {f'A{i+1}': net for i, net in enumerate(inputs)}
                     if out_net:
-                        # Determine output pin from existing port_connections keys in RTL diff
-                        # by finding the key whose value matches out_net
-                        existing_pc = gate.get('port_connections', {})
-                        out_pin = next((k for k, v in existing_pc.items() if v == out_net), None)
-                        if out_pin:
-                            port_connections[out_pin] = out_net
+                        # Derive output pin from gate_function (generic — no hardcoded cell names)
+                        fn_upper = fn.upper() if fn else ''
+                        if fn_upper.startswith(('INV', 'NAND', 'NOR', 'XNOR', 'IND')):
+                            out_pin = 'ZN'
+                        elif fn_upper.startswith(('DFF', 'SDFF', 'DFQD', 'SDFQD')):
+                            out_pin = 'Q'
+                        else:
+                            out_pin = 'Z'  # AND, OR, MUX, XOR, BUF and all others
+                        port_connections[out_pin] = out_net
 
                 entry = {
                     'change_type':    'new_logic_gate',
