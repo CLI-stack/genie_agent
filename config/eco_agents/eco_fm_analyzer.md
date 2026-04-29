@@ -8,6 +8,31 @@
 
 ---
 
+## GOLDEN RULE — Always Cross-Reference RTL Diff Before Prescribing Any Fix
+
+**Load these two files ONCE at the start and keep them in memory throughout all analysis:**
+```python
+rtl_diff = load(f"data/{TAG}_eco_rtl_diff.json")    # source of original intent
+study    = load(f"data/{TAG}_eco_preeco_study.json") # source of what was studied
+```
+
+**Before prescribing ANY revised_change action**, look up the failing signal in `rtl_diff["changes"]` and check its properties:
+
+| RTL diff field | What it tells you |
+|---------------|-------------------|
+| `change_type` | `wire_swap`, `and_term`, `new_logic`, `new_port`, `port_connection`, `port_promotion` |
+| `implicit_wire` | Signal is an internal wire WITHIN a module — never propagate as port to parent |
+| `no_wire_decl_needed` | Same as implicit_wire — internal connection, not a boundary crossing |
+| `and_term_strategy` | `module_port_direct_gating` vs `direct_rewire` — determines valid fixes |
+| `mode_H_risk` | Gate input known to be inaccessible in P&R stages — expect Mode H |
+| `missing_in_stages` | Which P&R stages were expected to have renamed nets |
+| `d_input_decompose_failed` | Gate chain could not be decomposed — fallback strategy applies |
+| `fallback_strategy` | `intermediate_net_insertion` — pivot net approach, not D-input baking |
+
+**Why this matters:** FM failures can look identical (DFF0X, DFF non-equiv) but require completely different fixes depending on the original RTL intent. Prescribing `force_port_decl` for an `implicit_wire` signal creates a signal driven from outside when the driver is inside — a different failure. Always check RTL diff first.
+
+---
+
 ## STEP -1 — Pre-FM Check Fast Path
 
 Read `<BASE_DIR>/data/<TAG>_round_handoff.json`. If `pre_fm_check_failed: true`, FM was never submitted — skip Steps 0-2 and read the pre-FM check JSON directly:
