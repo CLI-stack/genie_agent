@@ -220,10 +220,11 @@ def apply_port_connection(lines, entry, gz_path=None):
 def apply_rewire(lines, entry, stage='Synthesize'):
     """Change pin connection in cell instance block. Returns (lines, status, reason)."""
     # Use per-stage cell name if available (handles P&R renamed cells)
-    per_stage = entry.get('per_stage_cell_name', {})
+    per_stage = entry.get('per_stage_cell_name', {}) or entry.get('cell_name_per_stage', {})
     cell_name = per_stage.get(stage, '') or entry.get('cell_name', '')
     # Use per-stage pin name if available (e.g., ZN in Synthesize vs ZN1 in PrePlace/Route)
-    per_stage_pin = entry.get('per_stage_pin', {})
+    # Support both field name conventions: per_stage_pin and pin_per_stage
+    per_stage_pin = entry.get('per_stage_pin', {}) or entry.get('pin_per_stage', {})
     pin_name  = per_stage_pin.get(stage, '') or entry.get('pin', '')
     # Use per-stage nets if available
     old_net   = (entry.get('per_stage_old_net', {}) or {}).get(stage, '') or entry.get('old_net', '')
