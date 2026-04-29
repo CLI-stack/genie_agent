@@ -814,7 +814,33 @@ grep -n "<child_module_type>\s\+<instance_name>" <declaring_module_rtl_file>
    - DFF at parent scope connects to this new port via child's instance connection
 4. Record `preferred_insertion_reason: "input <signal> is output of <child_module> — black-boxed by FM in P&R; insert inside child to avoid DFF0X"`
 
-**If inputs are all directly accessible in declaring module scope:** `preferred_insertion_scope: null` (default — insert at declaring module level as before).
+**STEP 4 — Gate-level primitive driver check (MANDATORY even when signal found in declaring module scope):**
+
+When a D-input signal resolves to a gate-level wire (e.g., `UNCONNECTED_3288`) that IS declared as `wire` in the declaring module, it may still be driven ONLY through a submodule output bus — not by any primitive cell output in that scope. FM black-boxes such submodules in P&R → wire appears undriven (DFF0X).
+
+```bash
+# After resolving gate-level wire name (e.g., UNCONNECTED_3288):
+# Check if any primitive cell drives it directly in declaring module scope:
+awk '/^module <declaring_module>\b/,/^endmodule/' \
+    <REF_DIR>/data/PreEco/Synthesize.v.gz | \
+    grep -E "\.(Z|ZN|Q|QN|CO|S)\s*\(\s*<resolved_wire>\s*\)"
+# count = 0 → wire has NO direct primitive driver → only driven via submodule bus
+```
+
+If count = 0 (no primitive driver in scope) → treat same as "input from child submodule":
+- Set `preferred_insertion_scope` to the submodule instance that drives this wire via port bus
+- Set `input_from_submodule: true`, `submodule_bus_driven: true`
+- Reason: FM black-boxes submodule in P&R → bus output wire appears undriven regardless of wire name
+
+Find the driving submodule by searching for the wire in a port bus concatenation:
+```bash
+awk '/^module <declaring_module>\b/,/^endmodule/' \
+    <REF_DIR>/data/PreEco/Synthesize.v.gz | \
+    grep "\.\w\+\s*(\s*{[^}]*<resolved_wire>" | head -3
+# → shows which instance's port bus contains this wire → that instance is the submodule to insert into
+```
+
+**If inputs are all directly accessible in declaring module scope AND have primitive drivers:** `preferred_insertion_scope: null` (default — insert at declaring module level as before).
 
 ### E5 — Record in JSON
 
