@@ -827,10 +827,11 @@ awk '/^module <declaring_module>\b/,/^endmodule/' \
 # count = 0 → wire has NO direct primitive driver → only driven via submodule bus
 ```
 
-If count = 0 (no primitive driver in scope) → treat same as "input from child submodule":
+If count = 0 (no primitive driver in scope) → **MANDATORY: set preferred_insertion_scope — do NOT insert at declaring module scope.**
 - Set `preferred_insertion_scope` to the submodule instance that drives this wire via port bus
 - Set `input_from_submodule: true`, `submodule_bus_driven: true`
-- Reason: FM black-boxes submodule in P&R → bus output wire appears undriven regardless of wire name
+- Reason: FM black-boxes submodule in P&R → bus output wire appears undriven regardless of wire name → always DFF0X in P&R FM targets. This is NOT overridable — using UNCONNECTED_* directly at parent scope will fail.
+- **NEVER set `preferred_insertion_scope: null` when `submodule_bus_driven: true`**
 
 Find the driving submodule by searching for the wire in a port bus concatenation:
 ```bash
