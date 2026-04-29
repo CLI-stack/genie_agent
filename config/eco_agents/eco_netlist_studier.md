@@ -144,54 +144,94 @@ After all chain gates: set DFF entry `port_connections.D = "n_eco_<jira>_d<last>
 
 **For DFF with `has_sync_reset: true` — try reset-pin cell FIRST (preferred):**
 
-When the RTL diff flags `has_sync_reset: true` and provides `reset_signal` + `reset_polarity`, search PreEco for a DFF cell that has an **explicit reset/clear pin** (RN, SN, CDN, SDN, etc.):
+**Generic discovery — no hardcoded cell names or pin names.** The library's reset-capable DFF is found by searching for existing DFFs in the module that ALREADY connect to `reset_signal`:
 
-```bash
-# Search for reset-capable DFF cells in same module scope as the neighbour DFF
-# Generic: search for any DFF-family cell with a reset-style pin
-zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | \
-  awk '/^module <declaring_module>/,/^endmodule/' | \
-  grep -E "^[[:space:]]*(DFF|SDFQ|DFFRQ|DFFR|DFN|SDFF)[A-Z0-9]*[[:space:]]" | \
-  head -10
-
-# For each candidate, check if it has a reset/clear pin:
-# Active-low reset: .RN( or .SN( or .CDN( or .SDN(
-# Active-high reset: .RST( or .CLR( or .R(
-grep -m1 "<candidate_cell_type>" /tmp/eco_study_<TAG>_Synthesize.v | \
-  grep -E "\.RN\s*\(|\.SN\s*\(|\.CDN\s*\(|\.SDN\s*\(|\.RST\s*\(|\.CLR\s*\("
+```python
+def find_reset_capable_dff(module_scope_lines, reset_signal):
+    """
+    Find a DFF in module scope that uses reset_signal on one of its pins.
+    Returns (cell_type, reset_pin_name) — both discovered from the netlist,
+    no hardcoded cell prefixes or pin names.
+    """
+    import re
+    for i, line in enumerate(module_scope_lines):
+        # Check if this line references reset_signal as a port connection
+        if re.search(rf'\.\w+\s*\(\s*{re.escape(reset_signal)}\s*\)', line):
+            # Find the start of this cell instance block (scan back to cell declaration line)
+            inst_start = i
+            while inst_start > 0:
+                prev = module_scope_lines[inst_start - 1]
+                if re.search(r';\s*$', prev) or re.match(r'^\s*$', prev):
+                    break
+                inst_start -= 1
+            inst_block = ' '.join(module_scope_lines[inst_start : i + 10])
+            # Verify this is a DFF (has a Q output pin — generic DFF signature)
+            if re.search(r'\.Q\s*\(', inst_block):
+                # Extract cell_type: first uppercase token on instance declaration line
+                cell_line = module_scope_lines[inst_start].strip()
+                m = re.match(r'^([A-Z]\S+)', cell_line)
+                if m:
+                    cell_type = m.group(1)
+                    # Extract which pin connects to reset_signal — this IS the reset pin
+                    pin_m = re.search(
+                        rf'\.(\w+)\s*\(\s*{re.escape(reset_signal)}\s*\)', inst_block
+                    )
+                    if pin_m:
+                        return cell_type, pin_m.group(1)   # e.g. ("SDFQD4...", "RN")
+    return None, None  # No reset-capable DFF found in this scope
 ```
 
-**If a reset-pin cell is found:**
-1. Use it as the DFF cell type
-2. Set `reset_pin_used: true`, `reset_pin_name: <pin>`, `reset_signal: <from rtl_diff>`
-3. Connect `reset_signal` → `reset_pin` in `port_connections`
-4. **Remove reset term from `d_input_gate_chain`** — the reset gates (e.g., `INV(<rst>)`, `AND...(n_d_last, ~<rst>)`) are no longer needed
-5. Shorten `d_input_gate_chain` accordingly — D-input now feeds functional logic only
+Run against module scope from PreEco Synthesize:
+```bash
+awk '/^module <declaring_module>/,/^endmodule/' \
+    /tmp/eco_study_<TAG>_Synthesize.v > /tmp/eco_module_scope.v
+```
+Then call `find_reset_capable_dff(module_scope_lines, reset_signal)`.
+
+**If `(cell_type, reset_pin_name)` found:**
+1. Use `cell_type` as the DFF cell — same library cell as existing DFFs that use the reset signal
+2. Set `reset_pin_used: true`, `reset_pin_name: <discovered_pin>`, `reset_signal: <from rtl_diff>`
+3. Connect `reset_signal` to `<discovered_pin>` in `port_connections`
+4. **Remove reset term from `d_input_gate_chain`** — functional gates only; no reset INV gate
+5. DFF `port_connections.D` = last functional gate output (not the reset AND gate)
 
 ```json
 {
-  "dff_cell_type": "<reset_capable_cell>",
+  "dff_cell_type": "<discovered from PreEco>",
   "reset_pin_used": true,
-  "reset_pin_name": "RN",
-  "reset_signal": "<rst_signal>",
-  "reset_polarity": "active_high",
+  "reset_pin_name": "<discovered from PreEco — not hardcoded>",
+  "reset_signal": "<rst_signal from rtl_diff>",
   "port_connections": {
-    "<data_pin>": "n_eco_<jira>_d<last_functional_gate>",
-    "<clk_pin>":  "<clk_net>",
-    "<reset_pin>":"<rst_signal>",
-    "<q_pin>":    "<target_register>"
-  },
-  "note": "Sync reset connected to cell RN pin — NOT in D-input cone. Immune to CTS BBNet on reset net."
+    "<data_pin>":  "n_eco_<jira>_d<last_functional_gate>",
+    "<clk_pin>":   "<clk_net>",
+    "<reset_pin>": "<rst_signal>",
+    "<q_pin>":     "<target_register>"
+  }
 }
 ```
 
-**Why this is strongly preferred:** Reset signals are heavily replicated by CTS in Route. When baked into the D-input combinational cone, FM cannot trace through the CTS-merged BBNet driver → DFF appears non-equivalent in Route (GAP-CTS-2) → MANUAL_ONLY failure that no netlist fix can resolve. Using the DFF reset pin bypasses the combinational cone entirely.
+**If `None` returned (no existing DFF in scope uses reset_signal):**
+Fall back — bake reset into D-input gate chain (current behavior). Set `reset_pin_used: false`. Log: `"RESET_PIN_FALLBACK: no DFF found in scope <module> using <reset_signal> — baking reset into D-input (GAP-CTS-2 risk in Route)"`
 
-**If no reset-pin cell found in PreEco scope:** Fall back to current approach — bake reset into D-input gate chain. Set `reset_pin_used: false`, retain all d_input_gate_chain gates including the reset INV gate. Log: `"RESET_PIN_FALLBACK: no reset-capable DFF found in scope <module> — reset baked into D-input chain (GAP-CTS-2 risk in Route)"`
+**Why this is strongly preferred:** Reset signals are heavily replicated by CTS in Route. When baked into the D-input cone, FM cannot trace through CTS-merged BBNet drivers → DFF non-equivalent in Route (GAP-CTS-2) → MANUAL_ONLY. Using the DFF reset pin bypasses the combinational cone entirely — immune to CTS restructuring.
 
-**For DFF without sync reset (or fallback):**
-```bash
-zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -E "^[[:space:]]*(DFF|DFQD|SDFQD|SDFFQ|DFFR|DFFRQ)[A-Z0-9]* [a-z]" | head -5
+**For DFF without sync reset (or fallback) — also generic:**
+```python
+def find_neighbour_dff(module_scope_lines):
+    """Find any DFF cell in scope — identified by .Q( pin, not by cell name prefix."""
+    for i, line in enumerate(module_scope_lines):
+        if re.search(r'\.Q\s*\(', line):
+            inst_start = i
+            while inst_start > 0:
+                prev = module_scope_lines[inst_start - 1]
+                if re.search(r';\s*$', prev) or re.match(r'^\s*$', prev):
+                    break
+                inst_start -= 1
+            cell_line = module_scope_lines[inst_start].strip()
+            m = re.match(r'^([A-Z]\S+)', cell_line)
+            if m:
+                return m.group(1)   # cell_type, e.g. "SDFQD4AMDBWP..."
+    return None
 ```
 
 **For combinational gate:** Determine function from RTL expression (`A & B` → AND2, `~A` → INV, etc.), then search PreEco for matching cell pattern.
