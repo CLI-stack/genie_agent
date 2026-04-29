@@ -269,8 +269,21 @@ def main():
                     statuses.append({'name': inst, 'status':'INFO',
                                      'reason': f'wire_decl SKIPPED for {out_net}: already referenced ({existing}x) — SVR-9 prevention'})
 
-            # Build gate line
+            # Build gate line — cell_type must not be empty (SVR-4: missing cell type = invalid Verilog)
             cell_type = e.get('cell_type','')
+            if not cell_type:
+                # Fallback: try other stage entries for the same instance_name
+                for fb_stage in ['Synthesize','PrePlace','Route']:
+                    if fb_stage == stage: continue
+                    for fb_e in study.get(fb_stage,[]):
+                        if fb_e.get('instance_name') == inst and fb_e.get('cell_type'):
+                            cell_type = fb_e['cell_type']
+                            break
+                    if cell_type: break
+            if not cell_type:
+                statuses.append({'name': inst, 'status':'SKIPPED',
+                                 'reason': f'cell_type empty for {inst} in {stage} — cannot insert without cell type (SVR-4 risk)'})
+                continue
             pins_str  = ', '.join(f'.{pin}({net})' for pin, net in pcs.items())
             gate_line = f'  // ECO {args.jira} TAG={args.tag} Round={args.round}'
             changes[mod]['gates'].append(gate_line)

@@ -210,8 +210,16 @@ def apply_port_connection(lines, entry, gz_path=None):
     orig_suffix = close_line[last_paren:]       # e.g. ') ;' or ') ;\n'
     if ';' not in orig_suffix:
         orig_suffix = ') ;\n'                   # ensure semicolon always present
+    # Check if previous non-empty line already ends with comma — avoid double comma (SVR-4)
+    prev_comma = False
+    for prev_idx in range(inst_close - 1, max(inst_start - 1, 0), -1):
+        stripped = lines[prev_idx].rstrip()
+        if stripped:
+            prev_comma = stripped.endswith(',')
+            break
+    sep = '' if prev_comma else ' ,'
     lines[inst_close] = (close_line[:last_paren] +
-                         f' , .{port_name}( {net_name} )\n' + orig_suffix)
+                         f'{sep} .{port_name}( {net_name} )\n' + orig_suffix)
     return lines, 'APPLIED', f'added .{port_name}({net_name}) to {inst_name}'
 
 
