@@ -381,11 +381,24 @@ for err in errors:
 This validator catches F1 (duplicate wire), F3 (declaration inside cell instance), F4 (duplicate port connection), and F5 (corrupted port value). Runs in seconds when `--modules` is used. Without `--modules` it scans the entire netlist which is too slow.
 
 If the validator script is unavailable, run manual fallback checks on each stage:
-- **F1** (dup wire): `re.findall(r'^\s*wire\s+(\w+)\s*;', mod_block)` → find names with count > 1 → remove second occurrence
-- **F2** (explicit wire + implicit conflict): `wire_decls_only & port_conn_nets` → remove explicit `wire X;`
-- **F3** (dup port connection): find `.pin(` appearing twice in instance block → remove second
-
-**Inline fixes:** F1/F2 → remove the duplicate/conflicting `wire X;` line in module scope. F3 → remove second `.pin(...)` occurrence in instance block.
+```python
+for stage in ["Synthesize", "PrePlace", "Route"]:
+    content = gzip.open(f"PostEco/{stage}.v.gz", 'rt').read()
+    for mod_block in re.split(r'^module\s+', content, flags=re.MULTILINE)[1:]:
+        mod_name = mod_block.split('(')[0].strip()
+        # F1 — duplicate explicit wire declarations:
+        wire_names = re.findall(r'^\s*wire\s+(\w+)\s*;', mod_block, re.MULTILINE)
+        dups = [w for w, c in Counter(wire_names).items() if c > 1]
+        # F2 — explicit wire conflicts with implicit (port connection creates same net):
+        wire_decls_only = set(re.findall(r'^\s*wire\s+(\w+)\s*;', mod_block, re.MULTILINE))
+        port_conn_nets  = set(re.findall(r'\.\w+\s*\(\s*(\w+)\s*\)', mod_block))
+        conflicts = wire_decls_only & port_conn_nets
+        # F3 — duplicate port connections in instance blocks:
+        for inst in re.finditer(r'\w+\s+(\w+)\s*\((.*?)\)\s*;', mod_block, re.DOTALL):
+            pins = re.findall(r'\.\s*(\w+)\s*\(', inst.group(2))
+            dup_pins = [p for p, c in Counter(pins).items() if c > 1]
+```
+**Inline fixes:** F1/F2 → remove duplicate/conflicting `wire X;` line (keep first, remove second). F3 → remove second `.pin(...)` occurrence in instance block.
 
 ### Check G — Every ECO-added port in module header has a direction declaration in body
 
@@ -504,9 +517,20 @@ for issue in issues_H:
 This fix is always safe — only modifies the named ECO cell instance's output pin connection. Re-run Check H after fixing to confirm.
 
 **Check H extension — input pin names validation:**
-1. Grep PreEco for existing `<cell_type>` usage → parse all `.<PIN>(` → build `valid_pins` set
-2. For each `port_connections` pin that is NOT the output pin: verify it appears in `valid_pins`
-3. If wrong → `H_wrong_input_pin_name` → find correct pin (same position in valid_pins) → replace in PostEco instance block → re-validate
+```python
+preeco_example = bash(f'zcat {REF_DIR}/data/PreEco/Synthesize.v.gz | grep -m1 "{cell_type}"')
+if preeco_example:
+    valid_pins = set(re.findall(r'\.\s*(\w+)\s*\(', preeco_example))
+    # Identify output pin: pin whose connected net matches entry["output_net"] or n_eco_* pattern
+    output_pin = next((p for p in entry.get("port_connections",{})
+                       if entry["port_connections"][p] == entry.get("output_net","")), None)
+    for pin, net in entry.get("port_connections", {}).items():
+        if pin == output_pin: continue  # skip output pin — already validated above
+        if valid_pins and pin not in valid_pins:
+            # Fix: find correct pin at same position in valid_pins, replace in PostEco instance
+            issues_H.append({"check":"H_wrong_input_pin_name","stage":stage,"instance":inst_name,
+                              "wrong_pin":pin,"valid_pins":list(valid_pins),"severity":"CRITICAL"})
+```
 
 ### Check F2-POSITION — Cross-Position Wire Declaration Conflict (SVR-9 prevention)
 
