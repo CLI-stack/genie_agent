@@ -219,6 +219,19 @@ def validate_module(mod_name, mod_lines, start_lineno):
     # F6: invalid net names containing '/' or '\' (always runs — not suppressed by --strict)
     errors.extend(check_invalid_net_names(mod_lines, mod_name, start_lineno))
 
+    # SVR4_missing_comma: two consecutive .port(net) without comma between
+    # Caused by eco_passes_2_4 depth tracker finding wrong inst_close
+    errors.extend(check_missing_comma(mod_lines, mod_name, start_lineno))
+
+    # SVR4_dup_port: same port name twice in module header port list
+    errors.extend(check_dup_port_in_header(mod_lines, mod_name, start_lineno))
+
+    # SVR4_empty_connection: .port() — empty net in port connection
+    errors.extend(check_empty_connection(mod_lines, mod_name, start_lineno))
+
+    # SVR-14: net[N] indexing where base not declared as bus in module scope
+    errors.extend(check_bus_indexing(mod_lines, mod_name, start_lineno, wire_decls))
+
     # F2: wire X conflicts with implicit wire from port connection
     wire_implicit_conflicts = set(wire_decls.keys()) & port_conn_nets
     for net in wire_implicit_conflicts:
@@ -276,6 +289,122 @@ def validate_file(path, quiet=False, max_errors=50, skip_checks=None, target_mod
 
     return total_errors
 
+
+
+def check_missing_comma(mod_lines, mod_name, start_lineno):
+    """SVR4_missing_comma: two consecutive .port(net) without comma between.
+    Pattern: ).port( where ) closes a port arg and . starts next port without comma.
+    Caused by eco_passes_2_4 depth tracker finding wrong inst_close → FM-599."""
+    errors = []
+    # Join adjacent lines for cross-line pattern detection
+    text = ''.join(mod_lines)
+    for m in re.finditer(r'\)\s{0,10}\.(?: |\t)*[A-Za-z_]\w*\s*\(', text):
+        # Position before the '.' — check that no ',' precedes it
+        before = text[max(0, m.start()-30):m.start()]
+        # The ) should be a port-arg close, not instance/bus close
+        # Skip if ) is followed by ; (instance close) or } (bus close)
+        suffix = text[m.start():m.start()+3]
+        if ';' in suffix or '}' in suffix:
+            continue
+        # Check no comma between ) and .
+        between = m.group(0)  # )\s+.portname(
+        if ',' not in between:
+            # Find approximate line number
+            lineno = start_lineno + text[:m.start()].count('\n')
+            errors.append({
+                'check': 'SVR4_missing_comma',
+                'module': mod_name,
+                'msg': f"Missing comma between port connections near line {lineno}: "
+                       f"'...){between[1:20].strip()}' — FM 'Expected comma or )' → FM-599",
+                'line': lineno
+            })
+    return errors
+
+
+def check_dup_port_in_header(mod_lines, mod_name, start_lineno):
+    """SVR4_dup_port: same port name appears twice in module header port list.
+    Caused by eco_applier applying port_declaration twice with force_reapply → FM-599."""
+    errors = []
+    # Extract module header port list (between first ( and ) ;)
+    header = ''.join(mod_lines[:300])
+    m = re.search(r'^module\s+\S+\s*\((.*?)\)\s*;', header, re.DOTALL)
+    if not m:
+        return errors
+    port_list = m.group(1)
+    # Extract identifiers (port names) — filter keywords
+    KEYWORDS = {'input','output','inout','wire','reg','integer','parameter',
+                'localparam','genvar','time','real','realtime'}
+    names = re.findall(r'\b([A-Za-z_]\w*)\b', port_list)
+    seen = {}
+    for name in names:
+        if name in KEYWORDS:
+            continue
+        if name in seen:
+            errors.append({
+                'check': 'SVR4_dup_port',
+                'module': mod_name,
+                'msg': f"Duplicate port '{name}' in module header port list → FM-599. "
+                       f"eco_applier applied port_declaration twice.",
+                'line': start_lineno
+            })
+        else:
+            seen[name] = True
+    return errors
+
+
+def check_empty_connection(mod_lines, mod_name, start_lineno):
+    """SVR4_empty_connection: .port() with no net — empty port connection.
+    FM treats this as syntax error in some contexts → FM-599."""
+    errors = []
+    for i, line in enumerate(mod_lines):
+        # .portname() — port connected to nothing
+        for m in re.finditer(r'\.\s*\w+\s*\(\s*\)', line):
+            errors.append({
+                'check': 'SVR4_empty_connection',
+                'module': mod_name,
+                'msg': f"Empty port connection '{m.group(0).strip()}' at line {start_lineno+i} "
+                       f"— no net specified → FM-599",
+                'line': start_lineno + i
+            })
+    return errors
+
+
+def check_bus_indexing(mod_lines, mod_name, start_lineno, wire_decls):
+    """SVR-14: net[N] used in port connection where base name is not declared as bus.
+    Scalar wires cannot be indexed → FM SVR-14 → FM-599."""
+    errors = []
+    # Build set of bus-declared names: wire/input/output [W:0] name
+    bus_names = set()
+    for line in mod_lines[:500]:
+        m = re.match(r'^\s*(?:wire|input|output|inout)\s+\[.*?\]\s+(\w+)', line)
+        if m:
+            bus_names.add(m.group(1))
+    # Also from port list header
+    header = ''.join(mod_lines[:300])
+    for m in re.finditer(r'\[.*?\]\s+(\w+)', header):
+        bus_names.add(m.group(1))
+
+    seen_errors = set()
+    for i, line in enumerate(mod_lines):
+        line_nc = line.split('//')[0]
+        for m in re.finditer(r'\b(\w+)\[(\d+)\]', line_nc):
+            base = m.group(1)
+            idx  = m.group(2)
+            if base in bus_names:
+                continue  # valid bus indexing
+            if base in wire_decls:
+                # declared as scalar wire but indexed → SVR-14
+                key = (base, idx)
+                if key not in seen_errors:
+                    seen_errors.add(key)
+                    errors.append({
+                        'check': 'SVR14_scalar_indexed',
+                        'module': mod_name,
+                        'msg': f"'{base}[{idx}]' at line {start_lineno+i}: "
+                               f"'{base}' declared as scalar wire (not bus) — indexing causes SVR-14 → FM-599",
+                        'line': start_lineno + i
+                    })
+    return errors
 
 
 def check_invalid_net_names(mod_lines, mod_name, start_lineno):
@@ -343,8 +472,12 @@ def main():
 
     target_modules = set(args.modules) if args.modules else None
 
-    # Default: only F3, F5, F6 (always eco_applier bugs). --strict adds F1/F2/F4.
-    # F6 is NEVER in skip_checks — it runs in all modes (default and --strict).
+    # Default mode: only checks that are NEVER pre-existing (always eco_applier bugs):
+    #   F3, F5, F6, SVR4_missing_comma, SVR4_missing_cell_type, SVR4_double_comma,
+    #   SVR4_trailing_comma, SVR4_bare_paren, SVR4_empty_connection, SVR4_dup_port,
+    #   SVR14_scalar_indexed
+    # --strict adds: F1_dup_wire, F2_implicit_wire_conflict, F4_dup_port_conn
+    # F6 always runs regardless of mode.
     skip_checks = set()
     if not args.strict:
         skip_checks = {'F1_dup_wire', 'F2_implicit_wire_conflict', 'F4_dup_port_conn'}
