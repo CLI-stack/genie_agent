@@ -204,14 +204,19 @@ def apply_port_connection(lines, entry, gz_path=None):
 
     # Insert new port as a separate line before inst_close.
     # Ensure the previous non-empty port line ends with ',' (add if missing).
-    # This avoids any dependency on close_line structure or depth-tracking accuracy.
+    # Also: if inst_close line itself contains a port connection (not just ') ;'),
+    # the inserted port needs a trailing comma too — otherwise the port on inst_close
+    # line follows without a separator → FM "Expected ',' or ')' but found '.'".
     for prev_idx in range(inst_close - 1, max(inst_start - 1, 0), -1):
         stripped = lines[prev_idx].rstrip()
         if stripped:
             if not stripped.endswith(','):
                 lines[prev_idx] = stripped + ' ,\n'
             break
-    lines.insert(inst_close, f'    .{port_name}( {net_name} )\n')
+    # Determine if inst_close line has a port connection (not just ') ;')
+    close_has_port = bool(re.search(r'\.\s*\w+\s*\(', lines[inst_close].split('//')[0]))
+    trailing = ' ,' if close_has_port else ''
+    lines.insert(inst_close, f'    .{port_name}( {net_name} ){trailing}\n')
     return lines, 'APPLIED', f'added .{port_name}({net_name}) to {inst_name}'
 
 

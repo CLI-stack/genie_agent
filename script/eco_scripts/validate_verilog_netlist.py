@@ -373,16 +373,21 @@ def check_bus_indexing(mod_lines, mod_name, start_lineno, wire_decls):
     """SVR-14: net[N] used in port connection where base name is not declared as bus.
     Scalar wires cannot be indexed → FM SVR-14 → FM-599."""
     errors = []
-    # Build set of bus-declared names: wire/input/output [W:0] name
+    # Build set of bus-declared names: scan ALL lines for [W:0] declarations
+    # (P&R netlists have thousands of port declarations — 500-line cap causes false positives)
     bus_names = set()
-    for line in mod_lines[:500]:
+    for line in mod_lines:
         m = re.match(r'^\s*(?:wire|input|output|inout)\s+\[.*?\]\s+(\w+)', line)
         if m:
             bus_names.add(m.group(1))
-    # Also from port list header
-    header = ''.join(mod_lines[:300])
-    for m in re.finditer(r'\[.*?\]\s+(\w+)', header):
-        bus_names.add(m.group(1))
+        # Also catch bus concatenation patterns: .port( { name[N], ... } )
+        for bm in re.finditer(r'\b(\w+)\s*\[\d+:\d+\]', line):
+            bus_names.add(bm.group(1))
+
+    # Only flag nets that are ECO-introduced scalar wires (start with n_eco_ or eco_)
+    # Pre-existing nets may be indexed even if declared as scalar (tool quirk) — not our bug
+    eco_wire_decls = {k: v for k, v in wire_decls.items()
+                      if k.startswith('n_eco_') or k.startswith('eco_')}
 
     seen_errors = set()
     for i, line in enumerate(mod_lines):
@@ -392,8 +397,8 @@ def check_bus_indexing(mod_lines, mod_name, start_lineno, wire_decls):
             idx  = m.group(2)
             if base in bus_names:
                 continue  # valid bus indexing
-            if base in wire_decls:
-                # declared as scalar wire but indexed → SVR-14
+            if base in eco_wire_decls:
+                # ECO-introduced scalar wire being indexed → SVR-14
                 key = (base, idx)
                 if key not in seen_errors:
                     seen_errors.add(key)
@@ -401,7 +406,7 @@ def check_bus_indexing(mod_lines, mod_name, start_lineno, wire_decls):
                         'check': 'SVR14_scalar_indexed',
                         'module': mod_name,
                         'msg': f"'{base}[{idx}]' at line {start_lineno+i}: "
-                               f"'{base}' declared as scalar wire (not bus) — indexing causes SVR-14 → FM-599",
+                               f"ECO wire '{base}' declared as scalar (not bus) — indexing causes SVR-14 → FM-599",
                         'line': start_lineno + i
                     })
     return errors
