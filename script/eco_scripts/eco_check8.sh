@@ -86,13 +86,18 @@ for i, line in enumerate(lines):
     elif re.search(r'Validating:', line) and in_stage:
         break
     if in_stage:
-        # SVR4_bare_paren and SVR9_dup_wire always FAIL (never pre-existing in gate-level P&R netlists)
-        if re.search(r'SVR4_bare_paren|SVR9_dup_wire', line):
+        # FAIL on any pattern that causes FM-599 ABORT_NETLIST and is NOT pre-existing:
+        # - SVR4_bare_paren: bare ) without ; in port list (never pre-existing)
+        # - F1_dup_wire / SVR9_dup_wire: duplicate explicit wire declaration (rarely pre-existing)
+        # - SVR4_double_comma: , , pattern in port connections (never pre-existing)
+        # - SVR4_trailing_comma: trailing comma before ) ; (never pre-existing)
+        # - SVR4_missing_cell_type: eco_ instance without cell type (never pre-existing)
+        if re.search(r'SVR4_bare_paren|SVR9_dup_wire|F1_dup_wire|'
+                     r'SVR4_double_comma|SVR4_trailing_comma|SVR4_missing_cell_type', line):
             print("FAIL")
             sys.exit()
-        # F2_implicit_wire_conflict: compare against PreEco baseline — only FAIL if count is HIGHER
-        # Pre-existing F2s are normal in P&R netlists and FM handles them internally
-        # This check is done separately after stage loop via F2_COUNT comparison
+        # NOTE: F2_implicit_wire_conflict is intentionally excluded — hundreds of pre-existing
+        # F2 issues exist in all P&R netlists and FM handles them internally without aborting.
 
 print("PASS")
 PYEOF
