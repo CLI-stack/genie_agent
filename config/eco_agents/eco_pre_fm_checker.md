@@ -212,6 +212,14 @@ For each SKIPPED stage, determine why it was skipped (read `reason` from applied
 
 ### Check B — Port Declarations in All 3 Stages
 
+**CRITICAL — Check for SKIPPED port entries FIRST (before stage validation):**
+
+Read `<TAG>_eco_applied_round<ROUND>.json`. For every entry where `change_type` is `port_declaration` or `port_connection` AND `status` is `SKIPPED`:
+- If `reason` contains "deferred", "pending", "Round 2", or "application" → this is **FAIL**, not WARNING.
+- Missing port declarations cause FM ABORT (not just non-equiv) — FM cannot elaborate when module headers don't match port connections.
+- **Inline fix:** Re-apply the skipped entry immediately using the same port_declaration logic as Pass 2a/2b. Set `force_reapply: true`. Log `"CHECK_B_DEFERRED_FIX: applied <signal> to <module>"`.
+- If re-apply succeeds → mark FIXED. If fails → FAIL (blocks FM).
+
 ```bash
 # For each port_declaration APPLIED entry, check all 3 stages
 for signal in applied_port_signals:
