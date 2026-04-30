@@ -594,8 +594,8 @@ ECO-inserted DFFs (`eco_<jira>_` pattern) are **never** Mode E or subject to `se
 ## RULE 35 — MAX_ROUNDS is the ONLY exit (manual_only ABOLISHED)
 
 - **`manual_only` is ABOLISHED** — eco_fm_analyzer never prescribes it. For every failure, prescribe a progressive action: conservative_constant, try_structural_insertion, try_alternative_pivot, move_gate_to_submodule, cascade_verified_skip.
-- **MAX_ROUNDS**: Round 6 completed with FM still failing → spawn FINAL_ORCHESTRATOR with `status: MAX_ROUNDS`. This is the only exit besides FM_PASSED.
-- No MANUAL_LIMIT. ROUND_ORCHESTRATOR always runs all 6 rounds or until FM passes.
+- **MAX_ROUNDS**: Round 10 completed with FM still failing → spawn FINAL_ORCHESTRATOR with `status: MAX_ROUNDS`. This is the only exit besides FM_PASSED.
+- No MANUAL_LIMIT. ROUND_ORCHESTRATOR always runs all 10 rounds or until FM passes.
 - FINAL_ORCHESTRATOR maps: MAX_ROUNDS → "FAIL — Max rounds reached"; FM_PASSED → "PASS".
 
 ---

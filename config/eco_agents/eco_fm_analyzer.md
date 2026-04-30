@@ -10,7 +10,7 @@
 
 ## ABSOLUTE RULE — `manual_only` is ABOLISHED
 
-**Never prescribe `action: manual_only`.** The flow always tries its best — all 6 rounds. For every failure, prescribe a progressive action:
+**Never prescribe `action: manual_only`.** The flow always tries its best — all 10 rounds. For every failure, prescribe a progressive action:
 
 | Instead of manual_only | Use |
 |------------------------|-----|
@@ -20,7 +20,7 @@
 | Decomposition failed (Mode F2) | `try_alternative_decomposition` → `try_alternative_pivot` |
 | INTENTIONAL_CASCADE | `cascade_verified_skip` (not manual_only — just skip that DFF) |
 
-The only valid exit is MAX_ROUNDS (6 rounds). ROUND_ORCHESTRATOR will never early-exit for manual_only.
+The only valid exit is MAX_ROUNDS (10 rounds). ROUND_ORCHESTRATOR will never early-exit for manual_only.
 
 ## GOLDEN RULE — Always Cross-Reference RTL Diff Before Prescribing Any Fix
 
