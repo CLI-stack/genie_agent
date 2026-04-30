@@ -87,13 +87,19 @@ for i, line in enumerate(lines):
         break
     if in_stage:
         # FAIL on any pattern that causes FM-599 ABORT_NETLIST and is NOT pre-existing:
-        # - SVR4_bare_paren: bare ) without ; in port list (never pre-existing)
-        # - F1_dup_wire / SVR9_dup_wire: duplicate explicit wire declaration (rarely pre-existing)
-        # - SVR4_double_comma: , , pattern in port connections (never pre-existing)
-        # - SVR4_trailing_comma: trailing comma before ) ; (never pre-existing)
-        # - SVR4_missing_cell_type: eco_ instance without cell type (never pre-existing)
+        # - SVR4_bare_paren: bare ) without ; in port list
+        # - F1_dup_wire / SVR9_dup_wire: duplicate explicit wire declaration
+        # - SVR4_double_comma: , , pattern in port connections
+        # - SVR4_trailing_comma: trailing comma before ) ;
+        # - SVR4_missing_cell_type: eco_ instance without cell type
+        # - SVR4_missing_comma: .port(net) .port(net) without comma between
+        # - SVR4_dup_port: same port name twice in module header
+        # - SVR4_empty_connection: .port() with no net
+        # - SVR14_scalar_indexed: net[N] indexing on scalar wire
         if re.search(r'SVR4_bare_paren|SVR9_dup_wire|F1_dup_wire|'
-                     r'SVR4_double_comma|SVR4_trailing_comma|SVR4_missing_cell_type', line):
+                     r'SVR4_double_comma|SVR4_trailing_comma|SVR4_missing_cell_type|'
+                     r'SVR4_missing_comma|SVR4_dup_port|SVR4_empty_connection|'
+                     r'SVR14_scalar_indexed', line):
             print("FAIL")
             sys.exit()
         # NOTE: F2_implicit_wire_conflict is intentionally excluded — hundreds of pre-existing
@@ -140,7 +146,9 @@ if grep -q "SVR4_bare_paren" "${TMP_LOG}" 2>/dev/null; then
 fi
 
 # ── Collect FM-aborting error lines for JSON ──────────────────────────────────
-ERRORS_JSON=$(grep -E "SVR4_bare_paren|SVR9_dup_wire" "${TMP_LOG}" 2>/dev/null \
+ERRORS_JSON=$(grep -E "SVR4_bare_paren|SVR9_dup_wire|F1_dup_wire|SVR4_double_comma|\
+SVR4_trailing_comma|SVR4_missing_cell_type|SVR4_missing_comma|SVR4_dup_port|\
+SVR4_empty_connection|SVR14_scalar_indexed" "${TMP_LOG}" 2>/dev/null \
     | head -20 \
     | python3 -c "import sys,json; print(json.dumps([l.rstrip() for l in sys.stdin]))")
 [ -z "$ERRORS_JSON" ] && ERRORS_JSON="[]"
