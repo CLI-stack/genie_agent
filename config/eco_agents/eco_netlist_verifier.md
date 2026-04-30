@@ -557,7 +557,7 @@ If found → set `driven_by_submodule: true`, `driver_type: "submodule_bus_outpu
 
 For every entry where any input net is still `PENDING_FM_RESOLUTION:<signal>`:
 
-1. **Check condition_input_resolutions** from SPEC_SOURCES — if `resolved_gate_level_net` set for Synthesize, use it. Record `synth_net = resolved_gate_level_net`.
+1. **Check condition_input_resolutions first** — read `<BASE_DIR>/data/<TAG>_eco_fenets_rerun_round<ROUND>.json` if it exists. For any entry whose `original_signal` matches the PENDING signal, immediately set `port_connections_per_stage[Synthesize][pin] = resolved_gate_level_net`. This avoids waiting for a re_study round. If file absent, fall through to step 2.
 2. **For P&R stages** (not Synthesize): do NOT use the RTL signal name — use Priority 3 structural trace from the Synthesize-confirmed net:
    ```bash
    # Find driver cell of synth_net in Synthesize PreEco

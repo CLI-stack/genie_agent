@@ -289,7 +289,7 @@ def main():
                     continue
                 if net in ("1'b0", "1'b1") or str(net).startswith('NEEDS_NAMED_WIRE:'):
                     continue
-                if str(net).startswith('UNRESOLVABLE_IN_'):
+                if str(net).startswith('UNRESOLVABLE_IN_') or str(net).startswith('UNRESOLVABLE:'):
                     continue
                 # n_eco_* nets are intermediate batch nets — they don't exist in PostEco
                 # yet but will be created by other gates in the same Perl batch insertion.

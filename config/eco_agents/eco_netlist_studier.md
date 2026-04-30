@@ -155,7 +155,8 @@ P&R renames DFF outputs (scan insertion in PP, CTS/optimization in Route). A wir
 1. In each PreEco stage's module scope, check if any cell drives it: `grep -P '\.(Q|Z|ZN|ZN1|CO|S)\s*\(<net>\s*\)'`
 2. If driven → use as-is. If **not driven** → find the driver instance in Synthesize (same grep), then search that instance in the P&R stage and read its output pin → that is the alias.
 3. If driver instance also absent in P&R → search one hop upstream (grep driver's inputs in Synthesize → find those drivers in P&R → read output).
-4. If aliases differ across stages → set `entry["net_per_stage"][pin] = {Syn: ..., PP: ..., Route: ...}`.
+4. If upstream also absent → **CTS buffer search**: grep entire module scope for any cell whose output is the only driver of any net that feeds the same downstream consumers as `<net>` in Synthesize. CTS creates buffer chains (any cell type, not just BUF) with tool-generated output net names — accept the first driven net found in the P&R module scope that reaches the same fanout path.
+5. If aliases differ across stages → set `entry["net_per_stage"][pin] = {Syn: ..., PP: ..., Route: ...}`.
 
 Log: `PR_ALIAS: <gate>.<pin> Syn=<net> PP=<alias> Route=<alias>` or `PR_ALIAS_SAME` if identical.
 
@@ -398,7 +399,11 @@ Read `mux_select_gate_function` directly → create `new_logic_gate` entry. If n
 
 ### 0i — Process `port_promotion` changes → `port_promotion` study entries
 
-Verify net exists: `grep -cw "<signal_name>" /tmp/eco_study_<TAG>_Synthesize.v`. Record with `declaration_type: "output"`, `flat_net_confirmed: true`.
+1. Check Synthesize: `grep -cw "<signal_name>" /tmp/eco_study_<TAG>_Synthesize.v`
+   - If ≥ 1 → `flat_net_confirmed: true`, record with `declaration_type: "output"`.
+2. If 0 (net absent in gate-level — synthesis merged it into cone): find the D-input net of `<signal_name>_reg` or `<signal_name>_d1_reg` in Synthesize module scope → that is the combinational driver net. Record `driver_net: <found_net>`, `needs_buffer_chain: true`, `flat_net_confirmed: false`.
+   - eco_netlist_verifier Check 7 will auto-add a `new_logic_gate` INV+INV buffer chain entry: `INV(<driver_net>) → <tmp_net>`, `INV(<tmp_net>) → <signal_name>`, using cell types discovered from PreEco neighbours. This drives the new output port from the internal combinational value without modifying the DFF.
+3. If `<signal_name>_reg` also absent → `flat_net_confirmed: false`, `reason: "net and reg both absent — port_promotion cannot be auto-applied"`. Log for engineer review.
 
 ---
 
