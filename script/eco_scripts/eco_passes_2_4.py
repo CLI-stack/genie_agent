@@ -202,24 +202,16 @@ def apply_port_connection(lines, entry, gz_path=None):
             )
             return lines, 'APPLIED', f'rewired existing .{port_name} to ({net_name}) in {inst_name}'
 
-    # Insert before close paren — preserve original close suffix (e.g. ') ;' or ');')
-    close_line = lines[inst_close]
-    last_paren = close_line.rfind(')')
-    if last_paren < 0:
-        return lines, 'SKIPPED', f'no ) on instance close line {inst_close}'
-    orig_suffix = close_line[last_paren:]       # e.g. ') ;' or ') ;\n'
-    if ';' not in orig_suffix:
-        orig_suffix = ') ;\n'                   # ensure semicolon always present
-    # Check if previous non-empty line already ends with comma — avoid double comma (SVR-4)
-    prev_comma = False
+    # Insert new port as a separate line before inst_close.
+    # Ensure the previous non-empty port line ends with ',' (add if missing).
+    # This avoids any dependency on close_line structure or depth-tracking accuracy.
     for prev_idx in range(inst_close - 1, max(inst_start - 1, 0), -1):
         stripped = lines[prev_idx].rstrip()
         if stripped:
-            prev_comma = stripped.endswith(',')
+            if not stripped.endswith(','):
+                lines[prev_idx] = stripped + ' ,\n'
             break
-    sep = '' if prev_comma else ' ,'
-    lines[inst_close] = (close_line[:last_paren] +
-                         f'{sep} .{port_name}( {net_name} )\n' + orig_suffix)
+    lines.insert(inst_close, f'    .{port_name}( {net_name} )\n')
     return lines, 'APPLIED', f'added .{port_name}({net_name}) to {inst_name}'
 
 
