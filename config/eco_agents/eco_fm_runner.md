@@ -140,9 +140,13 @@ All three signals must agree for a FAIL classification:
 If any signal indicates ABORT → classify as ABORT. Classify abort type by reading the FM log (`logs/<target>.log.gz`, `.log`, `.bz2`, or `rpts/<target>/formality.log.gz/.log`):
 
 - `CMD-010` or `CMD-005` in log → `ABORT_SVF`
+- Log contains `guide_reg_duplication.*rejected` (N rejections) AND log ends at or near `Status:  Matching` without a subsequent PASS/FAIL/ABORT result line → **`ABORT_SVF`** (SVF rejection expanded unmatched cone → FM OOM/killed during matching). Record `svf_rejection_count: N` in JSON.
 - `FE-LINK-7` + (`FM-234` or `FM-156`) → `ABORT_LINK`
 - `FM-599` → `ABORT_NETLIST`
+- Log truncated at any `Status:` phase (no result line) AND no SVF rejections found → `ABORT_OTHER` with `reason: "FM killed/OOM during <phase>"`
 - Any other `\bError\b` → `ABORT_OTHER`
+
+**Log truncation detection:** Log is truncated if it contains `Status:  <phase>` as the last meaningful line with no subsequent `Verification SUCCEEDED` / `Verification FAILED` / `result:` line. The truncated phase name tells you where FM ran out of resources.
 
 **Priority when multiple codes appear:** `ABORT_SVF` > `ABORT_NETLIST` > `ABORT_LINK` > `ABORT_OTHER`. Use the highest-priority classification.
 
@@ -262,19 +266,24 @@ Two abort types allow a single inline fix attempt followed by immediate FM re-su
 
 ---
 
-### STEP F.3 — ABORT_SVF Inline Fix (SVF Guidance Error)
+### STEP F.3 — ABORT_SVF Inline Fix (SVF Guidance Error or SVF-Rejection OOM)
 
 **Trigger:** `overall_status == "ABORT"` AND any target has `abort_type == "ABORT_SVF"` AND `svf_fix_attempts == 0`.
 
-**Root cause:** FM is loading a pre-existing SVF guidance file that conflicts with the current ECO netlist. The AI flow always sets `RUN_SVF_GEN=0` — ABORT_SVF means a stale SVF from a prior run is being sourced.
+**Root cause — two sub-cases:**
+- **Sub-case A (CMD-010/005):** FM loading a stale SVF guidance file that conflicts with current ECO netlist. `RUN_SVF_GEN=0` but a pre-existing EcoChange.svf is being sourced.
+- **Sub-case B (guide_reg_duplication OOM):** FM SVF `guide_reg_duplication` rejections (N > 0) expand the unmatched cone exponentially → FM runs out of memory during Matching and is killed. The rejections are pre-existing (from register duplication by P&R scan insertion) and unrelated to this ECO's changes.
 
 **Procedure:**
 1. Increment `svf_fix_attempts`.
-2. Parse FM log for the SVF error line: `CMD-010: ... guide_eco_change ... not found` or similar.
-3. Add `set_svf_ignore_errors true` to `<REF_DIR>/data/eco_fm_config` before re-submitting:
+2. Determine sub-case from `svf_rejection_count` in JSON:
+   - Sub-case A (`svf_rejection_count == 0`): parse log for `CMD-010` guidance command name.
+   - Sub-case B (`svf_rejection_count > 0`): no specific error line needed.
+3. Add `set_svf_ignore_errors true` to `<REF_DIR>/data/eco_fm_config`:
    ```bash
    echo "set_svf_ignore_errors true" >> <REF_DIR>/data/eco_fm_config
    ```
+   This suppresses SVF guidance errors and rejection-induced cone expansion — FM proceeds without the stale/rejected guidance.
 4. Re-submit FM at STEP B with the updated config.
 
 **When NOT attempted / escalate:** Second attempt, cannot write eco_fm_config. Write result with `abort_type: "ABORT_SVF"` and EXIT 0.
