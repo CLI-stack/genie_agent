@@ -60,12 +60,16 @@ If `<actual_wire>` not found in PreEco → try other PreEco stages → if still 
 
 ## Phase 0 — Process new_logic and new_port Changes FIRST
 
-**Before studying any FM-returned cells, process ALL entries in `changes[]` by type:**
-- `"new_logic"` / `"and_term"` → process as gate/DFF insertion (steps 0a–0i)
-- `"new_port"` → create `port_declaration` study entry (step 0g)
-- `"port_connection"` → create `port_connection` study entry (step 0h)
-- `"port_promotion"` → create `port_promotion` study entry (step 0i — flat netlist only)
-- `"wire_swap"` → skip (handled by FM find_equivalent_nets in Phase 1)
+**MANDATORY ORDER: complete ALL Phase 0 entries before starting Phase 1.**
+
+Process ALL entries in `changes[]` in this exact order:
+1. `"new_logic"` / `"and_term"` → gate/DFF insertion (steps 0a–0i)
+2. `"new_port"` → `port_declaration` study entry (step 0g)
+3. `"port_connection"` → `port_connection` study entry (step 0h)
+4. `"port_promotion"` → `port_promotion` study entry (step 0i — flat netlist only)
+5. `"wire_swap"` → **skip here** (handled by FM find_equivalent_nets in Phase 1)
+
+Do NOT interleave Phase 1 (wire_swap/FM) processing with Phase 0. Phase 1 depends on Phase 0 outputs being complete (new_logic output nets must exist before wire_swap FM queries are interpreted).
 
 **CRITICAL: For hierarchical PostEco netlists, `new_port` and `port_connection` changes require explicit port list updates and instance connection additions.**
 
@@ -79,6 +83,13 @@ From RTL diff `context_line`:
 - `always @(posedge <clk>)` with reset/data pattern → **DFF** (sequential)
 - `wire/assign <signal> = <expr>` → **combinational gate**
 - Bare `reg <signal>` with no always block → skip
+
+**For DFF: extract reset polarity (MANDATORY):**
+- `if (~<rst>)` or `if (!<rst>)` → active-low reset → `reset_polarity: "active_low"` (DFF uses RN pin)
+- `if (<rst>)` → active-high reset → `reset_polarity: "active_high"` (DFF uses R pin)
+- No reset clause → `has_sync_reset: false`
+
+Record `reset_signal: <rst_name>`, `reset_polarity` in the DFF entry. Used in 0c to match the correct DFF reset pin type.
 
 ### 0b — Identify input signals (basic)
 
@@ -157,7 +168,7 @@ FM cannot trace `UNCONNECTED_*` / `SYNOPSYS_UNCONNECTED_*` across hierarchy → 
 **Rule:** For each such net:
 1. Generate: `named_net = "n_eco_<jira>_<rtl_hint>"` — sanitized from `new_token`, port name, or RTL context. **Same name used across all stages.**
 2. Find bus position in **each stage independently**: scan module scope for `.<port>( { ..., <UNCONNECTED_N>, ... } )`. Each stage may have a **different** UNCONNECTED name for the same bit (e.g., `UNCONNECTED_3288` in Syn, `UNCONNECTED_6680` in PP, `SYNOPSYS_UNCONNECTED_4826` in Route) — locate by bit position index from MSB, not by name.
-3. Record per-stage originals: `original_per_stage: {Synthesize: <N_syn>, PrePlace: <N_pp>, Route: <N_rt>}`. Record per-stage instance (may be `REGCMD` vs `REGCMD_0`): `port_bus_instance_per_stage: {Synthesize: ..., Route: ...}`.
+3. Record per-stage originals: `original_per_stage: {Synthesize: <N_syn>, PrePlace: <N_pp>, Route: <N_rt>}`. Record per-stage instance (submodule name may gain `_0` suffix in Route): `port_bus_instance_per_stage: {Synthesize: ..., Route: ...}`. Do NOT hardcode the instance name — read it from the port_connection entry or grep the PostEco module scope.
 4. Set on entry: `unconnected_rewires: [{original: <syn_name>, original_per_stage: {...}, named_net, needs_explicit_wire_decl:true, port_bus_instance, port_bus_instance_per_stage, port_bus_name, port_bus_bit}]`. Use `named_net` in `port_connections` for all stages.
 
 eco_perl_spec reads `unconnected_rewires`: declares `wire <named_net>;` once, applies `original_per_stage[stage]` → `named_net` replacement per stage in port bus `{ }` block.
@@ -357,9 +368,10 @@ Same seq across all 3 stages. Seq counter is global across all chains.
 
 **`instance_scope` for tile-root detection:**
 ```bash
-grep -m1 "^module ddrss_<tile>_t " /tmp/eco_study_<TAG>_Synthesize.v
+# Match tile-root module — no hardcoded prefix; pattern: any module containing the tile name as a word
+grep -m1 "^module [a-z0-9_]*<tile>[a-z0-9_]* " /tmp/eco_study_<TAG>_Synthesize.v
 ```
-Use trailing space to match the tile-root module name exactly.
+The tile-root module name is also available directly from `TILE_ROOT_MODULE` (provided in agent prompt or from `resolve_module_name()` fallback).
 
 Record skeleton entry with: `change_type`, `instance_scope`, `scope_is_tile_root`, `cell_type`, `instance_name`, `output_net`, `port_connections` (Synthesize only), `confirmed: true/false`.
 

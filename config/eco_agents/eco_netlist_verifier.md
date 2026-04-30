@@ -188,14 +188,26 @@ def find_scalar_for_bus_bit(base_name, bit_idx, module_scope_lines):
 
 For each input pin in `port_connections`:
 
+**HFS alias (Priority 2/3 term):** A net renamed by Hierarchical Flattening Synthesis or P&R (scan insertion, CTS, optimization). The original RTL name still exists in SynRtl/ but appears under a tool-generated alias in gate-level stages. Detected by tracing the driver cell across stages.
+
 | Priority | Method |
 |----------|--------|
 | 0 | RTL-named primary input — check `net_in_scope("input", module_scope)` → **HIGHEST** |
 | 1 | Direct name match within module scope — `net_in_scope(net, module_scope)` |
-| 2 | Trace driver cell in Synthesize → find same cell output in this stage, `net_in_scope` check |
-| 3 | P&R alias search, `net_in_scope` check |
+| 2 | Trace driver cell in Synthesize → find same cell output in this stage, `net_in_scope` check (HFS alias) |
+| 3 | P&R alias search via 0b-ALIAS driver trace, `net_in_scope` check |
 | 4 | Backward cone trace (max 10 hops), `net_in_scope` check |
-| — | Unresolved → `UNRESOLVED_IN_<Stage>:<net>` |
+| — | All priorities exhausted → see net status taxonomy below |
+
+**Net status taxonomy — use exactly one:**
+| Status | When to use |
+|--------|-------------|
+| `UNRESOLVED_IN_<Stage>:<net>` | Priority 0-4 not yet tried for this stage — still searching |
+| `UNRESOLVABLE:<net>` | All priorities (0-4) exhausted, no valid net found — set `confirmed: false` |
+| `NEEDS_NAMED_WIRE:<net>` | Net exists as UNCONNECTED_* or bus bit — rename required (0b-UNCONNECTED) |
+| `PENDING_FM_RESOLUTION:<net>` | Net not in PreEco gate-level; FM fenets rerun needed to resolve |
+
+Never leave a net as `PENDING_FM_RESOLUTION` after a rerun completes — resolve or mark `UNRESOLVABLE`.
 
 **After resolving any net — run `validate_bus_net()` before recording in `port_connections_per_stage`.**
 
@@ -229,11 +241,24 @@ if len(set(entry['pin_per_stage'].values())) > 1:
 eco_applier reads `pin_per_stage` (or `per_stage_pin`) to use the correct pin name per stage.
 
 **Scan alias rejection — MANDATORY before accepting any resolved net:**
+
+A resolved net is a scan alias if it matches tool-generated DFT naming conventions AND has no functional driver in PreEco Synthesize. Check both conditions — do NOT reject on name pattern alone (a user-named signal could match):
+
 ```python
-scan_alias_patterns = [r'^test_so\d+', r'^dftopt\d+', r'^scan_\w+', r'^si_\w+']
-if any(re.match(p, resolved_net) for p in scan_alias_patterns):
-    log(f"REJECTED scan alias {resolved_net} — not a valid functional input")
-    resolved_net = None  # force next priority
+# Step 1: pattern match (necessary but not sufficient condition)
+scan_alias_patterns = [r'^test_so\d+', r'^dftopt\d+', r'^aps_rename_\d+',
+                       r'^copt_net_\d+', r'^ctmn_\d+']
+name_matches = any(re.match(p, resolved_net) for p in scan_alias_patterns)
+
+# Step 2: confirm it has no driver in PreEco Synthesize (i.e., P&R-generated)
+if name_matches:
+    synth_driver_count = grep_module_scope(
+        rf'\.(Q|Z|ZN|ZN1)\s*\(\s*{re.escape(resolved_net)}\s*\)',
+        module_name, synthesize_preeco)
+    if synth_driver_count == 0:
+        log(f"SCAN_ALIAS_REJECTED: {resolved_net} — DFT name pattern + no Synth driver")
+        resolved_net = None  # force next priority
+    # else: name matches pattern but has a functional driver — keep it
 ```
 
 **GAP-CTS-2 — CTS merged cell input check (Route stage only):**
@@ -285,7 +310,7 @@ zcat <REF_DIR>/data/PostEco/Route.v.gz | awk '/<neighbour_dff>/{p=1} p && /\.CP\
 Set `cts_clock_renamed: true` when CP differs between PrePlace and Route.
 
 **GAP-20 — SE pin mismatch detection:**
-After resolving SE for all stages: if PrePlace SE ≠ Route SE AND neither exists in RTL source (`grep -rw "<se_net>" data/PreEco/SynRtl/` → 0), set `needs_se_tune: true`.
+After resolving SE for all stages: if PrePlace SE ≠ Route SE AND neither exists in RTL source (`grep -rw "<se_net>" <REF_DIR>/data/PreEco/SynRtl/` → 0), set `needs_se_tune: true`.
 
 Update `port_connections_per_stage` for all 3 stages.
 

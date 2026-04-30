@@ -139,7 +139,7 @@ for stage in Synthesize PrePlace Route:
 - `failure_mode: E` (pre-existing) → revised_changes contains `manual_only` entries. These failures existed before this ECO — the AI flow cannot fix them. Report in FINAL_ORCHESTRATOR summary for engineer review. Engineer decides whether SVF `set_dont_verify` is appropriate. Do NOT apply SVF in the AI flow.
 - `failure_mode: G` (structural stage mismatch) → first attempt `fix_named_wire` (Mode H path) for any ECO gate with a P&R-renamed net. If Priority 3 structural trace confirms no fixable net → revised_changes contains `manual_only` entries. Report for engineer review. Do NOT apply SVF.
 - `failure_mode: F` (manual_only — `d_input_decompose_failed`) → check `revised_changes`:
-  - If ALL entries have `action: manual_only` **AND NEXT_ROUND ≥ max_rounds** → exit early with `status: MANUAL_LIMIT`, spawn FINAL_ORCHESTRATOR
+  - If ALL entries have `action: manual_only` **AND NEXT_ROUND ≥ max_rounds** → exit with `status: MAX_ROUNDS`, spawn FINAL_ORCHESTRATOR (this is a MAX_ROUNDS exit, NOT a manual_only early exit)
   - If ALL entries have `action: manual_only` **AND NEXT_ROUND < max_rounds** → **DO NOT exit early**. eco_fm_analyzer has queued progressive strategies (invert_cmux_constants, try_strategy_A_andterm, try_alternative_pivot). Continue to Steps 6e/6f/4/5 — the studier will attempt the next strategy. `manual_only` means "no fix found YET", not "no fix possible ever".
   - If mixed (some manual_only, some fixable) → always continue; apply fixable changes, leave manual_only points for later rounds or final report
 - If `revised_changes` is empty → exit early — treat same as MAX_ROUNDS; spawn FINAL_ORCHESTRATOR with `status: MAX_ROUNDS`
