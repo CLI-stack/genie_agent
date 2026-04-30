@@ -168,6 +168,22 @@ def main():
                 prev_applied[inst] = e.get('status','')
 
     entries  = study.get(args.stage, [])
+
+    # Build set of nets that are NEW PORTS being added by Pass 2 (port_declaration entries).
+    # These nets won't exist in PostEco yet at Pass 1 time — Pass 2 adds them.
+    # Gates whose inputs reference these nets MUST NOT be skipped by Pass 1.
+    new_port_nets = set()
+    for e in entries:
+        if e.get('change_type') in ('port_declaration', 'port_promotion', 'new_port'):
+            sig = e.get('signal_name') or e.get('new_token') or ''
+            if sig:
+                new_port_nets.add(sig)
+        # Also include output nets of gates that will be inserted by this same Perl batch
+        if e.get('change_type') in ('new_logic_gate', 'new_logic_dff', 'new_logic'):
+            out = e.get('output_net', '')
+            if out:
+                new_port_nets.add(out)
+
     # Build scope → module_name map from PostEco for module resolution
     scope_to_mod = build_scope_to_module_map(posteco)
 
@@ -250,6 +266,10 @@ def main():
                     continue
                 # eco_<jira>_*_orig nets are renamed driver outputs — valid after Pass 4 rewire
                 if re.match(r'^eco_\d+_\w+_orig$', str(net)):
+                    continue
+                # Skip existence check for nets that are new ports (added by Pass 2)
+                # or output nets of other gates in this same Perl batch (forward reference)
+                if net in new_port_nets:
                     continue
                 if not net_exists_in_posteco(net, posteco):
                     skip_reason = f"input net '{net}' absent in {args.stage}"
