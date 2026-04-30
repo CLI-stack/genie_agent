@@ -238,8 +238,29 @@ def apply_rewire(lines, entry, stage='Synthesize'):
     old_net   = (entry.get('per_stage_old_net', {}) or {}).get(stage, '') or entry.get('old_net', '')
     new_net   = (entry.get('per_stage_new_net', {}) or {}).get(stage, '') or entry.get('new_net', '')
 
-    if not all([cell_name, pin_name, new_net]):
-        return lines, 'SKIPPED', 'missing cell_name/pin/new_net'
+    if not all([cell_name, new_net]):
+        return lines, 'SKIPPED', 'missing cell_name/new_net'
+
+    # bus_element: replace old_net as a word within any { } bus concatenation
+    # (Gap B: UNCONNECTED_* → named wire inside port bus assignment)
+    if entry.get('bus_element') and old_net:
+        pat_bus = rf'\b{re.escape(old_net)}\b'
+        for i, line in enumerate(lines):
+            if re.search(pat_bus, line) and cell_name in line:
+                lines[i] = re.sub(pat_bus, new_net, lines[i], count=1)
+                return lines, 'APPLIED', f'{cell_name}: bus element {old_net} → {new_net}'
+        # Also search surrounding lines if bus spans multiple lines
+        for i, line in enumerate(lines):
+            if cell_name in line:
+                for j in range(i, min(i+50, len(lines))):
+                    if re.search(pat_bus, lines[j]):
+                        lines[j] = re.sub(pat_bus, new_net, lines[j], count=1)
+                        return lines, 'APPLIED', f'{cell_name}: bus element {old_net} → {new_net}'
+                break
+        return lines, 'SKIPPED', f'bus element {old_net} not found near {cell_name}'
+
+    if not pin_name:
+        return lines, 'SKIPPED', 'missing pin_name'
 
     # Find cell instance — try exact name first, then search for it
     cell_start = -1

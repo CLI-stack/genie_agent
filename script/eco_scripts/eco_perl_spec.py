@@ -265,8 +265,12 @@ def main():
                 continue
 
             # Per-stage port connections
-            pcs = e.get('port_connections_per_stage', {}).get(args.stage) \
-                  or e.get('port_connections', {})
+            pcs = dict(e.get('port_connections_per_stage', {}).get(args.stage)
+                       or e.get('port_connections', {}))
+            # Apply net_per_stage overrides (Gap A: P&R driver alias renames)
+            for pin, stage_map in e.get('net_per_stage', {}).items():
+                if args.stage in stage_map:
+                    pcs[pin] = stage_map[args.stage]
 
             # Check all input nets exist in PostEco
             out_pin = output_pin_key(pcs)
@@ -348,6 +352,32 @@ def main():
             changes[mod]['gates'].append(f'  {cell_type} {inst} ( {pins_str} ) ;')
             statuses.append({'name': inst, 'status':'INSERTED',
                              'reason': f'Added to Perl spec for module {mod}'})
+
+        # ── unconnected_rewires (Gap B: rename UNCONNECTED_* → named wire) ──────
+        # Process after gate insertion — wire_decl + port bus bit replacement rewire.
+        # Applies to any change type that carries unconnected_rewires[].
+        for ur in e.get('unconnected_rewires', []):
+            named = ur.get('named_net', '')
+            orig  = ur.get('original_unconnected', '')
+            if not named or not orig:
+                continue
+            # Wire declaration for the named net (once per module)
+            if mod not in changes:
+                changes[mod] = {'wire_decls': [], 'wire_removes': [], 'gates': []}
+            if named not in changes[mod]['wire_decls'] \
+               and zgrep_count(named, posteco) == 0:
+                changes[mod]['wire_decls'].append(named)
+            # Port bus bit replacement — treated as a rewire on the submodule instance
+            # eco_passes_2_4 Pass 4 replaces orig→named by word-boundary text sub
+            bus_inst = ur.get('port_bus_instance', '')
+            if bus_inst:
+                if bus_inst not in rewires:
+                    rewires[bus_inst] = []
+                rewires[bus_inst].append({'pin': ur.get('port_bus_name',''),
+                                          'old': orig, 'new': named,
+                                          'bus_element': True})
+                statuses.append({'name': bus_inst, 'status':'QUEUED',
+                                 'reason': f'bus_bit_replace {orig}→{named} in .{ur.get("port_bus_name","")} on {bus_inst}'})
 
         # ── remove_wire_decl ─────────────────────────────────────────────────
         elif ct == 'remove_wire_decl':
