@@ -123,6 +123,19 @@ If count = 0 → record `input_from_change: <N>`.
 
 **Note:** Full per-stage resolution (Priority 0–4) and bus validation are handled by eco_netlist_verifier. Record what you can from Synthesize here, using module-scoped grep.
 
+**NEW PORT DEPENDENCY FLAG — for gate inputs that come from new_port changes:**
+
+When a gate chain input signal matches a `signal_name` from any `new_port` or `port_declaration` entry in the same ECO change set, set `input_from_new_port: "<signal_name>"` on that gate entry. This tells eco_perl_spec.py to skip the PostEco existence check for that pin (the port will be added by Pass 2 — it won't exist at Pass 1 time):
+
+```python
+new_port_signals = {c.get('new_token') or c.get('signal_name','')
+                    for c in rtl_diff['changes']
+                    if c.get('change_type') in ('new_port','port_declaration','port_promotion')}
+for pin, net in port_connections.items():
+    if net in new_port_signals:
+        entry['input_from_new_port'] = net  # eco_perl_spec skips existence check for this pin
+```
+
 ### 0b-DFF — Process `d_input_gate_chain` (MANDATORY when present)
 
 For each gate in `d_input_gate_chain` (d001→d00N), create a skeleton `new_logic_gate` entry:
@@ -258,6 +271,14 @@ Parse every `.<PIN>(` — these are the ONLY valid pin names. Never assume pin n
 | DFF, SDFF | `Q` | Sequential |
 
 Verify output pin by examining an actual instance from PreEco — always authoritative over this table.
+
+**GATE POLARITY VALIDATION (MANDATORY after 0c):** For every combinational gate, verify the chosen gate_function's polarity matches the RTL expression:
+- Expression uses `~(A & B)` → NAND2 (inverting, ZN output) — NOT NOR2
+- Expression uses `~(A | B)` → NOR2 (inverting, ZN output) — NOT NAND2
+- Expression uses `A & B` → AND2 (non-inverting, Z output)
+- Expression uses `~SplitActCtr == 2'b01` = `~(Ctr[1] & ~Ctr[0])` → NAND2 of (~Ctr[1], Ctr[0])
+
+Verify: `polarity_matches = (chosen_gate_function.output_is_inverting == rtl_expression_is_inverted)`. If mismatch → log `POLARITY_MISMATCH: chosen {gate_function} but RTL requires {correct_function}` and correct gate_function before writing study JSON.
 
 ### 0c-SCOPE — Use preferred_insertion_scope when set (MANDATORY check)
 

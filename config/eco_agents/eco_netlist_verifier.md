@@ -199,6 +199,35 @@ For each input pin in `port_connections`:
 
 **After resolving any net — run `validate_bus_net()` before recording in `port_connections_per_stage`.**
 
+**COMBINATIONAL GATE DRIVER PIN CHECK (rewire entries — ZN→ZN1 across stages):**
+
+For `rewire` entries, the driver cell may use different output pin names in different P&R stages (e.g., `SPC2NR2D1` uses `.ZN` in Synthesize but `.ZN1` in PrePlace/Route). The rewire must use the CORRECT pin name per stage:
+
+```python
+# After finding driver cell in each stage:
+def resolve_driver_pin(driver_cell_name, stage_lines, fallback_pin):
+    """Find actual output pin name used by driver cell in this stage."""
+    for line in stage_lines:
+        if driver_cell_name in line:
+            # Read the last .PIN(net) — that's the output pin
+            pins = re.findall(r'\.(\w+)\s*\(', line)
+            for candidate in reversed(pins):  # output pin is typically last
+                if candidate in ('ZN','ZN1','Z','Q','QN','CO','S'):
+                    return candidate
+    return fallback_pin
+
+# Set pin_per_stage for rewire entries:
+entry['pin_per_stage'] = {
+    'Synthesize': resolve_driver_pin(cell, synth_lines, entry.get('pin','')),
+    'PrePlace':   resolve_driver_pin(cell, pp_lines,    entry.get('pin','')),
+    'Route':      resolve_driver_pin(cell, route_lines, entry.get('pin',''))
+}
+if len(set(entry['pin_per_stage'].values())) > 1:
+    log(f"DRIVER_PIN_CHANGE: {cell} pin differs across stages: {entry['pin_per_stage']}")
+```
+
+eco_applier reads `pin_per_stage` (or `per_stage_pin`) to use the correct pin name per stage.
+
 **Scan alias rejection — MANDATORY before accepting any resolved net:**
 ```python
 scan_alias_patterns = [r'^test_so\d+', r'^dftopt\d+', r'^scan_\w+', r'^si_\w+']

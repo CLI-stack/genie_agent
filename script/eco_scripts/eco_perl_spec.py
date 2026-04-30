@@ -293,9 +293,10 @@ def main():
                 # eco_<jira>_*_orig nets are renamed driver outputs — valid after Pass 4 rewire
                 if re.match(r'^eco_\d+_\w+_orig$', str(net)):
                     continue
-                # Skip existence check for nets that are new ports (added by Pass 2)
-                # or output nets of other gates in this same Perl batch (forward reference)
-                if net in new_port_nets:
+                # Skip existence check for nets that are new ports (added by Pass 2),
+                # output nets of other gates in this same Perl batch (forward reference),
+                # or explicitly flagged via input_from_new_port field in study JSON
+                if net in new_port_nets or net == e.get('input_from_new_port', ''):
                     continue
                 if not net_exists_in_posteco(net, posteco):
                     skip_reason = f"input net '{net}' absent in {args.stage}"
