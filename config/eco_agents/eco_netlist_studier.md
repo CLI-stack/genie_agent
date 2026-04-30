@@ -167,7 +167,7 @@ FM cannot trace `UNCONNECTED_*` / `SYNOPSYS_UNCONNECTED_*` across hierarchy → 
 
 **Rule:** For each such net:
 1. Generate: `named_net = "n_eco_<jira>_<rtl_hint>"` — sanitized from `new_token`, port name, or RTL context. **Same name used across all stages.**
-2. Find bus position in **each stage independently**: scan module scope for `.<port>( { ..., <UNCONNECTED_N>, ... } )`. Each stage may have a **different** UNCONNECTED name for the same bit (e.g., `UNCONNECTED_3288` in Syn, `UNCONNECTED_6680` in PP, `SYNOPSYS_UNCONNECTED_4826` in Route) — locate by bit position index from MSB, not by name.
+2. Find bus position in **each stage independently**: scan module scope for `.<port>( { ..., <UNCONNECTED_N>, ... } )`. Each stage may have a **different** UNCONNECTED name for the same bus bit (tool assigns fresh names per stage) — locate by bit position index from MSB, not by name matching.
 3. Record per-stage originals: `original_per_stage: {Synthesize: <N_syn>, PrePlace: <N_pp>, Route: <N_rt>}`. Record per-stage instance (submodule name may gain `_0` suffix in Route): `port_bus_instance_per_stage: {Synthesize: ..., Route: ...}`. Do NOT hardcode the instance name — read it from the port_connection entry or grep the PostEco module scope.
 4. Set on entry: `unconnected_rewires: [{original: <syn_name>, original_per_stage: {...}, named_net, needs_explicit_wire_decl:true, port_bus_instance, port_bus_instance_per_stage, port_bus_name, port_bus_bit}]`. Use `named_net` in `port_connections` for all stages.
 
@@ -317,7 +317,7 @@ Verify output pin by examining an actual instance from PreEco — always authori
 - Expression uses `~(A & B)` → NAND2 (inverting, ZN output) — NOT NOR2
 - Expression uses `~(A | B)` → NOR2 (inverting, ZN output) — NOT NAND2
 - Expression uses `A & B` → AND2 (non-inverting, Z output)
-- Expression uses `~SplitActCtr == 2'b01` = `~(Ctr[1] & ~Ctr[0])` → NAND2 of (~Ctr[1], Ctr[0])
+- Expression uses `~(A[1] == 1 & A[0] == 0)` = `~(A[1] & ~A[0])` → NAND2 of (A[1], ~A[0])
 
 Verify: `polarity_matches = (chosen_gate_function.output_is_inverting == rtl_expression_is_inverted)`. If mismatch → log `POLARITY_MISMATCH: chosen {gate_function} but RTL requires {correct_function}` and correct gate_function before writing study JSON.
 

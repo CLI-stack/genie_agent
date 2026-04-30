@@ -36,10 +36,26 @@ Set `AI_ECO_FLOW_DIR = ai_eco_flow_dir` from handoff.
 
 Read all `data/<TAG>_eco_applied_round<ROUND>.json` files (ROUND = 1 to TOTAL_ROUNDS) and combine statistics.
 
-**Statistics calculation:**
-- **Cells Added**: count unique `instance_name` values where `change_type` in `["new_logic", "new_logic_dff", "new_logic_gate"]` AND `status=INSERTED`, deduplicated across stages (same logical cell appears in 3 stages — count once; field is `instance_name` for all 3 types)
-- **Cells Removed**: count SKIPPED entries where `status = "SKIPPED"` AND `reason` contains either `"not found in PostEco"` OR `"cell not found in PostEco"` — these are cells that existed in PreEco but were optimized away by P&R and do not appear in the PostEco netlist
-- **Pins Disconnected / Nets Connected**: count APPLIED + INSERTED entries per stage per round (cumulative)
+**Statistics calculation — concrete algorithm:**
+```python
+cells_added = set()    # deduplicated by instance_name (same cell in 3 stages = 1 count)
+cells_removed = set()  # deduplicated by instance_name
+pins_rewired = 0       # cumulative across all rounds and stages
+
+for round_n in range(1, TOTAL_ROUNDS + 1):
+    data = json.load(open(f"data/{TAG}_eco_applied_round{round_n}.json"))
+    for stage_entries in data.values():       # each top-level key = stage name
+        if not isinstance(stage_entries, list): continue
+        for entry in stage_entries:
+            ct, st, name = entry.get("change_type",""), entry.get("status",""), entry.get("instance_name") or entry.get("signal_name","")
+            if ct in ("new_logic","new_logic_dff","new_logic_gate") and st == "INSERTED":
+                cells_added.add(name)         # set deduplicates across 3 stages automatically
+            if st == "SKIPPED" and "not found in PostEco" in entry.get("reason",""):
+                cells_removed.add(name)
+            if st in ("APPLIED","INSERTED") and ct in ("rewire","port_connection"):
+                pins_rewired += 1
+```
+Use `len(cells_added)`, `len(cells_removed)`, `pins_rewired` in summary.
 
 Write `<BASE_DIR>/data/<TAG>_eco_summary.rpt`:
 
@@ -183,7 +199,14 @@ cp <BASE_DIR>/data/<TAG>_eco_summary.rpt <AI_ECO_FLOW_DIR>/
 
 ## STEP 7b — Write Final HTML Report
 
-Write `<BASE_DIR>/data/<TAG>_eco_report.html`. The HTML must contain the **same level of detail as eco_summary.rpt** — every step documented, not just a high-level summary. Read all step RPTs and JSON files and include their content.
+Write `<BASE_DIR>/data/<TAG>_eco_report.html`. The HTML must contain the **same level of detail as eco_summary.rpt** — every step documented, not just a high-level summary.
+
+**Generation algorithm — follow this order exactly:**
+1. Read `eco_summary.rpt` (already written in Step 7a) — use its content as the canonical text source for all sections
+2. For each round N = 1 to TOTAL_ROUNDS: read `eco_step4_eco_applied_roundN.rpt`, `eco_step5_pre_fm_check_roundN.rpt`, `eco_step6_fm_verify_roundN.rpt`, `eco_fm_analysis_roundN.json`
+3. For missing files: write `<section> — not available` in that section; never skip a section entirely
+4. Build HTML by wrapping each RPT section in `<pre>` tags with appropriate heading; embed JSON fields in readable table rows
+5. Mandatory: header, final status, RTL changes, per-round table (R1…RN), statistics, timing, step file index
 
 **Content source for each section:**
 
@@ -328,7 +351,7 @@ pre{padding:10px;overflow-x:auto} code{padding:2px 5px}
 <tr><td>rewire</td><td>[N]</td><td>[N]</td><td>[N]</td></tr>
 <tr><td>d_input_chains</td><td>[N chains, N gates]</td><td>—</td><td>[N decompose_failed]</td></tr>
 </table>
-<!-- Key notes from collect.rpt: per-stage net aliases, CTS clock renames, IReset BBNet etc. -->
+<!-- Key notes from collect.rpt: per-stage net aliases, CTS clock renames, reset signal BBNet risks, etc. -->
 <h3>Round 1 — Verifier Enrich (14 Checks)</h3>
 <p class="section-meta">Source: eco_step3_netlist_verify.rpt</p>
 <table>

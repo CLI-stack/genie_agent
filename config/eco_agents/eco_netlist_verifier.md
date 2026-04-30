@@ -487,10 +487,23 @@ assert grep_count(eco_wire_name, synth_lines) == 0, f"{eco_wire_name} already ex
 
 For every `rewire` entry, run backward cone then forward trace to confirm the cell is in the target DFF's cone.
 
-**Backward cone (max 8 hops):**
-- Find target DFF `.D(<net>)` → trace driver chain backward
-- If `old_net` appears in chain → `in_backward_cone: true`, `confirmed: true`
-- If not found → run forward trace
+**Backward cone (max 8 hops) — with cycle detection:**
+```python
+visited = set()
+queue = [target_dff_d_net]
+for hop in range(8):
+    if not queue: break
+    net = queue.pop(0)
+    if net in visited: continue   # cycle — skip, do not re-expand
+    visited.add(net)
+    driver = find_driver_cell(net, module_lines)
+    if not driver: continue
+    if old_net in get_cell_inputs(driver, module_lines):
+        return True  # in_backward_cone
+    queue.extend(get_cell_inputs(driver, module_lines))
+# not found after 8 hops → run forward trace
+```
+If `old_net` appears → `in_backward_cone: true`, `confirmed: true`. If not found → forward trace.
 
 **Forward trace (max 6 hops):**
 ```bash

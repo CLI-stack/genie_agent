@@ -407,7 +407,7 @@ for err in errors:
 **Inline fix for SVR4_missing_cell_type:**
 ```python
     elif err["check"] == "SVR4_missing_cell_type":
-        inst_name = err["msg"].split("'")[1]  # e.g. eco_9899_pm0
+        inst_name = err["msg"].split("'")[1]  # e.g. eco_<jira>_<seq>
         cell_type = bash(f'zcat {REF_DIR}/data/PreEco/Synthesize.v.gz | grep -m1 " {inst_name} " | awk "{{print $1}}"')
         if cell_type:
             fix_applied |= prepend_cell_type_gz(stage_gz, lineno=err["line"], cell_type=cell_type)

@@ -14,7 +14,7 @@
 |-------|-------------|
 | `TAG` | 14-digit task tag for this ECO round |
 | `REF_DIR` | TileBuilder run directory containing PostEco netlists |
-| `TILE` | Tile name (e.g., `umcdat`, `umccmd`) |
+| `TILE` | Tile name (e.g., `<tile_name>`) |
 | `BASE_DIR` | Parent of `runs/` and `data/` directories |
 | `AI_ECO_FLOW_DIR` | Destination directory for summary artefacts |
 | `ROUND` | Current round number (integer ≥ 1) |

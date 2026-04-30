@@ -347,7 +347,7 @@ Grep `cell_type` in PreEco to confirm actual output pin — PreEco wins over tab
       # wire declaration. Adding explicit wire decl here → SVR-9 duplicate.
       log(f"wire_decl_skipped: {output_net} referenced by rewire in {mod}")
   ```
-  **Why:** Pass 4 rewires existing cells (e.g., `ctmi_523004.S → n_eco_9868_mux_sel`). That rewired cell appears at its original position in the netlist — BEFORE the Perl-inserted gates at endmodule. FM sees the rewire reference as an implicit wire declaration, then the explicit `wire N;` in the Perl batch as a second declaration → SVR-9.
+  **Why:** Pass 4 rewires existing cells (e.g., `<orig_cell>.<pin> → n_eco_<jira>_<name>`). That rewired cell appears at its original position in the netlist — BEFORE the Perl-inserted gates at endmodule. FM sees the rewire reference as an implicit wire declaration, then the explicit `wire N;` in the Perl batch as a second declaration → SVR-9.
 
 **NEEDS_NAMED_WIRE inputs:**
 For pins starting `NEEDS_NAMED_WIRE:<source_net>`:

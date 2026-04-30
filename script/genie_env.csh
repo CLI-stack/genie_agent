@@ -8,5 +8,6 @@ endif
 
 # Load genie module
 module use /proj/verif_release_ro
-module load genie/current
+#module load genie/current
+module load genie/2.1.4
 

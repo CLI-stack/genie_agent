@@ -828,10 +828,10 @@ grep -n "<child_module_type>\s\+<instance_name>" <declaring_module_rtl_file>
 
 **STEP 4 — Gate-level primitive driver check (MANDATORY even when signal found in declaring module scope):**
 
-When a D-input signal resolves to a gate-level wire (e.g., `UNCONNECTED_3288`) that IS declared as `wire` in the declaring module, it may still be driven ONLY through a submodule output bus — not by any primitive cell output in that scope. FM black-boxes such submodules in P&R → wire appears undriven (DFF0X).
+When a D-input signal resolves to a gate-level wire (e.g., `UNCONNECTED_<N>`) that IS declared as `wire` in the declaring module, it may still be driven ONLY through a submodule output bus — not by any primitive cell output in that scope. FM black-boxes such submodules in P&R → wire appears undriven (DFF0X).
 
 ```bash
-# After resolving gate-level wire name (e.g., UNCONNECTED_3288):
+# After resolving gate-level wire name (e.g., UNCONNECTED_<N>):
 # Check if any primitive cell drives it directly in declaring module scope:
 awk '/^module <declaring_module>\b/,/^endmodule/' \
     <REF_DIR>/data/PreEco/Synthesize.v.gz | \
