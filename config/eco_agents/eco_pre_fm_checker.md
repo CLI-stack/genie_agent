@@ -74,8 +74,8 @@ If any assertion fails — **complete the missing sections before writing**. Do 
 
 ---
 
-**ABSOLUTE RULE — Check 8 (Verilog Validator) is NEVER suppressed by manual_only:**
-`manual_only` status suppresses Check A/C escalation ONLY. Check 8 runs regardless of any manual_only classifications. A FAIL in Check 8 always blocks FM submission. Set `passed: false` in the output JSON if Check 8 fails, even if all other checks are PASS or N/A.
+**ABSOLUTE RULE — Check 8 (Verilog Validator) ALWAYS runs and ALWAYS gates FM:**
+Check 8 runs regardless of any other check results. A FAIL in Check 8 always blocks FM submission. Set `passed: false` if Check 8 fails, even if all other checks are PASS or N/A. Note: `manual_only` is abolished — do not reference it.
 
 ---
 
@@ -365,20 +365,53 @@ result["check_summary"]["check8_verilog_validator"] = check8
 
 Do NOT write `"status": "PASS"` — always use the per-stage format from the script output.
 
-**ALWAYS run with `--strict`** — this enables F1 (duplicate wire) detection in addition to F3/F5/Check9. F1 catches cases where an explicit `wire n_eco_*;` declaration was added alongside a cell that already creates the net implicitly (eco_applier UNIVERSAL RULE violation). Without `--strict`, duplicate wire errors reach FM and cause FM-599 → ABORT_NETLIST.
+**ALWAYS run with `--strict`.** The validator now catches ALL patterns that cause FM-599 ABORT_NETLIST:
 
-**Inline fix for F1 (duplicate wire `n_eco_*`):**
+| Check | Pattern | Fix |
+|-------|---------|-----|
+| `F1_dup_wire` | Two explicit `wire X;` for same net | Remove second occurrence |
+| `SVR4_bare_paren` | Bare `)` without `;` in port list | Replace `)` → `) ;` |
+| `SVR4_double_comma` | `, ,` in port connections | Remove extra comma |
+| `SVR4_trailing_comma` | Port line ends `,` then `) ;` on next line | Remove trailing comma |
+| `SVR4_missing_cell_type` | `eco_<jira>_N ( .pin... )` without cell type | Find cell type from PreEco → prepend |
+| `F3_decl_inside_instance` | Direction decl inside cell block | Remove offending line |
+| `F5_corrupted_port_value` | Multiple nets in single `.pin(a,b,c)` | Keep only first net |
+
+**NOTE: `F2_implicit_wire_conflict` is NOT a FAIL condition.** Pre-existing F2 issues exist in all P&R netlists (hundreds per module) and FM handles them internally. eco_check8.sh only FAILS on errors that are genuinely new and cause FM-599. The `f2_preexisting_count` field is informational only.
+
+**Inline fix for F1_dup_wire:**
 ```python
 for err in errors:
-    if err["check"] == "F1_dup_wire" and err["signal"].startswith("n_eco_"):
-        # Remove the explicit wire declaration — the cell output creates the net implicitly
+    if err["check"] == "F1_dup_wire":
         fix_applied |= remove_line_from_gz(
             stage_gz=f"{REF_DIR}/data/PostEco/{err['stage']}.v.gz",
-            lineno=err["line"]  # line of the DUPLICATE wire declaration (second occurrence)
+            lineno=err["line"]  # second occurrence (duplicate)
         )
 ```
 
-This validator catches F1 (duplicate wire), F3 (declaration inside cell instance), F4 (duplicate port connection), and F5 (corrupted port value). Runs in seconds when `--modules` is used. Without `--modules` it scans the entire netlist which is too slow.
+**Inline fix for SVR4_double_comma:**
+```python
+    elif err["check"] == "SVR4_double_comma":
+        fix_applied |= replace_in_line_gz(
+            stage_gz, lineno=err["line"],
+            pattern=r',\s*,\s*\.', replacement=', .'
+        )
+```
+
+**Inline fix for SVR4_trailing_comma:**
+```python
+    elif err["check"] == "SVR4_trailing_comma":
+        fix_applied |= strip_trailing_comma_gz(stage_gz, lineno=err["line"])
+```
+
+**Inline fix for SVR4_missing_cell_type:**
+```python
+    elif err["check"] == "SVR4_missing_cell_type":
+        inst_name = err["msg"].split("'")[1]  # e.g. eco_9899_pm0
+        cell_type = bash(f'zcat {REF_DIR}/data/PreEco/Synthesize.v.gz | grep -m1 " {inst_name} " | awk "{{print $1}}"')
+        if cell_type:
+            fix_applied |= prepend_cell_type_gz(stage_gz, lineno=err["line"], cell_type=cell_type)
+```
 
 If the validator script is unavailable, run manual fallback checks on each stage:
 ```python
@@ -389,10 +422,11 @@ for stage in ["Synthesize", "PrePlace", "Route"]:
         # F1 — duplicate explicit wire declarations:
         wire_names = re.findall(r'^\s*wire\s+(\w+)\s*;', mod_block, re.MULTILINE)
         dups = [w for w, c in Counter(wire_names).items() if c > 1]
-        # F2 — explicit wire conflicts with implicit (port connection creates same net):
+        # F2 — informational only (NOT a FAIL condition): explicit wire + implicit from port connection
+        # Pre-existing F2 issues exist in ALL P&R netlists — FM handles them. Do NOT fail on F2.
         wire_decls_only = set(re.findall(r'^\s*wire\s+(\w+)\s*;', mod_block, re.MULTILINE))
         port_conn_nets  = set(re.findall(r'\.\w+\s*\(\s*(\w+)\s*\)', mod_block))
-        conflicts = wire_decls_only & port_conn_nets
+        f2_count = len(wire_decls_only & port_conn_nets)  # count only for informational RPT, not FAIL
         # F3 — duplicate port connections in instance blocks:
         for inst in re.finditer(r'\w+\s+(\w+)\s*\((.*?)\)\s*;', mod_block, re.DOTALL):
             pins = re.findall(r'\.\s*(\w+)\s*\(', inst.group(2))
