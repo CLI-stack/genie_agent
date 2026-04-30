@@ -2,6 +2,8 @@
 
 **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` in full before doing anything else.
 
+**ABSOLUTE RULE — NO DEFERRAL:** Every entry in the study JSON MUST be applied in the current round. "Deferred to Round 2", "pending", "application deferred" are **NEVER** valid SKIPPED reasons. The only valid SKIPPED reasons are: (a) entry already applied (ALREADY_APPLIED), (b) technical failure — net/cell genuinely not found after exhausting all resolution paths. Port declarations, port connections, gate insertions, and rewires all run in the **same round**. FM will ABORT if port declarations are missing when gates that use those ports are already inserted.
+
 ---
 
 ## 1. Overview
