@@ -136,6 +136,193 @@ for pin, net in port_connections.items():
         entry['input_from_new_port'] = net  # eco_perl_spec skips existence check for this pin
 ```
 
+### 0b-ALIAS — P&R Driver Alias Detection (MANDATORY for every resolved input net)
+
+After resolving any gate input net `net_name` in Synthesize, apply this check to ALL 3 stages. P&R tools (scan insertion in PrePlace, CTS/optimization in Route) frequently rename DFF output wires — the wire still exists in scope but is undriven (no cell outputs to it). FM sees X propagation → DFF0X → round wasted.
+
+**General algorithm — no hardcoded signal names:**
+
+```python
+def find_pr_alias(net_name, module_name, stage, preeco_lines):
+    """
+    Verify net_name is DRIVEN (not just declared) in stage.
+    If undiven → find the driver instance in Synthesize → locate its renamed output in stage.
+    Returns the correct net name for that stage.
+    """
+    module_lines = extract_module_scope(module_name, preeco_lines)
+
+    # Step 1: Check if net_name is driven in this stage
+    driven = any(
+        re.search(rf'\.(Q|Z|ZN|ZN1|CO|S)\s*\(\s*{re.escape(net_name)}\s*\)', line)
+        for line in module_lines
+    )
+    if driven:
+        return net_name  # valid — net exists and is driven
+
+    # Step 2: net declared but undriven → find driver instance from Synthesize
+    syn_lines = extract_module_scope(module_name, synthesize_preeco_lines)
+    driver_inst = None
+    for line in syn_lines:
+        m = re.search(rf'\.(Q|Z|ZN|ZN1|CO|S)\s*\(\s*{re.escape(net_name)}\s*\)', line)
+        if m:
+            # Scan back to find instance name on the cell declaration line
+            driver_inst = find_instance_name_before(line, syn_lines)
+            break
+
+    if not driver_inst:
+        return net_name  # cannot determine — keep as-is, verifier will flag
+
+    # Step 3: Find driver instance in P&R stage
+    for i, line in enumerate(module_lines):
+        if driver_inst in line:
+            # Read its output net (any output pin: Q, Z, ZN, ZN1, CO, S)
+            m = re.search(r'\.(Q|Z|ZN|ZN1|CO|S)\s*\(\s*(\S+?)\s*\)', line)
+            if m:
+                return m.group(2)  # renamed alias in P&R stage
+
+    # Step 4: Driver instance itself renamed/merged — search one level upstream
+    # Find what drives driver_inst's inputs in Synthesize → search those upstreams in P&R
+    for line in syn_lines:
+        if driver_inst in line:
+            inputs = re.findall(r'\.\w+\s*\(\s*(\S+?)\s*\)', line)
+            for inp in inputs:
+                for j, pline in enumerate(module_lines):
+                    if re.search(rf'\.(Q|Z|ZN|ZN1)\s*\(\s*{re.escape(inp)}\s*\)', pline):
+                        m2 = re.search(r'\.(Q|Z|ZN|ZN1)\s*\(\s*(\S+?)\s*\)', pline)
+                        if m2:
+                            return m2.group(2)
+
+    return net_name  # fallback — verifier will resolve further
+```
+
+**Apply per stage for every input net, record result:**
+```python
+for pin, net in entry['port_connections'].items():
+    if net.startswith('n_eco_') or net in new_port_signals:
+        continue  # ECO-internal net or new_port — skip
+    aliases = {}
+    for stage, preeco_path in stages.items():
+        aliases[stage] = find_pr_alias(net, module_name, stage, preeco_path)
+    if len(set(aliases.values())) > 1:
+        # Net name differs across stages → record per-stage map
+        entry.setdefault('net_per_stage', {})[pin] = aliases
+        log(f"PR_ALIAS_DETECTED: {pin}={net} → {aliases}")
+```
+
+**Log output (mandatory):**
+```
+PR_ALIAS: <gate>.<pin>=<net> | Syn=<net> PP=<pp_alias> Route=<rt_alias>
+PR_ALIAS_SAME: <gate>.<pin>=<net> — identical in all stages (driven, no rename)
+PR_UNDRIVEN: <gate>.<pin>=<net> — undriven in <stage>, upstream trace failed → verifier will resolve
+```
+
+---
+
+### 0b-UNCONNECTED — Auto-rename UNCONNECTED_* nets (MANDATORY)
+
+FM cannot trace wires named `UNCONNECTED_*` or `SYNOPSYS_UNCONNECTED_*` across hierarchical boundaries → globally unmatched → DFF non-equivalent. This applies to ANY gate input derived from a submodule bus bit output.
+
+**General algorithm — triggers on any resolved net matching the pattern:**
+
+```python
+UNCONNECTED_PATTERN = re.compile(r'^(SYNOPSYS_)?UNCONNECTED_\d+$', re.IGNORECASE)
+
+def auto_rename_unconnected(net_name, pin_name, entry, rtl_signal_hint, jira, stage_lines, module_name):
+    """
+    If net_name is UNCONNECTED_*, generate a named alias and find the port bus bit position.
+    Returns (named_net, rewire_info) or (net_name, None) if not UNCONNECTED.
+    """
+    if not UNCONNECTED_PATTERN.match(net_name):
+        return net_name, None
+
+    # Generate named alias from RTL signal hint (the original signal this bit represents)
+    # rtl_signal_hint comes from RTL diff new_token, port_name, or context_line
+    safe_hint = re.sub(r'[^a-zA-Z0-9_]', '_', rtl_signal_hint).lower()
+    named_net = f"n_eco_{jira}_{safe_hint}"
+
+    # Find which submodule instance and port bus contains this UNCONNECTED wire
+    module_lines = extract_module_scope(module_name, stage_lines)
+    bus_info = find_unconnected_in_port_bus(net_name, module_lines)
+    # bus_info = {instance: "REGCMD", port: "REG_DataBus", bit: 3} or None
+
+    rewire_info = {
+        "original_unconnected": net_name,
+        "named_net": named_net,
+        "needs_explicit_wire_decl": True,
+        "also_rewire_port_bus": bus_info is not None,
+        "port_bus_instance": bus_info["instance"] if bus_info else None,
+        "port_bus_name":     bus_info["port"]     if bus_info else None,
+        "port_bus_bit":      bus_info["bit"]       if bus_info else None,
+    }
+    log(f"UNCONNECTED_RENAME: {net_name} → {named_net} (bus={bus_info})")
+    return named_net, rewire_info
+
+def find_unconnected_in_port_bus(unconnected_net, module_lines):
+    """
+    Search all submodule instantiations in module scope for a port bus { ..., UNCONNECTED_N, ... }.
+    Return {instance, port, bit} where bit is 0-indexed from LSB.
+    """
+    current_inst = None
+    current_type = None
+    in_port = False
+    port_name = None
+    bus_elements = []
+
+    for line in module_lines:
+        # Detect instance start: CELLTYPE instname (
+        m = re.match(r'^\s*(\S+)\s+(\S+)\s*\(', line)
+        if m:
+            current_type = m.group(1)
+            current_inst = m.group(2)
+            in_port = False
+
+        # Detect port start: .PORT_NAME( { or .PORT_NAME(wire)
+        pm = re.search(r'\.(\w+)\s*\(\s*\{', line)
+        if pm:
+            in_port = True
+            port_name = pm.group(1)
+            bus_elements = []
+
+        if in_port:
+            # Collect comma-separated elements
+            elements = re.findall(r'\b(\w+)\b', re.sub(r'[{}.()\[\]]', ' ', line))
+            bus_elements.extend(elements)
+            if unconnected_net in elements:
+                # Found it — calculate bit position (MSB first → bit N = len-1-index from end before })
+                closing = line.find('}')
+                if closing >= 0:
+                    # Reconstruct and find position
+                    idx = bus_elements.index(unconnected_net)
+                    total = len(bus_elements)
+                    bit_pos = total - 1 - idx  # bit[0] = last = LSB
+                    return {"instance": current_inst, "port": port_name, "bit": bit_pos}
+            if '}' in line:
+                in_port = False
+
+    return None
+```
+
+**Apply to every resolved input net before recording in port_connections:**
+```python
+for pin, net in port_connections.items():
+    named, rewire = auto_rename_unconnected(net, pin, entry, rtl_signal_hint, jira, stage_lines, module_name)
+    if rewire:
+        port_connections[pin] = named           # use named alias in JSON
+        entry['unconnected_rewires'] = entry.get('unconnected_rewires', []) + [rewire]
+        entry['needs_explicit_wire_decl'] = True
+```
+
+**Log output (mandatory):**
+```
+UNCONNECTED_RENAME: <UNCONNECTED_N> → n_eco_<jira>_<hint> | bus=<inst>.<port>[<bit>]
+UNCONNECTED_RENAME: <UNCONNECTED_N> → n_eco_<jira>_<hint> | bus=<inst>.<port>[<bit>] (stage=<stage>)
+UNCONNECTED_NO_BUS: <UNCONNECTED_N> → n_eco_<jira>_<hint> | no port bus found — wire_decl only
+```
+
+**eco_perl_spec reads `unconnected_rewires`** to perform the port bus replacement and wire declaration in addition to the gate input pin rename. The named wire (`n_eco_<jira>_<hint>`) is stable across stages — FM can trace it across hierarchy.
+
+---
+
 ### 0b-DFF — Process `d_input_gate_chain` (MANDATORY when present)
 
 For each gate in `d_input_gate_chain` (d001→d00N), create a skeleton `new_logic_gate` entry:
