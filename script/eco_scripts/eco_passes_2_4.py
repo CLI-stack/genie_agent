@@ -241,23 +241,31 @@ def apply_rewire(lines, entry, stage='Synthesize'):
     if not all([cell_name, new_net]):
         return lines, 'SKIPPED', 'missing cell_name/new_net'
 
-    # bus_element: replace old_net as a word within any { } bus concatenation
-    # (Gap B: UNCONNECTED_* → named wire inside port bus assignment)
+    # bus_element: replace old_net as a word within the cell's instance block
+    # (Gap B: UNCONNECTED_* → named wire inside port bus { } concatenation)
     if entry.get('bus_element') and old_net:
         pat_bus = rf'\b{re.escape(old_net)}\b'
-        for i, line in enumerate(lines):
-            if re.search(pat_bus, line) and cell_name in line:
+        # Find cell instance start
+        cell_start = next((i for i, l in enumerate(lines) if re.search(rf'\b{re.escape(cell_name)}\b', l)), -1)
+        if cell_start < 0:
+            return lines, 'SKIPPED', f'bus_element: cell {cell_name} not found'
+        # Find cell block end using depth tracking
+        depth, cell_close = 0, cell_start
+        for i in range(cell_start, len(lines)):
+            for ch in lines[i].split('//')[0]:
+                if ch == '(': depth += 1
+                elif ch == ')':
+                    depth -= 1
+                    if depth == 0:
+                        cell_close = i
+                        break
+            if cell_close != cell_start: break
+        # Search within cell block for old_net (handles multi-line buses)
+        for i in range(cell_start, cell_close + 1):
+            if re.search(pat_bus, lines[i]):
                 lines[i] = re.sub(pat_bus, new_net, lines[i], count=1)
                 return lines, 'APPLIED', f'{cell_name}: bus element {old_net} → {new_net}'
-        # Also search surrounding lines if bus spans multiple lines
-        for i, line in enumerate(lines):
-            if cell_name in line:
-                for j in range(i, min(i+50, len(lines))):
-                    if re.search(pat_bus, lines[j]):
-                        lines[j] = re.sub(pat_bus, new_net, lines[j], count=1)
-                        return lines, 'APPLIED', f'{cell_name}: bus element {old_net} → {new_net}'
-                break
-        return lines, 'SKIPPED', f'bus element {old_net} not found near {cell_name}'
+        return lines, 'SKIPPED', f'bus element {old_net} not found in {cell_name} block'
 
     if not pin_name:
         return lines, 'SKIPPED', 'missing pin_name'

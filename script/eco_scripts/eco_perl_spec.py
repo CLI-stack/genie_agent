@@ -251,6 +251,11 @@ def main():
         # For tile-root entries (empty scope, scope_is_tile_root=True), use tile root module
         if not mod and (e.get('scope_is_tile_root') or not e.get('instance_scope','')):
             mod = tile_root_module
+        # Guard: if module still unresolved, skip to avoid invalid Perl key ''
+        if not mod:
+            statuses.append({'name': inst, 'status':'SKIPPED',
+                             'reason': f'module unresolvable for {inst} — no module_name, scope, or tile-root'})
+            continue
         force = e.get('force_reapply', False)
 
         # ── new_logic_gate / new_logic_dff ───────────────────────────────────
@@ -325,8 +330,8 @@ def main():
                                      'reason': f'wire_decl SKIPPED for {out_net}: referenced by Pass 4 rewire → implicit decl (SVR-9 prevention)'})
                 else:
                     existing = zgrep_count(out_net, posteco)
-                    if existing == 0:
-                        changes[mod]['wire_decls'].append(out_net)
+                    already_queued = out_net in changes[mod]['wire_decls']
+                    if existing == 0 and not already_queued:
                     else:
                         statuses.append({'name': inst, 'status':'INFO',
                                          'reason': f'wire_decl SKIPPED for {out_net}: already referenced ({existing}x) — SVR-9 prevention'})
@@ -353,31 +358,37 @@ def main():
             statuses.append({'name': inst, 'status':'INSERTED',
                              'reason': f'Added to Perl spec for module {mod}'})
 
-        # ── unconnected_rewires (Gap B: rename UNCONNECTED_* → named wire) ──────
-        # Process after gate insertion — wire_decl + port bus bit replacement rewire.
-        # Applies to any change type that carries unconnected_rewires[].
+        # ── unconnected_rewires — applies to ANY change type carrying this field ─
+        # Gap B: rename UNCONNECTED_* → named wire + rewire port bus bit.
+        # Processed once per entry regardless of change_type.
         for ur in e.get('unconnected_rewires', []):
             named = ur.get('named_net', '')
             orig  = ur.get('original_unconnected', '')
             if not named or not orig:
                 continue
-            # Wire declaration for the named net (once per module)
+            # Wire declaration (dedup: check both batch list and disk)
             if mod not in changes:
                 changes[mod] = {'wire_decls': [], 'wire_removes': [], 'gates': []}
-            if named not in changes[mod]['wire_decls'] \
-               and zgrep_count(named, posteco) == 0:
+            if named not in changes[mod]['wire_decls'] and zgrep_count(named, posteco) == 0:
                 changes[mod]['wire_decls'].append(named)
-            # Port bus bit replacement — treated as a rewire on the submodule instance
-            # eco_passes_2_4 Pass 4 replaces orig→named by word-boundary text sub
-            bus_inst = ur.get('port_bus_instance', '')
-            if bus_inst:
+            # Port bus bit replacement via Pass 4 rewire (word-boundary replace in bus { })
+            # per_stage_bus_instance supports stage-specific renamed instances (e.g., REGCMD_0 in Route)
+            # Use per-stage original (different UNCONNECTED_N names per stage)
+            orig_this_stage = ur.get('original_per_stage', {}).get(args.stage, orig)
+            per_stage_bi = ur.get('port_bus_instance_per_stage', {})
+            bus_inst = per_stage_bi.get(args.stage, '') or ur.get('port_bus_instance', '')
+            if bus_inst and orig_this_stage:
                 if bus_inst not in rewires:
                     rewires[bus_inst] = []
-                rewires[bus_inst].append({'pin': ur.get('port_bus_name',''),
-                                          'old': orig, 'new': named,
-                                          'bus_element': True})
+                rewires[bus_inst].append({
+                    'pin':                ur.get('port_bus_name', ''),
+                    'old':                orig_this_stage,
+                    'new':                named,
+                    'bus_element':        True,
+                    'per_stage_cell_name': per_stage_bi,
+                })
                 statuses.append({'name': bus_inst, 'status':'QUEUED',
-                                 'reason': f'bus_bit_replace {orig}→{named} in .{ur.get("port_bus_name","")} on {bus_inst}'})
+                                 'reason': f'bus_bit_replace {orig}→{named} on {bus_inst}.{ur.get("port_bus_name","")}'})
 
         # ── remove_wire_decl ─────────────────────────────────────────────────
         elif ct == 'remove_wire_decl':

@@ -155,13 +155,14 @@ Log: `PR_ALIAS: <gate>.<pin> Syn=<net> PP=<alias> Route=<alias>` or `PR_ALIAS_SA
 FM cannot trace `UNCONNECTED_*` / `SYNOPSYS_UNCONNECTED_*` across hierarchy → globally unmatched → DFF non-equivalent. Any gate input matching `^(SYNOPSYS_)?UNCONNECTED_\d+$` must be renamed.
 
 **Rule:** For each such net:
-1. Generate: `named_net = "n_eco_<jira>_<rtl_hint>"` where `rtl_hint` = sanitized RTL signal name (from `new_token`, port name, or context). Same named net used across all stages.
-2. Find bus position: scan module scope for `.<port>( { ..., <UNCONNECTED_N>, ... } )` on any submodule instance. Record `{instance, port, bit}` where `bit = (total_elements - 1 - index_from_MSB)`.
-3. Set on entry: `unconnected_rewires: [{original, named_net, needs_explicit_wire_decl:true, port_bus_instance, port_bus_name, port_bus_bit}]`. Use `named_net` in `port_connections` instead of the original.
+1. Generate: `named_net = "n_eco_<jira>_<rtl_hint>"` — sanitized from `new_token`, port name, or RTL context. **Same name used across all stages.**
+2. Find bus position in **each stage independently**: scan module scope for `.<port>( { ..., <UNCONNECTED_N>, ... } )`. Each stage may have a **different** UNCONNECTED name for the same bit (e.g., `UNCONNECTED_3288` in Syn, `UNCONNECTED_6680` in PP, `SYNOPSYS_UNCONNECTED_4826` in Route) — locate by bit position index from MSB, not by name.
+3. Record per-stage originals: `original_per_stage: {Synthesize: <N_syn>, PrePlace: <N_pp>, Route: <N_rt>}`. Record per-stage instance (may be `REGCMD` vs `REGCMD_0`): `port_bus_instance_per_stage: {Synthesize: ..., Route: ...}`.
+4. Set on entry: `unconnected_rewires: [{original: <syn_name>, original_per_stage: {...}, named_net, needs_explicit_wire_decl:true, port_bus_instance, port_bus_instance_per_stage, port_bus_name, port_bus_bit}]`. Use `named_net` in `port_connections` for all stages.
 
-eco_perl_spec reads `unconnected_rewires` to: declare `wire <named_net>;`, replace `<UNCONNECTED_N>` in gate pin, replace bit in port bus `{ }` concatenation.
+eco_perl_spec reads `unconnected_rewires`: declares `wire <named_net>;` once, applies `original_per_stage[stage]` → `named_net` replacement per stage in port bus `{ }` block.
 
-Log: `UNCONNECTED_RENAME: <UNCONNECTED_N> → n_eco_<jira>_<hint> | bus=<inst>.<port>[<bit>]`
+Log: `UNCONNECTED_RENAME: <N_syn>/<N_pp>/<N_rt> → n_eco_<jira>_<hint> | bus=<inst>.<port>[<bit>]`
 
 ---
 
