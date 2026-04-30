@@ -369,7 +369,11 @@ def main():
             # Wire declaration (dedup: check both batch list and disk)
             if mod not in changes:
                 changes[mod] = {'wire_decls': [], 'wire_removes': [], 'gates': []}
-            if named not in changes[mod]['wire_decls'] and zgrep_count(named, posteco) == 0:
+            # ALWAYS declare the named wire explicitly — even if it already appears implicitly
+            # from the REGCMD/submodule output bus. Without an explicit declaration, FM
+            # black-boxes the submodule in P&R stages and sees the wire as undriven → DFF0X.
+            # F2_implicit_wire_conflict from the duplicate is pre-existing/harmless (FM handles it).
+            if named not in changes[mod]['wire_decls']:
                 changes[mod]['wire_decls'].append(named)
             # Port bus bit replacement via Pass 4 rewire (word-boundary replace in bus { })
             # per_stage_bus_instance supports stage-specific renamed instances (e.g., REGCMD_0 in Route)
