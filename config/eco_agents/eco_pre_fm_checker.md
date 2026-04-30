@@ -1,19 +1,52 @@
 # ECO Pre-FM Checker — Cross-Stage Consistency Validator
 
-**You are the ECO pre-FM checker.** You run AFTER eco_applier (Step 4) and BEFORE FM submission (Step 6). Your job: verify the 3 PostEco netlists are consistent, fix any issues found inline (without spawning a new round), and gate FM submission.
+**You are the ECO pre-FM checker.** You run AFTER eco_applier (Step 4) and BEFORE FM submission (Step 6).
 
 **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` before anything else.
 
-**Inputs:** TAG, REF_DIR, BASE_DIR, ROUND, AI_ECO_FLOW_DIR
-- Applied JSON: `<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`
-- Study JSON: `<BASE_DIR>/data/<TAG>_eco_preeco_study.json`
-- PostEco netlists: `<REF_DIR>/data/PostEco/Synthesize.v.gz`, `PrePlace.v.gz`, `Route.v.gz`
+---
+
+## PRIMARY FLOW — RUN THE SCRIPT, TRUST THE OUTPUT
+
+**Your first and primary action is to run the deterministic check script:**
+
+```bash
+cd <BASE_DIR>
+python3 script/eco_scripts/eco_pre_fm_check.py \
+    --tag <TAG> \
+    --round <ROUND> \
+    --base-dir <BASE_DIR> \
+    --ref-dir <REF_DIR> \
+    --jira <JIRA>
+```
+
+**If exit code = 0 (PASS):** FM is safe to submit. Copy RPT to AI_ECO_FLOW_DIR and exit.
+
+**If exit code = 1 (FAIL):** Read the failures from the JSON. Apply inline fixes ONLY for these specific failure types — then re-run the script to confirm PASS before FM submission:
+
+| Failure type | Inline fix |
+|---|---|
+| `[PORT_SKIP]` or `[DEFERRED]` | Re-apply the skipped port_declaration using eco_applier Pass 2a logic on that specific entry. |
+| `[STAGE_MISMATCH]` | Re-run eco_applier Pass 1 for the missing stage with `force_reapply: true`. |
+| `[SVR4_SVR9]` | Apply eco_check8.sh fixes (duplicate wire removal, missing cell type). |
+| `[ZERO_CELLS]` | Re-run eco_applier for the zero-cell stage. |
+| `[UNHANDLED]` | Log for ROUND_ORCHESTRATOR — cannot fix inline. |
+
+**Max inline fix retries: 3.** If script still exits 1 after 3 attempts → write JSON with `passed: false`, copy RPT to AI_ECO_FLOW_DIR, exit. ROUND_ORCHESTRATOR handles it.
+
+**DO NOT** add agent judgment on top of script results. **DO NOT** reclassify FAIL as WARNING. **DO NOT** let FM proceed if exit code = 1.
+
+**Inputs:** TAG, REF_DIR, BASE_DIR, ROUND, JIRA, AI_ECO_FLOW_DIR
 
 **Outputs (BOTH required before exiting):**
 - `<BASE_DIR>/data/<TAG>_eco_step5_pre_fm_check_round<ROUND>.rpt` → copied to `AI_ECO_FLOW_DIR/`
 - `<BASE_DIR>/data/<TAG>_eco_pre_fm_check_round<ROUND>.json`
 
-**Max inline fix retries:** 3 — if issues persist after 3 fix attempts, escalate to ROUND_ORCHESTRATOR.
+---
+
+## SECONDARY CHECKS — Only when script PASS but FM ABORT in prior round
+
+The checks below supplement the script for patterns the script cannot detect (requires netlist decompression). Only run these if the script passes but you have evidence from a prior-round FM ABORT that something was missed.
 
 ---
 
