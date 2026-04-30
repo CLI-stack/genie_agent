@@ -88,10 +88,23 @@ def resolve_module_name(e, scope_to_mod, gz_path):
     """
     Resolve gate-level module_name for a study entry.
     Priority: explicit module_name > scope-based lookup > posteco grep.
+    P&R stages uniquify modules with _0/_1 suffixes — try those variants too.
     """
     mod = e.get('module_name', '')
     if mod:
-        return mod
+        # In P&R stages, module may be uniquified as mod_0, mod_1, etc.
+        # Verify the module exists in PostEco; if not, try _0 suffix.
+        for candidate in [mod, mod + '_0', mod + '_1', mod + '_0_0']:
+            try:
+                proc = subprocess.run(
+                    f'zcat {gz_path} | grep -c "^module {re.escape(candidate)}\\b"',
+                    shell=True, capture_output=True, text=True, timeout=10
+                )
+                if int(proc.stdout.strip() or '0') > 0:
+                    return candidate
+            except Exception:
+                pass
+        return mod  # fallback: return original even if not found
 
     scope = e.get('instance_scope', '')
     if not scope:
@@ -183,6 +196,19 @@ def main():
             out = e.get('output_net', '')
             if out:
                 new_port_nets.add(out)
+
+    # Build set of nets referenced by Pass 4 rewires (new_net of rewire entries).
+    # If a gate's output_net is used as a rewire target, that net will be implicitly
+    # declared by the rewire — do NOT add explicit wire_decl (prevents SVR-9 F2 conflict).
+    rewire_new_nets = set()
+    for e in entries:
+        if e.get('change_type') == 'rewire':
+            new_net = e.get('new_net', '')
+            if new_net:
+                rewire_new_nets.add(new_net)
+
+    # Track instance names already queued in this Perl batch (dedup guard for RISK 1.1).
+    queued_instances = set()
 
     # Build scope → module_name map from PostEco for module resolution
     scope_to_mod = build_scope_to_module_map(posteco)
@@ -279,15 +305,26 @@ def main():
                 statuses.append({'name': inst, 'status':'SKIPPED', 'reason': skip_reason})
                 continue
 
-            # wire_decls: output net only, and only if NOT already in PostEco
+            # Dedup guard: skip if same instance already queued in this Perl batch (RISK 1.1)
+            if inst in queued_instances:
+                statuses.append({'name': inst, 'status':'ALREADY_APPLIED',
+                                 'reason': f'{inst} already queued in this Perl batch — dedup guard'})
+                continue
+            queued_instances.add(inst)
+
+            # wire_decls: output net only, NOT if already in PostEco or referenced by rewire (RISK 1.3)
             out_net = pcs.get(out_pin, '') if out_pin else ''
             if e.get('needs_explicit_wire_decl') and out_net:
-                existing = zgrep_count(out_net, posteco)
-                if existing == 0:
-                    changes[mod]['wire_decls'].append(out_net)
-                else:
+                if out_net in rewire_new_nets:
                     statuses.append({'name': inst, 'status':'INFO',
-                                     'reason': f'wire_decl SKIPPED for {out_net}: already referenced ({existing}x) — SVR-9 prevention'})
+                                     'reason': f'wire_decl SKIPPED for {out_net}: referenced by Pass 4 rewire → implicit decl (SVR-9 prevention)'})
+                else:
+                    existing = zgrep_count(out_net, posteco)
+                    if existing == 0:
+                        changes[mod]['wire_decls'].append(out_net)
+                    else:
+                        statuses.append({'name': inst, 'status':'INFO',
+                                         'reason': f'wire_decl SKIPPED for {out_net}: already referenced ({existing}x) — SVR-9 prevention'})
 
             # Build gate line — cell_type must not be empty (SVR-4: missing cell type = invalid Verilog)
             cell_type = e.get('cell_type','')
