@@ -83,6 +83,7 @@ EOF
 ```
 
 - `RUN_SVF_GEN` is always `0`. Never write `ECO_SVF_ENTRIES` — Step 4b (eco_svf_updater) is permanently disabled; a missing SVF file causes post_eco_formality.csh to abort.
+- **`ECO_TARGETS` must always include ALL 3 targets** — never skip a target because it "passed" in a prior round. eco_applier modifies all 3 PostEco stages in every round; a previously-passing stage could silently regress if the applier touched it. If ROUND_ORCHESTRATOR passes fewer than 3 targets, add the missing ones before writing eco_fm_config.
 - Verify the file contains `ECO_TARGETS=` and `RUN_SVF_GEN=0`; abort if not.
 
 ---
