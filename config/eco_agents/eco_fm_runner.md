@@ -153,15 +153,15 @@ If any signal indicates ABORT → classify as ABORT. Classify abort type by read
 
 ### Load Previous Round Results
 
-On ROUND > 1, load `data/<TAG>_eco_fm_verify.json`. On missing or corrupt file, start with an empty dict (never crash).
+On ROUND > 1, load `data/<TAG>_eco_fm_verify.json` for reference only (e.g., to read `eco_fm_tag` history). Since all 3 targets are always run every round, do NOT carry forward prior PASS results — all 3 are freshly updated from this round's FM run. On missing or corrupt file, start with an empty dict (never crash).
 
 ### OVERALL Status Rules
 
-- `PASS` — all run targets have `status: PASS`
-- `FAIL` — any run target has `status: FAIL`
-- `ABORT` — any run target has `status: ABORT` and none have `FAIL`
-- `SKIP` — no targets were run (all `NOT_RUN`)
-- Targets with `status: NOT_RUN` are excluded from OVERALL determination.
+- `PASS` — all 3 targets have `status: PASS`
+- `FAIL` — any target has `status: FAIL`
+- `ABORT` — any target has `status: ABORT` and none have `FAIL`
+- `SKIP` — guard check found no changes applied (FM was not submitted)
+- `NOT_RUN` status must not appear for any of the 3 main targets — if eco_fm_config was written with all 3 targets, all 3 will have real results.
 
 ### CRITICAL EXIT RULE
 

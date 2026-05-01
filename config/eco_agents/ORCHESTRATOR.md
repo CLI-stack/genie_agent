@@ -946,7 +946,7 @@ The script reads `<REF_DIR>/data/eco_fm_config` automatically.
 
 **[eco_fm_runner sub-agent does this — not the ORCHESTRATOR]** eco_fm_runner reads the tag from CLI output, saves it to `<BASE_DIR>/data/<TAG>_eco_fm_tag_round<ROUND>.tmp`, polls `data/<eco_fm_tag>_spec` every 5 minutes until `OVERALL ECO FM RESULT:` appears.
 
-**[eco_fm_runner sub-agent does this — not the ORCHESTRATOR]** eco_fm_runner parses results, merges with previous round's results (carry forward PASS results, update only re-run targets), and writes `<BASE_DIR>/data/<TAG>_eco_fm_verify.json`:
+**[eco_fm_runner sub-agent does this — not the ORCHESTRATOR]** eco_fm_runner parses results and writes `<BASE_DIR>/data/<TAG>_eco_fm_verify.json`. Since all 3 FM targets are always run every round, the JSON is fully updated from the current round — no "carry forward" from prior rounds. Every target has a fresh result:
 ```json
 {
   "FmEqvEcoSynthesizeVsSynRtl": "PASS",

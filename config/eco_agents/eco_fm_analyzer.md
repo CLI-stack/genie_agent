@@ -80,9 +80,9 @@ Read `<BASE_DIR>/data/<TAG>_eco_fm_verify.json`. Each target result:
 | `{"status": "PASS"}` | FM ran and passed |
 | `{"status": "FAIL", "failing_count": N}` | FM ran, N non-equivalent points |
 | `{"status": "ABORT", "abort_type": "ABORT_LINK\|ABORT_NETLIST\|ABORT_SVF\|ABORT_OTHER"}` | FM aborted |
-| `{"status": "NOT_RUN"}` | Not run this round |
+| `{"status": "NOT_RUN"}` | Only valid for guard-check skip (no changes applied) — should NOT appear for normal rounds since all 3 targets are always run |
 
-Old format: each target is a string `"PASS"`, `"FAIL"`, or `"NOT_RUN"` — ABORT appears as `"FAIL"` with empty failing_points; check log to confirm.
+Old format: each target is a string `"PASS"`, `"FAIL"`, or `"NOT_RUN"` — ABORT appears as `"FAIL"` with empty failing_points; check log to confirm. If `NOT_RUN` appears for any of the 3 main targets in a normal round, flag as anomaly — eco_fm_runner should have run all 3.
 
 **If ANY target is ABORT (or FAIL with 0/N/A failing_points in old format) — complete abort diagnosis before anything else.**
 
