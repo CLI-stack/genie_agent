@@ -394,6 +394,25 @@ def main():
                 statuses.append({'name': bus_inst, 'status':'QUEUED',
                                  'reason': f'bus_bit_replace {orig}→{named} on {bus_inst}.{ur.get("port_bus_name","")}'})
 
+        # ── undo_instance — remove previously-inserted gate from PostEco ────────
+        # Used when eco_fm_analyzer replaces a gate strategy (e.g., MUX2→OA12).
+        # Removes the named instance block AND its associated wire declarations
+        # from the PostEco netlist. Must be paired with new gate insertion entries.
+        elif ct == 'undo_instance':
+            if mod not in changes:
+                changes[mod] = {'wire_decls': [], 'wire_removes': [], 'gates': [],
+                                'undo_instances': []}
+            if 'undo_instances' not in changes[mod]:
+                changes[mod]['undo_instances'] = []
+            # Remove the instance itself
+            changes[mod]['undo_instances'].append(inst)
+            # Also remove associated output wire declaration if specified
+            output_net = e.get('output_net', '')
+            if output_net and output_net not in changes[mod]['wire_removes']:
+                changes[mod]['wire_removes'].append(output_net)
+            statuses.append({'name': inst, 'status': 'UNDO_QUEUED',
+                             'reason': f'undo_instance: remove {inst} from {mod} in {args.stage}'})
+
         # ── remove_wire_decl ─────────────────────────────────────────────────
         elif ct == 'remove_wire_decl':
             sig = e.get('signal_name','')
@@ -463,10 +482,12 @@ def main():
         wd_str   = ', '.join(f"'{w}'" for w in spec['wire_decls'])
         wrm_str  = ', '.join(f"'{w}'" for w in spec['wire_removes'])
         gate_str = '\n'.join(f"    {repr(g)}," for g in spec['gates'])
+        undo_str = ', '.join(f"'{u}'" for u in spec.get('undo_instances', []))
         perl_lines.append(f"  '{mod}' => {{")
-        perl_lines.append(f"    wire_decls   => [{wd_str}],")
-        perl_lines.append(f"    wire_removes => [{wrm_str}],")
-        perl_lines.append(f"    gates        => [")
+        perl_lines.append(f"    wire_decls    => [{wd_str}],")
+        perl_lines.append(f"    wire_removes  => [{wrm_str}],")
+        perl_lines.append(f"    undo_instances=> [{undo_str}],")
+        perl_lines.append(f"    gates         => [")
         perl_lines.append(gate_str)
         perl_lines.append(f"    ],")
         perl_lines.append(f"  }},")
@@ -483,11 +504,27 @@ def main():
         "    if ($in_module) {",
         "        if ($line =~ /^endmodule\\b/) {",
         "            my $spec = $changes{$in_module};",
-        "            my %rm = map { $_ => 1 } @{ $spec->{wire_removes} };",
-        "            my @filtered;",
+        "            my %rm   = map { $_ => 1 } @{ $spec->{wire_removes} };",
+        "            my %undo = map { $_ => 1 } @{ $spec->{undo_instances} };",
+        "            my @filtered; my $undo_depth = 0; my $undo_inst = '';",
         "            for my $bl (@buf) {",
-        "                if (%rm && $bl =~ /^\\s*wire\\s+(\\w+)\\s*;/ && $rm{$1})",
+        "                # wire_removes: remove scalar wire declarations",
+        "                if (!$undo_depth && %rm && $bl =~ /^\\s*wire\\s+(\\w+)\\s*;/ && $rm{$1})",
         "                    { print STDERR \"REMOVED wire $1\\n\"; next; }",
+        "                # undo_instances: depth-track and skip entire instance block",
+        "                if (!$undo_depth && %undo) {",
+        "                    for my $ui (keys %undo) {",
+        "                        if ($bl =~ /\\b\\Q$ui\\E\\b/) { $undo_inst=$ui; $undo_depth=0; last; }",
+        "                    }",
+        "                }",
+        "                if ($undo_inst) {",
+        "                    $undo_depth += ($bl =~ tr/(//) - ($bl =~ tr/)/);",
+        "                    if ($undo_depth <= 0 && $bl =~ /\\)\\s*;/) {",
+        "                        print STDERR \"UNDO_REMOVED $undo_inst\\n\";",
+        "                        $undo_inst=''; $undo_depth=0; next;",
+        "                    }",
+        "                    next;",
+        "                }",
         "                push @filtered, $bl;",
         "            }",
         "            # Add wire decls — skip if net already in buffer (SVR-9 prevention)",

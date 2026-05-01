@@ -613,6 +613,44 @@ def setup_T16(jira, tag):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# T17 — PASS: undo_instance removes old gate + wire, new gate inserted cleanly
+# Simulates replacing a previously-inserted gate with a different one
+# ─────────────────────────────────────────────────────────────────────────────
+def setup_T17(jira, tag):
+    # PostEco already has old gate from a prior round (gate strategy being replaced)
+    old_inst = f'eco_{jira}_c001_old'
+    old_wire = f'n_eco_{jira}_c001_old'
+    new_inst = f'eco_{jira}_c001_new'
+    new_wire = f'n_eco_{jira}_c001_new'
+    netlist = make_netlist([
+        make_verilog('test_mod',
+            ports=['input IN1', 'output OUT1'],
+            extra_wires=[old_wire],
+            cells=[
+                f'  INVD1 {old_inst} ( .I( IN1 ) , .ZN( {old_wire} ) ) ;',
+                f'  AND2D1 existing_and ( .A1( IN1 ) , .A2( {old_wire} ) , .Z( OUT1 ) ) ;',
+            ])
+    ])
+    # Round N: undo old gate, insert replacement
+    undo = {
+        'change_type': 'undo_instance',
+        'instance_name': old_inst,
+        'output_net': old_wire,
+        'module_name': 'test_mod',
+        'confirmed': True,
+    }
+    new_gate = gate_entry(new_inst, 'AND2D1', 'AND2', new_wire,
+                          {'A1': 'IN1', 'A2': 'IN1', 'Z': new_wire},
+                          'test_mod', needs_wire=True)
+    study = {
+        'Synthesize': [undo, new_gate],
+        'PrePlace':   [undo, new_gate],
+        'Route':      [undo, new_gate],
+    }
+    return study, netlist
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('-v', '--verbose', action='store_true')
@@ -636,6 +674,8 @@ def main():
              setup_T13, PASS, **kw)
     run_test('T15', 'ALREADY_APPLIED entries are valid (PASS)',
              setup_T15, PASS, **kw)
+    run_test('T17', 'undo_instance removes old gate + wire, new gate inserted (PASS)',
+             setup_T17, PASS, **kw)
 
     # FAIL cases
     run_test('T2',  'Port declaration deferred to Round 2',
