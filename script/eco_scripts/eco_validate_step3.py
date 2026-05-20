@@ -1264,16 +1264,17 @@ def main():
                     issues.append(
                         f"HIGH/24-CONSOLIDATION-TOO-SMALL: ECO DFF {inst} stage={stage} "
                         f"sibling_pin_consolidation cluster has {len(cluster)} DFFs "
-                        f"(<10). Bridge_port requires ≥10-DFF cluster (per studier MD §374) "
+                        f"(<10). Bridge_port requires ≥10-DFF cluster "
+                        f"(per eco_pick_sibling.py SIBLING ESCALATION rule) "
                         f"or fall back to neighbor_dff strategy.")
 
     # ── 26. NAMED-NET FORMAT + SCOPE-LEAK SUSPECT DETECTION ────────────────
     # Two related checks for unconnected_rewires entries:
     # (a) named_net MUST be a flat Verilog identifier — no brackets, no spaces.
-    #     Bracket form (e.g. "REG_UmcCfgEco[1]") is illegal in `wire <name>;`
-    #     declarations. Run 20260512070625 root cause: studier emitted
-    #     `named_net: "REG_UmcCfgEco[1]"` → applier wrote `wire REG_UmcCfgEco[1];`
-    #     → FM SVR-4/SVR-64/FM-599 ABORT → 5 hours misdiagnosis.
+    #     Bracket form (e.g. "<bus>[N]") is illegal in `wire <name>;`
+    #     declarations. Typical root cause: studier emits a bracket-form
+    #     named_net → applier writes `wire <bus>[N];` → FM SVR-4 / SVR-64 /
+    #     FM-599 ABORT (and downstream debug burns hours).
     #     The applier's eco_perl_spec.py auto-sanitizes, but this validator
     #     flags the studier-side root cause so engineer can fix at source.
     # (b) When N entries across N different modules share the same `named_net`
@@ -2096,54 +2097,58 @@ def main():
             return parity, f'comb_{cell_type[:8]}'
         return parity, 'max_hops'
 
-    OUT_PINS_38 = ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'S')
+    # Exclude output pins (Z/ZN/...) and clock pins (CP/CK/CLK) from polarity
+    # check. Clock buffers intentionally have odd INV counts (CTS handles
+    # clock-tree parity separately); only combinational data-path pins are
+    # candidates for Mode J polarity flips.
+    _NO_CHECK_PINS_38 = ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'S',
+                          'CP', 'CK', 'CLK', 'CLOCK')
+    _ENTRY_TYPES_38 = ('new_logic_gate', 'new_logic_dff')
+    _placeholder_prefixes = ("MODE_H_ROUTE_SKIP", "UNRESOLVABLE",
+                              "PENDING_FM_RESOLUTION", "NEEDS_NAMED_WIRE")
     for e in study.get('Synthesize', []):
-        if e.get('change_type') != 'new_logic_gate':
+        if e.get('change_type') not in _ENTRY_TYPES_38:
             continue
         host = e.get('module_name', '')
         inst = e.get('instance_name', '?')
+        ent_kind = 'dff' if e.get('change_type') == 'new_logic_dff' else 'gate'
         pcs_synth = e.get('port_connections') or {}
         pcs_per_stage = e.get('port_connections_per_stage') or {}
         for pin, val in pcs_synth.items():
-            if pin in OUT_PINS_38 or not isinstance(val, str): continue
+            if pin in _NO_CHECK_PINS_38 or not isinstance(val, str): continue
             v = val.strip()
             if v.startswith(("1'b","0'b","1'h","0'h","n_eco_")): continue
-            # Get per-stage net values (fall back to Synth value if absent)
-            # (skip parity check if any stage has an unresolvable/placeholder net)
+            # Per-stage nets (fall back to Synth value if absent)
             per_stage_nets = {
                 'Synthesize': v,
                 'PrePlace':   (pcs_per_stage.get('PrePlace') or {}).get(pin) or v,
                 'Route':      (pcs_per_stage.get('Route')   or {}).get(pin) or v,
             }
-            # Skip parity check only for the specific stages that have placeholder nets
-            _placeholder_prefixes = ("MODE_H_ROUTE_SKIP", "UNRESOLVABLE", "PENDING_FM_RESOLUTION", "NEEDS_NAMED_WIRE")
+            # Skip parity check for placeholder/unresolved nets (per stage)
             parities = {}
             for stg, n in per_stage_nets.items():
                 if not n: continue
-                if any(str(n).startswith(p) for p in _placeholder_prefixes): continue  # skip only this stage
+                if any(str(n).startswith(p) for p in _placeholder_prefixes): continue
                 p = _net_parity_in_stage(n, host, args.ref_dir, stg)
                 if p is not None:
                     parities[stg] = p
-            # Skip if we couldn't resolve all 3
             if len(parities) < 3:
                 continue
-            # Compare parity values
             par_vals = {stg: pv[0] for stg, pv in parities.items()}
             if len(set(par_vals.values())) > 1:
                 terms = {stg: pv[1] for stg, pv in parities.items()}
                 issues.append(
-                    f"HIGH/38-CHAIN-LEAF-POLARITY-MISMATCH: gate {inst}.{pin} "
+                    f"HIGH/38-CHAIN-LEAF-POLARITY-MISMATCH: {ent_kind} {inst}.{pin} "
                     f"net per-stage = {per_stage_nets} but inverter-parity "
                     f"counts DIFFER across stages: {par_vals} "
                     f"(terminals: {terms}). The chain will compute opposite "
-                    f"logical values per stage → FM cone divergence "
-                    f"(see run 20260515084942 round 6 NeedFreqAdj_reg). "
+                    f"logical values per stage → FM cone divergence. "
                     f"Cause: Rule 32 picked the bare RTL-named wire in a "
                     f"stage where P&R added an odd number of inverters between "
-                    f"the registered driver and the port — bare name is the "
-                    f"INVERSE logical value in that stage. Fix: use a "
-                    f"polarity-correct wire (e.g. the DFF Q output directly, "
-                    f"or FM's resolved pin location's actual wire).")
+                    f"the registered driver and the port wire — bare name is "
+                    f"the INVERSE logical value in that stage. Fix: use a "
+                    f"polarity-correct wire (the DFF Q output directly, or "
+                    f"FM's resolved pin location's actual wire).")
 
     # ── port_declaration output driver check ─────────────────────────────────
     # Hierarchical netlists use port_declaration(output) instead of port_promotion.
