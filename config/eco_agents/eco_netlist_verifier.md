@@ -18,16 +18,61 @@ SPEC_SOURCES:
 If a stage has `SPEC_SOURCES[stage] = "FALLBACK"` → no FM results exist for that stage → apply Stage Fallback (GAP-5) in Check 10 instead of reading the spec.
 
 **Input file:** `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` (written by eco_netlist_studier)
-**Output files:**
-- `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` — same path, enriched in-place. Verify `wc -l` ≥ input line count.
-- `<BASE_DIR>/data/<TAG>_eco_step3_netlist_verify.rpt` — verification report (MANDATORY — ORCHESTRATOR checkpoints this)
-- Both files MUST be copied to `AI_ECO_FLOW_DIR/` before exit.
 
-**CHECK EXECUTION ORDER — MANDATORY:**
-Checks MUST run in this sequence to avoid stale data:
-1 → 5 → 6 → 2 → 3 → 4 → 7 → 8 → 9 → 11 → 12 → 13 → 10 → 14
+---
 
-Rationale: Check 1 (GAP-15) corrects `and_term_strategy` first. Check 5 propagates `mode_H_risk`. Check 6 reads corrected `and_term` entries for cascade DFFs. Checks 2/3 resolve per-stage nets (needed by cone verify). Checks 7/8/9 auto-add entries. Check 10 (cone verify) runs last on rewire entries so it sees all auto-added entries. Check 14 (decompose fallback) runs after per-stage resolution is complete.
+## OWNED OUTPUTS — single source of truth
+
+| Path | When I write it | Format |
+|---|---|---|
+| `data/<TAG>_eco_preeco_study.json` | Step Final | JSON (in-place enriched — wc -l ≥ input count) |
+| `data/<TAG>_eco_step3_netlist_verify.rpt` | Step Final | RPT (per-check counts) |
+| Copy of both → `AI_ECO_FLOW_DIR/` | Step Final | mirror (ORCHESTRATOR checkpoints) |
+
+## INPUTS — what the orchestrator gives me
+
+- `REF_DIR`, `TAG`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
+- `SPEC_SOURCES` — per-stage fenets spec map (Check 2 + Check 10 use it)
+- `GAP15_CHECK_PATH` — pre-computed `is_output_port` per old_token
+- `data/<TAG>_eco_preeco_study.json` — studier's skeleton (I enrich in place)
+- `data/<TAG>_eco_rtl_diff.json` — Step 1 RTL diff (cross-reference for Check 5/6)
+- `data/<TAG>_eco_fenets_rename_map.json` — for Check 2 cell_name_per_stage resolution
+
+## CHECK EXECUTION ORDER — dependency table
+
+Checks MUST run in this sequence — each row reads the column-1 outputs of all rows above it.
+
+| Run order | Check | Reads | Writes | Why this order |
+|---:|---|---|---|---|
+| 1 | **Check 1** (GAP-15) | `and_term_strategy` field, GAP15_CHECK | corrected `and_term_strategy` + `output_net` | Fixes `module_port_direct_gating` strategy before downstream checks consume it |
+| 2 | **Check 5** (mode_H_risk) | `eco_rtl_diff.json` gates | `port_connections_per_stage` for missing stages | Propagates Mode H aliases before Check 2 walks pins |
+| 3 | **Check 6** (expected_cascade_dffs) | Check 1's corrected `and_term` entries | `expected_cascade_dffs[]` | Needs Check 1's `module_port_direct_gating` decision |
+| 4 | **Check 2** (per-stage net resolution) | gate entries, rename_map | `port_connections_per_stage` (all 3 stages) | Must run before cone verify (Check 10) |
+| 5 | **Check 3** (per-stage DFF pin resolution) | DFF entries, rename_map | `port_connections_per_stage` CP/SE/SI | Must run before cone verify (Check 10) |
+| 6 | **Check 4** (GAP-14 wire decl) | new_logic_gate entries | `needs_explicit_wire_decl` flag | Independent — depends only on Synth check |
+| 7 | **Check 7** (port boundary) | new_logic entries | auto-added `port_declaration` entries | Must precede Check 8 (cascade may reference new ports) |
+| 8 | **Check 8** (consumer cascade) | rewire entries | auto-added `rewire` entries for consumers | Must precede Check 10 (cone verify sees all rewires) |
+| 9 | **Check 9** (UNCONNECTED bus bit) | DFF/gate entries with UNCONNECTED_* inputs | auto-added `port_connection` entries | Must precede Check 11 (named_wire flag) |
+| 10 | **Check 11** (needs_named_wire) | resolved nets | `needs_named_wire` flag | Reads Checks 7/9 output |
+| 11 | **Check 12** (PENDING_FM cleanup) | nets still `PENDING_FM_RESOLUTION:*` | resolved nets OR `UNRESOLVABLE:*` | Must precede Check 10 (cone verify needs final nets) |
+| 12 | **Check 13** (real-net preference) | all nets in port_connections_per_stage | `net_source` flag | Reads final resolved nets |
+| 13 | **Check 10** (cone verification) | rewire entries (incl. auto-added by 7/8/9) | `in_backward_cone` / `forward_trace_verified` | Last — sees all auto-added entries |
+| 14 | **Check 14** (decompose A/B fallback) | entries with `d_input_decompose_failed: true` | `intermediate_net_strategy` | Last — needs per-stage resolution complete |
+
+## HARD RULES — break these = fail the round (top 5)
+
+1. **Run checks in dependency order** (table above). Skipping the order causes stale data — e.g. Check 10 cone verify must see Check 7/8/9 auto-added entries.
+2. **Never leave `PENDING_FM_RESOLUTION:*` after Check 12** — resolve to real net OR mark `UNRESOLVABLE:*`. Never substitute a constant (`1'b0`) — changes ECO logic.
+3. **Module-scope net validation for every accepted net** — a net present in a child module body is NOT accessible at the parent. Using it causes SVR-14 / FM-599 ABORT on all 3 stages.
+4. **`needs_explicit_wire_decl: true` ONLY on output pins (ZN/Z/Q)** — never on inputs (SVR-9 duplicate decl).
+5. **Never default PP/Route cell_name_per_stage to Synth's value** — Synth cells are frequently renamed/absent in P&R. Verify `zgrep -cw "<cell>" PreEco/<stage>.v.gz ≥ 1` before writing.
+
+## I HAND OFF TO
+
+- Returns to **STUDY_ORCHESTRATOR / ROUND_ORCHESTRATOR**, which then invokes:
+  - `eco_expand_chains.py` — splice gate-level chains for new DFFs
+  - `eco_validate_step3.py` — validator with 38 checks (HARD GATE before applier spawn)
+  - `eco_applier.md` — Step 4 (writes PostEco netlists)
 
 ---
 
@@ -52,6 +97,8 @@ zcat <REF_DIR>/data/PreEco/Route.v.gz      > /tmp/eco_verify_<TAG>_Route.v
 ---
 
 ## Check 1 — GAP-15: MODULE PORT DIRECT GATING (Every and_term Entry)
+> **SKIP IF** no entry has `and_term_strategy` set.
+> **DONE WHEN** every and_term entry has its strategy re-verified against GAP15_CHECK; mismatches corrected to `module_port_direct_gating` with output_net → old_token AND driver rename rewire emitted.
 
 For every entry where `and_term_strategy` is set, re-verify the strategy is correct.
 
@@ -85,6 +132,8 @@ CHECK 1 GAP-15: <old_token>  is_output_port=<True/False>  strategy=<result>
 ---
 
 ## Check 2 — Per-Stage Net Resolution (Every new_logic_gate Entry)
+> **SKIP IF** no `new_logic_gate` entries exist.
+> **DONE WHEN** every gate input pin has `port_connections_per_stage` populated for all 3 stages with a net that passes `net_in_scope()` AND `validate_bus_net()`; remaining unresolved nets are marked `UNRESOLVABLE:<net>` with `confirmed: false`.
 
 For every `new_logic_gate` entry, resolve ALL input nets for ALL 3 stages using the priority table. Studier-1 only recorded Synthesize values — this check fills PrePlace and Route.
 
@@ -306,6 +355,8 @@ Update `port_connections_per_stage` for all 3 stages. Set `confirmed: false` for
 ---
 
 ## Check 3 — Per-Stage Pin Verification (Every new_logic_dff Entry)
+> **SKIP IF** no `new_logic_dff` entries exist.
+> **DONE WHEN** every DFF entry has `port_connections_per_stage` populated for CP/SE/SI/D/Q in all 3 stages; SE/SI follow the bridge-port-default rule (Synth=`1'b0`, PP/Route=bridge port); CTS clock rename flagged via `cts_clock_renamed: true` when CP differs across stages.
 
 For every `new_logic_dff` entry, resolve ALL pins per stage. Studier-1 records Synthesize only.
 
@@ -345,6 +396,8 @@ Update `port_connections_per_stage` for all 3 stages.
 ---
 
 ## Check 4 — GAP-14: Wire Declaration Flag (Every new_logic_gate Entry)
+> **SKIP IF** no `new_logic_gate` entries exist.
+> **DONE WHEN** every gate's output net has `needs_explicit_wire_decl` decided by Synth grep count (0 → true, ≥ 1 → false); input pins are NEVER flagged (SVR-9 prevention).
 
 For every new gate whose output net is genuinely new (not pre-existing in PreEco), `needs_explicit_wire_decl` must be `true`.
 
@@ -364,6 +417,8 @@ Do NOT set `needs_explicit_wire_decl: true` for:
 ---
 
 ## Check 5 — mode_H_risk Propagation (Every gate Entry)
+> **SKIP IF** `eco_rtl_diff.json` has no gates with `mode_H_risk: true` and `missing_in_stages`.
+> **DONE WHEN** every flagged gate has Priority-3 structural alias resolved into `port_connections_per_stage[stage][pin]` for each `missing_in_stages` stage AND `force_reapply: true` set with `re_study_note` updated.
 
 Re-read `eco_rtl_diff.json` for all gates with `mode_H_risk: true` and `missing_in_stages`:
 ```python
@@ -385,6 +440,8 @@ for change in rtl_diff.get("changes", []):
 ---
 
 ## Check 6 — expected_cascade_dffs (Every and_term Entry with module_port_direct_gating)
+> **SKIP IF** no and_term entries have `and_term_strategy == "module_port_direct_gating"`.
+> **DONE WHEN** every matching entry has `expected_cascade_dffs[]`, `expected_cascade_net`, and `expected_cascade_reason` populated.
 
 For every `and_term` entry where `and_term_strategy == "module_port_direct_gating"` and `expected_cascade_dffs` is missing or empty:
 
@@ -411,6 +468,8 @@ log(f"CHECK 6: {len(expected_cascade_dffs)} expected cascade DFFs identified for
 ---
 
 ## Check 7 — 0e-PORT: Port Boundary Analysis (Every new_logic Entry)
+> **SKIP IF** all new_logic entries reside in the same module as their consumers (no cross-module reach).
+> **DONE WHEN** every new_logic whose output escapes to the parent module has a `port_declaration` study entry added (declaration_type=output) with `force_reapply: true`.
 
 For every `new_logic_gate` or `new_logic_dff` entry, check if its output net escapes the declaring module scope:
 
@@ -446,6 +505,8 @@ if parent_uses_net:
 ---
 
 ## Check 8 — 0e-CASCADE: Consumer Cascade Tracing (Every Driver Rename)
+> **SKIP IF** no `rewire` entries rename a driver output (`old_net → new_net` where old_net was a cell output, not a pin input).
+> **DONE WHEN** every consumer of a renamed driver in the same module has a corresponding `rewire` study entry — auto-add the missing ones.
 
 For every `rewire` entry that renames a driver output (`old_net → new_net`), find ALL consumers of `old_net` in the same module and verify each has a corresponding rewire:
 
@@ -480,6 +541,8 @@ for rewire in rewire_entries_with_driver_rename:
 ---
 
 ## Check 9 — UNCONNECTED Bus Bit (Every DFF/gate with UNCONNECTED_* Input)
+> **SKIP IF** no entry has any input matching `^(SYNOPSYS_)?UNCONNECTED_\d+$`.
+> **DONE WHEN** every UNCONNECTED_* input is replaced by an `eco_<jira>_<signal>` named wire AND a `port_connection` entry renames the UNCONNECTED slot in the child instance.
 
 For every entry where any input in `port_connections` matches `UNCONNECTED_<N>` or `SYNOPSYS_UNCONNECTED_<N>`:
 
@@ -512,6 +575,8 @@ assert grep_count(eco_wire_name, synth_lines) == 0, f"{eco_wire_name} already ex
 ---
 
 ## Check 10 — Cone Verification (Every rewire Entry)
+> **SKIP IF** no `rewire` entries exist (including auto-added by Checks 7/8/9).
+> **DONE WHEN** every rewire entry has `in_backward_cone` decided (max 8 hops with cycle detection); forward-trace fallback verified when backward miss; stage fallback (GAP-5) applied for stages without FM results.
 
 For every `rewire` entry, run backward cone then forward trace to confirm the cell is in the target DFF's cone.
 
@@ -562,6 +627,7 @@ Take all `confirmed: true` entries from best reference stage (Synthesize → Pre
 ---
 
 ## Check 11 — needs_named_wire (All Resolved Nets)
+> **DONE WHEN** every resolved net in port_connections_per_stage has `needs_named_wire` flag decided via the helper rule (driven only by submodule output bus → true).
 
 Apply `needs_named_wire()` to every resolved net in `port_connections_per_stage`:
 
@@ -594,6 +660,8 @@ If found → set `driven_by_submodule: true`, `driver_type: "submodule_bus_outpu
 ---
 
 ## Check 12 — PENDING_FM_RESOLUTION Cleanup
+> **SKIP IF** no entry has any input net marked `PENDING_FM_RESOLUTION:*`.
+> **DONE WHEN** every PENDING signal is either resolved (via condition_input_resolutions OR forward-consumer search F1→F2→F3) OR marked `UNRESOLVABLE:<signal>`. NEVER use `1'b0` as fallback constant.
 
 For every entry where any input net is still `PENDING_FM_RESOLUTION:<signal>`:
 
@@ -656,6 +724,7 @@ For every entry where any input net is still `PENDING_FM_RESOLUTION:<signal>`:
 ---
 
 ## Check 13 — Universal Real-Net Preference (All Entries)
+> **DONE WHEN** every net in port_connections_per_stage has `net_source` flag set (real_rtl_name OR P&R alias), AND every `port_connection` submodule pattern is validated per-stage with `instance_confirmed` flag.
 
 For every net in every `port_connections_per_stage[stage]` entry:
 1. `grep -cw "<net>" /tmp/eco_verify_<TAG>_<Stage>.v`
@@ -671,6 +740,8 @@ If 0 → check PrePlace and Route. Record per-stage `instance_confirmed` flags. 
 ---
 
 ## Check 13b — BUS-CONST-DECODE: Bus Equality Constant Gate Verification
+> **SKIP IF** no `new_logic_gate` Synth entry has `gate_function` ∈ {IND2, IND3, IND4} with ≥2 bus-bit inputs.
+> **DONE WHEN** every matching IND-N gate generated from `~(bus[N:0] == K)` has companion INV cells emitted for every zero-bit of K (raw bus into IND-N is wrong unless K is all-ones).
 
 For every `new_logic_gate` entry in Synthesize where `gate_function` is `IND2`, `IND3`, or `IND4` and the inputs include two or more bus-bit signals (contain `[`):
 
@@ -686,6 +757,8 @@ For every `new_logic_gate` entry in Synthesize where `gate_function` is `IND2`, 
 ---
 
 ## Check 14 — Strategy A/B Fallback for d_input_decompose_failed
+> **SKIP IF** no entry has `d_input_decompose_failed: true` without `intermediate_net_strategy` set.
+> **DONE WHEN** every matching entry has `intermediate_net_strategy` set to `compound_gate_insertion` (Strategy A, preferred) OR `pivot` (Strategy B, fallback). Strategy A always tried first.
 
 For every entry with `d_input_decompose_failed: true` that has no `intermediate_net_strategy` set:
 

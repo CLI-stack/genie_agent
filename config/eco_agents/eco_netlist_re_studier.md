@@ -10,6 +10,71 @@
 
 ---
 
+## OWNED OUTPUTS — single source of truth
+
+| Path | When I write it | Format |
+|---|---|---|
+| `data/<TAG>_eco_preeco_study.json` | Step 4 | JSON (in-place patched — only failing entries modified) |
+| `data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt` | Step 4 | RPT (per-change summary) |
+| Copy of RPT → `AI_ECO_FLOW_DIR/` | Step 4 | mirror |
+
+## INPUTS — what the orchestrator gives me
+
+- `REF_DIR`, `TAG`, `BASE_DIR`, `ROUND` (the round that just failed)
+- `FM_ANALYSIS_PATH` — eco_fm_analyzer output with `revised_changes[]` + `evidence_for_studier`
+- `RE_STUDY_MODE=true` (signals re-study, not initial study)
+- `FENETS_RERUN_PATH` (optional) — `condition_input_resolutions[]` from rerun
+- `SPEC_SOURCES_JSON` — per-stage spec map (required when FENETS_RERUN_PATH set)
+- `data/<TAG>_eco_preeco_study.json` — current study to patch (do NOT wipe)
+- `data/<TAG>_eco_rtl_diff.json` — for cross-reference
+
+## EXECUTION ORDER — flat checklist
+
+```
+Pre-flight gates:
+  □ Step 1     — Read FM_ANALYSIS_PATH + verdict gate + evidence dossier load
+  □ Step 1a    — Validate analyzer evidence contract
+  □ Step 2     — Load study JSON + graceful-exit check (Mode E/G/ABORT_SVF → exit)
+  □ Step 0     — Re-check ALL and_term entries against GAP-15 (MANDATORY, always)
+  □ Pre-step   — GAP-22 fanout check + GAP-23 undo_instance pairing
+
+Per-failure-mode handling (only run blocks matching analysis.failure_mode):
+  □ Step 3.U   — Universal recipe-driven pattern (try evidence_for_studier first)
+  □ Step 3.A   — Mode A (ECO not applied correctly)         [SKIP IF mode != A]
+  □ Step 3.B   — Mode B (regression — wrong cell)           [SKIP IF mode != B]
+  □ Step 3.D   — Mode D (stage mismatch)                    [SKIP IF mode != D]
+  □ Step 3.H   — Mode H (gate input inaccessible in P&R)    [SKIP IF mode != H]
+  □ Step 3.T   — Mode T (compound cell mismatch)            [SKIP IF mode != T]
+  □ Step 3.J   — Mode J (chain-leaf inverter parity flip)   [SKIP IF mode != J]
+  □ Step 3.AL  — ABORT_LINK (missing port)                  [SKIP IF mode != ABORT_LINK]
+  □ Step 3.CT  — ABORT_CELL_TYPE                            [SKIP IF mode != ABORT_CELL_TYPE]
+  □ Step 3.MG  — action=move_gate_to_submodule              [SKIP IF action != move_gate_to_submodule]
+  □ Step 3.GF  — action=update_gate_function                [SKIP IF action != update_gate_function]
+  □ Step 3.RF  — action=rerun_fenets                        [SKIP IF no rerun_fenets actions]
+  □ Step 3.UK  — failure_mode UNKNOWN — full cone re-trace
+
+Exit:
+  □ Step 4     — Write patched JSON + RPT, copy RPT to AI_ECO_FLOW_DIR
+  □ Exit — verifier (Pass 6f-B) is spawned next by ROUND_ORCHESTRATOR
+```
+
+## HARD RULES — break these = fail the round (top 5)
+
+1. **Verdict gate is non-negotiable** — if `loop_verdict == "RERUN_SAME_ROUND"` → exit no-op (aborts use ROUND_ORCHESTRATOR Branch B netlist patches, not re-study). If `CONVERGED` → exit no-op.
+2. **Patch in place — never wipe.** Only modify entries referenced in `re_study_targets` / `revised_changes`. All other entries stay byte-for-byte unchanged.
+3. **GAP-22 fanout check** — never rename a driver whose `old_net` has `fanout > 10` in the declaring module scope. Use FM tuning (`set_constant`) instead.
+4. **GAP-23 pair `force_reapply` with `undo_instance`** — when re-inserting a gate already in PostEco, always insert an `undo_instance` entry BEFORE the gate entry. Without undo: SVR-9 duplicate gate OR silent pin-change miss.
+5. **UNCONNECTED parent-scope rule** — only update `original_per_stage` at the declaring module scope. NEVER edit child module internals — FM traces hierarchically; touching children breaks clock/cone analysis.
+
+## I HAND OFF TO
+
+- Returns to **ROUND_ORCHESTRATOR**, which then spawns:
+  - `eco_netlist_verifier` (Pass 6f-B) — re-enrich the patched entries
+  - `eco_expand_chains.py` — re-splice any chain that was modified
+  - `eco_validate_step3.py` — re-validate the patched study (HARD GATE before re-apply)
+
+---
+
 ## Step 1 — Read eco_fm_analyzer Output (with Evidence Contract)
 
 Read `FM_ANALYSIS_PATH`. Extract:
@@ -172,7 +237,11 @@ Log: `FORCE_REAPPLY_UNDO: added undo_instance for <inst> before re-insert`.
 
 ---
 
-**For `ABORT_LINK` (missing port from port list):** For each `force_port_decl` in `revised_changes`:
+### Step 3.AL — `ABORT_LINK` (missing port from port list)
+> **SKIP IF** `failure_mode != "ABORT_LINK"` AND no `force_port_decl` in revised_changes.
+> **DONE WHEN** every `force_port_decl` action has its matching `port_declaration` entry set to `force_reapply: true` for all 3 stages with `re_study_note` confirming the port is absent in PostEco.
+
+For each `force_port_decl` in `revised_changes`: For each `force_port_decl` in `revised_changes`:
 1. Find matching `port_declaration` entry for `signal_name` + `module_name`
 2. Verify port is missing from PostEco Synthesize port list:
    ```bash
@@ -181,7 +250,11 @@ Log: `FORCE_REAPPLY_UNDO: added undo_instance for <inst> before re-insert`.
 3. If missing → set `"force_reapply": true` for ALL stages
 4. Record `re_study_note` confirming port absent
 
-**For `failure_mode: A` (ECO not applied correctly):** For each target in `re_study_targets`:
+### Step 3.A — `failure_mode: A` (ECO not applied correctly)
+> **SKIP IF** `failure_mode != "A"`.
+> **DONE WHEN** every Mode A target has either `force_reapply: true` set (D-pin not updated case) OR `new_net` corrected (D-pin points to unexpected net) with `re_study_note`.
+
+ For each target in `re_study_targets`:
 1. Read PostEco Synthesize to verify current DFF D pin connection
 2. If D = old_net (not updated) → set `confirmed: true, force_reapply: true`
 3. If D = unexpected net → trace backward, update `new_net`
@@ -215,17 +288,29 @@ for e in study["<Stage>"]:
             e["re_study_note"] = f"UNCONNECTED_BIT_FIX: Route original_per_stage corrected from <wrong> to <actual>"
 ```
 
-**For `failure_mode: B` (regression — wrong cell rewired):** For each `exclude` in `revised_changes`:
+### Step 3.B — `failure_mode: B` (regression — wrong cell rewired)
+> **SKIP IF** `failure_mode != "B"`.
+> **DONE WHEN** every `exclude` action target has `confirmed: false` set (do NOT delete the entry).
+
+ For each `exclude` in `revised_changes`:
 - Set `"confirmed": false, "reason": "excluded by eco_fm_analyzer round <ROUND> — Mode B regression"`
 - Do NOT delete — set `confirmed: false` so eco_applier skips it
 
-**For `failure_mode: D` (stage mismatch — cell name differs in P&R):**
+### Step 3.D — `failure_mode: D` (stage mismatch — cell name differs in P&R)
+> **SKIP IF** `failure_mode != "D"`.
+> **DONE WHEN** every affected entry has `cell_name` updated for the correct P&R stage AND old_net re-verified on correct pin; HFS-alias / cone-check fallback applied for 0 / 2+ grep hits.
+
+
 - Grep correct PostEco stage for new cell name
 - Update `cell_name` for that specific stage
 - Re-verify old_net on correct pin
 - **If grep returns 0 hits or 2+ hits:** apply `eco_netlist_verifier.md` GAP-5 Steps 2-3 — HFS alias search (0 hits) or cone check (2+ hits) — before accepting any candidate. The same wrong-cell risk applies here: picking the first grep hit without cone verification causes FM failures on unrelated DFFs.
 
-**For `rerun_fenets` actions:** Build resolution map from `condition_input_resolutions[]` where `resolved_gate_level_net` is set. For each gate entry with `PENDING_FM_RESOLUTION:<signal>`:
+### Step 3.RF — action `rerun_fenets`
+> **SKIP IF** no `rerun_fenets` actions in revised_changes AND no entry has `PENDING_FM_RESOLUTION:*` inputs.
+> **DONE WHEN** every PENDING signal is resolved via condition_input_resolutions OR Priority-3 structural trace OR marked `UNRESOLVABLE:<signal>`. NEVER leave `PENDING_FM_RESOLUTION` after FM-036 rerun.
+
+ Build resolution map from `condition_input_resolutions[]` where `resolved_gate_level_net` is set. For each gate entry with `PENDING_FM_RESOLUTION:<signal>`:
 
 1. **Rerun fenets result** — if resolved with direct driver → use directly; if `needs_named_wire` → set `NEEDS_NAMED_WIRE`
 2. **Priority 3 structural driver trace** (if rerun returned FM-036 or no rerun done):
@@ -237,7 +322,11 @@ for e in study["<Stage>"]:
 
 **CRITICAL: Do NOT leave `PENDING_FM_RESOLUTION` after FM-036 rerun. Escalate to Priority 3 immediately.**
 
-**For `failure_mode: ABORT_CELL_TYPE`:** For each `fix_cell_type` entry:
+### Step 3.CT — `failure_mode: ABORT_CELL_TYPE`
+> **SKIP IF** `failure_mode != "ABORT_CELL_TYPE"`.
+> **DONE WHEN** every `fix_cell_type` action has `cell_type` updated for all 3 stages where `instance_name == gate_instance` AND `re_study_note` recorded.
+
+ For each `fix_cell_type` entry:
 - **CT-1 — Find correct cell in PreEco Synthesize:**
   ```bash
   zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | \
@@ -246,12 +335,20 @@ for e in study["<Stage>"]:
   ```
 - **CT-2 — Update** `cell_type` for all stages where `entry["instance_name"] == gate_instance`, add `re_study_note`
 
-**For `failure_mode: T`:** For each `swap_compound_cell` entry — fm_analyzer Check T already picked `correct_cell_type`; no PreEco re-search needed:
+### Step 3.T — `failure_mode: T` (compound-cell truth-table mismatch)
+> **SKIP IF** `failure_mode != "T"`.
+> **DONE WHEN** every `swap_compound_cell` action has `cell_type` overridden to `correct_cell_type` for all 3 stages AND `port_remap` applied atomically (when present) AND `re_study_note` recorded.
+
+ For each `swap_compound_cell` entry — fm_analyzer Check T already picked `correct_cell_type`; no PreEco re-search needed:
 - **T-1 — Override `cell_type`** to `correct_cell_type` for all 3 stages where `entry["instance_name"] == gate_instance`.
 - **T-2 — If `port_remap` present**, rebuild `port_connections` (and `port_connections_per_stage[*]`) by remapping pin names: for each `(old_pin, new_pin)` in `port_remap`, the value previously at `old_pin` moves to `new_pin`. Apply atomically to avoid clobbering when remap is a permutation.
 - **T-3 — Add `re_study_note: "swap_compound_cell <wrong>→<correct>"`.** Do NOT touch `gate_function` text, output_net, or scope.
 
-**For `failure_mode: H` (gate input inaccessible in P&R stage):** For each `fix_named_wire` entry:
+### Step 3.H — `failure_mode: H` (gate input inaccessible in P&R stage)
+> **SKIP IF** `failure_mode != "H"`.
+> **DONE WHEN** every `fix_named_wire` action has H1/H2/H3 applied (structural confirm + P&R alias resolve + study JSON updated with `port_connections_per_stage` per-stage values, falling back to `NEEDS_NAMED_WIRE` only when no alias found), AND `mode_H_risk` flags re-read from rtl_diff are propagated.
+
+ For each `fix_named_wire` entry:
 
 **H1 — Confirm structural issue:**
 ```bash
@@ -320,7 +417,11 @@ for change in rtl_diff.get("changes", []):
                     entry["force_reapply"] = True
 ```
 
-**For `action: move_gate_to_submodule`:** (persistent DFF0X after rename_wire — GAP-18 submodule black-box)
+### Step 3.MG — action `move_gate_to_submodule`
+> **SKIP IF** no revised_change has `action == "move_gate_to_submodule"`.
+> **DONE WHEN** affected gate's entries have `instance_scope` changed to the child path, `scope_is_submodule_insertion: true` set, AND companion port_declaration + port_connection entries auto-added; all marked `force_reapply: true`.
+
+ (persistent DFF0X after rename_wire — GAP-18 submodule black-box)
 
 1. Find all study entries for `gate_instance` (across all 3 stages)
 2. Change `instance_scope` to `preferred_insertion_scope` (the child instance path)
@@ -330,13 +431,25 @@ for change in rtl_diff.get("changes", []):
 6. Set `force_reapply: true` on all affected entries
 7. `re_study_note: "move_gate_to_submodule: gate chain moved inside <child_module> — FM can trace signal without submodule black-box"`
 
-**For `action: update_gate_function`:**
+### Step 3.GF — action `update_gate_function`
+> **SKIP IF** no revised_change has `action == "update_gate_function"`.
+> **DONE WHEN** every affected entry has `gate_function` + `cell_type` updated for all 3 stages AND WIRE_SWAP gate direction check passed (no De Morgan substitutions — match `mux_select_gate_function` exactly).
+
+
 - **GF-1** — Find correct cell in PreEco Synthesize (same port-structure search)
 - **GF-2** — Update `gate_function`, `cell_type`, `re_study_note` for ALL stages
 
 **WIRE_SWAP GATE DIRECTION CHECK (MANDATORY in GF-2):** Before updating gate_function, verify the gate type matches the RTL operator direction. AND expression in RTL → must use AND2 (output pin `Z`). NEVER substitute De Morgan equivalents (NAND2, OR2) even if logically identical — they create different LatCG cone structures that cause FM gate-level equivalence failures. Verify by reading `mux_select_gate_function` from `eco_rtl_diff.json` and confirming gate polarity matches.
 
-**For `failure_mode: UNKNOWN`:** For each `target_register`: trace full forward/backward cone from DFF in PostEco Synthesize, re-parse FM result for this net, update study entry.
+### Step 3.J — `failure_mode: J` (chain-leaf inverter parity flip — Mode J)
+> **SKIP IF** `failure_mode != "J"`.
+> **DONE WHEN** every affected gate's failing-stage input pin has been rewired (via `port_connections_per_stage[<stage>][<pin>]`) to a polarity-correct wire: priority 1 = MB DFF Q-pin direct (`aps_rename_*`); priority 2 = `actual_wire_<stage>` from rename_map; NEVER mid-buffer-chain nets. Do NOT call `update_gate_function` — gate function is correct; the input wire is the bug. See `eco_fm_pattern_library.md §B-FAIL-J` for the recipe.
+
+### Step 3.UK — `failure_mode: UNKNOWN`
+> **SKIP IF** `failure_mode != "UNKNOWN"`.
+> **DONE WHEN** for each `target_register`: full forward/backward cone traced from DFF in PostEco Synthesize, FM result re-parsed for the net, study entry updated with the resolved fix.
+
+For each `target_register`: trace full forward/backward cone from DFF in PostEco Synthesize, re-parse FM result for this net, update study entry.
 
 ---
 
