@@ -17,6 +17,82 @@ SPEC_SOURCES:
 
 ---
 
+## OWNED OUTPUTS — single source of truth
+
+| Path | When I write it | Format |
+|---|---|---|
+| `data/<TAG>_eco_preeco_study.json` | end of Phase 1 | JSON (skeleton — verifier enriches) |
+| `data/<TAG>_eco_step3_collect.rpt`  | last action before exit | RPT (summary) |
+| Copy of both → `AI_ECO_FLOW_DIR/`   | last action before exit | mirror |
+
+Verifier (next agent) re-writes `eco_preeco_study.json` in-place with `port_connections_per_stage`, GAP checks, auto-added entries, and cone verification.
+
+## INPUTS — what the orchestrator gives me
+
+- `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `AI_ECO_FLOW_DIR`
+- `SPEC_SOURCES` — per-stage map: Synthesize / PrePlace / Route → fenets spec path
+- `data/<TAG>_eco_rtl_diff.json` — Step 1 RTL diff classification
+- `data/<TAG>_eco_fenets_rename_map.json` — Step 2 FM-resolved per-stage map (SOURCE OF TRUTH for Rule 32)
+- `GAP15_CHECK_PATH` — pre-computed module-port-direct-gating decisions
+
+## EXECUTION ORDER — flat checklist (process in this order)
+
+```
+Phase 0 — new_logic / port changes (complete ALL before Phase 1):
+  □ 0.1   Classify cell type per change                  (was 0a)
+  □ 0.2   Identify input signals (basic)                 (was 0b)
+  □ 0.3   P&R alias detection per input                  (was 0b-ALIAS)
+  □ 0.4   UNCONNECTED rename       [SKIP IF no UNCONNECTED_* in any input]
+          (was 0b-UNCONNECTED)
+  □ 0.5   Bus DFF expansion        [SKIP IF no change has is_bus_dff: true]
+          (was 0b-BUS-DFF)
+  □ 0.6   Bus gate expansion       [SKIP IF no change has is_bus_gate: true]
+          (was 0b-BUS-GATE)
+  □ 0.7   DFF entry via wrapper    [SKIP IF no new_logic_dff change]
+          (was 0b-DFF)
+  □ 0.8   Find cell type from PreEco                     (was 0c)
+  □ 0.9   Use preferred_insertion_scope                  [SKIP IF unset]
+          (was 0c-SCOPE)
+  □ 0.10  Assign instance + output net names             (was 0d)
+  □ 0.11  Record skeleton entry                          (was 0e)
+  □ 0.12  Mark wire_swap dependencies                    (was 0f)
+  □ 0.13  Process new_port → port_declaration            (was 0g)
+  □ 0.14  Process port_connection                        (was 0h)
+  □ 0.15  Process port_promotion   [SKIP IF hierarchical netlist (>1 module)]
+          (was 0i)
+  □ 0.16  Process enable_swap      [SKIP IF no enable_swap changes]
+          (was Phase 0e)
+
+Phase 1 — wire_swap (FM-driven, per stage):
+  □ 1.0   PRE-PHASE — driver_substitution / intermediate_net_insertion
+  □ 1.1   Read PreEco netlist per stage                  (was 1)
+  □ 1.2   Find + extract cell instantiation block        (was 2–3)
+  □ 1.3   Confirm old_net is present                     (was 4)
+  □ 1.4   Basic new_net reachability                     (was 4b)
+  □ 1.5   Verify output count per stage                  (was 5)
+  □ 1.6   Cleanup temp files                             (was 6)
+
+Exit:
+  □ Sort JSON by PASS_ORDER, write to disk
+  □ Write collect RPT
+  □ Copy both files to AI_ECO_FLOW_DIR
+  □ Exit — verifier is spawned next by orchestrator
+```
+
+## HARD RULES — break these = fail the round (top 5)
+
+1. **SE/SI on new ECO DFFs = `1'b0` in ALL 3 stages.** Scan stitching is out of scope; DFT team handles it.
+2. **Rule 32 polarity check.** Never use a bare RTL name if inverter-parity differs across stages. Use `actual_wire_<stage>` from rename_map, or FM-resolved `<cell>/<pin>` wire. Step 3 validator Check 38 hard-fails violations.
+3. **Always use `eco_emit_dff_entry.py` wrapper for DFFs** — never call `eco_synth_chain.py` directly. Wrapper handles per-DFF prefix, chain decomposition, Mode-I detection, and validator-invariants.
+4. **Phase 0 fully complete BEFORE Phase 1 starts.** wire_swap (Phase 1) depends on new_logic outputs (Phase 0) being in the study JSON first.
+5. **`needs_explicit_wire_decl: true` ONLY on output pins (ZN/Z/Q).** Setting it on input pins causes SVR-9 duplicate wire declaration ABORT.
+
+## I HAND OFF TO
+
+- `eco_netlist_verifier` — spawned by orchestrator after I exit. Reads my JSON, enriches every entry with `port_connections_per_stage`, GAP checks (GAP-15/14/5/18/CTS-1/CTS-2), auto-adds port_declarations / consumer rewires / UNCONNECTED renames, and runs cone verification.
+
+---
+
 ## How to Read the fenets_spec File
 
 The `<fenets_tag>_spec` file uses `#text#` / `#table#` block markers. FM find_equivalent_nets output appears in `#text#` blocks. **Polarity rule:** Only use `(+)` impl lines. Lines marked `(-)` are inverted nets — never use them. If a net only returns `(-)` results, treat it as `fm_failed`.
@@ -91,7 +167,8 @@ Do NOT interleave Phase 1 (wire_swap/FM) processing with Phase 0. Phase 1 depend
 
 ---
 
-### 0a — Classify the new cell type
+### Phase 0.1 — Classify the new cell type  (was 0a)
+> **DONE WHEN** every change has `change_type` set to `new_logic_dff` / `new_logic_gate` / `port_declaration` / `port_connection` / `port_promotion` / `enable_swap`, AND DFF entries have `reset_polarity` recorded.
 
 From RTL diff `context_line`:
 - `always @(posedge <clk>)` with reset/data pattern → **DFF** (sequential)
@@ -105,7 +182,8 @@ From RTL diff `context_line`:
 
 Record `reset_signal: <rst_name>`, `reset_polarity` in the DFF entry. Used in 0c to match the correct DFF reset pin type.
 
-### 0b — Identify input signals (basic)
+### Phase 0.2 — Identify input signals (basic)  (was 0b)
+> **DONE WHEN** every gate input net is identified and module-scope-verified, and `input_from_new_port` flag is set wherever applicable.
 
 Parse `context_line` for clock/reset/data (DFF) or input signals (combinational).
 
@@ -140,7 +218,8 @@ for pin, net in port_connections.items():
         entry['input_from_new_port'] = net
 ```
 
-### 0b-ALIAS — P&R Driver Alias Detection (MANDATORY for every resolved input net)
+### Phase 0.3 — P&R Driver Alias Detection  (was 0b-ALIAS)
+> **DONE WHEN** every non-ECO input net has its per-stage value resolved from rename_map OR neighbor-DFF OR module-body grep, and Rule 32 polarity pre-check has run on every bare-RTL-name pick.
 
 P&R renames DFF outputs (CTS/optimization in Route). A wire may exist in scope but be undriven → FM `X` → DFF0X. For every non-ECO input net, verify it is driven in each stage and record per-stage aliases.
 
@@ -184,7 +263,9 @@ Apply only to Route (Synth/PP already resolved via fenets fix1 ZBUF retry).
 
 ---
 
-### 0b-UNCONNECTED — Auto-rename UNCONNECTED_* nets (MANDATORY)
+### Phase 0.4 — UNCONNECTED rename  (was 0b-UNCONNECTED)
+> **SKIP IF** no gate input matches `^(SYNOPSYS_)?UNCONNECTED_\d+$` AND no chain leaf landed on UNCONNECTED at a parent's child-port-bus connection.
+> **DONE WHEN** every UNCONNECTED_* in port_connections is replaced by an `n_eco_*` named wire AND `unconnected_rewires[]` has one entry per `(module, instance, port, bit)` tuple.
 
 FM cannot trace `UNCONNECTED_*` / `SYNOPSYS_UNCONNECTED_*` across hierarchy → DFF non-equivalent. Any gate input matching `^(SYNOPSYS_)?UNCONNECTED_\d+$` must be renamed.
 
@@ -239,7 +320,9 @@ Log: `UNCONNECTED_RENAME: <N_syn>/<N_pp>/<N_rt> → n_eco_<jira>_<hint> | bus=<i
 
 ---
 
-### 0b-BUS-DFF — Bus register DFF expansion (MANDATORY when is_bus_dff: true)
+### Phase 0.5 — Bus DFF expansion  (was 0b-BUS-DFF)
+> **SKIP IF** no change has `is_bus_dff: true`.
+> **DONE WHEN** N per-bit DFF entries are spliced into study[stage] for all 3 stages, where N = resolved bus width.
 
 When `is_bus_dff: true` on a `new_logic` change, the register is a vector type.
 Gate-level synthesis produces N individual DFF cells (one per bit).
@@ -276,7 +359,9 @@ for stage in ('Synthesize', 'PrePlace', 'Route'):
 
 Do NOT call `eco_expand_chains.py` for bus DFF changes — it skips them automatically.
 
-### 0b-BUS-GATE — Bus combinational gate expansion (MANDATORY when is_bus_gate: true)
+### Phase 0.6 — Bus gate expansion  (was 0b-BUS-GATE)
+> **SKIP IF** no change has `is_bus_gate: true`.
+> **DONE WHEN** N per-bit gate entries are spliced into study[stage] for all 3 stages with `is_bus_gate_bit: true` set per entry.
 
 When a `new_logic_gate` change has `is_bus_gate: true` (e.g. `wire [N:0] X = cond ? A : B`), synthesis produces N individual gate cells — one per bit.
 
@@ -304,7 +389,9 @@ for stage in ('Synthesize', 'PrePlace', 'Route'):
 
 eco_perl_spec.py automatically emits `wire [N-1:0] <signal_base> ;` after detecting the N `is_bus_gate_bit` entries — no extra action needed.
 
-### 0b-DFF — One-shot DFF entry assembly via `eco_emit_dff_entry.py` (MANDATORY)
+### Phase 0.7 — DFF entry assembly via `eco_emit_dff_entry.py` wrapper  (was 0b-DFF)
+> **SKIP IF** no `new_logic_dff` change (i.e., only gates / ports — no sequential insertions).
+> **DONE WHEN** wrapper output JSON exists per target_register AND its per-stage entries are spliced into study[stage], AND `diagnostics.modei_check[]` shows no unhandled leaves.
 
 For EVERY `new_logic` DFF change, invoke `eco_emit_dff_entry.py` ONCE and splice its per-stage output verbatim into `eco_preeco_study.json`. Do NOT call `eco_synth_chain.py` directly — the wrapper invokes it with the correct per-DFF prefix.
 
@@ -342,7 +429,8 @@ python3 script/eco_scripts/eco_synth_chain.py synthesize \
 
 ---
 
-### 0c — Find suitable cell type from PreEco netlist
+### Phase 0.8 — Find suitable cell type from PreEco  (was 0c)
+> **DONE WHEN** every new_logic entry has `cell_type` populated from a matching PreEco neighbor, AND DFF entries have `reset_pin_used` decision + actual pin name OR have the reset baked into the D-input chain.
 
 **Generic discovery — no hardcoded cell names or pin names.** Read module scope from PreEco Synthesize:
 ```bash
@@ -414,7 +502,9 @@ Verify output pin by examining an actual instance from PreEco — always authori
 
 When an input must enter a non-inverting cell as `~SIG`, reuse an existing INV in the host module whose output is `~SIG` — do NOT add a redundant INV.
 
-### 0c-SCOPE — Use preferred_insertion_scope when set (MANDATORY check)
+### Phase 0.9 — Use preferred_insertion_scope when set  (was 0c-SCOPE)
+> **SKIP IF** no change has `preferred_insertion_scope` set in the RTL diff.
+> **DONE WHEN** chain instance_scope set to the preferred child submodule AND last-gate output is registered as a new output_port on the child via port_declaration + port_connection at the parent.
 
 Before assigning `instance_scope` for a gate chain, check `preferred_insertion_scope` from the RTL diff change JSON:
 
@@ -423,7 +513,8 @@ Before assigning `instance_scope` for a gate chain, check `preferred_insertion_s
 
 **Why:** when `input_from_submodule: true`, chain inputs only exist inside the child. FM black-boxes the child in P&R → inputs appear undriven (DFF0X) if gates sit at parent.
 
-### 0d — Assign instance and output net names
+### Phase 0.10 — Assign instance and output net names  (was 0d)
+> **DONE WHEN** every new entry has `instance_name` and `output_net` populated (DFF: `<target>_reg` / `<target>`; gate: `eco_<jira>_<seq>` / `n_eco_<jira>_<seq>`).
 
 **For `new_logic_dff`:**
 ```
@@ -438,7 +529,8 @@ output_net    = n_eco_<jira>_<seq>
 ```
 Same seq across all 3 stages. Seq counter is global across all chains.
 
-### 0e — Record skeleton entry
+### Phase 0.11 — Record skeleton entry  (was 0e)
+> **DONE WHEN** every entry has `instance_scope`, `scope_is_tile_root`, `cell_type`, `instance_name`, `output_net`, `port_connections` (Synth only), `confirmed`, AND the context fields `reason` / `notes` / `source` are non-empty.
 
 **`instance_scope` rules — MANDATORY:**
 - Submodule: `instance_scope = "<INST_A>/<INST_B>"`
@@ -463,7 +555,9 @@ These are the audit trail for engineer review and round-N re-studier (Mode A/H/I
 
 eco_netlist_verifier will add `port_connections_per_stage`, GAP-15 correction, port boundary entries, and consumer cascade entries.
 
-### 0f — Mark wire_swap entries that depend on new_logic outputs
+### Phase 0.12 — Mark wire_swap entries that depend on new_logic outputs  (was 0f)
+> **SKIP IF** no wire_swap changes in rtl_diff.
+> **DONE WHEN** every wire_swap whose `new_token` matches a `new_logic` output has `new_logic_dependency: [<seq>]` set, AND `mux_select_gate_function` / `mux_select_*` fields are propagated from Step 1 verbatim (no De Morgan substitutions).
 
 For each `wire_swap` whose `new_token` matches a `new_logic` output net, add `"new_logic_dependency": [<seq>]`.
 
@@ -482,7 +576,9 @@ fanout=$(awk '/^module <module>/,/^endmodule/' PreEco/Synthesize.v.gz | grep -c 
 - (B) **Backward-trace** from `<target_register>_reg.D` per stage: locate the DFF instance, follow `.D(<wire>)` upstream until you hit the cell whose `<pin>` drives the chain — that cell's instance name is the per-stage rewire target.
 On (A)+(B) miss, emit `cell_name_per_stage[stage]: null` and `confirmed_per_stage[stage]: false` with a reason — the applier will hard-fail rather than silently SKIP.
 
-### 0g — Process `new_port` changes → `port_declaration` study entries
+### Phase 0.13 — Process `new_port` → `port_declaration` entries  (was 0g)
+> **SKIP IF** no `new_port` changes in rtl_diff.
+> **DONE WHEN** every new_port has a port_declaration study entry with `declaration_type`, `module_name`, `signal_name` populated, AND for `declaration_type=output` an INV+INV buffer chain has been emitted when no PreEco driver exists.
 
 1. Identify `module_name`, `signal_name` (`new_token`), `declaration_type`, `instance_scope`
 2. Detect netlist type: `grep -c "^module " /tmp/eco_study_<TAG>_Synthesize.v` — count > 1 = hierarchical
@@ -490,14 +586,18 @@ On (A)+(B) miss, emit `cell_name_per_stage[stage]: null` and `confirmed_per_stag
 4. If hierarchical: validate module name — `grep -c "^module <module_name>\b"`. If 0 → try `<module_name>_0`. Not found → `confirmed: false`.
 5. **Output port driver check (MANDATORY when `declaration_type=output`):** verify the signal has a driver cell in the PreEco Synthesize module scope: `grep -cE "\.(ZN|Z|Q)\s*\(\s*<signal_name>\s*\)" /tmp/eco_study_<TAG>_Synthesize.v`. If 0 (no driver) → the signal is undriven after port_declaration — emit INV+INV buffer chain entries exactly as step 0i does for `port_promotion` with `needs_buffer_chain: true`. Without a driver the output port is undriven → FM globally unmatched.
 
-### 0h — Process `port_connection` changes → `port_connection` study entries
+### Phase 0.14 — Process `port_connection` entries  (was 0h)
+> **SKIP IF** no `port_connection` changes in rtl_diff.
+> **DONE WHEN** every port_connection has `parent_module`, `instance_name`, `port_name`, `net_name`, `child_module_name`, AND multi-instance entries are expanded via `flat_net_name_per_instance` into one entry per instance.
 
 1. Identify `parent_module`, `instance_name`, `port_name`, `net_name`, `submodule_type`
 2. **MANDATORY — Validate `submodule_pattern`:** `grep -c "<submodule_type> <instance_name>" /tmp/eco_study_<TAG>_Synthesize.v`. If 0 → check PrePlace and Route; record per-stage `instance_confirmed` flags.
 
 **Per-instance expansion:** When the rtl_diff entry has `flat_net_name_per_instance`, emit one separate `port_connection` study entry per instance, each with its own `instance_name` and `net_name` from the dict. When absent, emit a single entry using `flat_net_name` as normal. This is backward-compatible — single-instance ECOs produce one entry, multi-instance cross-channel ECOs produce one entry per instance with the correct hookup net.
 
-### 0i — Process `port_promotion` changes → `port_promotion` study entries
+### Phase 0.15 — Process `port_promotion` entries  (was 0i)
+> **SKIP IF** netlist is hierarchical (`grep -c '^module ' Synthesize.v` > 1) — use port_declaration + port_connection instead.
+> **DONE WHEN** every port_promotion has `flat_net_confirmed` decided, AND missing-driver cases have emitted INV+INV buffer chain entries (do NOT rely on verifier for this).
 
 1. Check Synthesize: `grep -cw "<signal_name>" /tmp/eco_study_<TAG>_Synthesize.v`
    - If ≥ 1 → signal exists in file. **Also verify it has a driver cell:** `grep -c "\.\(ZN\|Z\|Q\)( <signal_name> )" /tmp/eco_study_<TAG>_Synthesize.v`. If driver found → `flat_net_confirmed: true`, no buffer chain needed. If signal exists but has NO driver → treat as undriven → proceed to step 2 (emit buffer chain).
@@ -505,7 +605,9 @@ On (A)+(B) miss, emit `cell_name_per_stage[stage]: null` and `confirmed_per_stag
    - **The studier itself MUST emit the buffer chain** — do NOT rely on the verifier. Emit two `new_logic_gate` entries directly into the study JSON: `INV(<driver_net>) → n_eco_<jira>_<signal>_inv1`, `INV(n_eco_<jira>_<signal>_inv1) → <signal_name>`. Use INV cell types from PreEco neighbours. Without these entries the output port is undriven → FM globally unmatched → thousands of failures.
 3. If `<signal_name>_reg` also absent → `flat_net_confirmed: false`, `reason: "net and reg both absent — port_promotion cannot be auto-applied"`. Log for engineer review.
 
-### Phase 0e — Process `enable_swap` changes
+### Phase 0.16 — Process `enable_swap` changes  (was Phase 0e — was out-of-order at end of Phase 0)
+> **SKIP IF** no `enable_swap` changes in rtl_diff.
+> **DONE WHEN** for every enable_swap: the enable pin (CE/EN/WE/E) is identified on the target DFF, per-stage rewire entries are emitted (one per stage per bus bit), and new condition gate chain entries are emitted from `new_enable_gate_chain[]`.
 
 For each `enable_swap` change (clock-enable / write-enable pin rewire on an existing DFF):
 
@@ -569,16 +671,19 @@ Log: `CONDITION_GATE_CHAIN: emitting <N> new_logic_gate entries for wire_swap <o
 
 **Multi-instance:** when `instances` is non-null, process each instance's FM results independently.
 
-### 1. Read the PreEco netlist (once per stage, reuse across all cells)
+### Phase 1.1 — Read the PreEco netlist (once per stage, reuse across all cells)  (was 1)
+> **DONE WHEN** `/tmp/eco_study_<TAG>_<Stage>.v` exists for all 3 stages.
 ```bash
 zcat <REF_DIR>/data/PreEco/<Stage>.v.gz > /tmp/eco_study_<TAG>_<Stage>.v
 ```
 
-### 2–3. Find and extract cell instantiation block
+### Phase 1.2 — Find and extract cell instantiation block  (was 2–3)
+> **DONE WHEN** each FM-qualified cell's instantiation block has been parsed and its `.portname(netname)` map extracted.
 
 Read from the line with the cell name through the closing `);`. Extract all `.portname(netname)` entries.
 
-### 4. Confirm old_net is present
+### Phase 1.3 — Confirm old_net is present  (was 4)
+> **DONE WHEN** each rewire entry has `old_net` populated AND `confirmed: true/false` decided. HFS-alias case has `old_net_alias: true` + reason set when applicable.
 
 **Step 1 — Try direct old_net name:** `grep -c "\.<pin>(<old_token>)" /tmp/eco_study_<TAG>_<Stage>.v`
 - If ≥ 1 → `"old_net": "<old_token>"`, `"confirmed": true`
@@ -587,7 +692,8 @@ Read from the line with the cell name through the closing `);`. Extract all `.po
 
 If neither found: `"confirmed": false`. eco_netlist_verifier will run stage fallback (GAP-5).
 
-### 4b. Basic new_net reachability
+### Phase 1.4 — Basic new_net reachability  (was 4b)
+> **DONE WHEN** each rewire entry has `new_net` populated AND `new_net_reachable: true/false` decided. (Full cone verification deferred to verifier Check 10.)
 
 **Priority 1 — Direct name:** `grep -cw "<new_token>" /tmp/eco_study_<TAG>_<Stage>.v`. If ≥ 1 → `"new_net": "<new_token>"`.
 
@@ -595,25 +701,15 @@ If neither found: `"confirmed": false`. eco_netlist_verifier will run stage fall
 
 Backward cone and forward trace verification are handled by eco_netlist_verifier Check 10.
 
-### 4d. Timing estimate (Synthesize only)
-
-Compare driver structure of `old_net` vs `new_net` in PreEco Synthesize. Record:
-```json
-"timing_lol_analysis": {
-  "old_net_driver": "<cell> (<type>)",
-  "new_net_driver": "<cell> (<type>)",
-  "old_net_fanout": N, "new_net_fanout": N,
-  "timing_estimate": "BETTER|LIKELY_BETTER|NEUTRAL|RISK|LOAD_RISK|UNCERTAIN"
-}
-```
-
-### 5. Verify output count before moving to next stage
+### Phase 1.5 — Verify output count per stage  (was 5)
+> **DONE WHEN** `N qualifying cells` from the FM rpt == `N entries` in study[stage] for the current stage. Mismatch → re-check Phase 1.2–1.4.
 ```
 Qualifying list had: N cells
 Output JSON has:     N entries  ← must match
 ```
 
-### 6. Cleanup temp files (after all stages complete)
+### Phase 1.6 — Cleanup temp files  (was 6)
+> **DONE WHEN** `/tmp/eco_study_<TAG>_*.v` files are removed.
 ```bash
 rm -f /tmp/eco_study_<TAG>_Synthesize.v /tmp/eco_study_<TAG>_PrePlace.v /tmp/eco_study_<TAG>_Route.v
 ```
