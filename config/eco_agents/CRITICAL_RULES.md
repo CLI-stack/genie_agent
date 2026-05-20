@@ -641,7 +641,7 @@ jq '."<scope>/<sig>".actual_wire_Route' rename_map.json
 
 **Step 3 validator Check 38 enforces** the polarity parity for chain leaf inputs — HARD FAIL on cross-stage parity mismatch.
 
-**Why polarity matters:** A chain reading `.A2(ArbCtrlPeRdy)` computes `+ArbCtrlPeRdy` in stages where the wire is positive-polarity, but `~ArbCtrlPeRdy` in any stage where odd INVs flipped it → FM cone divergence → unfixable through cell-type/CP rewires. See run 20260515084942 round 6 NeedFreqAdj_reg: Route had 3 INVs between `ArbCtrlPeRdy_reg.Q` (= `aps_rename_12109_`) and the port wire `ArbCtrlPeRdy`, while Synth/PP had 0/2. Six rounds of fixes targeted clock/data symptoms while the actual cause was polarity inversion in the OR4 chain.
+**Why polarity matters:** A chain reading a bare RTL net `.A2(<sig>)` computes `+<sig>` in stages where the wire is positive-polarity, but `~<sig>` in any stage where odd INVs flipped it → FM cone divergence → unfixable through cell-type/CP rewires. The hazard pattern: P&R inserts a drive-strength inverter buffer chain (odd count) between the MB-merged DFF.Q output and the bare-named port wire — same name across all stages, opposite logical value in the buffered stage. Symptom: one-target FM FAIL that survives `update_gate_function` retries because the gate function is correct; the input wire is the bug.
 
 **Why bare-name preference still exists:** HFS aliases change between P&R runs. Using an alias in Round 1 that gets renamed in Round 2 causes SKIPPED entries. The polarity-correct preference order remains stable across rounds because FM's per-stage resolution is deterministic for the same netlist.
 

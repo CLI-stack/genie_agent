@@ -53,8 +53,8 @@ patterns:
       Fix: delete the bogus `wire <name>[<bit>] ;` line from PostEco netlists.
       Consumers reference `<name>[<bit>]` as bus-bit access, which is fine —
       only the wire decl is broken.
-      Run 20260512070625 root cause: round 2 agent direct-edit added
-      `wire REG_UmcCfgEco[1] ;` to all 3 PostEco netlists.
+      Typical root cause: an agent direct-edit added `wire <name>[<bit>] ;`
+      to PostEco netlists in a fix-up round instead of going through applier.
     recovery:
       whitelist: true
       action: delete_bracket_wire_decl
@@ -97,11 +97,12 @@ patterns:
       element on a SCALAR net/port {match}. Either declare {match} as a bus
       (`wire [N:0] {match}`) OR rewrite consumers to use a flat-net form
       (`{match}_<bit>_`).
-      Run 20260512070625 root cause: round 2 partial fix added the new flat-net
-      `REG_UmcCfgEco_b1` for d007.A2 ONLY — left 37+ other consumer references
-      in Route still using `REG_UmcCfgEco[1]` bracket form. After deleting the
-      bogus wire decl (invalid_wire_decl_bracket), Route surfaced this second
-      bug. Mechanical fix: sed-replace bracket consumers with flat-net form.
+      Typical co-occurrence: a partial fix added a new flat-net for one
+      consumer but left other consumer references still in `<name>[<bit>]`
+      bracket form. After deleting the bogus wire decl
+      (invalid_wire_decl_bracket), surviving bracket consumers surface this
+      second bug. Mechanical fix: sed-replace bracket consumers with flat-net
+      form across all stages.
     recovery:
       whitelist: false   # Requires picking flat-net rename target; not safe blind
       action: rename_bracket_consumers

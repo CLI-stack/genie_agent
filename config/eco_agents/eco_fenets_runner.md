@@ -144,7 +144,7 @@ python3 script/genie_cli.py \
 ```
 Read `<fenets_tag>` from CLI output.
 
-> **MANDATORY net format — pass tile-relative paths, NOT tile-prefixed.** Use net values exactly as written in `queries.json` net_path field (e.g. `ARB/CTRLSW/NeedFreqAdj`, `ARB/DCQARB/<wire>`). DO NOT pre-prepend `<TILE>/` (e.g. `umccmd/ARB/CTRLSW/...`) — `find_equivalent_nets.csh` auto-prepends the tile name. Pre-prepending produces `<TILE>/<TILE>/...` paths that FM-036 on every query (run 20260511201004 root cause). The script is idempotent against double-prefix as a defensive fix, but the contract is: pass tile-RELATIVE paths only.
+> **MANDATORY net format — pass tile-relative paths, NOT tile-prefixed.** Use net values exactly as written in `queries.json` net_path field (e.g. `<HIER>/<wire>`). DO NOT pre-prepend `<TILE>/` — `find_equivalent_nets.csh` auto-prepends the tile name. Pre-prepending produces `<TILE>/<TILE>/...` paths that FM-036 on every query. The script is idempotent against double-prefix as a defensive fix, but the contract is: pass tile-RELATIVE paths only.
 
 **B2. Poll every 5 minutes with individual Bash tool calls** (keeps main session responsive and showing progress):
 ```bash

@@ -526,14 +526,14 @@ If parity differs across stages → **Mode J confirmed**. Don't change gate func
 2. **`actual_wire_<stage>` from rename map** — if `eco_fenets_rename_map.json` has `actual_wire_<stage>` field for this signal, use that. **FM-resolved**, polarity-preserving.
 3. **NEVER** tap mid-chain (`FxPlace_ZINV_*`, `FxPrePlace_*` intermediate nets) — these are placer scaffolding, renamed/removed by next P&R iteration.
 
-**Worked example (run 20260515084942 round 6, `NeedFreqAdj_reg` failure):**
-- Gate: `eco_9868_needfreqadj_d003.A2`
-- Bare net `ArbCtrlPeRdy`:
-  - Synth: drives directly from `ArbCtrlPeRdy_reg.Q` → parity 0
-  - PrePlace: through scan-rename `dftopt230` → parity 0
-  - Route: through `INVD10 → INVD10 → INVSKRD10 → aps_rename_12109_` → **parity 1**
-- MB cell `IReset_reg_dup7_MB_ArbCtrlRecRdy_reg_MB_ArbCtrlPeRdy_reg_MB_...` — position 3 = `ArbCtrlPeRdy_reg` → Q3 = `aps_rename_12109_`
-- Fix: rewire Route only `.A2(ArbCtrlPeRdy) → .A2(aps_rename_12109_)` → Route FM PASS
+**Worked-example shape (synthetic):**
+- Gate: `<new_logic_gate>.<input_pin>` driven by bare RTL net `<sig>`
+- Per-stage walk of `<sig>`:
+  - Synth: drives directly from `<sig>_reg.Q` → parity 0
+  - PrePlace: through 0 or even-count INVs (e.g. via scan-rename intermediate) → parity 0
+  - Route: through odd-count INV buffer chain (e.g. `INVD* → INVD* → INVSKR* → <mb_q_net>`) → **parity 1**
+- MB cell instance name lists merged registers in pin order (`<reg1>_MB_<reg2>_MB_...`) — decode position of target register to identify its Q-pin net
+- Fix: rewire failing stage only `.<pin>(<bare_sig>) → .<pin>(<mb_q_net>)` → FM PASS
 
 **Cross-reference:** This mode is caught at study-time by `eco_validate_step3.py` Check 38 (HIGH/38-CHAIN-LEAF-POLARITY-MISMATCH). If Check 38 fires on a study patch during ROUND, do NOT proceed to applier — Mode J needs a wire change, not a re-apply.
 
