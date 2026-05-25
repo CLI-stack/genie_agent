@@ -353,6 +353,13 @@ The wrapper emits N entries (`<target>_reg_<bit>_`) with per-bit D (`<d_src>[bit
 **D-input gate chain — must also be per-bit (MANDATORY when chain is non-empty):**
 If the bus DFF has a D-input gate chain (e.g., reset-baked `INR2(data, reset)` → D), that chain gate must be replicated N times with bit-indexed data inputs — one gate per DFF bit. Never emit a single scalar chain gate shared across all N bits: each bit's DFF connects to its own gate output, and each gate's data input is the bit-indexed form of the source bus signal (e.g., `data[bit]`). Scalar inputs such as reset signals are shared unchanged across all N gate entries.
 
+**Per-stage net form for bus bit-indexed gate inputs (MANDATORY):**
+Bus signal bits appear in different forms across stages — use the correct form per stage:
+- **Synthesize:** bracket form is valid inside `port_connections` — use `signal[bit]` (e.g., `.A1(wdbptr_org0_d1[3])`)
+- **PrePlace / Route:** bit-indexed wires use flat underscore-escaped form — use `signal_N_` (e.g., `wdbptr_org0_d1_3_`)
+
+Verify each per-stage form exists in the corresponding PreEco netlist: `zgrep -c "signal_N_" PreEco/<stage>.v.gz`. If 0 occurrences in Route (P&R may merge or rename the bit), mark that gate entry with `input_from_new_port: "signal_N_"` so the verifier skips the existence check and let eco_applier resolve at apply time.
+
 **Step 3 — Splice all N entries per stage:**
 ```python
 out = json.load(open(f'data/{TAG}_eco_dff_entry_{target}.json'))
