@@ -113,14 +113,24 @@ After FM resolves the gate driving `old_token`, record in the change entry:
 ```
 `old_driver_inverting` = best-effort at Step 1: grep PreEco Synthesize for the cell driving `old_token`, record `old_driver_cell_type`. Set `old_driver_inverting: true` if cell type starts with an inverting prefix (AOI/OAI/NOR/NAND/INV/NR/ND). This is a placeholder — **the definitive polarity is determined in Step 3 from the FM `(+)/(-)` result** (see `eco_netlist_studier.md` and_term gate chain rule).
 
-**Gate chain selection (Step 3 uses FM polarity, not cell type prefix):**
+**Gate chain selection — E4c PreEco grep FIRST, FM polarity fallback:**
 
-The chain must compute: `output = old_expression & ~new_term`. Cell type prefix alone is unreliable — AOI12/INR3 can output `+old_expression` at FM `(+)` polarity. The studier reads the Step 2 fenets qualifying impl line polarity for the old driver to determine the correct gate:
+The chain must compute: `output = old_expression & ~new_term`. Before choosing NOR2 or INR2 from FM polarity alone, **grep the declaring module in PreEco Synthesize for compound gates** (E4c rule):
 
-| FM polarity on old driver | Renamed output value | Correct gate |
+```bash
+zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | \
+  awk "/^module <declaring_module>\b/,/^endmodule/" | \
+  grep -E "^\s+(AN|ND|NR|INR|AOI|OAI)[A-Z0-9]" | head -10
+```
+
+If the grep finds gates that compute `old_expression & ~new_term` (e.g. `AN2`, `ND2`) → use those cell types with `cell_type_from_preeco: true`. This is more reliable than FM polarity alone — synthesis already picked the correct cell for the library and RTL pattern (e.g. AOI12 driver → INV+AN2 pattern, not NOR2/INR2).
+
+**Only if E4c grep returns no matching compound gate**, fall back to FM polarity:
+
+| FM polarity on old driver | Renamed output value | Fallback gate |
 |---|---|---|
-| `(-)` negative | `~old_expression` | `NOR2(renamed, new_term)` ✓ |
-| `(+)` positive | `+old_expression` | `INR2(renamed, new_term)` ✓ |
+| `(-)` negative | `~old_expression` | `NOR2(renamed, new_term)` |
+| `(+)` positive | `+old_expression` | `INR2(renamed, new_term)` |
 
 **CRITICAL — `and_term` vs `wire_swap + intermediate_net_insertion`:**  
 `and_term` is ONLY for simple single-gate gating (one new term added to one existing expression). If the RTL diff shows **multiple new conditions prepended before the old expression as a default fallback** (priority chain pattern: `new_cond_1 ? val1 : new_cond_2 ? val2 : <old_expr>`), this is **NOT `and_term`** — it MUST be classified as `wire_swap` with `fallback_strategy: "intermediate_net_insertion"`. The key test: if the `new_condition_gate_chain` requires MUX2 gates, it is `wire_swap + intermediate_net_insertion`, not `and_term`. Misclassifying as `and_term` causes the studier to do a simple gate modification and skip the full MUX cascade — the ECO logic is never applied.
@@ -661,17 +671,17 @@ Example — RTL `if (IReset) X<=0; else X<=A & ~B & ((src==3'b000) | (src==3'b01
 3. Final gate of sub-chain: 1-bit (condition true/false).
 4. `<val>` (`1'b0` / `1'b1`) → what the MUX outputs when this condition matches.
 
-**Combining conditions with the old expression — MANDATORY.** `new_condition_gate_chain` MUST include condition gates AND the priority MUX cascade that connects them to the pivot. Without the cascade, nothing drives the pivot net.
+**Combining conditions with the old expression — MANDATORY. NO MUX2.**
 
-Cascade:
+`new_condition_gate_chain` MUST include condition gates AND a final compound gate that drives the pivot net. **MUX2 cascade is FORBIDDEN** for `intermediate_net_insertion` — MUX2 creates structural cone divergence between Synth ECO and PP ECO that FM cannot verify stage-to-stage (globally unmatched cut-point DFFs in MUX select paths). Use compound gates from E4c (OA12, OAI21, AN3, ND3) instead.
+
+Pattern: rename the existing pivot driver output → `ECO_<jira>_net_orig`, build condition gates, combine with a final compound gate that outputs `<pivot_net>` directly:
 ```
-c_mux1: MUX2(val_1, pivot_net_orig, sel=cond_1) → c_mux1
-c_mux2: MUX2(val_2, c_mux1,         sel=cond_2) → c_mux2
-…
-c_muxN: MUX2(val_N, c_mux<N-1>,     sel=cond_N) → <pivot_net>   ← restores original name
+condition gates → n_eco_<jira>_cN outputs
+OA12(cond_output, ECO_<jira>_net_orig, ~blocking_cond) → <pivot_net>  ← restores original name
 ```
 
-Last MUX MUST output `<pivot_net>` (not a new net) — keeps downstream chain unchanged. Use `gate_function: "MUX2"` (eco_applier resolves to the library `MUX2[A-Z0-9]*`). Constants `1'b0`/`1'b1` are accepted directly in MUX inputs (`.I1(1'b0)`).
+Last gate MUST output `<pivot_net>` (not a new net) — keeps downstream chain unchanged.
 
 Record as `new_condition_gate_chain` (flat array of all gates):
 
