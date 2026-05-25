@@ -390,6 +390,10 @@ eco_applier reads `no_wire_decl_needed: true` and never adds `wire <net>;` for t
 
 For every input net in every `d_input_gate_chain` (skip `1'b0`, `1'b1`, `n_eco_*`): grep the net in all 3 PreEco gate-level netlists. If found in Synthesize but absent in PrePlace or Route → set `mode_H_risk: true` and `missing_in_stages: ["PrePlace"|"Route"]` on that gate chain entry. The net is likely driven inside a hard macro black-boxed in P&R. eco_netlist_studier reads this and applies `needs_named_wire: true` for those stages automatically — no wasted FM round.
 
+### Step D-SE-SI — New-DFF scan pins (MANDATORY)
+
+For every `new_logic` DFF, set `SE = SI = "1'b0"` in **all 3 stages** of `port_connections_per_stage`. NEVER copy bridge wires or `neighbor_dff` scan pins. Scan stitching is out of scope — DFT team handles it.
+
 ---
 
 ## Step E — RTL Expression Decomposer (MANDATORY for new_logic DFFs)
