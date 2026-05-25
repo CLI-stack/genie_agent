@@ -33,7 +33,17 @@ from pathlib import Path
 
 def resolve_from_defines(macro: str, rtl_dir: str) -> int | None:
     """Grep RTL source files for `define MACRO hi:lo or `define MACRO_WIDTH N."""
-    if not macro or not rtl_dir:
+    if not macro:
+        return None
+
+    # Detect literal range format already resolved by the analyzer: "hi:lo" or "hi : lo"
+    # e.g. bus_width_expr="6:0" → N = 6-0+1 = 7.  No file grep needed.
+    m_range = re.match(r'^\s*(\d+)\s*:\s*(\d+)\s*$', macro)
+    if m_range:
+        hi, lo = int(m_range.group(1)), int(m_range.group(2))
+        return hi - lo + 1
+
+    if not rtl_dir:
         return None
 
     rtl_path = Path(rtl_dir)
