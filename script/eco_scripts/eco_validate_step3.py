@@ -498,9 +498,9 @@ def main():
 
     # ── 6. and_term changes: GAP-15 result must be present ──────────────────
     and_term_changes = [c for c in rtl_diff.get('changes',[]) if c.get('change_type') == 'and_term']
-    gap15_file = Path(args.study.replace('_eco_preeco_study.json', '_eco_gap15_check.json'))
+    gap15_file = Path(args.study.replace('_eco_preeco_study.json', '_eco_and_term_port_check.json'))
     if and_term_changes and not gap15_file.exists():
-        issues.append(f"HIGH: and_term changes present but eco_gap15_check.json missing — eco_gap15_check.py was not run")
+        issues.append(f"HIGH: and_term changes present but eco_and_term_port_check.json missing — eco_and_term_port_check.py was not run")
 
     # ── 7. eco_expand_chains must have run ───────────────────────────────────
     marker = Path(args.study).parent / f"{args.tag}_eco_preeco_study_eco_expand_chains_marker.txt"

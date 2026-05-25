@@ -187,14 +187,14 @@ If ANY of the 3 assertions fail → **HARD STOP**, do NOT spawn Step 3. Re-spawn
 **MANDATORY pre-Step 3: Run GAP-15 check script (do this BEFORE spawning eco_netlist_studier):**
 ```bash
 cd <BASE_DIR>
-python3 script/eco_scripts/eco_gap15_check.py \
+python3 script/eco_scripts/eco_and_term_port_check.py \
     --rtl-diff data/<TAG>_eco_rtl_diff.json \
     --ref-dir  <REF_DIR> \
-    --output   data/<TAG>_eco_gap15_check.json
+    --output   data/<TAG>_eco_and_term_port_check.json
 ```
-Read the output JSON and **pass it explicitly to the eco_netlist_studier sub-agent prompt** as `GAP15_CHECK_PATH=data/<TAG>_eco_gap15_check.json`. The studier reads this file to get `is_output_port` and `strategy` for each `and_term` change — it does NOT re-derive these itself.
+Read the output JSON and **pass it explicitly to the eco_netlist_studier sub-agent prompt** as `GAP15_CHECK_PATH=data/<TAG>_eco_and_term_port_check.json`. The studier reads this file to get `is_output_port` and `strategy` for each `and_term` change — it does NOT re-derive these itself.
 
-**Verify script ran:** The script prints `ECO_SCRIPT_LAUNCHED: eco_gap15_check.py` to stdout and writes a `_marker.txt` sidecar. The Step 3 RPT MUST contain a line starting with `ECO_SCRIPT_LAUNCHED: eco_gap15_check.py`. If this line is absent from the RPT, the script was NOT called — the agent must re-run it before spawning eco_netlist_studier.
+**Verify script ran:** The script prints `ECO_SCRIPT_LAUNCHED: eco_and_term_port_check.py` to stdout and writes a `_marker.txt` sidecar. The Step 3 RPT MUST contain a line starting with `ECO_SCRIPT_LAUNCHED: eco_and_term_port_check.py`. If this line is absent from the RPT, the script was NOT called — the agent must re-run it before spawning eco_netlist_studier.
 
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_netlist_studier.md` prepended. Pass:
 - `REF_DIR`, `TAG`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
@@ -264,7 +264,7 @@ If any check fails — eco_netlist_studier failed. Do NOT spawn verifier. Re-spa
 
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_netlist_verifier.md` prepended. Pass:
 - `REF_DIR`, `TAG`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
-- `GAP15_CHECK_PATH=data/<TAG>_eco_gap15_check.json`
+- `GAP15_CHECK_PATH=data/<TAG>_eco_and_term_port_check.json`
 - `SPEC_SOURCES` (same mapping passed to eco_netlist_studier — verifier uses it for per-stage net resolution in Check 2 and cone verification in Check 10)
 - Task: Enrich every entry in `eco_preeco_study.json` — 14 checks covering GAP-15, per-stage nets, port boundary, consumer cascade, CTS, cone verification, missing entry detection
 

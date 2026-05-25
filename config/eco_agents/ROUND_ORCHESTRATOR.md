@@ -480,12 +480,12 @@ If `eco_fm_analysis_round<ROUND>.json` contains `"action": "tune_file_update"` e
 **MANDATORY pre-Step 6f: Run GAP-15 check script:**
 ```bash
 cd <BASE_DIR>
-python3 script/eco_scripts/eco_gap15_check.py \
+python3 script/eco_scripts/eco_and_term_port_check.py \
     --rtl-diff data/<TAG>_eco_rtl_diff.json \
     --ref-dir  <REF_DIR> \
-    --output   data/<TAG>_eco_gap15_check.json
+    --output   data/<TAG>_eco_and_term_port_check.json
 ```
-Pass `GAP15_CHECK_PATH=data/<TAG>_eco_gap15_check.json` to the studier sub-agent prompt.
+Pass `GAP15_CHECK_PATH=data/<TAG>_eco_and_term_port_check.json` to the studier sub-agent prompt.
 
 **Step 6f has two sequential passes — re_studier fixes failing entries, verifier enriches ALL entries:**
 
@@ -502,7 +502,7 @@ Wait for eco_netlist_re_studier to complete and verify `eco_step3_netlist_study_
 
 **Pass 6f-B — Spawn eco_netlist_verifier** with `config/eco_agents/eco_netlist_verifier.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
-- `GAP15_CHECK_PATH=data/<TAG>_eco_gap15_check.json`
+- `GAP15_CHECK_PATH=data/<TAG>_eco_and_term_port_check.json`
 - `SPEC_SOURCES` (same mapping — verifier uses it for per-stage net resolution in Check 2)
 - Task: re-enrich ALL entries in `eco_preeco_study.json` with per-stage nets, gap checks, port boundary, consumer cascade, CTS checks
 
