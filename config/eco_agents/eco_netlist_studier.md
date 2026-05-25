@@ -355,10 +355,10 @@ If the bus DFF has a D-input gate chain (e.g., reset-baked `INR2(data, reset)` �
 
 **Per-stage net form for bus bit-indexed gate inputs (MANDATORY):**
 Bus signal bits appear in different forms across stages — use the correct form per stage:
-- **Synthesize:** bracket form is valid inside `port_connections` — use `signal[bit]` (e.g., `.A1(wdbptr_org0_d1[3])`)
-- **PrePlace / Route:** bit-indexed wires use flat underscore-escaped form — use `signal_N_` (e.g., `wdbptr_org0_d1_3_`)
+- **Synthesize:** bracket form is valid inside `port_connections` — use `<signal>[<bit>]`
+- **PrePlace / Route:** bit-indexed wires use flat underscore-escaped form — use `<signal>_<bit>_`
 
-Verify each per-stage form exists in the corresponding PreEco netlist: `zgrep -c "signal_N_" PreEco/<stage>.v.gz`. If 0 occurrences in Route (P&R may merge or rename the bit), mark that gate entry with `input_from_new_port: "signal_N_"` so the verifier skips the existence check and let eco_applier resolve at apply time.
+Verify each per-stage form exists in the corresponding PreEco netlist: `zgrep -c "<signal>_<bit>_" PreEco/<stage>.v.gz`. If 0 occurrences in Route (P&R may have merged or renamed that bit), mark the gate entry with `input_from_new_port: "<signal>_<bit>_"` so the verifier skips the existence check and let eco_applier resolve at apply time.
 
 **Step 3 — Splice all N entries per stage:**
 ```python
