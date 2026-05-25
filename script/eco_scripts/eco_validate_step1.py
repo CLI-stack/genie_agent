@@ -443,6 +443,44 @@ def main():
     if bus_dff_issues:
         overall_pass = False
 
+    # ── and_term-preference check (WARN) — flag wire_swap+fallback when
+    # and_term is likely feasible. Per rtl_diff_analyzer.md "PREFER and_term
+    # WHEN FEASIBLE" rule: a single new else-if branch with a hop-0 compound
+    # cell driver should classify as and_term, NOT wire_swap+fallback. The
+    # most common mistake: agent reads d_input_decompose_failed=true and
+    # falls back to wire_swap — that flag does NOT disqualify and_term.
+    _COMPOUND_CELL_PREFIXES = ('IAOI', 'OAI', 'AOI', 'IOAI', 'AOAI',
+                                'IND2', 'IND3', 'INR2', 'INR3',
+                                'AOA', 'OAO', 'AO2', 'OA2')
+    and_term_pref_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') != 'wire_swap':
+            continue
+        if c.get('fallback_strategy') not in ('driver_substitution',
+                                              'intermediate_net_insertion'):
+            continue
+        old_driver = (c.get('old_driver_cell_type') or '').upper()
+        if not any(old_driver.startswith(p) for p in _COMPOUND_CELL_PREFIXES):
+            continue  # no compound cell to host and_term — fallback acceptable
+        # Single new branch + compound cell at hop 0 → and_term should have been tried.
+        # NOTE: can't reliably count NEW else-if branches from context_line alone
+        # (agent includes adjacent existing branches as context). Rely on the
+        # mux_select_reasoning to indicate if the agent had a real polarity-fail
+        # justification for the fallback.
+        reason = (c.get('mux_select_reasoning') or '').lower()
+        # If the agent documented a SPECIFIC infeasibility, accept the fallback
+        if 'polarity' in reason and ('fail' in reason or 'infeasible' in reason):
+            continue
+        tgt = c.get('target_register') or c.get('new_token') or '?'
+        and_term_pref_issues.append(
+            f"WARN: changes[{idx}] target={tgt}: wire_swap+{c.get('fallback_strategy')} "
+            f"used but ONE new else-if branch + compound cell '{old_driver[:30]}' "
+            f"at hop 0 suggests `and_term` is feasible. Per rtl_diff_analyzer.md "
+            f"`PREFER and_term WHEN FEASIBLE` rule, fall back only when polarity "
+            f"check fails on BOTH NOR2 and INR2 candidates. d_input_decompose_failed "
+            f"does NOT disqualify and_term. Reconsider classification.")
+    # WARN — not blocking — agent may have legitimate reason; just flag for review
+
     # ── SE/SI scan-pin check — new ECO DFFs MUST be isolated from scan chain
     # in ALL 3 stages (Synth/PrePlace/Route). Bridge wires (e.g.
     # eco<jira>_si_bridge, ECO_*_SI_out, neighbor_dff's scan pins) MUST NOT be
@@ -1519,6 +1557,8 @@ def main():
         'bus_dff_issue_count':            len(bus_dff_issues),
         'scan_pin_issue_count':           len(scan_pin_issues),
         'scan_pin_issues':                scan_pin_issues,
+        'and_term_pref_warn_count':       len(and_term_pref_issues),
+        'and_term_pref_warns':            and_term_pref_issues,
         'bus_dff_issues':                 bus_dff_issues,
         'overall_pass':          overall_pass,
         'entries':               results,
