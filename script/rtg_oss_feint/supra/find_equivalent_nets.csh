@@ -175,9 +175,16 @@ redirect ${refdir_name}/${output_rpt} {
 exit
 TCLEOF
 
+    # umcdat Synthesize target requires higher memory reservation (large netlist)
+    set extra_opts = ""
+    if ("$tile_name" == "umcdat" && "$tgt" == "FmEqvPreEcoSynthesizeVsPreEcoSynRtl") then
+        set extra_opts = "-r 130000"
+        echo "umcdat Synthesize: using -r 130000 (high memory reservation)"
+    endif
+
     echo "Launching TileBuilderIntFM for target: $tgt"
     cd $refdir_name
-    TileBuilderTerm -x "TileBuilderIntFM --nogui --append $tcl_script $tgt" &
+    TileBuilderTerm -x "TileBuilderIntFM --nogui --append $tcl_script $tgt $extra_opts" &
     cd $source_dir
 
     set result_files = ($result_files $result_file)
