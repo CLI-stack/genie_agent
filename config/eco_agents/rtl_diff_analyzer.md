@@ -640,9 +640,18 @@ Script error → E4c.
 
 #### E4c — PreEco Compound Gate Discovery (MANDATORY FIRST — before any RTL decomposition)
 
-**RULE: For every new condition sub-expression in the priority chain, find an EXISTING cell in the PreEco Synthesize netlist that implements the same boolean function, and use that EXACT cell type and pin mapping. Never invent a gate structure from RTL decomposition alone.**
+**HARD RULE — PreEco gates FIRST, RTL decomposition NEVER unless PreEco has zero compound gates:**
 
-Why: synthesis chose specific compound gate types (OA12, OAI21, AN3, ND3, etc.) based on the library and RTL pattern. PD stages handle these consistently between Synth and PP. FM can verify them structurally without needing SVF. Any gate structure that diverges from what synthesis produces causes scan-enable path structural differences between Synth ECO and PP ECO → thousands of FM failures.
+Before writing ANY gate chain entry, run this grep against PreEco Synthesize scoped to the declaring module:
+```bash
+zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | \
+  awk "/^module <declaring_module>\b/,/^endmodule/" | \
+  grep -E "^\s+(OA|OAI|AN3|AN4|ND3|ND4|NR3|INR3|IAOI)[A-Z0-9]" | head -20
+```
+- **If the grep returns ANY compound gates** → you MUST build the gate chain exclusively from those cell types. Pick the cell whose boolean function matches the RTL sub-expression. Set `cell_type_from_preeco: true` on every gate. Step 1 validator FAILS any chain that skips this when compound gates exist in scope.
+- **If the grep returns nothing** → no compound gates exist in the declaring module → only then proceed to E4d (RTL decomposition with simple gates).
+
+**Why this matters:** Synthesis chooses compound gate types (OA12, OAI21, AN3, ND3) that are structurally consistent across Synth/PP/Route stages and FM-verifiable without SVF. Using different-but-logically-equivalent simple gates (OR2+AND2, NR2+OR3+AN2) creates intermediate nodes that FM cannot match stage-to-stage → ToggleChn_reg-style failures even when the boolean is correct. The PreEco netlist is the ground truth — it already shows which compound types synthesis picked for this library and RTL pattern.
 
 How: grep the PreEco Synthesize netlist for cells near the pivot cone that implement each sub-expression's boolean function (OA21 for `(A|B)&C`, OA12 for `(A|B)&~C`, etc.). Use that cell type verbatim — don't substitute a logically-equivalent alternative.
 
@@ -671,13 +680,15 @@ zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | \
 
 **If no compound gate found:** fall through to E4d (RTL decomposition with simple gates).
 
-#### E4d — Decompose the new prepended conditions into a gate chain (FALLBACK when E4c finds nothing)
+#### E4d — RTL decomposition (LAST RESORT — only when E4c grep returned zero compound gates)
 
-When `fallback_strategy: "intermediate_net_insertion"` AND E4c found nothing, synthesize the new conditions as a gate chain from RTL. Studier Step 0c-4 Entry B inserts these gates at the pivot net.
+**Do NOT enter E4d if E4c found any compound gate. E4d is only for modules with no compound cells at all (rare).**
+
+When `fallback_strategy: "intermediate_net_insertion"` AND E4c grep confirmed zero compound gates in scope, decompose from RTL. Studier Step 0c-4 Entry B inserts these gates at the pivot net.
 
 Parse each new condition from `context_line` independently (cases BEFORE the last/default old expression). Decompose each into a sub-chain using E3 rules. Sequence numbers start at `c001` (condition gates) — separate from D-input chain `d001` numbering.
 
-**PRIORITY: compound gate types from PreEco before simple gates.** For each Boolean sub-expression, search PreEco for a COMPOUND cell that implements it (OA12, OAI21, AN3, ND3, NR3, INR3, IAOI21, …) — these are FM-verifiable stage-to-stage without SVF. Record `cell_type_from_preeco: true`.
+**Even in E4d: search PreEco for any COMPOUND cell before using a simple gate.** For each Boolean sub-expression, grep PreEco for a COMPOUND cell that implements it (OA12, OAI21, AN3, ND3, NR3, INR3, IAOI21, …). Record `cell_type_from_preeco: true` if found.
 
 ```bash
 zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | awk "/^module <declaring_module>/,/^endmodule/" \
