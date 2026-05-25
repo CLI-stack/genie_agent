@@ -2,7 +2,7 @@
 """
 test_step4_step5.py — Comprehensive test suite for Step 4 (eco_applier) and Step 5 (eco_pre_fm_check)
 
-Tests eco_perl_spec.py, eco_passes_2_4.py, and eco_pre_fm_check.py
+Tests eco_perl_spec.py, eco_netlist_port_rewire.py, and eco_pre_fm_check.py
 with synthetic netlists and study JSONs.
 
 Each test verifies a specific scenario:
@@ -19,9 +19,9 @@ import argparse, gzip, json, os, shutil, subprocess, sys, tempfile, textwrap
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PERL_SPEC  = os.path.join(SCRIPT_DIR, 'eco_perl_spec.py')
-PASSES     = os.path.join(SCRIPT_DIR, 'eco_passes_2_4.py')
+PASSES     = os.path.join(SCRIPT_DIR, 'eco_netlist_port_rewire.py')
 PRE_FM     = os.path.join(SCRIPT_DIR, 'eco_pre_fm_check.py')
-CHECK8     = os.path.join(SCRIPT_DIR, 'eco_check8.sh')
+CHECK8     = os.path.join(SCRIPT_DIR, 'eco_verilog_validator.sh')
 
 PASS = 'PASS'
 FAIL = 'FAIL'
@@ -196,7 +196,7 @@ def _run_test_inner(name, desc, setup_fn, expected_step5, expected_failures,
         'Synthesize': 'PASS', 'PrePlace': 'PASS', 'Route': 'PASS',
         'errors': [], 'f2_preexisting_count': 0
     }
-    write_json(f'{base}/data/{tag}_eco_check8_round{round_n}.json', check8_result)
+    write_json(f'{base}/data/{tag}_eco_verilog_validator_round{round_n}.json', check8_result)
 
     # ── Step 4a: eco_perl_spec.py ─────────────────────────────────────────────
     applied_all = {}
@@ -222,19 +222,19 @@ def _run_test_inner(name, desc, setup_fn, expected_step5, expected_failures,
             if verbose and pl_rc != 0:
                 print(f'  perl {stage} FAILED: {pl_out[:200]}')
 
-        # ── Step 4c: eco_passes_2_4.py ────────────────────────────────────────
+        # ── Step 4c: eco_netlist_port_rewire.py ────────────────────────────────────────
         rc2, out2 = run(
             f'python3 {PASSES} '
             f'--stage {stage} --tag {tag} --round {round_n} --jira {jira} '
             f'--study {base}/data/{tag}_eco_preeco_study.json '
             f'--ref-dir {ref} '
-            f'--status {base}/data/{tag}_eco_passes_2_4_{stage}.json',
+            f'--status {base}/data/{tag}_eco_netlist_port_rewire_{stage}.json',
             cwd=base
         )
         if verbose:
             print(f'  passes_2_4 {stage} rc={rc2}')
 
-        p_j = read_json(f'{base}/data/{tag}_eco_passes_2_4_{stage}.json')
+        p_j = read_json(f'{base}/data/{tag}_eco_netlist_port_rewire_{stage}.json')
         applied_all[stage] = (spec_j.get('entries', []) + p_j.get('entries', []))
 
     # Write combined applied JSON — use override if test provides pre-built applied state
@@ -359,7 +359,7 @@ def setup_T3(jira, tag):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # T4 — FAIL: Gate inserted without cell_type (SVR4_missing_cell_type)
-# eco_pre_fm_check detects via eco_check8 result
+# eco_pre_fm_check detects via eco_verilog_validator result
 # ─────────────────────────────────────────────────────────────────────────────
 def setup_T4(jira, tag):
     netlist = make_netlist([make_verilog('test_mod')])
@@ -378,7 +378,7 @@ def setup_T4(jira, tag):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # T5 — FAIL: Duplicate wire declaration (F1_dup_wire → SVR9)
-# eco_check8 catches F1_dup_wire as FAIL
+# eco_verilog_validator catches F1_dup_wire as FAIL
 # ─────────────────────────────────────────────────────────────────────────────
 def setup_T5(jira, tag):
     netlist = make_netlist([make_verilog('test_mod', extra_wires=['dup_wire'])])
@@ -473,7 +473,7 @@ def setup_T10(jira, tag):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # T11 — PASS: Pre-existing F2 implicit wire conflicts (NOT a FAIL)
-# Hundreds of pre-existing F2 — eco_check8 must not fail for these
+# Hundreds of pre-existing F2 — eco_verilog_validator must not fail for these
 # ─────────────────────────────────────────────────────────────────────────────
 def setup_T11(jira, tag):
     netlist = make_netlist([make_verilog('test_mod')])

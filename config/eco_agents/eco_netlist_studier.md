@@ -298,7 +298,7 @@ This is wire-up (real driver), not invention. Engineers do this manually when a 
 
 Log: `UNCONNECTED_RENAME: <N_syn>/<N_pp>/<N_rt> → n_eco_<jira>_<hint> | bus=<inst>.<port>[<bit>]`
 
-**MANDATORY port_connection schema for bus-position renames** — eco_passes_2_4 dispatches to `_apply_bus_rename` on these exact fields:
+**MANDATORY port_connection schema for bus-position renames** — eco_netlist_port_rewire dispatches to `_apply_bus_rename` on these exact fields:
 
 ```json
 {
@@ -316,7 +316,7 @@ Log: `UNCONNECTED_RENAME: <N_syn>/<N_pp>/<N_rt> → n_eco_<jira>_<hint> | bus=<i
 
 **`child_module_name` MANDATORY on EVERY `port_connection`** (not only bus renames) — Step 3 Check 3e cross-checks `port_name` against the child's port list. Missing child_module_name skips the check; missing port slips to FM as FE-LINK-7 ABORT. Whenever you introduce a new port on a child, also emit a `port_declaration` for it.
 
-**`net_name_before` per-stage map REQUIRED** — eco_passes_2_4 prefers scope-search by exact old name (mode a). Bit-index parsing (mode b) is fallback only. Omitting `net_name_before` causes wrong-instance edits when multiple instances share the same port name.
+**`net_name_before` per-stage map REQUIRED** — eco_netlist_port_rewire prefers scope-search by exact old name (mode a). Bit-index parsing (mode b) is fallback only. Omitting `net_name_before` causes wrong-instance edits when multiple instances share the same port name.
 
 ---
 

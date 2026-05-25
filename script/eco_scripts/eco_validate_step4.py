@@ -328,7 +328,7 @@ def main():
                 issues.append(
                     f"HIGH: GAP-4 — port_declaration {sig!r} APPLIED in Synthesize "
                     f"but missing in {stage}. Gates using this port in {stage} will "
-                    f"trigger FE-LINK-7 ABORT or SVR-8 in FM. eco_passes_2_4.py must "
+                    f"trigger FE-LINK-7 ABORT or SVR-8 in FM. eco_netlist_port_rewire.py must "
                     f"apply port_declaration entries to all 3 stages.")
 
     # ── 13. wire_swap + intermediate_net_insertion: pivot net must be driven ─

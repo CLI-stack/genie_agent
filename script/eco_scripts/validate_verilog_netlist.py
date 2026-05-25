@@ -220,7 +220,7 @@ def validate_module(mod_name, mod_lines, start_lineno):
     errors.extend(check_invalid_net_names(mod_lines, mod_name, start_lineno))
 
     # SVR4_missing_comma: two consecutive .port(net) without comma between
-    # Caused by eco_passes_2_4 depth tracker finding wrong inst_close
+    # Caused by eco_netlist_port_rewire depth tracker finding wrong inst_close
     errors.extend(check_missing_comma(mod_lines, mod_name, start_lineno))
 
     # SVR4_dup_port: same port name twice in module header port list
@@ -294,7 +294,7 @@ def validate_file(path, quiet=False, max_errors=50, skip_checks=None, target_mod
 def check_missing_comma(mod_lines, mod_name, start_lineno):
     """SVR4_missing_comma: two consecutive .port(net) without comma between.
     Pattern: ).port( where ) closes a port arg and . starts next port without comma.
-    Caused by eco_passes_2_4 depth tracker finding wrong inst_close → FM-599."""
+    Caused by eco_netlist_port_rewire depth tracker finding wrong inst_close → FM-599."""
     errors = []
     # Join adjacent lines for cross-line pattern detection
     text = ''.join(mod_lines)

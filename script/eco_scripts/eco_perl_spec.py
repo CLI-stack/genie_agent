@@ -667,7 +667,7 @@ def main():
         # module that instantiates host + sibling). Same 5-layer dedup as the
         # unconnected_rewires wire-decl path to prevent SVR-9 duplicate.
         # `bridge_port_role`-tagged entries are auto-skipped in Synth (Synth
-        # has no scan plumbing — see eco_passes_2_4.py).
+        # has no scan plumbing — see eco_netlist_port_rewire.py).
         elif ct == 'wire_declaration':
             sig = e.get('signal_name','') or e.get('net_name','')
             # Synth-skip for bridge plumbing per the auto-skip contract
@@ -756,9 +756,9 @@ def main():
 
         # Types that another script handles intentionally — silently skip
         # the catch-all UNHANDLED entry. new_logic_gate / new_logic_dff are
-        # already INSERTED/SKIPPED above; assign is handled by eco_passes_2_4
+        # already INSERTED/SKIPPED above; assign is handled by eco_netlist_port_rewire
         # Pass 5; rewire alone (without per_stage_cell_name) is handled by
-        # eco_passes_2_4 Pass 4. Without this filter, every cell appears in
+        # eco_netlist_port_rewire Pass 4. Without this filter, every cell appears in
         # status as both INSERTED and UNHANDLED — pollutes the merged
         # applied JSON and trips Step 5 `no_unhandled` check.
         elif ct in ('new_logic_gate', 'new_logic_dff', 'new_logic',

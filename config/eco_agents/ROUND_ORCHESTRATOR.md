@@ -47,7 +47,7 @@ The new `loop_verdict` field from the prior round's analyzer drives this round's
 | `CONVERGED` | UNCHANGED | Set `next_phase: FINAL`, spawn FINAL_ORCHESTRATOR inline, write exit sentinel | everything else |
 
 **Hard rules for verdict handling:**
-1. ABORT verdict (RERUN_SAME_ROUND) MUST NOT trigger re-study or eco_passes_2_4 re-run. Only netlist patches that fix the elaboration error.
+1. ABORT verdict (RERUN_SAME_ROUND) MUST NOT trigger re-study or eco_netlist_port_rewire re-run. Only netlist patches that fix the elaboration error.
 2. Maximum 3 RERUN_SAME_ROUND emissions per round counter value. On 4th attempt, force `ADVANCE_NEXT_ROUND` with synthetic failure_mode `abort_unrecoverable` (records all 3 prior abort attempts in fixer_state).
 3. The analyzer MUST emit `loop_verdict` and `next_round` fields. Both feed into the spawn decision below.
 
@@ -296,7 +296,7 @@ This bounds the retry budget to 1 per round so the loop can never get stuck on a
 - `failure_mode: ABORT_LINK` → NOT a reason to stop — `revised_changes` contains `force_port_decl` entries; apply them in Step 6e (`force_reapply: true` in study JSON), continue to next round
 - `failure_mode: ABORT_CELL_TYPE` → NOT a reason to stop — `revised_changes` contains `fix_cell_type` entries; eco_netlist_studier_round_N re-searches PreEco for correct cell type and updates study JSON, continue to next round
 - `failure_mode: T` (compound-cell truth-table mismatch) → NOT a reason to stop — `revised_changes` contains `swap_compound_cell` entries; eco_netlist_studier_round_N overrides `cell_type` (and re-permutes `port_connections` per `port_remap` if present) for all 3 stages in study JSON, continue to next round. If Check T could not find a same-family match, eco_fm_analyzer escalates to Mode F with action `try_structural_decomposition` (rebuild chain with simpler 2/3-input primitives) — never `manual_only`.
-- `failure_mode: I` (child output port internally undriven) → NOT a reason to stop — `revised_changes` contains a second `port_connection` entry with `module_name=<child>`, `bus_bit_index`, `net_name=<port>[<bit>]`. eco_netlist_studier_round_N appends it to study JSON; existing `_apply_bus_rename` in eco_passes_2_4 wires the child's internal slot to its own output pin. Continue to next round.
+- `failure_mode: I` (child output port internally undriven) → NOT a reason to stop — `revised_changes` contains a second `port_connection` entry with `module_name=<child>`, `bus_bit_index`, `net_name=<port>[<bit>]`. eco_netlist_studier_round_N appends it to study JSON; existing `_apply_bus_rename` in eco_netlist_port_rewire wires the child's internal slot to its own output pin. Continue to next round.
 - `failure_mode: H` (hierarchical port bus input) → NOT a reason to stop — `revised_changes` contains `fix_named_wire` entries; eco_netlist_studier_round_N sets `needs_named_wire: true` in study JSON, eco_apply_fix_round_N declares named wire and rewires port bus, continue to next round
 - `needs_rerun_fenets: true` → NOT a reason to stop — Step 6f-FENETS re-queries the missing signals; eco_netlist_studier_round_N resolves PENDING_FM_RESOLUTION inputs from the rerun results; continue to next round
 - `failure_mode: ABORT_NETLIST` → NOT a reason to stop — eco_applier corrupted the netlist; revert is already done in 6b; revised_changes will re-apply the affected entries correctly
@@ -365,12 +365,12 @@ If `loop_verdict` is still `RERUN_SAME_ROUND` after the rerun-count check:
 
 **Step 6d-RERUN-VERIFY:** All `revised_changes` entries MUST have `action` ∈ {`force_port_decl`, `fix_cell_type`, `fix_netlist_syntax`, `remove_svf_entry`}. If any entry has a non-abort action, this is an analyzer bug — log and treat as ADVANCE_NEXT_ROUND fallback.
 
-**Step 6d-RERUN-PATCH:** Apply the netlist patches inline (no eco_passes_2_4 re-run needed for these focused patches):
+**Step 6d-RERUN-PATCH:** Apply the netlist patches inline (no eco_netlist_port_rewire re-run needed for these focused patches):
 ```python
 for change in revised_changes:
     if change["action"] == "force_port_decl":
-        # Re-invoke eco_passes_2_4 in surgical mode for THIS port_declaration entry only
-        run_eco_passes_2_4_surgical(stage=change["stage"], entry={
+        # Re-invoke eco_netlist_port_rewire in surgical mode for THIS port_declaration entry only
+        run_eco_netlist_port_rewire_surgical(stage=change["stage"], entry={
             "change_type": "port_declaration",
             "signal_name": change["signal_name"],
             "module_name": change["module_name"],
@@ -380,7 +380,7 @@ for change in revised_changes:
     elif change["action"] == "fix_cell_type":
         # Update study JSON cell_type field, re-apply that one change
         update_study_cell_type(change["gate_instance"], change["correct_cell_type"])
-        run_eco_passes_2_4_surgical(stage=change["stage"], entry=updated_entry)
+        run_eco_netlist_port_rewire_surgical(stage=change["stage"], entry=updated_entry)
     elif change["action"] == "fix_netlist_syntax":
         # Direct text edit of PostEco file
         apply_text_edit(change["file"], change["error_line"], change["fix_description"])
@@ -621,7 +621,7 @@ if NEXT_ROUND > max_rounds:
 
 ## STEP 4 — Apply ECO Fix (eco_apply_fix_round_N)
 
-> **ROLLBACK INVARIANT** — eco_applier writes directly to `<REF_DIR>/data/PostEco/<Stage>.v.gz` BEFORE Step 5 runs. If Step 5 self-healing fails or eco_applier introduces syntax errors, PostEco is left mid-applied. **Step 6b backup of THIS round** (taken at line 134-146 of THIS instance) IS the rollback point — the next ROUND_ORCHESTRATOR's Step 6b will overwrite this round's backup with the now-broken state, and the FIRST-round backup (`bak_<TAG>_round1`) remains the deepest restore point. Surgical mode in eco_passes_2_4 handles partial-applied state correctly when re-applying with `force_reapply: true`.
+> **ROLLBACK INVARIANT** — eco_applier writes directly to `<REF_DIR>/data/PostEco/<Stage>.v.gz` BEFORE Step 5 runs. If Step 5 self-healing fails or eco_applier introduces syntax errors, PostEco is left mid-applied. **Step 6b backup of THIS round** (taken at line 134-146 of THIS instance) IS the rollback point — the next ROUND_ORCHESTRATOR's Step 6b will overwrite this round's backup with the now-broken state, and the FIRST-round backup (`bak_<TAG>_round1`) remains the deepest restore point. Surgical mode in eco_netlist_port_rewire handles partial-applied state correctly when re-applying with `force_reapply: true`.
 
 **Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_applier.md` prepended. Pass:
 - `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `ROUND=<NEXT_ROUND>`, `AI_ECO_FLOW_DIR`
@@ -660,27 +660,27 @@ If this file does NOT exist — eco_applier failed to write its output JSON. Do 
 
 ## STEP 5 — Pre-FM Quality Checker (MANDATORY)
 
-**BEFORE spawning eco_pre_fm_checker: run eco_check8.sh directly from ROUND_ORCHESTRATOR.**
+**BEFORE spawning eco_pre_fm_checker: run eco_verilog_validator.sh directly from ROUND_ORCHESTRATOR.**
 
-eco_check8.sh is the syntax gate that prevents FM ABORT_NETLIST. It MUST be run by the orchestrator — not delegated to the sub-agent which has repeatedly skipped it. Run it NOW:
+eco_verilog_validator.sh is the syntax gate that prevents FM ABORT_NETLIST. It MUST be run by the orchestrator — not delegated to the sub-agent which has repeatedly skipped it. Run it NOW:
 
 ```bash
 cd <BASE_DIR>
-bash script/eco_scripts/eco_check8.sh \
+bash script/eco_scripts/eco_verilog_validator.sh \
     <BASE_DIR> <REF_DIR> <TAG> <NEXT_ROUND> \
     data/<TAG>_eco_applied_round<NEXT_ROUND>.json
 CHECK8_EXIT=$?
 ```
 
 - If CHECK8_EXIT = 0 (all PASS) → proceed to spawn eco_pre_fm_checker
-- If CHECK8_EXIT = 1 (any FAIL) → apply inline SVR-9/FM-599 fixes directly (remove duplicate wire decls, fix bare parens), then re-run eco_check8.sh. Only proceed when PASS.
+- If CHECK8_EXIT = 1 (any FAIL) → apply inline SVR-9/FM-599 fixes directly (remove duplicate wire decls, fix bare parens), then re-run eco_verilog_validator.sh. Only proceed when PASS.
 
-Pass `CHECK8_RESULT_PATH=data/<TAG>_eco_check8_round<NEXT_ROUND>.json` to eco_pre_fm_checker — it reads this pre-computed result (does NOT re-run eco_check8.sh).
+Pass `CHECK8_RESULT_PATH=data/<TAG>_eco_verilog_validator_round<NEXT_ROUND>.json` to eco_pre_fm_checker — it reads this pre-computed result (does NOT re-run eco_verilog_validator.sh).
 
 **Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_pre_fm_checker.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `BASE_DIR`, `ROUND=<NEXT_ROUND>`, `AI_ECO_FLOW_DIR`
 - Path to applied JSON: `<BASE_DIR>/data/<TAG>_eco_applied_round<NEXT_ROUND>.json`
-- `CHECK8_RESULT_PATH=<BASE_DIR>/data/<TAG>_eco_check8_round<NEXT_ROUND>.json`
+- `CHECK8_RESULT_PATH=<BASE_DIR>/data/<TAG>_eco_verilog_validator_round<NEXT_ROUND>.json`
 
 Wait for sub-agent to complete.
 
@@ -717,7 +717,7 @@ else:
     # Step 5 Self-Healing Loop (one attempt):
     #   1. Re-spawn eco_netlist_verifier (re-enrich study JSON — checks 7/8/9 auto-add missing entries)
     #   2. Re-spawn eco_applier (re-apply force_reapply entries with re-enriched study)
-    #   3. Re-run eco_check8.sh
+    #   3. Re-run eco_verilog_validator.sh
     #   4. Re-spawn eco_pre_fm_checker (fresh full attempt)
     #   5. If passed=true → proceed to Step 6
     #   6. If still passed=false → THEN escalate to next ROUND_ORCHESTRATOR
@@ -729,9 +729,9 @@ else:
     spawn eco_applier (ROUND=NEXT_ROUND, study JSON re-enriched)
 
     # Step 5c: Re-run check8
-    bash script/eco_scripts/eco_check8.sh <BASE_DIR> <REF_DIR> <TAG> <NEXT_ROUND> \
+    bash script/eco_scripts/eco_verilog_validator.sh <BASE_DIR> <REF_DIR> <TAG> <NEXT_ROUND> \
         data/<TAG>_eco_applied_round<NEXT_ROUND>.json
-    CHECK8_RESULT_PATH = data/<TAG>_eco_check8_round<NEXT_ROUND>.json
+    CHECK8_RESULT_PATH = data/<TAG>_eco_verilog_validator_round<NEXT_ROUND>.json
 
     # Step 5d: Re-run pre_fm_checker
     spawn eco_pre_fm_checker (CHECK8_RESULT_PATH=<above>)

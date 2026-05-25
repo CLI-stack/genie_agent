@@ -38,7 +38,7 @@ These four files are the source of truth for ALL prior-state decisions. Keep the
 - `manual_only` is ABOLISHED — always emit progressive action.
 - NEVER modify `EcoChange.svf` or any SVF file.
 - ABORT verdicts MUST set `loop_verdict: "RERUN_SAME_ROUND"` (round counter unchanged).
-- ABORT analysis MUST NOT prescribe `re_study` or `eco_passes_2_4` re-run.
+- ABORT analysis MUST NOT prescribe `re_study` or `eco_netlist_port_rewire` re-run.
 - Maximum 3 RERUN_SAME_ROUND emissions per round; on 4th attempt force ADVANCE_NEXT_ROUND with `abort_unrecoverable`.
 
 ---

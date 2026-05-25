@@ -78,7 +78,7 @@ Search the log for these patterns:
 | `<TAG>_eco_fm_verify.json` | Per-target: `{"status": "PASS\|FAIL\|ABORT\|NOT_RUN", "failing_count": N, "failing_points": [...], "abort_type": "...", "log_excerpt": "..."}` |
 | `<TAG>_eco_rtl_diff.json` | Original RTL intent: every change with type, scope, target_register, condition_inputs, gate chain, flags (implicit_wire, mode_H_risk, etc.) |
 | `<TAG>_eco_preeco_study.json` | Per-stage cell instances + port_connections that the studier prescribed |
-| `<TAG>_eco_applied_round<N>.json` | Per-stage entries from eco_passes_2_4 with `status: APPLIED\|SKIPPED\|VERIFY_FAILED\|ALREADY_APPLIED` and reasons |
+| `<TAG>_eco_applied_round<N>.json` | Per-stage entries from eco_netlist_port_rewire with `status: APPLIED\|SKIPPED\|VERIFY_FAILED\|ALREADY_APPLIED` and reasons |
 | `<TAG>_eco_fixer_state` | Round counter, fm_results_per_round trend, strategies_tried list |
 | `<TAG>_eco_fm_evidence_round<N>.json` | NEW — output of `eco_fm_evidence_walk.py`; structured per-DFF dossiers |
 | `<TAG>_eco_fm_xstage_round<N>.json` | NEW — output of `eco_fm_xstage_compare.py`; 3-way structural compare |
@@ -89,7 +89,7 @@ Search the log for these patterns:
 
 When FM aborts, it never compared the netlists. The fix is structural (link/parse/SVF error) — patch the netlist or remove the offending SVF entry, then **re-submit FM in the SAME round**. Never advance the round counter on an abort.
 
-**Hard rule for ABORT verdict**: Do NOT prescribe `re_study`, `eco_passes_2_4 re-run`, or `revised_changes` that target failing-point logic. Only emit fixes that resolve the elaboration error.
+**Hard rule for ABORT verdict**: Do NOT prescribe `re_study`, `eco_netlist_port_rewire re-run`, or `revised_changes` that target failing-point logic. Only emit fixes that resolve the elaboration error.
 
 ### B-ABORT-1 — `ABORT_LINK` (Port mismatch)
 
@@ -774,7 +774,7 @@ These rules override all other guidance. Violating any one corrupts the flow.
 
 ### Loop Control
 1. **ABORT verdict MUST set `loop_verdict: "RERUN_SAME_ROUND"`.** Round counter never increments on abort.
-2. **ABORT analysis MUST NOT prescribe `re_study` or `eco_passes_2_4` re-run.** Only netlist patches that fix the elaboration error.
+2. **ABORT analysis MUST NOT prescribe `re_study` or `eco_netlist_port_rewire` re-run.** Only netlist patches that fix the elaboration error.
 3. **Maximum 3 RERUN_SAME_ROUND emissions per round.** On the 4th attempt, force `ADVANCE_NEXT_ROUND` with synthetic failure mode `abort_unrecoverable`.
 4. **CONVERGED only when all 3 targets PASS with 0 failing points.** Any failing point or unmatched target → not converged.
 

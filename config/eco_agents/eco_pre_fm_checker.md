@@ -34,7 +34,7 @@ python3 script/eco_scripts/eco_pre_fm_check.py \
 |---|---|
 | `[PORT_SKIP]` or `[DEFERRED]` | Re-apply the skipped port_declaration using eco_applier Pass 2a logic on that specific entry. |
 | `[STAGE_MISMATCH]` | Re-run eco_applier Pass 1 for the missing stage with `force_reapply: true`. |
-| `[SVR4_SVR9]` | Apply eco_check8.sh fixes (duplicate wire removal, missing cell type). |
+| `[SVR4_SVR9]` | Apply eco_verilog_validator.sh fixes (duplicate wire removal, missing cell type). |
 | `[ZERO_CELLS]` | Re-run eco_applier for the zero-cell stage. |
 | `[UNHANDLED]` | Log for ROUND_ORCHESTRATOR — cannot fix inline. |
 
@@ -186,7 +186,7 @@ The script runs all 16 checks. If exit code = 1, read the `failures[]` array in 
 | 2 port_declarations_applied | All port_decls landed | `check_port_declarations_applied()` |
 | 3 stage_consistency | Gates inserted in all 3 stages | `check_stage_consistency()` |
 | 4 no_unhandled | No UNHANDLED entries | `check_no_unhandled()` |
-| 5 check8_verilog_validator | Verilog syntax clean per stage (eco_check8.sh) | `check_check8()` |
+| 5 check8_verilog_validator | Verilog syntax clean per stage (eco_verilog_validator.sh) | `check_check8()` |
 | 6 eco_cell_counts | Cell count balanced across stages | `check_eco_cell_counts()` |
 | 7 cells_in_netlist | Every INSERTED cell physically present | `check_cells_in_netlist()` |
 | 8 undriven_eco_nets | Every n_eco_* net has ≥ 2 references | `check_undriven_eco_nets()` |

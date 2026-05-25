@@ -198,23 +198,23 @@ The script handles:
 - wire_removes for remove_wire_decl entries
 - Gate line building from study JSON port_connections_per_stage
 
-After running eco_perl_spec.py for all 3 stages, run eco_passes_2_4.py for Passes 2-4:
+After running eco_perl_spec.py for all 3 stages, run eco_netlist_port_rewire.py for Passes 2-4:
 
 ```bash
 cd <BASE_DIR>
 for STAGE in Synthesize PrePlace Route; do
-    python3 script/eco_scripts/eco_passes_2_4.py \
+    python3 script/eco_scripts/eco_netlist_port_rewire.py \
         --study    data/<TAG>_eco_preeco_study.json \
         --ref-dir  <REF_DIR> \
         --tag      <TAG> \
         --stage    ${STAGE} \
         --round    <ROUND> \
-        --status   data/<TAG>_eco_passes_2_4_${STAGE}.json
+        --status   data/<TAG>_eco_netlist_port_rewire_${STAGE}.json
     echo "Exit: $?"
 done
 ```
 
-This handles port_declaration, port_connection, and rewire entries — no agent reasoning needed. Check `ECO_SCRIPT_LAUNCHED: eco_passes_2_4.py` in the Step 4 RPT for each stage.
+This handles port_declaration, port_connection, and rewire entries — no agent reasoning needed. Check `ECO_SCRIPT_LAUNCHED: eco_netlist_port_rewire.py` in the Step 4 RPT for each stage.
 
 ## Phase A — Collect Gate Spec (Legacy pseudocode — for reference only)
 

@@ -198,7 +198,7 @@ def main():
 
     # port_connection completeness: every entry must have inst/port/net populated
     # under SOME field name (canonical or alternative). Catches incomplete entries
-    # that would silently SKIP in eco_passes_2_4.py.
+    # that would silently SKIP in eco_netlist_port_rewire.py.
     pc_issues = []
     for idx, c in enumerate(rtl_diff.get('changes', [])):
         if c.get('change_type') != 'port_connection':

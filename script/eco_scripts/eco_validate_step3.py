@@ -208,7 +208,7 @@ def main():
     #        study MUST contain matching port_declaration entries for the SI_in,
     #        SE_in and Q_out bridge ports referenced by the DFF's
     #        port_connections_per_stage, AND an `assign` change wiring Q_out to
-    #        the DFF's Q net. Without these, eco_passes_2_4 will leave the
+    #        the DFF's Q net. Without these, eco_netlist_port_rewire will leave the
     #        bridge ports undeclared and Step 5 Check 17 catches it later — but
     #        we want to fail fast at Step 3.
     decl_set = set()       # (module_name, signal_name)
@@ -254,7 +254,7 @@ def main():
                     issues.append(
                         f"HIGH: Mode S {inst} (mode_S_applied=true) references bridge "
                         f"port {port_name!r} on module {mod!r} but no matching "
-                        f"`port_declaration` entry exists in the study — eco_passes_2_4 "
+                        f"`port_declaration` entry exists in the study — eco_netlist_port_rewire "
                         f"will leave this port undeclared. Add the port_declaration "
                         f"or switch mode_S_strategy_per_stage to neighbor_dff for "
                         f"the affected stage with a justification.")

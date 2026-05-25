@@ -209,16 +209,16 @@ def check_no_unhandled(applied):
 
 def check_check8(check8_json_path):
     """
-    Read pre-computed eco_check8 result. FAIL if any stage is not PASS.
+    Read pre-computed eco_verilog_validator result. FAIL if any stage is not PASS.
     """
     d = load_json(check8_json_path)
     if d is None:
-        return ['eco_check8 result not found — cannot validate Verilog syntax']
+        return ['eco_verilog_validator result not found — cannot validate Verilog syntax']
     failures = []
     for stage in ('Synthesize', 'PrePlace', 'Route'):
         result = d.get(stage, 'MISSING')
         if result != 'PASS':
-            failures.append(f'eco_check8 {stage}: {result}')
+            failures.append(f'eco_verilog_validator {stage}: {result}')
     return failures
 
 
@@ -268,7 +268,7 @@ def check_cells_in_netlist(applied, ref_dir):
 def check_port_edits_in_netlist(ref_dir, applied):
     """For every applied port_declaration / port_connection entry, verify the
     edit is physically in the netlist. Catches the silent-failure pattern where
-    eco_passes_2_4.py reported APPLIED but the regex sub did nothing because
+    eco_netlist_port_rewire.py reported APPLIED but the regex sub did nothing because
     the target line wasn't in inst_close / port list spanned multiple lines.
 
     Reads the entry's `reason` text to extract signal/port/net since the applied
@@ -1353,7 +1353,7 @@ def main():
     jira  = args.jira
 
     applied_path  = f'{base}/data/{tag}_eco_applied_round{rnd}.json'
-    check8_path   = f'{base}/data/{tag}_eco_check8_round{rnd}.json'
+    check8_path   = f'{base}/data/{tag}_eco_verilog_validator_round{rnd}.json'
     out_json_path = f'{base}/data/{tag}_eco_pre_fm_check_round{rnd}.json'
     out_rpt_path  = f'{base}/data/{tag}_eco_step5_pre_fm_check_round{rnd}.rpt'
     marker_path   = f'{base}/data/{tag}_eco_step5_pre_fm_check_round{rnd}_marker.txt'
@@ -1384,7 +1384,7 @@ def main():
     results['no_unhandled'] = 'PASS' if not fails else 'FAIL'
     all_fails.extend([f'[UNHANDLED] {f}' for f in fails])
 
-    # Check 5 — eco_check8 Verilog validator (runs eco_check8.sh externally)
+    # Check 5 — eco_verilog_validator Verilog validator (runs eco_verilog_validator.sh externally)
     fails = check_check8(check8_path)
     # Build nested per-stage structure as required by mandatory output contract
     chk8_json = load_json(check8_path) or {}
@@ -1411,7 +1411,7 @@ def main():
 
     # Check 8 — Every n_eco_* net in PostEco netlist must have ≥ 2 references.
     # Catches bus-rename failures where the rename was specified in study JSON
-    # but eco_passes_2_4.py didn't apply it to the netlist (driver missing).
+    # but eco_netlist_port_rewire.py didn't apply it to the netlist (driver missing).
     fails = check_undriven_eco_nets(args.ref_dir)
     results['undriven_eco_nets'] = 'PASS' if not fails else 'FAIL'
     all_fails.extend(fails)
