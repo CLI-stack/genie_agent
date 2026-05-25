@@ -2231,6 +2231,14 @@ def main():
     for stage in ('Synthesize',):
         gate_output_nets_all = {e.get('output_net', '') for e in study.get(stage, [])
                                 if e.get('change_type') in ('new_logic_gate', 'new_logic')}
+        # Build set of nets wired by companion port_connection entries — a
+        # child instance port connection provides the driver implicitly (the
+        # child output pin drives the parent net through the connection).
+        port_conn_nets = {
+            (e.get('net_name') or e.get('new_token') or '')
+            for e in study.get(stage, [])
+            if e.get('change_type') == 'port_connection'
+        }
         for e in study.get(stage, []):
             if e.get('change_type') != 'port_declaration':
                 continue
@@ -2239,6 +2247,8 @@ def main():
             sig = e.get('signal_name') or e.get('new_token') or '?'
             if sig in gate_output_nets_all:
                 continue  # driven by ECO gate ✓
+            if sig in port_conn_nets:
+                continue  # driven by companion port_connection (child instance output) ✓
             has_preeco_driver = False
             if _pre_synth_gz2 and os.path.exists(_pre_synth_gz2):
                 try:
