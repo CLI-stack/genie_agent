@@ -2916,6 +2916,85 @@ def main():
                 f"Fix: INV for each 0-bit input, then ND{len(bus_bits)} of all inputs. "
                 f"See rtl_diff_analyzer.md §E2.5 rule 2b.")
 
+    # ── 39. UNCONNECTED-RENAME-NAMED-NET DRIVER CONSISTENCY ─────────────────
+    # Bug class caught: a DFF's unconnected_rewires[].named_net references a
+    # form (e.g. "REG_UmcCfgEco_12_" underscore) that no port_connection or
+    # wire decl in the study actually drives — the bus rename mechanism in
+    # eco_perl_spec.py creates the OTHER form (e.g. "REG_UmcCfgEco[12]"
+    # bracket via implicit bus indexing) so the consumer ends up undriven.
+    # Result: FM Mode A failure on the new DFF's D-input cone (run
+    # 20260525085948 round 1 — REG_UmcCfgEco_12_ globally undriven).
+    #
+    # Rule: every `named_net` referenced as an input by a downstream gate's
+    # port_connections MUST be drivable — either:
+    #   (a) Same name string appears as `net_name` on a port_connection entry
+    #       (bus rename creates that wire), OR
+    #   (b) `needs_explicit_wire_decl: true` AND eco_perl_spec.py declares it
+    #       (verified via stage-level scope), OR
+    #   (c) Name appears as `output_net` of some new_logic_gate entry, OR
+    #   (d) Name pre-exists in PreEco netlist (skip — handled by other checks).
+    #
+    # If named_net is consumed but NONE of (a)-(d) hold → HARD FAIL.
+    for stage_name in ('Synthesize', 'PrePlace', 'Route'):
+        stage = study.get(stage_name, [])
+        if not stage:
+            continue
+        # Collect declared named_nets from unconnected_rewires
+        named_nets = {}  # named_net → (declarer_inst, needs_explicit_wire_decl)
+        for e in stage:
+            for ur in (e.get('unconnected_rewires') or []):
+                nn = ur.get('named_net')
+                if not nn or not isinstance(nn, str):
+                    continue
+                named_nets[nn] = (
+                    e.get('instance_name', '?'),
+                    ur.get('needs_explicit_wire_decl', True),
+                )
+        if not named_nets:
+            continue
+        # Collect drivers: port_connection.net_name + new_logic_gate.output_net
+        # + any explicit wire decl from eco_perl_spec.py (we approximate by
+        # treating needs_explicit_wire_decl=True as a self-driver).
+        pc_net_names = {(e.get('net_name') or '')
+                        for e in stage
+                        if e.get('change_type') == 'port_connection'}
+        gate_outputs = {(e.get('output_net') or '')
+                        for e in stage
+                        if e.get('change_type') in ('new_logic_gate','new_logic_dff')}
+        # Walk consumers
+        for e in stage:
+            if e.get('change_type') not in ('new_logic_gate', 'new_logic_dff'):
+                continue
+            inst = e.get('instance_name', '?')
+            for pin, net in (e.get('port_connections') or {}).items():
+                if pin in ('Z','ZN','ZN1','Q','QN','CO','S','CP','CK','CLK'):
+                    continue
+                if not isinstance(net, str): continue
+                if net not in named_nets:
+                    continue  # not a named_net reference — skip
+                declarer, needs_decl = named_nets[net]
+                # Check driver presence
+                if net in pc_net_names:
+                    continue  # driven by port_connection bus rename ✓
+                if net in gate_outputs:
+                    continue  # driven by a new gate ✓
+                if needs_decl:
+                    continue  # eco_perl_spec.py will declare it ✓ (trust the flag)
+                # No driver found AND no explicit decl — UNDRIVEN
+                issues.append(
+                    f"HIGH/39-NAMED-NET-UNDRIVEN: stage={stage_name} gate "
+                    f"{inst}.{pin}={net!r} references DFF {declarer}'s "
+                    f"unconnected_rewires.named_net but no port_connection "
+                    f"creates that net_name, no new gate outputs it, and "
+                    f"needs_explicit_wire_decl=false (no wire decl will be "
+                    f"emitted). Result: undriven net at FM time → Mode A "
+                    f"fail. Fix: either (a) set needs_explicit_wire_decl=true "
+                    f"to force wire decl, OR (b) change port_connection's "
+                    f"net_name to match {net!r} exactly so bus rename drives "
+                    f"it, OR (c) align named_net to the form actually created "
+                    f"by the port_connection (typically bracket form "
+                    f"<bus>[<bit>] for implicit bus indexing).")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}
