@@ -443,6 +443,28 @@ def main():
     if bus_dff_issues:
         overall_pass = False
 
+    # ── SE/SI scan-pin check — new ECO DFFs MUST be isolated from scan chain
+    # in ALL 3 stages (Synth/PrePlace/Route). Bridge wires (e.g.
+    # eco<jira>_si_bridge, ECO_*_SI_out, neighbor_dff's scan pins) MUST NOT be
+    # copied from a neighbor_dff lookup. See rtl_diff_analyzer.md Step D-SE-SI
+    # and eco_netlist_studier.md HARD RULE 1.
+    scan_pin_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') not in ('new_logic', 'new_logic_dff'):
+            continue
+        tgt = c.get('target_register') or c.get('new_token') or '?'
+        pcs = c.get('port_connections_per_stage') or {}
+        for stage in ('Synthesize', 'PrePlace', 'Route'):
+            for pin in ('SE', 'SI'):
+                v = (pcs.get(stage) or {}).get(pin)
+                if v is not None and v != "1'b0":
+                    scan_pin_issues.append(
+                        f"changes[{idx}] target={tgt}: port_connections_per_stage[{stage}].{pin}={v!r} — "
+                        f"new ECO DFF scan pins MUST be \"1'b0\" in all 3 stages (scan stitching out of scope). "
+                        f"rtl_diff_analyzer should NOT copy bridge wires from neighbor_dff.")
+    if scan_pin_issues:
+        overall_pass = False
+
     # Mandatory-fields check for new_logic / new_logic_dff entries — every such
     # entry MUST have dff_clock (Step 3 needs it to pick neighbor DFF for per-stage
     # CP + Mode S clock-domain match), AND must have a non-empty d_input_gate_chain
@@ -1495,6 +1517,8 @@ def main():
         'bus_gate_issue_count':           len(bus_gate_issues),
         'bus_gate_issues':                bus_gate_issues,
         'bus_dff_issue_count':            len(bus_dff_issues),
+        'scan_pin_issue_count':           len(scan_pin_issues),
+        'scan_pin_issues':                scan_pin_issues,
         'bus_dff_issues':                 bus_dff_issues,
         'overall_pass':          overall_pass,
         'entries':               results,
