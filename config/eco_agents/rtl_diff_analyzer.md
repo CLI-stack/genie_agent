@@ -135,6 +135,8 @@ If the grep finds gates that compute `old_expression & ~new_term` (e.g. `AN2`, `
 **CRITICAL — `and_term` vs `wire_swap + intermediate_net_insertion`:**  
 `and_term` is ONLY for simple single-gate gating (one new term added to one existing expression). If the RTL diff shows **multiple new conditions prepended before the old expression as a default fallback** (priority chain pattern: `new_cond_1 ? val1 : new_cond_2 ? val2 : <old_expr>`), this is **NOT `and_term`** — it MUST be classified as `wire_swap` with `fallback_strategy: "intermediate_net_insertion"`. The key test: count the number of distinct output values before the default fallback — if ≥2, it is `wire_swap + intermediate_net_insertion`. Note: `intermediate_net_insertion` uses compound gates (OA12/OAI21/AN3/ND3), **NEVER MUX2**. Misclassifying as `and_term` causes the studier to do a simple gate modification and skip the full condition chain — the ECO logic is never applied.
 
+**PREFER `and_term` WHEN FEASIBLE (MANDATORY):** When exactly ONE new `else if (<cond>)` branch is prepended before the existing chain AND the old D-input has an identifiable single-gate driver at hop 0, classify as `and_term` — do NOT fall back to `wire_swap + driver_substitution`. Simpler is better: `and_term` reuses the existing compound cell type (e.g. IAOI21), preserves FM structural match, and keeps the edit at hop 0 (no downstream polarity propagation risk). Only fall back to `wire_swap + driver_substitution` when `and_term` is infeasible (e.g. old driver is a hard-macro output, polarity check fails, or no compound cell at hop 0 can host the new term). Document the reason for falling back in `mux_select_reasoning`.
+
 For each change record:
 ```json
 {
