@@ -133,7 +133,7 @@ If the grep finds gates that compute `old_expression & ~new_term` (e.g. `AN2`, `
 | `(+)` positive | `+old_expression` | `INR2(renamed, new_term)` |
 
 **CRITICAL — `and_term` vs `wire_swap + intermediate_net_insertion`:**  
-`and_term` is ONLY for simple single-gate gating (one new term added to one existing expression). If the RTL diff shows **multiple new conditions prepended before the old expression as a default fallback** (priority chain pattern: `new_cond_1 ? val1 : new_cond_2 ? val2 : <old_expr>`), this is **NOT `and_term`** — it MUST be classified as `wire_swap` with `fallback_strategy: "intermediate_net_insertion"`. The key test: if the `new_condition_gate_chain` requires MUX2 gates, it is `wire_swap + intermediate_net_insertion`, not `and_term`. Misclassifying as `and_term` causes the studier to do a simple gate modification and skip the full MUX cascade — the ECO logic is never applied.
+`and_term` is ONLY for simple single-gate gating (one new term added to one existing expression). If the RTL diff shows **multiple new conditions prepended before the old expression as a default fallback** (priority chain pattern: `new_cond_1 ? val1 : new_cond_2 ? val2 : <old_expr>`), this is **NOT `and_term`** — it MUST be classified as `wire_swap` with `fallback_strategy: "intermediate_net_insertion"`. The key test: count the number of distinct output values before the default fallback — if ≥2, it is `wire_swap + intermediate_net_insertion`. Note: `intermediate_net_insertion` uses compound gates (OA12/OAI21/AN3/ND3), **NEVER MUX2**. Misclassifying as `and_term` causes the studier to do a simple gate modification and skip the full condition chain — the ECO logic is never applied.
 
 For each change record:
 ```json
@@ -554,7 +554,7 @@ Read `driver_sub_target_net` + `driver_sub_target_cell_type` directly. The scrip
 1. Set `fallback_strategy: "driver_substitution"`, `driver_sub_target_net: "<script output>"`, `driver_sub_renamed_to: "ECO_<jira>_net_orig"`.
 2. New chain renames target's driver output → `ECO_<jira>_net_orig`; adds compound gates (OA12/OAI21/AN3/ND3) that re-output the original net name.
 3. Stage-stable signals only: ALLOWED — new ECO ports from `new_port`/`port_promotion` (may be `PENDING_ECO_PORT`), existing primary inputs, `ctmn_*` ONLY as `ECO_<jira>_net_orig` for the default.
-4. **NO MUX2 cascade** — direct driver replacement. MUX cascade is for `intermediate_net_insertion` only.
+4. **NO MUX2 cascade** — direct driver replacement. MUX2 cascade is FORBIDDEN in ALL strategies.
 4a. **Last gate MUST output `driver_sub_target_net`** — restores the original name; otherwise undriven → FM ABORT.
 5. Old expression (`ECO_<jira>_net_orig`) feeds the chain as DEFAULT.
 6. Pivot net (SEQMAP_NET_*, DFF.D) — untouched.
@@ -669,7 +669,7 @@ Example — RTL `if (IReset) X<=0; else X<=A & ~B & ((src==3'b000) | (src==3'b01
 1. Decompose `<cond_expr>` — prefer compound PreEco gates over simple-gate chains.
 2. Each gate: instance `eco_<jira>_c<seq>`, output `n_eco_<jira>_c<seq>`.
 3. Final gate of sub-chain: 1-bit (condition true/false).
-4. `<val>` (`1'b0` / `1'b1`) → what the MUX outputs when this condition matches.
+4. `<val>` (`1'b0` / `1'b1`) → what the final compound gate drives to the pivot net when this condition matches.
 
 **Combining conditions with the old expression — MANDATORY. NO MUX2.**
 
@@ -698,12 +698,13 @@ Record as `new_condition_gate_chain` (flat array of all gates):
   },
   ...
   {
-    "seq": "c_mux_final",
-    "instance_name": "eco_<jira>_c_mux_final",
+    "seq": "c_final",
+    "instance_name": "eco_<jira>_c_final",
     "output_net": "<pivot_net>",
-    "gate_function": "MUX2|priority_gate",
-    "inputs": ["<condition_output>", "<pivot_net>_orig", "1'b0|1'b1"],
-    "role": "pivot_net_output"
+    "gate_function": "OA12|OAI21|AN3|ND3",
+    "inputs": ["<cond_output>", "ECO_<jira>_net_orig", "<blocking_cond_n>"],
+    "role": "pivot_net_output",
+    "cell_type_from_preeco": true
   }
 ]
 ```
