@@ -901,20 +901,19 @@ def main():
             continue
         if c.get('e4c_no_compound_found'):
             continue
-            for g in chain:
-                raw_fn = (g.get('gate_function') or '').upper()
-                # Match both exact (NR2) and prefix-stripped (NR)
-                fn  = raw_fn.rstrip('0123456789')
-                cpf = g.get('cell_type_from_preeco', False)
-                if (fn in _SIMPLE_GATES or raw_fn in _SIMPLE_GATES) and not cpf:
-                    chain_compact_issues.append(
-                        f"changes[{idx}] target={tgt} [WARN/9f-PREECO-FIRST]: "
-                        f"gate seq={g.get('seq','?')} uses simple gate '{g.get('gate_function')}' "
-                        f"without cell_type_from_preeco:true. "
-                        f"Run E4c grep on PreEco declaring module first — compound gates "
-                        f"(OA12/OAI21/AN3/ND3) from PreEco must be used when they exist. "
-                        f"Simple gates cause FM structural divergence between Synth and PP ECO. "
-                        f"See rtl_diff_analyzer.md §E4c.")
+        for g in chain:
+            raw_fn = (g.get('gate_function') or '').upper()
+            fn  = raw_fn.rstrip('0123456789')
+            cpf = g.get('cell_type_from_preeco', False)
+            if (fn in _SIMPLE_GATES or raw_fn in _SIMPLE_GATES) and not cpf:
+                chain_compact_issues.append(
+                    f"changes[{idx}] target={tgt} [WARN/9f-PREECO-FIRST]: "
+                    f"gate seq={g.get('seq','?')} uses simple gate '{g.get('gate_function')}' "
+                    f"without cell_type_from_preeco:true. "
+                    f"Run E4c grep on PreEco declaring module first — compound gates "
+                    f"(OA12/OAI21/AN3/ND3) from PreEco must be used when they exist. "
+                    f"Simple gates cause FM structural divergence between Synth and PP ECO. "
+                    f"See rtl_diff_analyzer.md §E4c.")
 
     # Check 9e — Compound gate preference: detect consecutive gate pairs (gate_i →
     # gate_i+1) where gate_i's output feeds ONLY gate_i+1 and the combined function
