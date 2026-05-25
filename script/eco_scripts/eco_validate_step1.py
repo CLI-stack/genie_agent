@@ -186,7 +186,9 @@ def main():
         if c.get('change_type') != 'new_port':
             continue
         dt = c.get('declaration_type')
-        if dt not in ('input', 'output', 'wire'):
+        if dt is None:
+            decl_issues.append(f'changes[{idx}] new_port {c.get("new_token")!r} in {c.get("module_name")!r}: declaration_type is MISSING (MANDATORY — must be input/output/wire)')
+        elif dt not in ('input', 'output', 'wire'):
             decl_issues.append(f'changes[{idx}] new_port {c.get("new_token")!r} in {c.get("module_name")!r}: declaration_type={dt!r} (must be input/output/wire)')
         key = (c.get('module_name'), c.get('new_token'))
         if key in seen:
@@ -456,6 +458,25 @@ def main():
             new_logic_field_issues.append(
                 f"changes[{idx}] target={tgt}: `dff_clock` MISSING — "
                 f"required for Step 3 per-stage CP + Mode S clock-domain match")
+        # reset_polarity MANDATORY when has_sync_reset is true
+        if c.get('has_sync_reset') and not c.get('reset_polarity'):
+            new_logic_field_issues.append(
+                f"changes[{idx}] target={tgt} [FAIL/RESET-POLARITY-MISSING]: "
+                f"has_sync_reset=true but reset_polarity not set. "
+                f"Must be 'active_high' or 'active_low'.")
+            overall_pass = False
+        # dff_instance_name and dff_output_net MANDATORY for new_logic DFF
+        inst_name = c.get('dff_instance_name') or ''
+        out_net   = c.get('dff_output_net') or ''
+        if tgt != '?' and not inst_name:
+            new_logic_field_issues.append(
+                f"changes[{idx}] target={tgt} [FAIL/DFF-INSTANCE-NAME-MISSING]: "
+                f"dff_instance_name not set. Must be '<target_register>_reg'.")
+            overall_pass = False
+        elif inst_name and tgt != '?' and inst_name != f'{tgt}_reg':
+            new_logic_field_issues.append(
+                f"changes[{idx}] target={tgt} [WARN/DFF-INSTANCE-NAME-FORMAT]: "
+                f"dff_instance_name='{inst_name}' expected '{tgt}_reg'.")
         # Mode S decision: scan stitching is OUT OF SCOPE under the new policy
         # (DFT team handles scan integration). The rtl_diff MD instructs analyzers
         # NOT to emit `requires_scan_stitching` / `mode_s_anchor` / sibling fields.
@@ -865,20 +886,21 @@ def main():
                 f"See rtl_diff_analyzer.md §E2.5 rule 2b.")
             overall_pass = False
 
-    # Check 9f-PREECO-FIRST — every gate in new_condition_gate_chain and d_input_gate_chain
-    # must have cell_type_from_preeco: true UNLESS the declaring module has zero compound
-    # gates (confirmed by E4c grep returning nothing).  Simple gates (OR2, AND2, NR2,
-    # OR3, AN2) used when compound gates exist in PreEco → WARN so studier can correct.
+    # Check 9f-PREECO-FIRST — gates in new_condition_gate_chain must use PreEco compound
+    # types (cell_type_from_preeco: true) when compound gates exist in scope.
+    # SCOPE: new_condition_gate_chain (wire_swap/intermediate_net_insertion) only.
+    # d_input_gate_chain for new_logic DFFs may use simple gates (MUX2/AND/OR/INV
+    # for ternary/boolean decomposition) — E4c rule does not apply there.
     _SIMPLE_GATES = {'OR2','AND2','NR2','NOR2','AN2','OR3','AND3','NR3','OR4','AND4',
                      'OR','AND','NR','AN','INV'}
     for idx, c in enumerate(rtl_diff.get('changes', [])):
-        for chain_key in ('new_condition_gate_chain', 'd_input_gate_chain'):
-            chain = c.get(chain_key) or []
-            tgt   = c.get('target_register', c.get('new_token', '?'))
-            if not chain:
-                continue
-            if c.get('e4c_no_compound_found'):
-                continue
+        # Only check new_condition_gate_chain — not d_input_gate_chain for new_logic DFFs
+        chain = c.get('new_condition_gate_chain') or []
+        tgt   = c.get('target_register', c.get('new_token', '?'))
+        if not chain:
+            continue
+        if c.get('e4c_no_compound_found'):
+            continue
             for g in chain:
                 raw_fn = (g.get('gate_function') or '').upper()
                 # Match both exact (NR2) and prefix-stripped (NR)
@@ -1098,10 +1120,8 @@ def main():
                 f"Use compound gates (OA12/OAI21/AN3/ND3) matching synthesis output instead.")
             overall_pass = False
 
-    # Check: and_term changes must record old_driver_inverting.
-    # The rtl_diff_analyzer must grep the PreEco Synthesize netlist to find the gate
-    # driving old_token and record its cell type + polarity. Without this, the Step 3
-    # boolean function check cannot run and wrong gate choices go undetected.
+    # Check: and_term changes must record old_driver_inverting + old_driver_cell_type
+    # + and_term_gate_input (the module-scope port name, NOT the parent flat_net_name).
     for idx, c in enumerate(rtl_diff.get('changes', [])):
         if c.get('change_type') != 'and_term':
             continue
@@ -1109,10 +1129,21 @@ def main():
             and_term_mux_issues.append(
                 f"changes[{idx}] [FAIL/AND-TERM-NO-POLARITY]: and_term change for "
                 f"'{c.get('old_token','?')}' missing old_driver_inverting. "
-                f"rtl_diff_analyzer must grep PreEco Synthesize netlist for the gate "
-                f"driving old_token, record old_driver_cell_type + old_driver_inverting "
-                f"(true if AOI/OAI/NOR/NAND/INV/NR/ND prefix, else false).")
+                f"Grep PreEco Synthesize for gate driving old_token, record "
+                f"old_driver_cell_type + old_driver_inverting.")
             overall_pass = False
+        if not c.get('old_driver_cell_type'):
+            and_term_mux_issues.append(
+                f"changes[{idx}] [FAIL/AND-TERM-NO-CELL-TYPE]: and_term change for "
+                f"'{c.get('old_token','?')}' missing old_driver_cell_type. "
+                f"Required alongside old_driver_inverting.")
+            overall_pass = False
+        if not c.get('and_term_gate_input'):
+            and_term_mux_issues.append(
+                f"changes[{idx}] [WARN/AND-TERM-NO-GATE-INPUT]: and_term change for "
+                f"'{c.get('old_token','?')}' missing and_term_gate_input. "
+                f"Must be the port/signal name INSIDE the declaring module (not flat_net_name). "
+                f"Required for studier to wire new AND gate correctly.")
         chain = c.get('new_condition_gate_chain') or []
         has_mux = any(g.get('gate_function', '').upper().startswith('MUX') for g in chain)
         if has_mux:
