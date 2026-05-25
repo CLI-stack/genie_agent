@@ -907,13 +907,15 @@ def main():
             cpf = g.get('cell_type_from_preeco', False)
             if (fn in _SIMPLE_GATES or raw_fn in _SIMPLE_GATES) and not cpf:
                 chain_compact_issues.append(
-                    f"changes[{idx}] target={tgt} [WARN/9f-PREECO-FIRST]: "
+                    f"changes[{idx}] target={tgt} [FAIL/9f-PREECO-FIRST]: "
                     f"gate seq={g.get('seq','?')} uses simple gate '{g.get('gate_function')}' "
                     f"without cell_type_from_preeco:true. "
-                    f"Run E4c grep on PreEco declaring module first — compound gates "
-                    f"(OA12/OAI21/AN3/ND3) from PreEco must be used when they exist. "
-                    f"Simple gates cause FM structural divergence between Synth and PP ECO. "
+                    f"HARD FAIL — condition chains MUST use compound gates from PreEco "
+                    f"(OA12/OAI21/AN3/ND3). Run E4c grep on PreEco declaring module first; "
+                    f"simple gates (NR2/OR3/AN2) cause FM structural divergence between "
+                    f"Synth and PP ECO even when boolean is correct. "
                     f"See rtl_diff_analyzer.md §E4c.")
+                overall_pass = False
 
     # Check 9e — Compound gate preference: detect consecutive gate pairs (gate_i →
     # gate_i+1) where gate_i's output feeds ONLY gate_i+1 and the combined function
