@@ -137,11 +137,13 @@ def main():
                     f"scalar shared D causes FM logical mismatch on every bit")
 
     # ── 2f. Combinational loop detection ─────────────────────────────────────
-    # A gate whose output net feeds back into its own input chain is a
+    # A gate whose output net feeds back into its own INPUT chain is a
     # combinational loop — illegal Verilog, causes FM ABORT or infinite loop.
-    # Common cause: buffer chain (INV→INV) where the start input = chain output.
+    # Common cause: buffer chain (INV→INV) where the final output = the first
+    # gate's input (e.g., A drives INV1 → INV2 → A, creating a cycle).
+    _OUT_PINS = {'Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'S'}
     for stage in ['Synthesize']:
-        # Map output_net → entry for each new_logic_gate
+        # Build output_net → entry map for new_logic_gate entries only
         out_to_entry = {}
         for e in study.get(stage, []):
             if e.get('change_type') not in ('new_logic_gate', 'new_logic'):
@@ -149,14 +151,21 @@ def main():
             out = e.get('output_net', '')
             if out:
                 out_to_entry[out] = e
-        # For each gate, walk its input chain; if we reach the gate's own output → loop
+
+        def _input_nets(entry, stg):
+            """Return only INPUT pin values — exclude output pins to avoid false positives."""
+            pcs = entry.get('port_connections') or entry.get('port_connections_per_stage', {}).get(stg, {})
+            return [v for k, v in pcs.items()
+                    if isinstance(v, str) and k not in _OUT_PINS]
+
         for e in study.get(stage, []):
             if e.get('change_type') not in ('new_logic_gate', 'new_logic'):
                 continue
-            pcs = e.get('port_connections') or e.get('port_connections_per_stage', {}).get(stage, {})
             gate_out = e.get('output_net', '')
-            # BFS through inputs
-            visited, queue = set(), list(pcs.values())
+            if not gate_out:
+                continue
+            # BFS through INPUT pins only — do NOT include output pin in initial queue
+            visited, queue = set(), list(_input_nets(e, stage))
             loop_found = False
             while queue and not loop_found:
                 net = queue.pop(0)
@@ -168,8 +177,7 @@ def main():
                     break
                 src = out_to_entry.get(net)
                 if src:
-                    src_pcs = src.get('port_connections') or src.get('port_connections_per_stage', {}).get(stage, {})
-                    queue.extend(v for v in src_pcs.values() if isinstance(v, str))
+                    queue.extend(_input_nets(src, stage))
             if loop_found:
                 inst = e.get('instance_name', '?')
                 issues.append(
