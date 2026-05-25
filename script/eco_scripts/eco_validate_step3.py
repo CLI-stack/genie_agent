@@ -114,6 +114,69 @@ def main():
                 f"CRITICAL: bus gate '{target_base}' has inconsistent entry counts across stages "
                 f"({counts}) — all 3 stages must have the same N bit entries")
 
+    # ── 2e. Bus DFF: per-bit D-input check ───────────────────────────────────
+    # All N is_bus_dff_bit entries for the same register must carry DISTINCT D
+    # nets — one per bit.  A single scalar D shared by all bits means the chain
+    # gate was not expanded per-bit; each DFF bit would get the same scalar
+    # value instead of its bit-slice → FM logical mismatch on every bus bit.
+    import re as _re2
+    for stage in ['Synthesize']:
+        bus_d = {}
+        for e in study.get(stage, []):
+            if not e.get('is_bus_dff_bit'):
+                continue
+            reg = _re2.sub(r'_reg_\d+_$', '', e.get('instance_name', ''))
+            pcs = e.get('port_connections') or e.get('port_connections_per_stage', {}).get(stage, {})
+            d_net = pcs.get('D', '')
+            bus_d.setdefault(reg, set()).add(d_net)
+        for reg, d_nets in bus_d.items():
+            if len(d_nets) == 1:
+                issues.append(
+                    f"CRITICAL: bus DFF '{reg}' all bits share the same D net ({d_nets}) "
+                    f"— D-input chain must be expanded per-bit with bit-indexed inputs; "
+                    f"scalar shared D causes FM logical mismatch on every bit")
+
+    # ── 2f. Combinational loop detection ─────────────────────────────────────
+    # A gate whose output net feeds back into its own input chain is a
+    # combinational loop — illegal Verilog, causes FM ABORT or infinite loop.
+    # Common cause: buffer chain (INV→INV) where the start input = chain output.
+    for stage in ['Synthesize']:
+        # Map output_net → entry for each new_logic_gate
+        out_to_entry = {}
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_gate', 'new_logic'):
+                continue
+            out = e.get('output_net', '')
+            if out:
+                out_to_entry[out] = e
+        # For each gate, walk its input chain; if we reach the gate's own output → loop
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_gate', 'new_logic'):
+                continue
+            pcs = e.get('port_connections') or e.get('port_connections_per_stage', {}).get(stage, {})
+            gate_out = e.get('output_net', '')
+            # BFS through inputs
+            visited, queue = set(), list(pcs.values())
+            loop_found = False
+            while queue and not loop_found:
+                net = queue.pop(0)
+                if not isinstance(net, str) or net in visited:
+                    continue
+                visited.add(net)
+                if net == gate_out:
+                    loop_found = True
+                    break
+                src = out_to_entry.get(net)
+                if src:
+                    src_pcs = src.get('port_connections') or src.get('port_connections_per_stage', {}).get(stage, {})
+                    queue.extend(v for v in src_pcs.values() if isinstance(v, str))
+            if loop_found:
+                inst = e.get('instance_name', '?')
+                issues.append(
+                    f"CRITICAL: combinational loop detected — gate '{inst}' output '{gate_out}' "
+                    f"feeds back into its own input chain — illegal Verilog; "
+                    f"check that the output port driver is not also used as the gate source")
+
     # ── 3. DFF entries have port_connections_per_stage for all 3 stages ─────
     # Only flag STATEFUL entries (DFFs with .Q output, .CP, scan pins). Skip:
     #   - bridge buffer cells (bridge_port_role ends in '_driver') — these are

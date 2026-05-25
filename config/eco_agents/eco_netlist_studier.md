@@ -350,6 +350,9 @@ python3 script/eco_scripts/eco_emit_dff_entry.py \
 ```
 The wrapper emits N entries (`<target>_reg_<bit>_`) with per-bit D (`<d_src>[bit]`) and Q (`<target>[bit]`) nets, plus shared CP/SI/SE derived from a sibling DFF in the same clock domain.
 
+**D-input gate chain — must also be per-bit (MANDATORY when chain is non-empty):**
+If the bus DFF has a D-input gate chain (e.g., reset-baked `INR2(data, reset)` → D), that chain gate must be replicated N times with bit-indexed data inputs — one gate per DFF bit. Never emit a single scalar chain gate shared across all N bits: each bit's DFF connects to its own gate output, and each gate's data input is the bit-indexed form of the source bus signal (e.g., `data[bit]`). Scalar inputs such as reset signals are shared unchanged across all N gate entries.
+
 **Step 3 — Splice all N entries per stage:**
 ```python
 out = json.load(open(f'data/{TAG}_eco_dff_entry_{target}.json'))
@@ -584,7 +587,7 @@ On (A)+(B) miss, emit `cell_name_per_stage[stage]: null` and `confirmed_per_stag
 2. Detect netlist type: `grep -c "^module " /tmp/eco_study_<TAG>_Synthesize.v` — count > 1 = hierarchical
 3. **Implicit wire check:** if `context_line` has only `wire` AND ≥ 2 `port_connection` changes reference it → skip port_declaration, set `no_wire_decl_needed: true` on those port_connection entries, note in entry.
 4. If hierarchical: validate module name — `grep -c "^module <module_name>\b"`. If 0 → try `<module_name>_0`. Not found → `confirmed: false`.
-5. **Output port driver check (MANDATORY when `declaration_type=output`):** verify the signal has a driver cell in the PreEco Synthesize module scope: `grep -cE "\.(ZN|Z|Q)\s*\(\s*<signal_name>\s*\)" /tmp/eco_study_<TAG>_Synthesize.v`. If 0 (no driver) → the signal is undriven after port_declaration — emit INV+INV buffer chain entries exactly as step 0i does for `port_promotion` with `needs_buffer_chain: true`. Without a driver the output port is undriven → FM globally unmatched.
+5. **Output port driver check (MANDATORY when `declaration_type=output`):** first check if a companion `port_connection` change in the same ECO wires a child instance output to this signal — if so, the driver is the child port connection and **no buffer chain is needed**; emit only the `port_declaration`. Only if no such companion port_connection exists AND `grep -cE "\.(ZN|Z|Q)\s*\(\s*<signal_name>\s*\)" /tmp/eco_study_<TAG>_Synthesize.v` returns 0 (no primitive driver) → emit INV+INV buffer chain entries with `needs_buffer_chain: true`. Emitting a buffer chain when the driver is already provided by a child port_connection creates a combinational loop (gate output feeds its own input) → FM ABORT.
 
 ### Phase 0.14 — Process `port_connection` entries  (was 0h)
 > **SKIP IF** no `port_connection` changes in rtl_diff.
