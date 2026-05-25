@@ -184,7 +184,7 @@ TCLEOF
 end
 
 # --- Phase 6: Poll until ALL result files have sentinel ---
-set max_wait = 60
+set max_wait = 180
 set wait_count = 0
 
 echo "Waiting for all $target_count targets to complete (max ${max_wait} minutes)..."
