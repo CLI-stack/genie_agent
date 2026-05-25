@@ -1277,9 +1277,16 @@ def main():
                                     f"changes[{idx}] target={tgt} [FAIL/9f-STAGE-UNSTABLE]: "
                                     f"intermediate_net_insertion gate uses '{base}' which has "
                                     f"0 occurrences in {stage} PreEco — signal won't survive P&R. "
-                                    f"Use driver_substitution: find a named net 2-3 hops upstream "
-                                    f"of the pivot net, rename its driver, add compound gates using "
-                                    f"only stage-stable signals (ECO ports, primary inputs).")
+                                    f"FIRST PREFERENCE: classify as `and_term` (NOT wire_swap) "
+                                    f"when exactly ONE new else-if branch is prepended AND the old "
+                                    f"D-input has a compound-cell driver at hop 0 — see "
+                                    f"rtl_diff_analyzer.md `PREFER and_term WHEN FEASIBLE` rule. "
+                                    f"and_term reuses the existing compound cell, avoids inserting "
+                                    f"new gates with unstable inputs, and is FM-friendliest. "
+                                    f"FALLBACK ONLY IF and_term polarity check fails for both "
+                                    f"NOR2 and INR2 candidates: use driver_substitution (find a "
+                                    f"named net 2-3 hops upstream of the pivot, rename its driver, "
+                                    f"add compound gates using only stage-stable signals).")
                                 overall_pass = False
                                 break  # one stage failure is enough to flag
                         except Exception:
