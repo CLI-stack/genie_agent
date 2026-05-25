@@ -402,13 +402,14 @@ new_logic DFF detected
   ├─ E3: Decompose to gate chain — use PreEco compound cells where possible
   └─ Expression complex / failed?
        ├─ Old expr still present as default branch? (E4a)
-       │    YES → E4b: run eco_find_drvsub_target.py
+       │    YES → E4b-DRVSUB: run eco_find_drvsub_target.py
        │           ├─ stage-stable conditions → driver_substitution
        │           └─ synthesis-internal signals → intermediate_net_insertion + PENDING_FM_RESOLUTION
        ├─ E4c: grep PreEco for compound gates in declaring module scope FIRST
        │    found → build chain exclusively from those cell types
        │    none  → E4d: simple gate RTL decomposition (last resort)
-       └─ Old expr absent / arithmetic / function calls → fallback_strategy: null (MANUAL_ONLY)
+       ├─ E4e: fallback_strategy: null (MANUAL_ONLY) — when old expr absent / arithmetic
+       └─ E4f: Submodule input scope check (MANDATORY after any decomposition)
 ```
 
 For every `new_logic` change that declares a new DFF register, parse its D-input expression from the always block and decompose it into a gate chain. This produces a `d_input_gate_chain` array that allows eco_applier to insert the full combinational D-input logic automatically — no placeholder nets, no manual synthesis needed.
@@ -521,11 +522,11 @@ When the RTL diff shows the OLD expression still present as the last/default con
 
 **Set `fallback_strategy: "intermediate_net_insertion"` when this pattern is detected.**
 
-#### E4b — Identify the fallback query signal
+#### E4b-QUERY — Identify the fallback query signal
 
 Add `target_register` (the DFF output Q signal) to `nets_to_query` with `fallback_for_decompose_failed: true`. The studier traces backward from `target_register.D` to find the pivot net.
 
-#### E4b — Driver Substitution (PRIORITY 0 — check BEFORE compound gate discovery)
+#### E4b-DRVSUB — Driver Substitution (PRIORITY 0 — check BEFORE compound gate discovery)
 
 The most FM-friendly strategy: never touches the pivot path, no new intermediate wires for FM to trace.
 
@@ -739,7 +740,7 @@ Set `new_condition_gate_chain: null` only when decomposition itself failed (arit
 
 **If decomposition fails** (arithmetic, function calls) → `new_condition_gate_chain: null`, `fallback_strategy: null`. eco_netlist_studier will mark as MANUAL_ONLY.
 
-#### E4c — When fallback is not possible
+#### E4e — When fallback is not possible
 
 Set `fallback_strategy: null` when ANY of the following is true:
 - The old always block's default case (`else <target> <= <old_expression>`) is ABSENT from the new RTL — meaning the new RTL replaced the entire expression with new logic that does not preserve the old expression as any branch. There is no pivot net to redirect because the old gate chain no longer drives the register at all.
@@ -748,7 +749,7 @@ Set `fallback_strategy: null` when ANY of the following is true:
 
 When `fallback_strategy: null`, the eco_netlist_studier marks this change as MANUAL_ONLY — an engineer must synthesize the full D-input expression from scratch using synthesis tools.
 
-### E4b — Submodule Input Scope Check (MANDATORY after decomposition)
+### E4f — Submodule Input Scope Check (MANDATORY after decomposition)
 
 For each gate chain input, verify it is directly accessible in the declaring module scope:
 
