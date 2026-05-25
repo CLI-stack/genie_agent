@@ -136,5 +136,8 @@
     "function": "S ? I1 : I0",
     "output_pin": "Z",
     "output_is_inverting": false
+  },
+  "OA12": {
+    "Z": "(A1 & (A2 | B))"
   }
 }
