@@ -2,7 +2,7 @@
 
 **You are the ECO fenets runner.** Your sole job is Step 2 of the ECO flow: submit find_equivalent_nets, block until complete, handle retries, write all raw rpt files, and produce the step2 fenets RPT. Then exit.
 
-**MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` before anything else.
+**MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES_FAST.md` before anything else.
 
 **MANDATORY SECOND ACTION:** Read **only** your scope-contract section in the parent orchestrator: `config/eco_agents/STUDY_ORCHESTRATOR.md` **§STEP 2 — Run find_equivalent_nets**. You handle exactly what is documented there — no more, no less. Do NOT read other STEP sections; they belong to other agents.
 
@@ -111,6 +111,8 @@ The script writes `queries.json` plus a sibling marker file `queries_sanitize_ma
 
 **FROZEN — after sanitize, `queries.json` is your INPUT. DO NOT regenerate, edit, or rewrite it.** Submit each `net_path` to FM `find_equivalent_nets` exactly as written.
 
+**MANDATORY: Do NOT reuse a previous fenets run if its queried scope differs from Step 1 `net_path` values.** Compare the net paths that tag actually queried against the `net_path` values in `nets_to_query` from the Step 1 JSON. If they differ (e.g., previous run used a deeper or shallower hierarchy), do NOT reuse it as the initial fenets — submit a fresh run. A previous run at a different hierarchy level may only be used as a **retry result**, not as the initial run.
+
 If FM returns FM-036 on entries:
 - **DO NOT manually edit `queries.json` to "fix" paths.** This bypasses the deterministic sanitize step and silently drops queries.
 - Use FM-side scope adjustments via the retry rpts (let FM handle scope reconciliation through its built-in fallbacks).
@@ -204,10 +206,45 @@ Copy each retry rpt to `AI_ECO_FLOW_DIR/` immediately after writing. Verify copy
 
 **FM-036 — MUST classify before retrying:**
 First determine if the net is a port-level signal or an internal wire:
-- Read `eco_rtl_diff.json` for this net's `change_type`. If `change_type = "wire_swap"` and the net has no `input`/`output` declaration in any RTL module (only `reg`/`wire`), it is an **internal wire** — FM will return FM-036 at every hierarchy level because the net is never exposed in FM's reference namespace. Do NOT strip levels. Instead, pivot immediately to querying `target_register` (the DFF output Q signal), which IS visible to FM. Submit one genie_cli call with `netName:<hierarchy_path>/<target_register>` — this is the internal wire pivot (max 1 pivot attempt per net).
-- If the net IS declared as `input`/`output` in any RTL module, it is a **port-level signal** — FM-036 means the hierarchy level is wrong. Strip one level per retry, max 3 retries.
+```bash
+grep -rn "^\s*\(input\|output\)\b.*<old_token>" <REF_DIR>/data/PreEco/SynRtl/
+```
+- If grep returns **≥1 match** → port-level signal → strip one hierarchy level per retry, max 3 retries
+- If grep returns **0 matches** → internal wire → pivot immediately to target register query (step 2b below); do NOT submit any level-stripping retries
 
-After all retries exhausted for a stage (including the internal wire pivot attempt when the net was classified as internal wire) → apply Stage Fallback: grep confirmed cell names from another stage's FM results and use them for this stage (documented in STUDY_ORCHESTRATOR.md retry sections). Stage Fallback is applied only when ALL retry options for that stage are exhausted — not before.
+Read `eco_rtl_diff.json` for this net's `change_type`. If `change_type = "wire_swap"` and the net has no `input`/`output` declaration in any RTL module (only `reg`/`wire`), it is an **internal wire** — FM will return FM-036 at every hierarchy level because the net is never exposed in FM's reference namespace. Do NOT strip levels. Instead, pivot immediately to querying `target_register` (the DFF output Q signal), which IS visible to FM. Submit one genie_cli call with `netName:<hierarchy_path>/<target_register>` — this is the internal wire pivot (max 1 pivot attempt per net).
+
+**Step 2b — Pivot to target register query (when net is an internal wire):**
+```bash
+python3 script/genie_cli.py \
+  -i "find equivalent nets at <REF_DIR> for <TILE> netName:<hierarchy_path>/<target_register>" \
+  --execute --xterm
+```
+Where `<hierarchy_path>` is the instance path from the `hierarchy` field in `eco_rtl_diff.json`. Write and copy the raw rpt with `_fm036_retry<N>` suffix. If the target register pivot also returns FM-036, try with `_reg` suffix, then `_0_` bus notation, then apply direct netlist grep (step 3 below).
+
+**If FM-036 fires at EVERY hierarchy level after 2 retries:** stop stripping. The net is likely an internal wire — apply step 2b even if you initially treated it as a port-level signal.
+
+If the net IS declared as `input`/`output` in any RTL module, it is a **port-level signal** — FM-036 means the hierarchy level is wrong. Strip one level per retry, max 3 retries.
+
+**When all FM retries and pivot are exhausted — fallback chain:**
+
+3. **Direct netlist grep:**
+   ```bash
+   zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -n "<net_token>"
+   ```
+   `<net_token>` = signal name extracted from the failing net path (may have `_reg` suffix or synthesis renaming).
+
+4. **Use RTL diff context** — if grep finds no match, search by structural proximity (surrounding expression from the diff hunk) to identify the relevant cell.
+
+5. **Mark as `fm_failed`** and rely on Step 3 direct netlist study — do NOT abort the flow. A single failed net does not stop the whole ECO.
+
+After all retries exhausted for a stage (including the internal wire pivot attempt when the net was classified as internal wire) → apply Stage Fallback. Stage Fallback is applied only when ALL retry options for that stage are exhausted — not before.
+
+**Stage Fallback procedure:**
+- Take confirmed cell names from a passing stage (e.g. Synthesize) and use them for the failing stage
+- Record in the step2 fenets RPT: `NO_EQUIV_NETS — all retries exhausted, fallback applied for <Stage> using <source_stage> results`
+- Set `spec_sources["<failing_stage>"] = "FALLBACK"` in SPEC_SOURCES mapping
+- eco_netlist_studier will use the fallback cells for that stage and note them as `fallback_from: <source_stage>`
 
 ---
 
@@ -302,7 +339,45 @@ spec_sources = {
 
 **ECO type reclassification (GAP-9):** Before writing the per-net summary, check each `wire_swap` change for a non-null `mux_select_gate_function` (set by rtl_diff_analyzer Step D-MUX). When present, the ECO requires BOTH a new gate insertion AND a pin rewire — classify as `new_logic_gate_with_rewire` in the RPT (not `wire_swap`). Include in the per-net description: "Requires new `<gate_function>` gate insertion AND rewire of `<target_register>` MUX select pin." This prevents eco_netlist_studier from treating it as a simple net substitution.
 
-Write `<BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt` covering all nets queried, retry history, FM results per stage, qualifying cells per stage, and a **SPEC_SOURCES section**.
+Write `<BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt` using this exact format:
+
+```
+================================================================================
+STEP 2 — FIND EQUIVALENT NETS
+Tag: <TAG>  |  fenets_tag: <fenets_tag>  |  Tile: <TILE>
+================================================================================
+────────────────────────────────────────────────────────────────────────────────
+Net [<n>/<total>]: <net_path>
+────────────────────────────────────────────────────────────────────────────────
+RTL Context   : <change_type> in <module_name> — <old_token> → <new_token>
+
+<If No-Equiv-Nets retry was performed:>
+2nd Iteration (No Equiv Nets Retry):
+  Original query : <original_net_path> → No Equivalent Nets in <Stage>
+  Retry 1 (<noequiv_retry1_tag>): <retry1_net_path> → <FOUND N cells / Still no results>
+  Retry 2 (<noequiv_retry2_tag>): <retry2_net_path> → <FOUND N cells / All retries exhausted>
+  Outcome        : <Used retry N results for <Stage> / Stage fallback applied>
+
+<If FM-036 internal wire pivot was performed:>
+FM-036 Internal Wire Pivot:
+  Failing net    : <original_net_path> → FM-036 at all hierarchy levels (internal wire)
+  Classification : Internal wire — not a module port, invisible to FM at any depth
+  Pivot query    : <target_register_path> → <FOUND N cells / FM-036 again>
+  Outcome        : <Used pivot results / fallback>
+
+FM Results per Stage:
+  [Synthesize] : <N> qualifying cells  (or: No Equiv Nets → retry<N> used / fallback)
+  [PrePlace]   : <N> qualifying cells  (or: No Equiv Nets → retry<N> used / fallback)
+  [Route]      : <N> qualifying cells  (or: FM-036 → stripped path / fallback)
+
+Qualifying cells passed to Step 3:
+  Synthesize : <cell_name>/<pin>, ...
+  PrePlace   : <cell_name>/<pin>, ...  (or: fallback from Synthesize)
+  Route      : <cell_name>/<pin>, ...  (or: fallback from Synthesize)
+
+<Repeat block for each net>
+================================================================================
+```
 
 The SPEC_SOURCES section MUST appear at the end of the RPT with this exact format so ORCHESTRATOR can parse it:
 
@@ -332,13 +407,30 @@ ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step2_fenets.rpt
 
 ## STRICT FILE VERIFICATION before exiting
 
-Every raw rpt file written MUST also exist in AI_ECO_FLOW_DIR:
+Every raw rpt file written to `data/` MUST also exist in `AI_ECO_FLOW_DIR/`. Verify each individually:
+
 ```bash
+# Initial run — MUST exist
 ls <AI_ECO_FLOW_DIR>/<fenets_tag>_find_equivalent_nets_raw.rpt
-# Plus all retry rpts submitted
+
+# No-Equiv-Nets retries — MUST exist if submitted
+ls <AI_ECO_FLOW_DIR>/<noequiv_retry1_tag>_find_equivalent_nets_raw_noequiv_retry1.rpt
+ls <AI_ECO_FLOW_DIR>/<noequiv_retry2_tag>_find_equivalent_nets_raw_noequiv_retry2.rpt
+
+# FM-036 retries — MUST exist if submitted
+ls <AI_ECO_FLOW_DIR>/<fm036_retry1_tag>_find_equivalent_nets_raw_fm036_retry1.rpt
+ls <AI_ECO_FLOW_DIR>/<fm036_retry2_tag>_find_equivalent_nets_raw_fm036_retry2.rpt
+ls <AI_ECO_FLOW_DIR>/<fm036_retry3_tag>_find_equivalent_nets_raw_fm036_retry3.rpt
+
+# Step 2 summary RPT — MUST exist
 ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step2_fenets.rpt
 ```
-If any is missing — copy before exiting.
+
+If any submitted run's raw rpt is missing — copy before exiting:
+```bash
+cp <BASE_DIR>/data/<tag>_find_equivalent_nets_raw*.rpt <AI_ECO_FLOW_DIR>/
+```
+A missing file means either the copy was skipped or the run did not complete — investigate before proceeding to Step 3.
 
 ## STEP F — Run Step 2 validator with self-healing loop (BLOCKING — gates Step 3)
 

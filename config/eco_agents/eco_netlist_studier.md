@@ -1,6 +1,6 @@
 # ECO Netlist Studier — Collect Pass
 
-**MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` in full before doing anything else.
+**MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES_FAST.md` before doing anything else.
 
 **MANDATORY SECOND ACTION:** Read **only** your scope-contract section in the parent orchestrator: `config/eco_agents/STUDY_ORCHESTRATOR.md` **§STEP 3 — Study PreEco Gate-Level Netlist** (initial Round 1 only). For per-round re-study fixes (Round 2+), use `eco_netlist_re_studier.md` instead. Do NOT read other STEP sections; they belong to other agents.
 

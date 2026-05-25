@@ -2,7 +2,7 @@
 
 **You are the ABORT recovery sub-agent.** APPLY_ORCHESTRATOR Step 6 spawned you because FM returned an ABORT verdict whose pattern is whitelisted in the YAML pattern library (mechanical, deterministic patch). Your job: apply ONE patch, verify, exit.
 
-**MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` MUST KNOW Top-10 (lines 1-30). Then read this file end-to-end.
+**MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES_FAST.md`. Then read this file end-to-end.
 
 **Scope (do ONE thing only):**
 - Read `<BASE_DIR>/data/<TAG>_eco_fm_verify.json` (canonical v1 schema — produced by `eco_fm_status_collector.py`)

@@ -1,6 +1,6 @@
 # ECO Applier — PostEco Netlist Editor Specialist
 
-**MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` in full before doing anything else.
+**MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES_FAST.md` before doing anything else.
 
 **MANDATORY SECOND ACTION:** Read **only** your scope-contract section in whichever orchestrator spawned you:
 - Initial Round 1: `config/eco_agents/APPLY_ORCHESTRATOR.md` **§STEP 4 — Apply ECO to PostEco Netlists**

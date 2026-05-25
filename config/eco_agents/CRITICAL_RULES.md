@@ -1,30 +1,7 @@
-# ECO Flow — CRITICAL RULES
+# ECO Flow — CRITICAL RULES (Full Reference)
 
-**Every orchestrator and sub-agent in the ECO flow MUST read this file first before doing any work.**
-These rules exist because each one addresses a known failure mode that caused a real run to fail or produce wrong output.
-
----
-
-## MUST KNOW — Top 10 (read these first; never violate)
-
-If context pressure forces you to skip the rest of this file, these 10 are non-negotiable. Each maps to a real run that failed.
-
-1. **Read `config/eco_agents/` ONLY** — never `config/analyze_agents/` (different flow). [Rule 0]
-2. **Every TAG is fresh** — never reuse files from `AI_ECO_FLOW_<OLDER_TAG>/`. Step 2 always submits fresh. [Rule 1]
-3. **Spawn then HARD STOP** — after Step 6, write `round_handoff.json`, spawn next agent, EXIT. Never run Steps 7-8 yourself. [Rule 2]
-4. **Write `round_handoff.json` BEFORE spawning** — verify `ls -la` shows it on disk. No file → no spawn. [Rule 3]
-5. **Never skip a step** — context/token pressure is NOT a valid reason. Each step writes its file → checkpoint → only then next step. [Rule 4]
-6. **Instance names, not module names** — all paths use instance hierarchy (e.g. `ARB/DCQARB`), never module-type (`ddrss_<tile>_t_<peer>`). Wrong → FM-036 on every Cat 8 query. [Rule 7]
-7. **DFF naming convention** — instance = `<target_register>_reg`, Q output net = `<target_register>`. FM auto-matches by name; any other naming breaks `FmEqvEcoSynthesizeVsSynRtl`. [Rule 10b]
-8. **All 3 stages must change** — verify md5 of each PostEco stage differs from `.bak_<TAG>_round<N>`. Only-Synth = partial ECO = FM fail. [Rule 12]
-9. **Sub-agents write JSON only; orchestrator writes RPTs** — sub-agent context pressure must not block the RPT being created. [Rule 14]
-10. **FM ABORT → next ROUND_ORCHESTRATOR, never self-fix** — write `eco_fm_verify.json` with `status: "ABORT"` → EXIT. Don't re-submit FM, don't patch netlist inline, don't loop. [Rule 26]
-
-**Forbidden actions (NEVER, in any rule, under any pressure):**
-- NEVER Modify `EcoChange.svf` — AI flow is permanently prohibited from SVF updates. [Rule 27]
-- NEVER Set `manual_only` — abolished. Always prescribe a progressive action across 10 rounds. [Rule 35]
-- NEVER Skip backup before PostEco edit — `cp .v.gz .v.gz.bak_<TAG>_round<N>`. [Rule 6]
-- NEVER modify a validator script to suppress, skip, or weaken a check just to make the current study/run pass. Validators exist to catch real errors — bypassing them hides bugs that cause FM failures. Fix the study/netlist, not the validator.
+> **Sub-agents:** read `CRITICAL_RULES_FAST.md` only (Top 10 + forbidden actions).
+> **Orchestrators:** read `CRITICAL_RULES_FAST.md` first, then this file for full rule definitions.
 
 ---
 
@@ -211,7 +188,7 @@ When FM returns **No Equivalent Nets** or **FM-036** in Step 2, retries MUST be 
 
 > **This rule prevents:** wasting FM-036 retries by stripping hierarchy levels on an internal wire net that is invisible to FM at every depth. Classifying the net type first ensures the correct retry strategy is applied immediately.
 
-The retry strategies in Step 2 of STUDY_ORCHESTRATOR.md are NOT optional. Only after the correct retries are exhausted may fallback be applied.
+The retry strategies are in `eco_fenets_runner.md` STEP C — NOT optional. Only after the correct retries are exhausted may fallback be applied.
 
 ---
 

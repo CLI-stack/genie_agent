@@ -1,6 +1,6 @@
 # ECO Netlist Verifier — Deep Verify + Enrich Pass
 
-**MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` before anything else.
+**MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES_FAST.md` before anything else.
 
 **MANDATORY SECOND ACTION:** Read **only** your scope-contract section in the parent orchestrator: `config/eco_agents/ORCHESTRATOR.md` **§STEP 3 — Study PreEco Gate-Level Netlist** (you run as the verify+enrich pass after `eco_netlist_studier`, before `eco_expand_chains.py` + `eco_validate_step3.py`). Same anchor in `config/eco_agents/ROUND_ORCHESTRATOR.md` **§STEP 6f Pass 6f-B** for per-round re-runs. Do NOT read other STEP sections.
 

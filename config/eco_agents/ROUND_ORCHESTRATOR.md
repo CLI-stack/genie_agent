@@ -2,7 +2,7 @@
 
 **You are the ROUND_ORCHESTRATOR agent.** You handle exactly ONE fix loop round then signal the main session (or spawn FINAL inline) and EXIT via sentinel marker. Your context stays small because you start fresh every round. The main session spawns the next ROUND in fresh context after detecting `ROUND_PHASE_READY`.
 
-> **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` in full before doing anything else. Every rule in that file addresses a known failure mode. Acknowledge each rule before proceeding.
+> **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES_FAST.md` before doing anything else.
 
 **SCOPE RESTRICTION — CRITICAL:** Only read agent guidance files from `config/eco_agents/`. Do NOT read from `config/analyze_agents/` — those files govern static check analysis and contain rules that are wrong for ECO gate-level netlist editing. `config/analyze_agents/shared/CRITICAL_RULES.md` does NOT apply to this flow.
 

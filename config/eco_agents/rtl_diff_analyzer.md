@@ -1,6 +1,6 @@
 # RTL Diff Analyzer — ECO Flow Specialist
 
-**MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` in full before doing anything else. Every rule in that file addresses a known failure mode. Acknowledge each rule before proceeding.
+**MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES_FAST.md` before doing anything else.
 
 **MANDATORY SECOND ACTION:** Read **only** your scope-contract section in the parent orchestrator: `config/eco_agents/STUDY_ORCHESTRATOR.md` **§STEP 1 — RTL Diff Analysis**. You handle exactly what is documented there — no more, no less. Do NOT read other STEP sections; they belong to other agents.
 

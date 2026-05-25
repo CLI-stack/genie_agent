@@ -4,7 +4,7 @@
 
 **You do NOT patch anything on ABORT.** The recovery path is owned by APPLY_ORCHESTRATOR's Step 6 inline loop, which spawns `abort_recovery_agent` (whitelisted patterns, dispatched via `eco_fm_abort_patterns.yaml`'s `recovery.action` field). Just exit with the verdict — orchestrator handles recovery.
 
-**MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` before anything else.
+**MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES_FAST.md` before anything else.
 
 **MANDATORY SECOND ACTION:** Read **only** your scope-contract section in whichever orchestrator spawned you:
 - Initial Round 1: `config/eco_agents/APPLY_ORCHESTRATOR.md` **§STEP 6 — PostEco Formality Verification**

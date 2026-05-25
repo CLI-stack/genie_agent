@@ -2,7 +2,7 @@
 
 **You are the APPLY phase orchestrator.** STUDY_ORCHESTRATOR (Phase A) completed Steps 1-3 and emitted an `APPLY_PHASE_READY` signal. You handle Steps 4-6 in a fresh agent context.
 
-**MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` Top-10 (lines 1-30). Then continue here.
+**MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES_FAST.md`, then `config/eco_agents/CRITICAL_RULES.md`. Then continue here.
 
 **Inputs (from prompt):**
 ```

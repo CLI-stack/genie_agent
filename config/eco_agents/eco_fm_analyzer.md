@@ -1,6 +1,6 @@
 # ECO FM Analyzer — Investigative Debugger
 
-**MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` in full before anything else.
+**MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES_FAST.md` before doing anything else.
 
 **MANDATORY SECOND ACTION:** Read **only** your scope-contract sections in `config/eco_agents/ROUND_ORCHESTRATOR.md`:
 - **§STEP 6d — Analyze FM Failure** (your spawn point + checkpoint contract)

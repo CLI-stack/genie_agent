@@ -1,6 +1,6 @@
 # ECO Netlist Re-Studier — FM Failure Fix Pass
 
-**MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` before anything else.
+**MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES_FAST.md` before anything else.
 
 **MANDATORY SECOND ACTION:** Read **only** your scope-contract section in the parent orchestrator: `config/eco_agents/ROUND_ORCHESTRATOR.md` **§STEP 6f — Re-Study (eco_netlist_studier_round_N)**, specifically Pass 6f-A. Also read **§STEP 6f-FENETS-RESOLVE** if `FENETS_RERUN_PATH` is set (defines the SPEC_SOURCES_JSON contract). Do NOT read other STEP sections; they belong to other agents.
 
