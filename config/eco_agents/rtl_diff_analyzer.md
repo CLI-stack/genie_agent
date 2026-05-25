@@ -303,7 +303,7 @@ mux_select_i0_net = new_select_inputs[0] if new_select_inputs_from_change[0] els
 # same for i1
 ```
 
-Cross-check before writing JSON: `mux_select_i{0,1}_net == new_select_inputs[k]` when the corresponding flag is true. Step 1 Check 27 enforces.
+Cross-check before writing JSON: `mux_select_i{0,1}_net == new_select_inputs[k]` when the corresponding flag is true. The Step 1 validator enforces this (MUX-SELECT-FIELD-MISMATCH check).
 
 Set `mux_select_polarity_pending: false`.
 
@@ -367,6 +367,8 @@ for change in rtl_diff["changes"]:
 ```
 
 **CHECKPOINT:** After this step, verify `nets_to_query` count increased by the number of `condition_inputs_to_query` entries across all changes. If count is unchanged but `condition_inputs_to_query` was non-empty → this step was skipped → run it again.
+
+**Multi-instance rule:** If `instances` is non-null (multiple instances), generate SEPARATE `nets_to_query` entries for EACH instance (same as per-instance net generation at Step D). For bus signals in `condition_inputs_to_query`, also generate the `_0_` bit-indexed variant per instance.
 
 The studier reads these FM results in Step 0c-5: when a chain entry has `"PENDING_FM_RESOLUTION:<signal>"` as an input, it substitutes the gate-level net name returned by FM for that signal.
 
@@ -497,7 +499,7 @@ Parse the expression recursively. For each sub-expression, assign a gate type:
 | `A \| B \| C` | OR3 | 3-input OR |
 | `A[N:0] == K'b0...0` | NOR-N | All bits zero: NOR of all N bits |
 | `A[N:0] == K` (general) | Per-bit INV + AND-N | For each bit i: if K[i]=0 insert INV(A[i]); if K[i]=1 use A[i] directly; AND all N terms |
-| `A ? B : C` | MUX2 | |
+| `A ? B : C` | MUX2 | **`d_input_gate_chain` for new_logic DFF only.** FORBIDDEN in `new_condition_gate_chain` (intermediate_net_insertion). Use compound gates (OA12/OAI21/AN3/ND3) for condition chains instead. |
 | Bit-select `A[i]` | Direct net | Use signal directly; gate-level name may be `A_i_` — verify by grep |
 
 **Assign names for D-input gate chain (combinational gates only):** `eco_<jira>_d<seq>` for instances, `n_eco_<jira>_d<seq>` for output nets. Seq starts from `d001` per DFF target register.
@@ -526,7 +528,7 @@ When the RTL diff shows the OLD expression still present as the last/default con
 
 Add `target_register` (the DFF output Q signal) to `nets_to_query` with `fallback_for_decompose_failed: true`. The studier traces backward from `target_register.D` to find the pivot net.
 
-#### E4b-DRVSUB — Driver Substitution (PRIORITY 0 — check BEFORE compound gate discovery)
+#### E4b-DRVSUB — Driver Substitution (check first within fallback — before E4c compound gate discovery)
 
 The most FM-friendly strategy: never touches the pivot path, no new intermediate wires for FM to trace.
 
@@ -788,35 +790,55 @@ Write to `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json` (always use the full absolute
     {
       "file": "<rtl_file.v>",
       "module_name": "<declaring_module>",
-      "change_type": "<wire_swap|and_term|new_port|port_promotion|new_logic|port_connection>",
+      "change_type": "<wire_swap|and_term|new_port|port_promotion|new_logic|port_connection|enable_swap>",
       "old_token": "<old_signal_name>",
       "new_token": "<new_signal_name>",
       "context_line": "<full RTL line containing the change>",
       "target_register": "<register_name from LHS of context_line>",
       "target_bit": "<[0] or null>",
+      "scope": "<full instance hierarchy path e.g. umccmd/ARB/CMDARB — MANDATORY for new_logic>",
+      "declaration_type": "<input|output|wire — MANDATORY for new_port>",
       "flat_net_exists": false,
       "flat_net_name": null,
       "flat_net_name_per_instance": null,
       "instances": null,
+      "implicit_wire": false,
+      "no_wire_decl_needed": false,
+      "and_term_gate_input": null,
+      "old_driver_cell_type": null,
+      "old_driver_inverting": null,
       "d_input_gate_chain": null,
       "d_input_net": null,
+      "d_input_resolved_net": null,
       "d_input_decompose_failed": false,
+      "d_input_expected_function": null,
+      "dff_instance_name": null,
+      "dff_output_net": null,
+      "dff_clock": null,
       "fallback_strategy": null,
       "new_condition_gate_chain": null,
+      "condition_inputs_to_query": [],
       "mux_select_polarity_pending": false,
       "mux_select_gate_function": null,
       "mux_select_i0_net": null,
       "mux_select_i1_net": null,
       "mux_select_branch_true_on": null,
+      "mux_select_old_driver_cell_type": null,
+      "mux_select_old_driver_inverting": null,
+      "mux_select_old_S_when_condition_true": null,
       "mux_select_reasoning": null,
       "has_sync_reset": false,
       "reset_signal": null,
+      "reset_polarity": null,
       "preferred_insertion_scope": null,
       "input_from_submodule": false,
       "submodule_instance": null,
       "submodule_type": null,
       "is_bus_dff": false,
+      "is_bus_gate": false,
       "bus_width_expr": null,
+      "mode_H_risk": false,
+      "missing_in_stages": [],
       "old_enable_net": null,
       "new_enable_net": null,
       "new_enable_gate_chain": null
@@ -849,13 +871,27 @@ Write to `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json` (always use the full absolute
 ```
 
 **Field notes:**
+- `change_type`: one of `wire_swap|and_term|new_port|port_promotion|new_logic|port_connection|enable_swap`
+- `scope`: full instance hierarchy path to declaring module (e.g. `umccmd/ARB/CMDARB`). **MANDATORY for `new_logic`** when module has multiple instances. Same format as `net_path` but without the signal name.
+- `declaration_type`: **MANDATORY for `new_port`** — `input`, `output`, or `wire` (wire = parent-scope connector, no port-list update needed)
 - `flat_net_exists`: `true` for `port_promotion` — net already in flat netlist under original signal name
-- `flat_net_name`: resolved actual net name in flat netlist for:
-  - `new_port` inputs (single instance) — the net driving this new port in parent scope
-  - `and_term` — the actual flat net name of the new AND term signal (resolved from the port connection in parent; this is the net eco_netlist_studier uses as the second input to the new AND/NAND gate)
-- `flat_net_name_per_instance`: map of `{instance_name: flat_net_name}` for multi-instance modules where each instance has a different connection. Applies to both `new_port` and `and_term` when `instances` is non-null.
-- `instances`: list of instance names when the declaring module is instantiated multiple times in the parent
-- `instance`: in `nets_to_query`, identifies which instance this entry belongs to (null for single-instance)
+- `flat_net_name`: resolved actual net name in flat netlist for `new_port` inputs (single instance) and `and_term` second input
+- `flat_net_name_per_instance`: `{instance_name: flat_net_name}` map for multi-instance modules
+- `instances`: list of ALL instance names when declaring module is instantiated multiple times in parent
+- `implicit_wire` / `no_wire_decl_needed`: `true` when `new_token` appears in ≥2 `port_connection` entries — eco_applier skips `wire <net>;` declaration to avoid FM-599
+- `and_term_gate_input`: the port/signal name as it appears INSIDE the declaring module (NOT the parent-scope `flat_net_name`)
+- `old_driver_cell_type` / `old_driver_inverting`: best-effort from Step 1 grep for `and_term`; definitive from FM polarity in Step 3
+- `d_input_resolved_net`: source net when `d_input_gate_chain: []` (single-net D-input, no decomposition needed)
+- `d_input_expected_function`: Python boolean string for the DFF D-input — MANDATORY when `d_input_gate_chain` is non-empty
+- `dff_instance_name` / `dff_output_net`: MANDATORY for `new_logic` DFF — `"<target_register>_reg"` and `"<target_register>"`
+- `dff_clock`: clock signal name — MANDATORY for `new_logic_dff`, recommended for all `target_register` changes
+- `condition_inputs_to_query`: list of `{signal, scope}` objects for synthesis-internal signals needing FM Mode H resolution
+- `mux_select_old_driver_cell_type` / `mux_select_old_driver_inverting` / `mux_select_old_S_when_condition_true`: MANDATORY for `wire_swap` with MUX-select polarity resolution (D-MUX-3/4/5)
+- `reset_polarity`: `"active_high"` or `"active_low"` — set when `has_sync_reset: true`
+- `preferred_insertion_scope`: `null` = default to declaring module; `"<child_instance>"` = gate chain lives in child scope (output becomes new child output port)
+- `mode_H_risk` / `missing_in_stages`: per gate-chain entry — `true` when input net present in Synthesize but absent in PP or Route
+- `is_bus_gate`: `true` for `new_logic_gate` or `wire_swap` with bus-width chain; never set together with `is_bus_dff`
+- `instance` (in `nets_to_query`): identifies which instance this entry belongs to (null for single-instance)
 
 **`flat_net_name` for `and_term` MUST be populated in Step C.7** — without it, eco_netlist_studier Phase 0 cannot create the `new_logic_gate` entry for the AND-term addition. If Step C.7 cannot resolve the connection (e.g., the new port connection is not yet in PreEco RTL), use the PostEco RTL parent module as the source.
 
