@@ -364,112 +364,42 @@ The studier reads these FM results in Step 0c-5: when a chain entry has `"PENDIN
 
 ---
 
-### Step D-IMPLICIT-WIRE — Detect implicit wire chains (MANDATORY, run after all changes classified)
+### Step D-IMPLICIT-WIRE — Detect implicit wire chains (MANDATORY)
 
-**Purpose:** Prevent eco_applier from adding explicit `wire <net>;` declarations for nets that Verilog already creates as implicit wires from port connections — which causes FM-599 ABORT_NETLIST.
+When the same `new_token` appears in ≥2 `port_connection` entries within the same parent `module_name`: set `implicit_wire: true` and `no_wire_decl_needed: true` on each entry. Also mark any matching `port_declaration` with `declaration_type: "wire"` as `skip: true`.
 
-An implicit wire chain occurs when the same `new_token` net appears in 2 or more `port_connection` changes within the **same parent module** (`module_name` field). One connection drives the wire (output port of one child instance into the parent scope), another consumes it (input port of a different child instance). Verilog creates the wire implicitly — no explicit declaration is needed or allowed.
+Also flag single `port_connection` entries where `new_token` matches a `port_promotion` change's `new_token` — promoted outputs create implicit wires in the parent.
 
-```python
-from collections import defaultdict
-
-# Group port_connection changes by (module_name, new_token)
-port_conn_by_net = defaultdict(list)
-for change in changes:
-    if change["change_type"] == "port_connection":
-        key = (change["module_name"], change["new_token"])
-        port_conn_by_net[key].append(change)
-
-# Any net with 2+ port_connection entries in the same parent module = implicit wire
-for (parent_module, net), conn_list in port_conn_by_net.items():
-    if len(conn_list) >= 2:
-        for c in conn_list:
-            c["implicit_wire"] = True
-            c["no_wire_decl_needed"] = True
-        # Also mark any port_declaration entry for this net as skip: true
-        # eco_applier must NOT add 'wire <net>;' for implicit wires (GAP-7)
-        for c in changes:
-            if (c.get("change_type") == "port_declaration"
-                    and c.get("module_name") == parent_module
-                    and c.get("new_token") == net
-                    and c.get("declaration_type") == "wire"):
-                c["skip"] = True
-                c["no_wire_decl_needed"] = True
-```
-
-**Also flag single port_connection entries** where the `new_token` net is also the `new_token` of a `port_promotion` change in a child module — the promoted output creates an implicit wire in the parent when connected:
-```python
-promoted_nets = {c["new_token"] for c in changes if c["change_type"] == "port_promotion"}
-for change in changes:
-    if change["change_type"] == "port_connection" and change["new_token"] in promoted_nets:
-        change["implicit_wire"] = True
-        change["no_wire_decl_needed"] = True
-```
-
-**Record in RPT for each implicit wire detected:**
-```
-IMPLICIT WIRE: '<new_token>' in '<module_name>' — created implicitly by port connections; eco_applier must NOT add explicit wire declaration.
-  Appears in <N> port_connection entries — Verilog creates this as an implicit wire.
-  Any port_declaration entry for this net with declaration_type "wire" is marked skip: true.
-  Explicit declaration alongside an implicit wire causes FM-599 ABORT_NETLIST.
-```
-
-> **GAP-7 note:** When a net appears as `<new_token>` in ≥ 2 `port_connection` entries within the same parent module scope, it is an implicit wire — `no_wire_decl_needed: true` is set on the net AND any matching `port_declaration` entry is marked `skip: true`. eco_applier must never add `wire <net>;` for implicit wires. There is no scenario where a port-connection-implicit wire requires an explicit wire declaration.
-
-eco_applier reads `no_wire_decl_needed: true` on each `port_connection` entry and skips wire declaration for that net. eco_pre_fm_checker Check F (sub-check F2) is the safety net if eco_applier adds one anyway.
+eco_applier reads `no_wire_decl_needed: true` and never adds `wire <net>;` for these nets. Explicit declaration of an implicit wire causes FM-599. eco_pre_fm_checker Check F2 is the safety net.
 
 ---
 
-### Step D-STAGE-VERIFY — Verify gate chain inputs across all 3 PreEco stages (MANDATORY for new_logic DFFs)
+### Step D-STAGE-VERIFY — Verify gate chain inputs across all 3 PreEco stages (MANDATORY)
 
-**Purpose:** A gate chain input net found in PreEco Synthesize may not be accessible in PrePlace/Route stages if its driving cell is inside a hard macro that is black-boxed in P&R. Detecting this early lets eco_netlist_studier set `needs_named_wire: true` proactively rather than burning a full FM round to discover it.
-
-For every input net in every `d_input_gate_chain` entry across all `new_logic` changes:
-
-```bash
-for each net in gate_chain_entry["inputs"]:
-
-    # Skip — always valid, no stage check needed
-    if net in ("1'b0", "1'b1"):
-        continue
-    if net starts with "n_eco_<jira>_":
-        continue   # ECO-inserted intermediate net — present only after ECO is applied
-
-    # Check presence in all 3 PreEco gate-level netlists
-    synth_hits    = $(zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -cw "<net>")
-    preplace_hits = $(zcat <REF_DIR>/data/PreEco/PrePlace.v.gz   | grep -cw "<net>")
-    route_hits    = $(zcat <REF_DIR>/data/PreEco/Route.v.gz      | grep -cw "<net>")
-
-    missing_stages = []
-    if preplace_hits == 0: missing_stages.append("PrePlace")
-    if route_hits    == 0: missing_stages.append("Route")
-
-    if missing_stages:
-        # Net found in Synthesize but not in P&R stages → hard macro black-box risk
-        gate_chain_entry["mode_H_risk"] = true
-        gate_chain_entry["missing_in_stages"] = missing_stages
-        # Add to RPT:
-        # MODE H RISK: net '<net>' found in Synthesize PreEco but absent in <missing_stages> PreEco.
-        # Likely driven from inside a hard macro black-boxed in P&R.
-        # eco_netlist_studier will set needs_named_wire: true for <missing_stages>.
-```
-
-**JSON output per gate chain entry when Mode H risk detected:**
-```json
-{
-  "seq": "<seq_id>",
-  "gate_function": "<gate_function>",
-  "inputs": ["<net>", "..."],
-  "mode_H_risk": true,
-  "missing_in_stages": ["PrePlace", "Route"]
-}
-```
-
-eco_netlist_studier reads `mode_H_risk: true` on the gate chain entry and automatically applies `needs_named_wire: true` for the listed stages — no FM round wasted on Mode H discovery.
+For every input net in every `d_input_gate_chain` (skip `1'b0`, `1'b1`, `n_eco_*`): grep the net in all 3 PreEco gate-level netlists. If found in Synthesize but absent in PrePlace or Route → set `mode_H_risk: true` and `missing_in_stages: ["PrePlace"|"Route"]` on that gate chain entry. The net is likely driven inside a hard macro black-boxed in P&R. eco_netlist_studier reads this and applies `needs_named_wire: true` for those stages automatically — no wasted FM round.
 
 ---
 
 ## Step E — RTL Expression Decomposer (MANDATORY for new_logic DFFs)
+
+**Navigation — choose path before reading E1–E5:**
+
+```
+new_logic DFF detected
+  ├─ E1: Extract D-input expression (strip sync reset separately)
+  ├─ E2: Resolve macro constants
+  ├─ E2.5: MANDATORY boolean simplification (De Morgan, bus fold, INV reuse, compounds)
+  ├─ E3: Decompose to gate chain — use PreEco compound cells where possible
+  └─ Expression complex / failed?
+       ├─ Old expr still present as default branch? (E4a)
+       │    YES → E4b: run eco_find_drvsub_target.py
+       │           ├─ stage-stable conditions → driver_substitution
+       │           └─ synthesis-internal signals → intermediate_net_insertion + PENDING_FM_RESOLUTION
+       ├─ E4c: grep PreEco for compound gates in declaring module scope FIRST
+       │    found → build chain exclusively from those cell types
+       │    none  → E4d: simple gate RTL decomposition (last resort)
+       └─ Old expr absent / arithmetic / function calls → fallback_strategy: null (MANUAL_ONLY)
+```
 
 For every `new_logic` change that declares a new DFF register, parse its D-input expression from the always block and decompose it into a gate chain. This produces a `d_input_gate_chain` array that allows eco_applier to insert the full combinational D-input logic automatically — no placeholder nets, no manual synthesis needed.
 
@@ -768,47 +698,18 @@ Record as `new_condition_gate_chain` (flat array of all gates):
 ]
 ```
 
-**After decomposing, verify each input — V1–V4.**
+**After decomposing, verify each input — apply in order, stop at first match:**
 
-Two pre-rules: `~X` → emit INV gate (not PENDING); only base `X` goes through V1–V4. `X[N:M] == K` → bit-decompose into AND/INV/NAND gates; each bit signal goes through V1–V4. `PENDING_FM_RESOLUTION` is ONLY for a raw RTL signal V3 grep can't find — never for gate ops.
+Pre-rules: `~X` → emit INV gate (never PENDING). `X[N:M]==K` → bit-decompose; each bit signal goes through V1–V4. PENDING_FM_RESOLUTION is ONLY for a raw RTL signal V3 cannot find.
 
-```python
-all_inputs_resolvable = True
-for gate in new_condition_gate_chain:
-    for idx, inp in enumerate(gate["inputs"]):
-        # V1: constants
-        if inp in ("1'b0", "1'b1"): continue
+| Check | Condition | Action |
+|-------|-----------|--------|
+| **V1** | `1'b0` or `1'b1` | Keep as-is — always valid |
+| **V2** | `inp` is `new_token` of a same-ECO `new_port`/`new_logic`/`port_promotion` change | Set `input_from_change` index; keep — will exist after Pass 2 |
+| **V3** | grep `inp` (and variants `_reg`, `_0_`, `_reg/Q`) in PreEco Synthesize ≥ 1 | Use resolved gate-level name |
+| **V4** | Not found | Set `PENDING_FM_RESOLUTION:<inp>`; add to `condition_inputs_to_query` for Step 2 Mode H |
 
-        # V2: same-ECO new tokens (RULE 23 — will exist after Pass 2)
-        eco_new_tokens = [c["new_token"] for c in changes
-                          if c["change_type"] in ("new_port","new_logic","port_promotion")]
-        if inp in eco_new_tokens:
-            gate["input_from_change"] = next((i for i,c in enumerate(changes)
-                                              if c.get("new_token") == inp), None)
-            continue
-
-        # V3: resolve to gate-level name in PreEco Synthesize (synthesis renames RTL names)
-        candidates = [inp, f"{inp}_reg", f"{inp}_0_", f"{inp}_reg/Q"]
-        resolved = next((c for c in candidates
-                         if grep_count_in_preeco(c, stage="Synthesize") >= 1), None)
-        if resolved:
-            gate["inputs"][idx] = resolved
-            continue
-
-        # V4: not found by text — FM find_equivalent_nets will resolve
-        gate["inputs"][idx] = "PENDING_FM_RESOLUTION:" + inp
-        change.setdefault("condition_inputs_to_query", [])
-        if inp not in [q["signal"] for q in change["condition_inputs_to_query"]]:
-            change["condition_inputs_to_query"].append({
-                "signal": inp, "scope": "<INST_A>/<INST_B>",
-                "reason": f"not in PreEco (tried {candidates}); FM will resolve"
-            })
-        # Do NOT mark unresolvable — FM resolves in Step 2
-
-# null ONLY when decomposition itself failed (arithmetic / function calls)
-if not all_inputs_resolvable:
-    new_condition_gate_chain = null; fallback_strategy = null
-```
+Set `new_condition_gate_chain: null` only when decomposition itself failed (arithmetic, function calls) — NOT for PENDING inputs.
 
 **Preserve chain structure even when inputs are PENDING.** Two phases: (1) build full gate structure from RTL; (2) verify inputs — unresolvable ones get `PENDING_FM_RESOLUTION:<sig>` placeholders. The studier needs the structure to substitute FM-resolved names; setting `new_condition_gate_chain: null` for pending inputs forces MANUAL_ONLY unnecessarily.
 ```json
@@ -838,66 +739,26 @@ When `fallback_strategy: null`, the eco_netlist_studier marks this change as MAN
 
 ### E4b — Submodule Input Scope Check (MANDATORY after decomposition)
 
-For each resolved input signal in the gate chain, verify it is **directly accessible** in the declaring module's scope — not only reachable by crossing a child submodule boundary.
+For each gate chain input, verify it is directly accessible in the declaring module scope:
 
-**Detection:**
 ```bash
-# For each input signal in the gate chain:
-# Step 1: is it declared in the declaring module's own RTL file?
+# Step 1: declared in declaring module RTL?
 grep -n "^\s*\(reg\|wire\|input\|output\)\b.*\b<signal>\b" <declaring_module_rtl_file>
-# count = 0 → NOT in declaring module scope
+# count=0 → comes from child submodule
 
-# Step 2: if not found, is it declared as an output of a child module?
-grep -rn "^\s*output\b.*\b<signal>\b" <REF_DIR>/data/SynRtl/*.v
-# If match found in a DIFFERENT module → signal comes from a child submodule
-
-# Step 3: if from child submodule, which instance in the declaring module?
-grep -n "<child_module_type>\s\+<instance_name>" <declaring_module_rtl_file>
-```
-
-**If any gate chain input comes from a child submodule output:**
-1. Set `preferred_insertion_scope: "<child_instance_path>"` — insert gate chain INSIDE the child, not at parent
-2. Set `input_from_submodule: true`, `submodule_instance: "<instance>"`, `submodule_type: "<module_type>"`
-3. The gate chain output net becomes a **new output port** of the child module:
-   - Add `port_declaration` for `n_eco_<jira>_d<last>` (output) from child module
-   - DFF at parent scope connects to this new port via child's instance connection
-4. Record `preferred_insertion_reason: "input <signal> is output of <child_module> — black-boxed by FM in P&R; insert inside child to avoid DFF0X"`
-
-**STEP 4 — Gate-level primitive driver check (MANDATORY even when signal found in declaring module scope):**
-
-When a D-input signal resolves to a gate-level wire (e.g., `UNCONNECTED_<N>`) that IS declared as `wire` in the declaring module, it may still be driven ONLY through a submodule output bus — not by any primitive cell output in that scope. FM black-boxes such submodules in P&R → wire appears undriven (DFF0X).
-
-```bash
-# After resolving gate-level wire name (e.g., UNCONNECTED_<N>):
-# Check if any primitive cell drives it directly in declaring module scope:
-awk '/^module <declaring_module>\b/,/^endmodule/' \
-    <REF_DIR>/data/PreEco/Synthesize.v.gz | \
+# Step 2: if from child, does any primitive cell drive it directly in PreEco?
+awk '/^module <declaring_module>\b/,/^endmodule/' <REF_DIR>/data/PreEco/Synthesize.v.gz | \
     grep -E "\.(Z|ZN|Q|QN|CO|S)\s*\(\s*<resolved_wire>\s*\)"
-# count = 0 → wire has NO direct primitive driver → only driven via submodule bus
+# count=0 → only driven via submodule bus → FM black-boxes in P&R → DFF0X
 ```
 
-If count = 0 (no primitive driver in scope):
+**Branch on result:**
 
-**EXCEPTION — UNCONNECTED_* bus bit wires:** If the resolved wire matches `^(SYNOPSYS_)?UNCONNECTED_\d+$`, do NOT set `preferred_insertion_scope`. These wires come from submodule port bus outputs — the correct fix is 0b-UNCONNECTED rename at the declaring module (parent) scope. The studier renames `UNCONNECTED_N → n_eco_<jira>_<hint>` as an explicit wire at parent scope, and FM traces hierarchically from parent → submodule → internal DFF. Going INSIDE the submodule breaks FM's clock/cone analysis and causes LatCG mismatches.
-- Set `preferred_insertion_scope: null`
-- Set `submodule_bus_driven: true` (flags studier to apply 0b-UNCONNECTED rename instead)
-- **Mode I pre-check:** if the bus port is `output` of the child AND the child body's matching bit slot is also `UNCONNECTED_M` (grep child for `UNCONNECTED_\d+` at same `bus_bit_index` of any sub-instance bus), set `needs_child_internal_wireup: true`. Studier emits a paired child-scope `port_connection` (net_name=`<port>[<bit>]`) so the child output pin gets an internal driver — without this the parent rename leaves FM seeing X.
-
-**For all other signals (not UNCONNECTED_*):** → **MANDATORY: set preferred_insertion_scope**
-- Set `preferred_insertion_scope` to the submodule instance that drives this wire via port bus
-- Set `input_from_submodule: true`, `submodule_bus_driven: true`
-- Reason: FM black-boxes submodule in P&R → bus output wire appears undriven → always DFF0X in P&R FM targets.
-- **NEVER set `preferred_insertion_scope: null` when `submodule_bus_driven: true` and signal is not UNCONNECTED_***
-
-Find the driving submodule by searching for the wire in a port bus concatenation:
-```bash
-awk '/^module <declaring_module>\b/,/^endmodule/' \
-    <REF_DIR>/data/PreEco/Synthesize.v.gz | \
-    grep "\.\w\+\s*(\s*{[^}]*<resolved_wire>" | head -3
-# → shows which instance's port bus contains this wire → that instance is the submodule to insert into
-```
-
-**If inputs are all directly accessible in declaring module scope AND have primitive drivers:** `preferred_insertion_scope: null` (default — insert at declaring module level as before).
+| Case | Signal type | Action |
+|------|-------------|--------|
+| Directly accessible + primitive driver | Normal signal | `preferred_insertion_scope: null` (default) |
+| From child submodule output (non-UNCONNECTED) | Child-driven | Set `preferred_insertion_scope: "<child_instance>"`, `input_from_submodule: true`. Gate chain output becomes new output port of child — add `port_declaration` for `n_eco_<jira>_d<last>`. **NEVER set null when `submodule_bus_driven: true` and not UNCONNECTED_*** |
+| `UNCONNECTED_*` bus bit wire | Port bus output | Set `preferred_insertion_scope: null`, `submodule_bus_driven: true`. Studier applies 0b-UNCONNECTED rename at parent scope. If child's matching bit slot is also UNCONNECTED: set `needs_child_internal_wireup: true` for paired child-scope `port_connection`. Do NOT go inside the submodule — breaks FM clock/cone analysis. |
 
 ### E5 — Record in JSON
 
@@ -1009,7 +870,7 @@ If the output JSON's `overall_pass` is `false`: read every issue list (`entries[
 
 ## Output RPT
 
-After writing the JSON, write `<BASE_DIR>/data/<TAG>_eco_step1_rtl_diff.rpt` then copy to `AI_ECO_FLOW_DIR`:
+Write `<BASE_DIR>/data/<TAG>_eco_step1_rtl_diff.rpt` then copy to `AI_ECO_FLOW_DIR`:
 ```bash
 cp <BASE_DIR>/data/<TAG>_eco_step1_rtl_diff.rpt <AI_ECO_FLOW_DIR>/
 ```
@@ -1042,4 +903,5 @@ Nets to Query (<N> nets):
 <Repeat for each net>
 
 ================================================================================
+```
 ```
