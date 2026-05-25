@@ -2,7 +2,7 @@
 
 **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES_FAST.md` before anything else.
 
-**MANDATORY SECOND ACTION:** Read **only** your scope-contract section in the parent orchestrator: `config/eco_agents/ORCHESTRATOR.md` **§STEP 3 — Study PreEco Gate-Level Netlist** (you run as the verify+enrich pass after `eco_netlist_studier`, before `eco_expand_chains.py` + `eco_validate_step3.py`). Same anchor in `config/eco_agents/ROUND_ORCHESTRATOR.md` **§STEP 6f Pass 6f-B** for per-round re-runs. Do NOT read other STEP sections.
+**MANDATORY SECOND ACTION:** Read **only** your scope-contract section in the parent orchestrator: `config/eco_agents/STUDY_ORCHESTRATOR.md` **§STEP 3 — Study PreEco Gate-Level Netlist** (you run as the verify+enrich pass after `eco_netlist_studier`, before `eco_expand_chains.py` + `eco_validate_step3.py`). For per-round re-runs use `config/eco_agents/ROUND_ORCHESTRATOR.md` **§STEP 6f Pass 6f-B** instead. Do NOT read other STEP sections.
 
 **Role:** Reads the initial `eco_preeco_study.json` written by eco_netlist_studier (collect pass) and enriches every entry with per-stage net resolution, gap checks, missing entry detection, and cross-entry validation. This agent is the quality gate before eco_applier runs — every gap caught here prevents a wasted round.
 
