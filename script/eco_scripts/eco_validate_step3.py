@@ -114,6 +114,27 @@ def main():
                 f"CRITICAL: bus gate '{target_base}' has inconsistent entry counts across stages "
                 f"({counts}) — all 3 stages must have the same N bit entries")
 
+    # ── 2e-pre. Rewire entries must have module_name ─────────────────────────
+    # Without module_name, eco_applier's resolve_module_name() falls back to a
+    # generic file-wide search and matches the FIRST cell of that name across ALL
+    # modules — which may be a completely unrelated module sharing the same
+    # tool-generated cell name (e.g. ctmi_*, phs_*). This silently applies the
+    # rewire to the wrong module, leaving the intended target unchanged and
+    # corrupting unrelated logic. Require module_name on every rewire entry so
+    # eco_applier can scope its search to the correct module.
+    for stage in ['Synthesize']:
+        for e in study.get(stage, []):
+            if e.get('change_type') != 'rewire':
+                continue
+            cell = e.get('cell_name') or e.get('instance_name') or '?'
+            if not e.get('module_name'):
+                issues.append(
+                    f"CRITICAL: rewire entry '{cell}' pin={e.get('pin','?')} in {stage} "
+                    f"has no module_name — eco_applier will match the first cell of this "
+                    f"name across ALL modules (wrong-module rewire risk). "
+                    f"Studier must set module_name from the declaring module of the cell "
+                    f"found by fenets (extracted from the impl path hierarchy).")
+
     # ── 2e. Bus DFF: per-bit D-input check ───────────────────────────────────
     # All N is_bus_dff_bit entries for the same register must carry DISTINCT D
     # nets — one per bit.  A single scalar D shared by all bits means the chain

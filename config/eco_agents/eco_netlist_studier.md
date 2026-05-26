@@ -641,8 +641,11 @@ For each stage, emit a `rewire` entry for the enable pin:
   "new_net": "<new_enable_net>",
   "confirmed": true,
   "reason": "enable_swap: CE pin rewired from old condition to new condition",
-  "cell_name_per_stage": {"Synthesize": "...", "PrePlace": "...", "Route": "..."} }
+  "cell_name_per_stage": {"Synthesize": "...", "PrePlace": "...", "Route": "..."},
+  "module_name": "<gate-level module name containing the cell>" }
 ```
+
+**`module_name` is MANDATORY on every `rewire` entry** — including enable_swap rewires. Tool-generated cell names (`ctmi_*`, `phs_*`, `copt_*`) repeat across many modules in the hierarchical netlist. Without `module_name`, eco_applier matches the first cell of that name in the entire file — which may be in a completely unrelated module, silently corrupting unrelated logic while leaving the intended target unchanged. Extract `module_name` from the FM impl path: `i:/FMWORK_IMPL_<TILE>/<TILE>/<INST_A>/<INST_B>/<cell>/<pin>` — the declaring module is derived from `<INST_A>/<INST_B>` hierarchy using `resolve_module_name()` against the PostEco netlist.
 
 For bus DFFs: emit N rewire entries (one per bit cell), all sharing the same enable pin name and old/new net names.
 
