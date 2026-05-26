@@ -555,6 +555,70 @@ def companion_files_section(base_dir: Path, ai_eco_flow_dir: Path | None,
 
 
 # -----------------------------------------------------------------------------
+# JSON-first FM results builder — format-stable, no RPT parsing needed
+# -----------------------------------------------------------------------------
+def _build_fm_verify_from_json(evidence_path: Path, verify_path: Path,
+                                rpt_path: Path) -> dict | None:
+    """Build fm_verify dict from JSON sources first, RPT only as last resort.
+
+    Priority per target:
+      1. eco_fm_evidence_roundN.json  → failing_diagnostics.failing_count (most reliable)
+      2. eco_fm_verify.json           → len(failing_points) or failing_count field
+      3. eco_step6_fm_verify_roundN.rpt → RPT parsing (format varies — last resort)
+    """
+    TARGETS = ("FmEqvEcoSynthesizeVsSynRtl",
+               "FmEqvEcoPrePlaceVsEcoSynthesize",
+               "FmEqvEcoRouteVsEcoPrePlace")
+    result = {"per_target": {}}
+
+    evidence  = read_json(evidence_path) or {}
+    fm_json   = read_json(verify_path)   or {}
+    ev_pt     = evidence.get("per_target", {})
+    fv_pt     = fm_json.get("per_target", {})
+
+    for tgt in TARGETS:
+        status, count = None, "—"
+
+        # Source 1 — evidence JSON
+        ev = ev_pt.get(tgt, {})
+        if ev:
+            status = ev.get("status") or ev.get("verdict")
+            diag   = ev.get("failing_diagnostics", {})
+            if "failing_count" in diag:
+                count = diag["failing_count"]
+            elif diag.get("per_dff_dossiers") is not None:
+                count = len(diag["per_dff_dossiers"])
+
+        # Source 2 — fm_verify JSON (fills gaps left by evidence)
+        fv = fv_pt.get(tgt, {})
+        if fv:
+            if not status:
+                status = fv.get("verdict") or fv.get("status")
+            if count == "—":
+                if "failing_count" in fv:
+                    count = fv["failing_count"]
+                elif isinstance(fv.get("failing_points"), list):
+                    count = len(fv["failing_points"])
+
+        # Source 3 — RPT file (last resort, format-dependent)
+        if (not status or count == "—") and rpt_path.exists():
+            rpt_data = _parse_fm_verify_rpt(rpt_path) or {}
+            rpt_tgt  = (rpt_data.get("per_target") or {}).get(tgt, {})
+            if rpt_tgt:
+                if not status:
+                    status = rpt_tgt.get("status")
+                if count == "—":
+                    count = rpt_tgt.get("failing_count", "—")
+
+        if status:
+            if count == "—" and status == "PASS":
+                count = 0
+            result["per_target"][tgt] = {"status": status, "failing_count": count}
+
+    return result if result["per_target"] else None
+
+
+# -----------------------------------------------------------------------------
 # Main HTML assembly
 # -----------------------------------------------------------------------------
 def build_html(args) -> str:
@@ -566,11 +630,15 @@ def build_html(args) -> str:
 
     # Load all artifacts (best-effort; some may be missing depending on verdict)
     handoff      = read_json(data_dir / f"{tag}_round_handoff.json")
-    # eco_fm_verify.json is overwritten each round — use round-specific RPT to get
-    # the correct results for THIS round (not the latest round's merged data).
-    fm_verify = _parse_fm_verify_rpt(
-        data_dir / f"{tag}_eco_step6_fm_verify_round{round_n}.rpt"
-    ) or read_json(data_dir / f"{tag}_eco_fm_verify.json")
+
+    # FM results: JSON sources first (structured, format-stable), RPT last resort.
+    # Priority: evidence_round<N>.json → fm_verify.json → RPT file
+    # This avoids depending on the RPT format which changes between runs.
+    fm_verify = _build_fm_verify_from_json(
+        evidence_path = data_dir / f"{tag}_eco_fm_evidence_round{round_n}.json",
+        verify_path   = data_dir / f"{tag}_eco_fm_verify.json",
+        rpt_path      = data_dir / f"{tag}_eco_step6_fm_verify_round{round_n}.rpt",
+    )
     eco_applied  = read_json(data_dir / f"{tag}_eco_applied_round{round_n}.json")
     evidence     = read_json(data_dir / f"{tag}_eco_fm_evidence_round{round_n}.json")
     xstage       = read_json(data_dir / f"{tag}_eco_fm_xstage_round{round_n}.json")
