@@ -114,6 +114,51 @@ def main():
                 f"CRITICAL: bus gate '{target_base}' has inconsistent entry counts across stages "
                 f"({counts}) — all 3 stages must have the same N bit entries")
 
+    # ── 2e-pre0. Chain gate per-stage input resolution check ─────────────────
+    # Every non-output input pin on a new_logic_gate that has port_connections_per_stage
+    # must NOT have the same bare value across all 3 stages when the rename map
+    # has a different per-stage value for that signal.  Identical values across all
+    # stages mean per-stage resolution was skipped — CTS-renamed nets (IReset,
+    # clock signals, etc.) will differ between stages causing DFF0X / cone mismatch.
+    _rename_map_path = Path(args.study).parent / f'{args.tag}_eco_fenets_rename_map.json'
+    _rmap = {}
+    if _rename_map_path.is_file():
+        try:
+            _rmap = json.loads(_rename_map_path.read_text())
+        except Exception:
+            pass
+    _OUT_CHECK = {'Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'S'}
+    for stage in ['Synthesize']:
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_gate', 'new_logic'):
+                continue
+            pcps = e.get('port_connections_per_stage', {})
+            if not pcps:
+                continue
+            inst = e.get('instance_name', '?')
+            scope = e.get('instance_scope', '')
+            for pin in pcps.get('Synthesize', {}):
+                if pin in _OUT_CHECK:
+                    continue
+                vals = {s: pcps.get(s, {}).get(pin, '') for s in ('Synthesize', 'PrePlace', 'Route')}
+                if len(set(vals.values())) != 1:
+                    continue  # already different per-stage — OK
+                bare = vals['Synthesize']
+                # Check rename map: does this net have different per-stage values?
+                base = bare.split('[')[0]
+                key = f'{scope}/{base}' if scope else base
+                entry = _rmap.get(key, {})
+                if isinstance(entry, dict):
+                    rmap_vals = {s: entry.get(s, bare) for s in ('Synthesize', 'PrePlace', 'Route')}
+                    if len(set(rmap_vals.values())) > 1:
+                        issues.append(
+                            f"HIGH: gate '{inst}' pin={pin!r} uses bare '{bare}' for ALL stages "
+                            f"but rename map shows per-stage values "
+                            f"(Syn={rmap_vals['Synthesize']!r} PP={rmap_vals['PrePlace']!r} "
+                            f"Route={rmap_vals['Route']!r}). "
+                            f"eco_emit_dff_entry.py must resolve this pin per-stage from rename map "
+                            f"to avoid DFF0X/cone-mismatch in PP/Route stages.")
+
     # ── 2e-pre. Rewire entries must have module_name ─────────────────────────
     # Without module_name, eco_applier's resolve_module_name() falls back to a
     # generic file-wide search and matches the FIRST cell of that name across ALL

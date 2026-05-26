@@ -573,6 +573,39 @@ def main():
                 if isinstance(val, str) and val in flat_to_bracket:
                     pcs[pin] = flat_to_bracket[val]
 
+    # ── Per-stage resolution of ALL chain gate input pins from rename map ────
+    # The 0b-ALIAS rule requires every non-ECO input net to be resolved per
+    # stage from the rename map.  Historically only CP (clock) and the leaf A1
+    # (data signal from Cat4 fenets) were resolved; scalar inputs like the reset
+    # signal (B1) were left with the bare RTL name which causes DFF0X / cone
+    # mismatch in PP/Route where CTS renames those nets.
+    _OUT_PINS_SET = {'Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'S'}
+    for g in chain_entries:
+        pcs = g.get('port_connections') or {}
+        # Only add port_connections_per_stage when at least one stage differs
+        pcs_per_stage = {s: {} for s in ('Synthesize', 'PrePlace', 'Route')}
+        changed = False
+        for pin, net in pcs.items():
+            for stage in ('Synthesize', 'PrePlace', 'Route'):
+                if pin in _OUT_PINS_SET or not isinstance(net, str):
+                    pcs_per_stage[stage][pin] = net
+                    continue
+                # Look up net (strip bit-select for map key)
+                base = net.split('[')[0]
+                bit_suffix = net[len(base):]   # e.g. '[3]' or ''
+                key = f'{host_scope}/{base}' if host_scope else base
+                entry = rmap.get(key) or {}
+                renamed = entry.get(stage, net) if isinstance(entry, dict) else net
+                if bit_suffix and renamed and renamed != net:
+                    renamed = renamed + bit_suffix
+                pcs_per_stage[stage][pin] = renamed
+                if renamed != net:
+                    changed = True
+        if changed:
+            g['port_connections_per_stage'] = pcs_per_stage
+            # Also update base port_connections to Synthesize form
+            g['port_connections'] = dict(pcs_per_stage['Synthesize'])
+
     # ── Discover DFF cell type (for build_dff_entry) ─────────────────────
     # Walk host module body in PreEco/Synthesize for a cell using <dff_clock>
     # on its .CP pin; copy that cell's type. Without this the DFF entry has

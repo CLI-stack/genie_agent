@@ -233,6 +233,8 @@ P&R renames DFF outputs (CTS/optimization in Route). A wire may exist in scope b
 4. Still absent → **CTS buffer search**: any cell in the module whose output is sole driver of a net feeding the same downstream consumers as `<net>` in Synthesize. CTS makes buffer chains with tool-generated names — accept the first driven net reaching the same fanout.
 5. Aliases differ across stages → set `entry["net_per_stage"][pin] = {Syn, PP, Route}`.
 
+**CRITICAL — this rule applies to EVERY non-output pin of EVERY chain gate, not just the primary data input (A1).** Scalar inputs to chain gates — including reset signals (B1), MUX selects (S), and any other non-ECO net — are equally subject to CTS renaming across stages. Using a bare RTL name (e.g. `IReset`) for all stages when the rename map has different per-stage values causes DFF0X or cone mismatch in PP/Route. The `eco_emit_dff_entry.py` wrapper performs this resolution automatically after building the chain entries; sub-agents must NOT override the per-stage values with bare names.
+
 **Per-stage resolution priority** (all ECO input pins, anything except `{Z, ZN, ZN1, Q, QN, CO}`):
 
 1. **`<BASE_DIR>/data/<TAG>_eco_fenets_rename_map.json`** — Step 2 (eco_fenets_runner) builds the authoritative per-stage map for every queried signal. If the pin's logical signal is in the map, USE ITS VALUES VERBATIM. Single source of truth.
