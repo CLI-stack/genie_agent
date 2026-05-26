@@ -3060,6 +3060,54 @@ def main():
                         f"existing driver UNCHANGED. See rtl_diff_analyzer.md "
                         f"`MANDATORY insertion pattern — DFF-pin-rewire`.")
 
+    # ── 41. REWIRE-DESTROYS-OLD-NET (and_term anti-pattern cleanup) ─────────
+    # When and_term is correctly classified as DFF-pin-rewire (Check 40
+    # passes — gate output is fresh n_eco_*), the upstream `rewire` entry
+    # that renames the OLD driver's output is no longer needed and actively
+    # HARMS FM. The LATCG clock-gating cone uses the driver's OUTPUT NET
+    # NAME for structural matching — renaming it destroys the pattern even
+    # when the chain Boolean is correct.
+    #
+    # Bad pattern: rewire on cell output pin where (a) old_net is NOT the
+    # output of any new gate AND (b) new_net IS consumed by some new gate
+    # input → the rewire is structurally dead AND breaks LATCG.
+    _OUT_PINS_41 = ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'S')
+    for stage_name in ('Synthesize', 'PrePlace', 'Route'):
+        stage = study.get(stage_name, [])
+        if not stage: continue
+        gate_outputs = set(); gate_input_nets = set()
+        for e in stage:
+            if e.get('change_type') not in ('new_logic_gate', 'new_logic_dff'):
+                continue
+            for pin, net in (e.get('port_connections') or {}).items():
+                if not isinstance(net, str): continue
+                if pin in _OUT_PINS_41:
+                    gate_outputs.add(net.strip())
+                else:
+                    gate_input_nets.add(net.strip())
+        for e in stage:
+            if e.get('change_type') != 'rewire': continue
+            pin = (e.get('pin') or '').strip()
+            if pin not in _OUT_PINS_41: continue
+            old_net = (e.get('old_net') or '').strip()
+            new_net = (e.get('new_net') or '').strip()
+            if not old_net or not new_net: continue
+            if old_net not in gate_outputs and new_net in gate_input_nets:
+                cell = e.get('cell_name', '?')
+                issues.append(
+                    f"HIGH/41-REWIRE-DESTROYS-OLD-NET: stage={stage_name} "
+                    f"rewire on driver output {cell}.{pin}: {old_net!r} → "
+                    f"{new_net!r} renames the driver but NO new gate outputs "
+                    f"to {old_net!r}. The original net name is abandoned — "
+                    f"this is the driver-rename and_term anti-pattern that "
+                    f"breaks FM LATCG equivalence (Unmatched Cone Input on "
+                    f"reset signal). Fix: DROP this rewire entry; change the "
+                    f"consuming gate's input pin from {new_net!r} back to "
+                    f"{old_net!r}. Fresh chain output (n_eco_*) + DFF.D pin "
+                    f"rewire is sufficient — no driver rename needed. See "
+                    f"rtl_diff_analyzer.md `MANDATORY insertion pattern — "
+                    f"DFF-pin-rewire`.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}
