@@ -250,6 +250,27 @@ def main():
             if net and not net.startswith("1'b"):
                 rewire_new_nets.add(net)
 
+    # Build set of all nets that will have implicit wires created in this batch
+    # by port_connection targets or by gate output pins (.Z/.ZN/.Q).
+    # When any of these appear as an explicit `wire X ;` declaration → SVR-9.
+    port_conn_nets = set()
+    for e in entries:
+        # port_connection target net → implicit wire from .PORT(net) hookup
+        if e.get('change_type') == 'port_connection':
+            net = e.get('net_name') or e.get('flat_net_name') or ''
+            if net and not net.startswith("1'b"):
+                port_conn_nets.add(net)
+        # new_logic_gate being INSERTED → gate line has .Z(out_net) which
+        # auto-creates an implicit wire — explicit `wire out_net ;` = SVR-9
+        if e.get('change_type') in ('new_logic_gate', 'and_term'):
+            for pin, net in (e.get('port_connections') or {}).items():
+                if pin in ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'S') and isinstance(net, str):
+                    if net and not net.startswith("1'b") and not net.startswith("n_eco_") is False:
+                        port_conn_nets.add(net)
+            out = e.get('output_net', '')
+            if out and not out.startswith("1'b"):
+                port_conn_nets.add(out)
+
     # Track instance names already queued in this Perl batch (dedup guard for RISK 1.1).
     queued_instances = set()
 
@@ -465,7 +486,24 @@ def main():
             # Run 20260511201004 root cause: dedup #1 didn't fire (reason TBD), wire decl
             # added on top of Pass 4 rewire's implicit wire → FM-599 ABORT. Layers
             # below catch the same condition through orthogonal evidence.
-            out_net = pcs.get(out_pin, '') if out_pin else ''
+            out_net_raw = pcs.get(out_pin, '') if out_pin else ''
+            # Bug fix: for bus-gate-bit entries (is_bus_gate_bit: true), the
+            # output net is a bus-bit access like RowUpperMask[0]. When the bus
+            # port is declared as 'input [7:0] RowUpperMask', bracket-indexing
+            # IS valid Verilog — do NOT sanitize. Sanitize only for genuinely
+            # new standalone wire declarations (not bus-port bit accesses).
+            is_bus_bit_output = (e.get('is_bus_gate_bit') and
+                                 out_net_raw and '[' in out_net_raw)
+            if is_bus_bit_output:
+                out_net = out_net_raw   # keep bracket form — valid bus-bit access
+                _ow_san = False
+            else:
+                out_net, _ow_san = _sanitize_named_net(out_net_raw)
+            if _ow_san and out_net_raw:
+                statuses.append({'name': inst, 'status': 'AUTO_SANITIZED',
+                                 'reason': f'output wire_decl "{out_net_raw}" used bus-bit form; '
+                                           f'auto-converted to flat-net "{out_net}". '
+                                           f'Studier should emit flat-net form directly.'})
             if e.get('needs_explicit_wire_decl') and out_net:
                 # Layer 1: rewire-new-nets (Pass 4 will create implicit wire)
                 if out_net in rewire_new_nets:
@@ -480,18 +518,22 @@ def main():
                     existing_pre  = zgrep_count(out_net, preeco)
                     # Layer 4: already queued in this batch (intra-batch dedup)
                     already_queued = out_net in changes[mod]['wire_decls']
-                    # Layer 5: NEW — also scan PostEco for `.PORT(<out_net>)` port
-                    # connections. If found, the net already has implicit-wire
-                    # creation and an explicit wire decl is a duplicate.
+                    # Layer 5: scan PostEco for `.PORT(<out_net>)` port connections.
+                    # If found, the net already has implicit-wire creation and an
+                    # explicit wire decl is a duplicate (SVR-9).
                     has_port_use_in_post = False
                     try:
                         import subprocess as _sp
-                        _grep = _sp.run(['zgrep', '-c', f'\\.[A-Za-z0-9_]\\+ *( *{out_net} *)', posteco],
+                        _grep = _sp.run(['zgrep', '-c', f'\\.[A-Za-z0-9_]\\+ *( *{re.escape(out_net)} *)', posteco],
                                         capture_output=True, text=True, timeout=60)
                         has_port_use_in_post = int((_grep.stdout or '0').strip() or '0') > 0
                     except Exception:
                         pass
-                    if existing_post == 0 and existing_pre == 0 and not already_queued and not has_port_use_in_post:
+                    # Layer 6: intra-batch port_connection entries — when another
+                    # entry in this same run uses out_net as a port_connection net,
+                    # that will auto-create an implicit wire; explicit decl = SVR-9.
+                    in_batch_port_conn = out_net in port_conn_nets
+                    if existing_post == 0 and existing_pre == 0 and not already_queued and not has_port_use_in_post and not in_batch_port_conn:
                         changes[mod]['wire_decls'].append(out_net)
                     else:
                         why = []
@@ -517,7 +559,11 @@ def main():
                 statuses.append({'name': inst, 'status':'SKIPPED',
                                  'reason': f'cell_type empty for {inst} in {args.stage} — cannot insert without cell type (SVR-4 risk)'})
                 continue
-            pins_str  = ', '.join(f'.{pin}({net})' for pin, net in pcs.items())
+            # Sanitize bracket-bit form in gate pin nets (e.g. X[0] → X_0_)
+            # so the emitted Verilog is consistent with flat-net convention.
+            def _san_net(n):
+                return _sanitize_named_net(n)[0] if isinstance(n, str) else n
+            pins_str  = ', '.join(f'.{pin}({_san_net(net)})' for pin, net in pcs.items())
             gate_line = f'  // ECO {args.jira} TAG={args.tag} Round={args.round}'
             changes[mod]['gates'].append(gate_line)
             changes[mod]['gates'].append(f'  {cell_type} {inst} ( {pins_str} ) ;')
@@ -529,7 +575,13 @@ def main():
         # Processed once per entry regardless of change_type.
         for ur in e.get('unconnected_rewires', []):
             named_raw = ur.get('named_net', '')
-            orig      = ur.get('original_unconnected', '')
+            # Bug fix: also try 'original' field (studier may use 'original' not
+            # 'original_unconnected') and fall back to entry's port_connections.I
+            # value (the UNCONNECTED net the gate reads directly).
+            orig = (ur.get('original_unconnected', '')
+                    or ur.get('original', '')
+                    or e.get('port_connections', {}).get('I', '')
+                    or '')
             if not named_raw or not orig:
                 continue
             # Auto-sanitize bus-bit form to flat-net form. Studier may emit
