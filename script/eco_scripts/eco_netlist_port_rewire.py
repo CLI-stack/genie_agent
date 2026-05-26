@@ -143,8 +143,17 @@ def apply_port_declaration(lines, entry, stage='Synthesize'):
         orig_suffix = ') ;\n'                       # ensure semicolon always present
     lines[port_close] = close_line[:last_paren] + f' , {signal}\n' + orig_suffix
 
-    # Insert direction declaration after port list close
-    decl_line = f'  {direction} {signal} ;\n'
+    # Insert direction declaration after port list close.
+    # If entry has bus_width > 1, emit the range prefix [W-1:0] so FM sees
+    # an array-type port (e.g. input [7:0] RowUpperMask ;).
+    # Without this, bus ports declared as scalar cause SVR-14 when the
+    # consumer references RowUpperMask[N] bit-select indexing.
+    bus_width = entry.get('bus_width')
+    if bus_width and isinstance(bus_width, int) and bus_width > 1:
+        range_pfx = f'[{bus_width - 1}:0] '
+    else:
+        range_pfx = ''
+    decl_line = f'  {direction} {range_pfx}{signal} ;\n'
     lines.insert(port_close + 1, decl_line)
 
     # Post-edit verification: confirm BOTH the port-list addition AND the
@@ -153,7 +162,7 @@ def apply_port_declaration(lines, entry, stage='Synthesize'):
     # was wrong.
     new_port_region = ''.join(lines[mod_start:port_close + 2])
     in_port_list = bool(re.search(rf'\b{re.escape(signal)}\b', new_port_region))
-    has_direction = bool(re.search(rf'^\s*{direction}\s+{re.escape(signal)}\b', lines[port_close + 1]))
+    has_direction = bool(re.search(rf'^\s*{direction}\s+(?:\[\d+:\d+\]\s+)?{re.escape(signal)}\b', lines[port_close + 1]))
     if not (in_port_list and has_direction):
         return lines, 'SKIPPED', f'VERIFY_FAILED port_decl: in_port_list={in_port_list} has_direction={has_direction} for {signal} in {mod_name}'
 
