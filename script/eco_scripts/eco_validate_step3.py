@@ -2995,6 +2995,50 @@ def main():
                     f"by the port_connection (typically bracket form "
                     f"<bus>[<bit>] for implicit bus indexing).")
 
+    # ── 40. AND-TERM DRIVER-RENAME PATTERN DETECTION ────────────────────────
+    # Mirrors Step 1 Check `and_term_pattern_issues` but for the study JSON
+    # (rtl_diff.chain_design may have been cleared during round-N reclassif).
+    # Bug pattern: a `rewire` entry renames an existing net (old_net → new_net)
+    # AND a `new_logic_gate` produces output to that SAME old_net name. This
+    # is the driver-rename and_term pattern that breaks LATCG/clock-gating
+    # equivalence in FM. The correct pattern is DFF-pin-rewire: chain output
+    # to a fresh n_eco_* net, then separately rewire DFF.D from old_net to
+    # the new net (driver untouched).
+    _OUT_PINS_40 = ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'S')
+    for stage_name in ('Synthesize', 'PrePlace', 'Route'):
+        stage = study.get(stage_name, [])
+        if not stage:
+            continue
+        # Collect old_net values from rewire entries (= renamed nets)
+        renamed_old_nets = {(e.get('old_net') or '').strip()
+                            for e in stage
+                            if e.get('change_type') == 'rewire'
+                            and e.get('old_net')}
+        if not renamed_old_nets:
+            continue
+        # Find new_logic_gate entries whose output pin equals a renamed old_net
+        for e in stage:
+            if e.get('change_type') != 'new_logic_gate':
+                continue
+            inst = e.get('instance_name', '?')
+            pcs = e.get('port_connections') or {}
+            for pin, net in pcs.items():
+                if pin not in _OUT_PINS_40: continue
+                if not isinstance(net, str): continue
+                if net.strip() in renamed_old_nets:
+                    issues.append(
+                        f"HIGH/40-AND-TERM-DRIVER-RENAME: stage={stage_name} "
+                        f"new_logic_gate {inst}.{pin}={net!r} REUSES a net "
+                        f"that a rewire entry also renames "
+                        f"(old_net={net!r}). This is the driver-rename "
+                        f"and_term pattern that breaks FM clock-gating "
+                        f"equivalence (LATCG cone shape destroyed). "
+                        f"Required: chain output to a fresh n_eco_<jira>_<seq> "
+                        f"net AND emit a separate rewire on the consuming "
+                        f"DFF.D pin from {net!r} to that new net. Leave the "
+                        f"existing driver UNCHANGED. See rtl_diff_analyzer.md "
+                        f"`MANDATORY insertion pattern — DFF-pin-rewire`.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}
