@@ -3153,6 +3153,53 @@ def main():
                     f"rtl_diff_analyzer.md `MANDATORY insertion pattern — "
                     f"DFF-pin-rewire`.")
 
+    # ── PORT-DECL-WRONG-SOURCE: port_declaration(output) buffer chain uses DFF
+    # D-input wire directly instead of tracing to the pure combinational source.
+    # Pattern: port_declaration(output) needs_buffer_chain=true, and one of its
+    # INV gate inputs matches the D-input of the co-located <signal>_d1_reg.
+    # The DFF D-input often has extra AND gating — using it as the buffer source
+    # produces a functionally different output port that FM detects as a mismatch.
+    import re as _re_pds
+    for stage_name in ('Synthesize',):
+        for e in study.get(stage_name, []):
+            if e.get('change_type') != 'port_declaration':
+                continue
+            if e.get('declaration_type') != 'output':
+                continue
+            if not e.get('needs_buffer_chain'):
+                continue
+            sig = e.get('signal_name', '')
+            if not sig:
+                continue
+            driver_net = e.get('driver_net', '')
+            if not driver_net:
+                continue
+            # Check if driver_net is the D-input of <signal>_d1_reg
+            # by looking for an INV gate in the study whose input IS driver_net
+            # AND another entry (new_logic_gate INV) that feeds into <signal>
+            # Heuristic: if driver_net contains no 'ctm'/'Fx'/'phf' prefix but
+            # looks like a synthesis net (N\d+) that drives a DFF, flag it.
+            # More directly: warn if driver_net appears as a DFF .D connection
+            # in the study (i.e., it IS a DFF D-input, not a pure comb source)
+            for e2 in study.get(stage_name, []):
+                if e2.get('change_type') != 'new_logic_dff':
+                    continue
+                dff_name = e2.get('instance_name', '')
+                if f'{sig}_d1_reg' not in dff_name and f'{sig}_reg' not in dff_name:
+                    continue
+                pcs = e2.get('port_connections') or {}
+                d_pin = pcs.get('D') or pcs.get('D1') or ''
+                if d_pin and d_pin == driver_net:
+                    issues.append(
+                        f"CRITICAL/PORT-DECL-WRONG-SOURCE: port_declaration '{sig}' "
+                        f"output buffer chain uses driver_net='{driver_net}' which is "
+                        f"the D-input of '{dff_name}' — not the pure combinational source. "
+                        f"The DFF D-input has extra AND-gate logic mixed in. "
+                        f"Trace one level deeper: find the cell driving '{driver_net}' "
+                        f"and use its input (the pre-gating combinational net) as driver_net. "
+                        f"See eco_netlist_studier.md Phase 0.15 step 2.")
+                    break
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}
