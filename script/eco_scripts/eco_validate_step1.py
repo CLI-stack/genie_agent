@@ -486,6 +486,32 @@ def main():
     # eco<jira>_si_bridge, ECO_*_SI_out, neighbor_dff's scan pins) MUST NOT be
     # copied from a neighbor_dff lookup. See rtl_diff_analyzer.md Step D-SE-SI
     # and eco_netlist_studier.md HARD RULE 1.
+    # ── and_term insertion-pattern check — chain output MUST be a fresh
+    # n_eco_* net, NOT a reuse of old_token. Reusing old_token = driver-rename
+    # pattern, which breaks LATCG/clock-gating equivalence in FM. See
+    # rtl_diff_analyzer.md `MANDATORY insertion pattern — DFF-pin-rewire`.
+    and_term_pattern_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') != 'and_term':
+            continue
+        old_token = c.get('old_token') or ''
+        chain = c.get('and_term_gate_chain_design') or []
+        if not chain or not old_token:
+            continue
+        last_out = (chain[-1].get('output_net') or '').strip()
+        if last_out == old_token:
+            tgt = c.get('target_register') or '?'
+            and_term_pattern_issues.append(
+                f"changes[{idx}] target={tgt}: and_term_gate_chain_design[-1]."
+                f"output_net={last_out!r} REUSES old_token (driver-rename "
+                f"pattern). MANDATORY DFF-pin-rewire pattern: chain output "
+                f"must be a fresh n_eco_<jira>_<seq> net AND emit a separate "
+                f"rewire entry on the DFF.D pin. Reusing old_token breaks "
+                f"LATCG/clock-gating equivalence — FM will FAIL with "
+                f"'Unmatched Cone Input' on the reset signal.")
+    if and_term_pattern_issues:
+        overall_pass = False
+
     scan_pin_issues = []
     for idx, c in enumerate(rtl_diff.get('changes', [])):
         if c.get('change_type') not in ('new_logic', 'new_logic_dff'):
@@ -1566,6 +1592,8 @@ def main():
         'scan_pin_issues':                scan_pin_issues,
         'and_term_pref_warn_count':       len(and_term_pref_issues),
         'and_term_pref_warns':            and_term_pref_issues,
+        'and_term_pattern_issue_count':   len(and_term_pattern_issues),
+        'and_term_pattern_issues':        and_term_pattern_issues,
         'bus_dff_issues':                 bus_dff_issues,
         'overall_pass':          overall_pass,
         'entries':               results,

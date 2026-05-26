@@ -102,7 +102,17 @@ When a `wire_swap` diff adds an extra `& ~<NewSignal>` term to an existing expre
 - Old: `<expr_A> & ~<expr_B>`
 - New: `<expr_A> & ~<expr_B> & ~<NewSignal>`
 
-Classify as `and_term` (NOT `wire_swap`). `old_token` = the final output net of the existing expression, `new_token` = `<NewSignal>` (the new term being added). The applier will: find the existing gate driving the output net, insert a new AND/NAND gate in series with `~<NewSignal>` as additional input.
+Classify as `and_term` (NOT `wire_swap`). `old_token` = the final output net of the existing expression, `new_token` = `<NewSignal>` (the new term being added).
+
+**MANDATORY insertion pattern — DFF-pin-rewire, NOT driver-rename:**
+
+Insert the new gate chain BETWEEN the OLD net and the consuming DFF's D pin. The OLD net (`old_token`) and its driver are left UNTOUCHED. The new chain's final `output_net` MUST be a fresh `n_eco_<jira>_<seq>` net. Then emit a separate `rewire` entry that points the DFF's D pin from `old_token` to the new net.
+
+JSON encoding:
+- `and_term_gate_chain_design[-1].output_net` = `n_eco_<jira>_andterm_<seq>` (NEVER `old_token`)
+- Emit `{change_type: "rewire", cell_name: "<dff_inst>", pin: "D", old_net: "<old_token>", new_net: "<new_chain_output>"}`
+
+Why: `old_token` is often part of a clock-gating cone (LATCG) that FM uses for structural matching. Renaming the OLD driver's output breaks LATCG equivalence → FM reports "Unmatched Cone Input" + "Failing Reverse Clock Gating" even when the Boolean is correct. DFF-pin-rewire preserves all upstream structures.
 
 **MANDATORY — Record old driver polarity for `and_term` chains:**
 
