@@ -389,9 +389,10 @@ python3 script/eco_scripts/eco_resolve_bus_width.py \
 **Step 2 — Emit N gate entries.** For each bit 0..N-1:
 - `instance_name`: `eco_<jira>_<gate_seq>_bit<bit>_`
 - `is_bus_gate_bit: true`, `bus_bit_index: <bit>`
-- `output_net`: `<signal_base>[<bit>]`  (e.g. `wdbptr_org0_d2_nxt[3]`)
-- Bus-width inputs (appear as bus signals in the change set): add `[<bit>]` suffix — e.g. `.I0(wdbptr_org0_d1[<bit>])`, `.I1(wdbptr_org0_d1p5[<bit>])`
-- Scalar inputs (1-bit signals, e.g. a MUX select): **shared unchanged** across all N entries — e.g. `.S(RegPageRetEn)`
+- `output_net`: `<signal_base>[<bit>]`
+- Bus-width inputs: add `[<bit>]` suffix per entry
+- Scalar inputs (1-bit signals): **shared unchanged** across all N entries
+- **`module_name` and `instance_scope` MUST come from the PARENT `new_logic_gate` change** (the `is_bus_gate: true` entry), NOT from surrounding `and_term` or `wire_swap` entries which may be in a different module scope. The parent change's declaring module is where the bus signal's inputs are accessible. Using a different module (e.g. a child module where the `and_term` gates live) causes SVR-14 (signal not in scope) at FM elaboration time. Step 3 validator Check 40 enforces this.
 
 **Step 3 — Splice N entries per stage** (same pattern as bus DFF):
 ```python

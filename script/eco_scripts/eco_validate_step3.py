@@ -3213,6 +3213,41 @@ def main():
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}
     Path(args.output).write_text(json.dumps(result, indent=2))
 
+    # ── 42. BUS-GATE-BIT MODULE SCOPE CONSISTENCY ───────────────────────────
+    # When a new_logic_gate entry has is_bus_gate: true, the per-bit expanded
+    # entries (is_bus_gate_bit: true) MUST use the SAME module_name as the
+    # parent change. The parent change declares the bus signal and its inputs
+    # are only accessible in that module's scope. Using a different module
+    # (e.g. a child module where and_term gates live) causes SVR-14 at FM
+    # elaboration because the bus input signal is not in scope there.
+    # eco_netlist_studier.md Phase 0.6 Step 2 enforces this rule.
+    bus_gate_parents = {}  # signal_base → module_name from parent new_logic_gate
+    for e in study.get('Synthesize', []):
+        if e.get('is_bus_gate') and not e.get('is_bus_gate_bit'):
+            sig = (e.get('output_net', '') or '').split('[')[0]
+            mod = e.get('module_name', '')
+            if sig and mod:
+                bus_gate_parents[sig] = mod
+    for stage_name in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage_name, []):
+            if not e.get('is_bus_gate_bit'):
+                continue
+            out = (e.get('output_net', '') or '')
+            sig_base = out.split('[')[0]
+            expected_mod = bus_gate_parents.get(sig_base)
+            actual_mod = e.get('module_name', '')
+            if expected_mod and actual_mod and expected_mod != actual_mod:
+                inst = e.get('instance_name', '?')
+                issues.append(
+                    f"HIGH/42-BUS-GATE-BIT-WRONG-MODULE: stage={stage_name} "
+                    f"bus-gate-bit entry {inst} (output={out!r}) has "
+                    f"module_name={actual_mod!r} but parent bus gate declares "
+                    f"module_name={expected_mod!r}. Per-bit entries MUST use "
+                    f"the parent's module — the bus input signals are only in "
+                    f"scope in {expected_mod!r}. Using a child module causes "
+                    f"SVR-14 at FM elaboration. See eco_netlist_studier.md "
+                    f"Phase 0.6 Step 2.")
+
     marker_txt = (
         f"ECO_SCRIPT_LAUNCHED: eco_validate_step3.py\n"
         f"  passed: {passed}\n"
