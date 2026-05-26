@@ -3154,12 +3154,12 @@ def main():
                     f"DFF-pin-rewire`.")
 
     # ── PORT-DECL-WRONG-SOURCE: port_declaration(output) buffer chain uses DFF
-    # D-input wire directly instead of tracing to the pure combinational source.
-    # Pattern: port_declaration(output) needs_buffer_chain=true, and one of its
-    # INV gate inputs matches the D-input of the co-located <signal>_d1_reg.
-    # The DFF D-input often has extra AND gating — using it as the buffer source
-    # produces a functionally different output port that FM detects as a mismatch.
+    # D-input wire directly instead of the pure combinational source.
+    # Rule: driver_net must be the output of an INVERTING cell (.ZN — ND/NR/INV).
+    # A non-inverting driver (.Z — AN2/OR/BUF) means extra AND/OR gating is mixed
+    # in — the DFF D-input is NOT the pure signal, trace deeper.
     import re as _re_pds
+    _NON_INV_PREFIXES = ('AN', 'OR', 'BUF', 'AO', 'OA', 'XOR', 'MUX')  # .Z output cells
     for stage_name in ('Synthesize',):
         for e in study.get(stage_name, []):
             if e.get('change_type') != 'port_declaration':
@@ -3195,10 +3195,20 @@ def main():
                         f"output buffer chain uses driver_net='{driver_net}' which is "
                         f"the D-input of '{dff_name}' — not the pure combinational source. "
                         f"The DFF D-input has extra AND-gate logic mixed in. "
-                        f"Trace one level deeper: find the cell driving '{driver_net}' "
-                        f"and use its input (the pre-gating combinational net) as driver_net. "
+                        f"Trace one level deeper: find the cell driving '{driver_net}', "
+                        f"check its output pin (.ZN=inverting=pure source, .Z=non-inverting=has extra gating). "
+                        f"Use the inverting cell's output (ND/NR prefix) as driver_net. "
                         f"See eco_netlist_studier.md Phase 0.15 step 2.")
                     break
+            # Also flag if driver_cell_inverting is explicitly false (non-inverting cell used)
+            if e.get('driver_cell_inverting') is False:
+                issues.append(
+                    f"CRITICAL/PORT-DECL-NONINV-SOURCE: port_declaration '{sig}' "
+                    f"output buffer chain driver_net='{driver_net}' is driven by a "
+                    f"NON-INVERTING cell (driver_cell_inverting=false — AN/OR/BUF prefix). "
+                    f"Non-inverting DFF D-input drivers have extra AND/OR gating mixed in. "
+                    f"Must use the INVERTING cell input (ND/NR/NOR prefix, .ZN output) "
+                    f"as the pure combinational source. See eco_netlist_studier.md Phase 0.15 step 2.")
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
