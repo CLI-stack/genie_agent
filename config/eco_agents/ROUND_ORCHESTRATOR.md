@@ -18,6 +18,15 @@
 4. **Email after FM analyzer** — Step 6.3 (email) runs AFTER Step 6.2 (FM analyzer). Never skip.
 5. **Fixer state must be incremented and saved** before spawning the next round agent.
 6. **Never skip a step** — context pressure is NOT a valid reason to skip any step or checkpoint.
+7. **Validator `passed: false` is a HARD GATE — applier / pre-FM / FM MUST NOT spawn.**
+   Three validator JSONs in this round MUST be checked for `passed: true` before proceeding downstream:
+   - `<TAG>_eco_validate_step3_round<N>.json` — gates Step 4 (applier)
+   - `<TAG>_eco_validate_step4_round<N>.json` — gates Step 5 (pre-FM checker)
+   - `<TAG>_eco_pre_fm_check_round<N>.json`   — gates Step 6 (FM submission)
+
+   If ANY shows `passed: false`, the gated step MUST NOT run. The orchestrator must re-spawn the producing agent (re_studier / applier / pre_fm_checker) with the validator's issues as hint, up to a per-round retry cap (3 for step3, 2 for step4, see Step 5 self-heal for pre-FM). Cap exceeded → escalate via `STUDY_VALIDATOR_UNFIXABLE` / `APPLIER_VALIDATOR_UNFIXABLE` / pre_fm_check_failed handoff.
+
+   **Anti-pattern this rule blocks:** orchestrator reading `passed: false`, logging it, then proceeding to the next step anyway. That is FORBIDDEN. The validator's role is to PREVENT bad state from reaching FM — bypassing it wastes a 30-90 min FM round on a known-bad design.
 
 ---
 
@@ -561,38 +570,68 @@ python3 script/eco_scripts/eco_validate_step3.py \
     --output data/<TAG>_eco_validate_step3_round<NEXT_ROUND>.json
 ```
 
-**Exit 1 → branch on issue type:**
+**`passed: false` is a HARD GATE — applier MUST NOT spawn.**
 
 ```python
 result = json.load(open(f"data/{TAG}_eco_validate_step3_round{NEXT_ROUND}.json"))
-mode_j_issues = [i for i in result['issues'] if 'HIGH/38-CHAIN-LEAF-POLARITY-MISMATCH' in i]
-other_issues  = [i for i in result['issues'] if i not in mode_j_issues]
+if not result.get('passed', False):
+    # ABSOLUTE RULE: applier cannot run with a failing study validator.
+    # The validator catches structural bugs that FM will fail on. Skipping
+    # this gate = wasting an FM round (30-90 min) on a known-bad study.
+    issues = result.get('issues', [])
+    retry_count = fixer_state.get(f'validate_step3_round{NEXT_ROUND}_retries', 0)
 
-if mode_j_issues:
-    # Mode J — re_studier patched a gate's input wire to a bare RTL name that
-    # has odd INV-parity in one stage. update_gate_function (Mode A) will NOT
-    # converge — needs a wire change, not a function change.
-    # Re-spawn re_studier with explicit Mode J hint:
-    re_studier_extra_input = {
-      "mode_J_hints": [
-        {
-          "gate_instance": <parse from issue text>,
-          "pin": <parse>,
-          "stages_parity": <parse>,        # e.g. {Synth:0, PrePlace:0, Route:1}
-          "remediation": "rewire_gate_input to polarity-correct wire — see pattern_library §B-FAIL-J. Use MB DFF Q-pin direct (aps_rename_*) or actual_wire_<stage> from rename_map. NEVER mid-buffer-chain nets (FxPlace_ZINV_*).",
-        }
-        for issue in mode_j_issues
-      ]
-    }
-    # Re-spawn Pass 6f-A with this extra input. Do NOT proceed to applier.
+    # Classify issues to pick re-spawn hint
+    mode_j_issues = [i for i in issues if 'HIGH/38-CHAIN-LEAF-POLARITY-MISMATCH' in i]
+    pattern_issues = [i for i in issues if 'HIGH/40-AND-TERM-DRIVER-RENAME' in i
+                                          or 'HIGH/41-REWIRE-DESTROYS-OLD-NET' in i]
+    named_net_issues = [i for i in issues if 'HIGH/39-NAMED-NET-UNDRIVEN' in i]
+    other_issues = [i for i in issues if i not in mode_j_issues + pattern_issues + named_net_issues]
 
-elif other_issues:
-    # Other validator failures (Check 16 schema, port_declaration, etc.)
-    # Re-spawn re_studier or eco_expand_chains until passing.
-    pass
+    # Hard retry cap — 3 re-spawns max per round to prevent infinite loops
+    if retry_count >= 3:
+        update_handoff(status="STUDY_VALIDATOR_UNFIXABLE",
+                       next_phase="STOP",
+                       next_phase_reason=f"validate_step3 failed {retry_count+1}x in round {NEXT_ROUND} — re_studier cannot satisfy validator")
+        write exit sentinel; STOP  # escalate to engineer
+
+    fixer_state[f'validate_step3_round{NEXT_ROUND}_retries'] = retry_count + 1
+    save(fixer_state)
+
+    # Build hint for re_studier based on issue class
+    hint = {}
+    if mode_j_issues:
+        hint['mode_J_hints'] = [{ ... parse from issue ... } for i in mode_j_issues]
+    if pattern_issues:
+        hint['and_term_pattern_hints'] = [{
+            'rule': 'Use DFF-pin-rewire pattern (engineer-style).',
+            'forbidden': 'Driver-rename — do NOT rename old driver output AND do NOT reuse old_token as new gate output.',
+            'recipe': 'Chain output to fresh n_eco_*. Rewire DFF.D from old_token to new net. Leave existing driver untouched. If validator already detected old vestigial rewire (Check 41), DROP that rewire entry entirely.',
+        } for i in pattern_issues]
+    if named_net_issues:
+        hint['named_net_consistency'] = [{ ... } for i in named_net_issues]
+    if other_issues:
+        hint['other_issues'] = other_issues
+
+    # Re-spawn Pass 6f-A with hint. STOP HERE — do NOT proceed to applier.
+    re_spawn eco_netlist_re_studier with hint
+    GOTO Step 6f validator re-run after re_studier completes
+    # Loop until passed=true OR retry_count == 3 (escalate)
+
+# Only reach here if passed=true → proceed to applier
 ```
 
-Mode J cannot be fixed by re-applying the same gate function — applier will re-emit the same wrong wire. The re_studier must change `port_connections_per_stage[<failing_stage>][<pin>]` to a polarity-correct wire BEFORE Step 4 re-runs.
+**Anti-pattern this rule blocks:** the orchestrator reading `passed: false`, logging it, then proceeding to applier anyway because "the analyzer's prescription was already executed." That's WRONG — the analyzer can prescribe fixes the validator still rejects (e.g. analyzer added an OR2 gate but didn't drop a vestigial rewire that Check 41 flags). Applier must not run with KNOWN-BAD study.
+
+**Issue-class hints for re_studier:**
+
+| Issue prefix | Class | Hint to re_studier |
+|---|---|---|
+| `HIGH/38-CHAIN-LEAF-POLARITY-MISMATCH` | Mode J | rewire to MB DFF Q-pin direct or `actual_wire_<stage>` |
+| `HIGH/39-NAMED-NET-UNDRIVEN` | named_net consistency | align named_net to form produced by port_connection bus rename |
+| `HIGH/40-AND-TERM-DRIVER-RENAME` | and_term pattern | use DFF-pin-rewire: chain output to fresh n_eco_*, rewire DFF.D |
+| `HIGH/41-REWIRE-DESTROYS-OLD-NET` | rewire cleanup | DROP the vestigial rewire; restore gate input from `ECO_*_orig` back to `old_token` |
+| Other | schema / generic | re-spawn re_studier with the raw issue text |
 
 **MANDATORY: Re-load study JSON before exit check** — the file was just updated by verifier + eco_expand_chains. Do NOT use any in-memory study JSON from earlier in this instance. Always load fresh from disk:
 
@@ -653,6 +692,35 @@ Do NOT proceed to Step 5 until the RPT is confirmed in both data/ and AI_ECO_FLO
 **MANDATORY pre-Step 5 gate — verify eco_applier JSON exists:**
 ```bash
 ls <BASE_DIR>/data/<TAG>_eco_applied_round<NEXT_ROUND>.json
+```
+
+**MANDATORY Step 4 VALIDATOR — HARD GATE before Step 5:**
+
+```bash
+python3 script/eco_scripts/eco_validate_step4.py \
+    --applied data/<TAG>_eco_applied_round<NEXT_ROUND>.json \
+    --study   data/<TAG>_eco_preeco_study.json \
+    --ref-dir <REF_DIR> --tag <TAG> --round <NEXT_ROUND> \
+    --output  data/<TAG>_eco_validate_step4_round<NEXT_ROUND>.json
+```
+
+```python
+result = json.load(open(f"data/{TAG}_eco_validate_step4_round{NEXT_ROUND}.json"))
+if not result.get('passed', False):
+    # ABSOLUTE RULE: cannot proceed to Step 5 (pre-FM) or Step 6 (FM)
+    # with a failing applier validator. Catches silently-skipped applies,
+    # missing entries, invalid wire decl forms, etc.
+    retry_count = fixer_state.get(f'validate_step4_round{NEXT_ROUND}_retries', 0)
+    if retry_count >= 2:
+        update_handoff(status="APPLIER_VALIDATOR_UNFIXABLE",
+                       next_phase="STOP",
+                       next_phase_reason=f"validate_step4 failed {retry_count+1}x in round {NEXT_ROUND}")
+        write exit sentinel; STOP
+    fixer_state[f'validate_step4_round{NEXT_ROUND}_retries'] = retry_count + 1
+    save(fixer_state)
+    # Re-spawn applier with the issue list as hint
+    re_spawn eco_applier with validate_step4 issues; re-run validator
+    # Loop until passed=true OR retry_count == 2 (escalate)
 ```
 If this file does NOT exist — eco_applier failed to write its output JSON. Do NOT proceed to Step 5 or FM. Re-spawn eco_applier with the same inputs. **NEVER submit FM without this JSON existing** — the pre-FM checker reads it and without it Step 5 cannot run.
 
