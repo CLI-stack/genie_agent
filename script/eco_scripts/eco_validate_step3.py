@@ -3208,11 +3208,6 @@ def main():
                         f"See eco_netlist_studier.md Phase 0.15 step 2.")
                     break
 
-    # ── Result ───────────────────────────────────────────────────────────────
-    passed = len(issues) == 0
-    result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}
-    Path(args.output).write_text(json.dumps(result, indent=2))
-
     # ── 42. BUS-GATE-BIT MODULE SCOPE CONSISTENCY ───────────────────────────
     # When a new_logic_gate entry has is_bus_gate: true, the per-bit expanded
     # entries (is_bus_gate_bit: true) MUST use the SAME module_name as the
@@ -3247,6 +3242,11 @@ def main():
                     f"scope in {expected_mod!r}. Using a child module causes "
                     f"SVR-14 at FM elaboration. See eco_netlist_studier.md "
                     f"Phase 0.6 Step 2.")
+
+    # ── Result ───────────────────────────────────────────────────────────────
+    passed = len(issues) == 0
+    result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}
+    Path(args.output).write_text(json.dumps(result, indent=2))
 
     marker_txt = (
         f"ECO_SCRIPT_LAUNCHED: eco_validate_step3.py\n"
