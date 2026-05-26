@@ -76,30 +76,51 @@ def _parse_fm_verify_rpt(rpt_path: Path) -> dict | None:
     text = read_text(rpt_path)
     if not text:
         return None
+    import re as _re
     result = {"per_target": {}}
-    for tgt in ("FmEqvEcoSynthesizeVsSynRtl",
-                "FmEqvEcoPrePlaceVsEcoSynthesize",
-                "FmEqvEcoRouteVsEcoPrePlace"):
-        # Match lines like: FmEqvEcoSynthesizeVsSynRtl : FAIL  [failing_count: 3071]
-        import re as _re
+    targets = ("FmEqvEcoSynthesizeVsSynRtl",
+               "FmEqvEcoPrePlaceVsEcoSynthesize",
+               "FmEqvEcoRouteVsEcoPrePlace")
+    for i, tgt in enumerate(targets):
+        # Step 1: find the status on the target line
         m = _re.search(
             rf'{_re.escape(tgt)}\s*[:\|]\s*(PASS|FAIL|ABORT\S*)'
             rf'(?:'
-            rf'\s*\[failing(?:_count)?:\s*(\d+)\]'           # [failing_count: N] or [failing: N]
-            rf'|\s*\([^)]*?failing\s*=\s*(\d+)[^)]*\)'        # (...failing=N...) — Step 6 RPT format
-            rf'|\s*\([^)]*?(\d+)\s+failing'                   # (... N failing point...)
-            rf'|\s*\|\s*(\d+)'                                # | N (pipe-separated)
-            rf'|\s*\[(\d+)\s+failing'                         # [N failing DFFs/points...]
-            rf'|\s+failing=(\d+)'                             # failing=N (space-separated k=v)
-            rf'|\s+Failing points \((\d+)\)'                  # Failing points (N): on next line
+            rf'\s*\[failing(?:_count)?:\s*(\d+)\]'           # [failing_count: N]
+            rf'|\s*\([^)]*?failing\s*=\s*(\d+)[^)]*\)'        # (failing=N)
+            rf'|\s*\([^)]*?(\d+)\s+failing'                   # (N failing point)
+            rf'|\s*\|\s*(\d+)'                                # | N
+            rf'|\s*\[(\d+)\s+failing'                         # [N failing DFFs]
+            rf'|\s+failing=(\d+)'                             # failing=N
+            rf'|\s+Failing points \((\d+)\)'                  # Failing points (N):
             rf')?',
             text
         )
-        if m:
-            status = m.group(1)
-            raw_count = m.group(2) or m.group(3) or m.group(4) or m.group(5) or m.group(6) or m.group(7) or m.group(8)
-            count = int(raw_count) if raw_count else (0 if status == "PASS" else "—")
-            result["per_target"][tgt] = {"status": status, "failing_count": count}
+        if not m:
+            continue
+        status = m.group(1)
+        raw_count = m.group(2) or m.group(3) or m.group(4) or m.group(5) or m.group(6) or m.group(7) or m.group(8)
+
+        # Step 2: if count not found inline, search the block until next target or end
+        if not raw_count and status != "PASS":
+            next_tgt = targets[i + 1] if i + 1 < len(targets) else None
+            block_start = m.end()
+            block_end   = _re.search(_re.escape(next_tgt), text).start() if next_tgt and _re.search(_re.escape(next_tgt), text) else len(text)
+            block = text[block_start:block_end]
+            # Pattern: "Total failing points: N" or "Failing DFFs (N)" or "Failing Ports (N)"
+            for pat in (r'Total failing points[:\s]+(\d+)',
+                        r'Failing DFFs \((\d+)\)',
+                        r'Failing Ports \((\d+)\)',
+                        r'(\d+)\s+Failing compare points'):
+                bm = _re.search(pat, block)
+                if bm:
+                    # For "Total failing points" use directly;
+                    # for DFFs/Ports/compare points sum if multiple patterns match
+                    raw_count = bm.group(1)
+                    break
+
+        count = int(raw_count) if raw_count else (0 if status == "PASS" else "—")
+        result["per_target"][tgt] = {"status": status, "failing_count": count}
     return result if result["per_target"] else None
 
 
