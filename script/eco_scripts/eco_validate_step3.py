@@ -3158,57 +3158,55 @@ def main():
     # Rule: driver_net must be the output of an INVERTING cell (.ZN — ND/NR/INV).
     # A non-inverting driver (.Z — AN2/OR/BUF) means extra AND/OR gating is mixed
     # in — the DFF D-input is NOT the pure signal, trace deeper.
-    import re as _re_pds
-    _NON_INV_PREFIXES = ('AN', 'OR', 'BUF', 'AO', 'OA', 'XOR', 'MUX')  # .Z output cells
+    # Check by finding the first INV gate in the buffer chain and inspecting its source.
+    # Works even when driver_net is None (studier didn't record it).
     for stage_name in ('Synthesize',):
+        # Collect port_declaration(output) signals needing buffer chain
+        pd_sigs = {e.get('signal_name') for e in study.get(stage_name, [])
+                   if e.get('change_type') == 'port_declaration'
+                   and e.get('declaration_type') == 'output'
+                   and e.get('needs_buffer_chain')
+                   and e.get('signal_name')}
+        if not pd_sigs:
+            continue
+        # Multi-map: output_net → list of (input_net, instance_name)
+        inv_mmap = {}
         for e in study.get(stage_name, []):
-            if e.get('change_type') != 'port_declaration':
+            if (e.get('gate_function') or '').upper() != 'INV':
                 continue
-            if e.get('declaration_type') != 'output':
-                continue
-            if not e.get('needs_buffer_chain'):
-                continue
-            sig = e.get('signal_name', '')
-            if not sig:
-                continue
-            driver_net = e.get('driver_net', '')
-            if not driver_net:
-                continue
-            # Check if driver_net is the D-input of <signal>_d1_reg
-            # by looking for an INV gate in the study whose input IS driver_net
-            # AND another entry (new_logic_gate INV) that feeds into <signal>
-            # Heuristic: if driver_net contains no 'ctm'/'Fx'/'phf' prefix but
-            # looks like a synthesis net (N\d+) that drives a DFF, flag it.
-            # More directly: warn if driver_net appears as a DFF .D connection
-            # in the study (i.e., it IS a DFF D-input, not a pure comb source)
-            for e2 in study.get(stage_name, []):
-                if e2.get('change_type') != 'new_logic_dff':
-                    continue
-                dff_name = e2.get('instance_name', '')
-                if f'{sig}_d1_reg' not in dff_name and f'{sig}_reg' not in dff_name:
-                    continue
-                pcs = e2.get('port_connections') or {}
-                d_pin = pcs.get('D') or pcs.get('D1') or ''
-                if d_pin and d_pin == driver_net:
+            pcs = e.get('port_connections') or {}
+            out = pcs.get('ZN') or pcs.get('Z') or ''
+            inp = pcs.get('I') or ''
+            if out and inp:
+                inv_mmap.setdefault(out, []).append((inp, e.get('instance_name', '')))
+
+        import re as _re_pds
+        for sig in pd_sigs:
+            # Trace backwards: sig ← INV(mid_net) ← INV(src_net)
+            # All INV chains terminating at sig
+            for mid_net, _mid_inst in inv_mmap.get(sig, []):
+                for src_net, src_inst in inv_mmap.get(mid_net, []):
+                    if not src_net:
+                        continue
+                    # N\d+ anonymous synthesis nets are typically non-inverting
+                    # AND/OR outputs with extra gating — not the pure source
+                    if _re_pds.match(r'^N\d{5,}$', src_net):
+                        issues.append(
+                            f"CRITICAL/PORT-DECL-WRONG-SOURCE: '{sig}' buffer chain "
+                            f"'{src_inst}' uses source='{src_net}' — anonymous synthesis "
+                            f"net (N\\d+) likely has extra AND-gate gating mixed in. "
+                            f"Find the INVERTING cell (.ZN of ND/NR) driving this net "
+                            f"and use its output as the pure combinational source. "
+                            f"See eco_netlist_studier.md Phase 0.15 step 2.")
+            # Also flag if driver_cell_inverting explicitly false
+            for e in study.get(stage_name, []):
+                if e.get('signal_name') == sig and e.get('driver_cell_inverting') is False:
                     issues.append(
-                        f"CRITICAL/PORT-DECL-WRONG-SOURCE: port_declaration '{sig}' "
-                        f"output buffer chain uses driver_net='{driver_net}' which is "
-                        f"the D-input of '{dff_name}' — not the pure combinational source. "
-                        f"The DFF D-input has extra AND-gate logic mixed in. "
-                        f"Trace one level deeper: find the cell driving '{driver_net}', "
-                        f"check its output pin (.ZN=inverting=pure source, .Z=non-inverting=has extra gating). "
-                        f"Use the inverting cell's output (ND/NR prefix) as driver_net. "
+                        f"CRITICAL/PORT-DECL-NONINV-SOURCE: '{sig}' buffer chain "
+                        f"source driver_cell_inverting=false — non-inverting cell (AN/OR/.Z) "
+                        f"has extra AND/OR gating. Use INVERTING (.ZN of ND/NR) as source. "
                         f"See eco_netlist_studier.md Phase 0.15 step 2.")
                     break
-            # Also flag if driver_cell_inverting is explicitly false (non-inverting cell used)
-            if e.get('driver_cell_inverting') is False:
-                issues.append(
-                    f"CRITICAL/PORT-DECL-NONINV-SOURCE: port_declaration '{sig}' "
-                    f"output buffer chain driver_net='{driver_net}' is driven by a "
-                    f"NON-INVERTING cell (driver_cell_inverting=false — AN/OR/BUF prefix). "
-                    f"Non-inverting DFF D-input drivers have extra AND/OR gating mixed in. "
-                    f"Must use the INVERTING cell input (ND/NR/NOR prefix, .ZN output) "
-                    f"as the pure combinational source. See eco_netlist_studier.md Phase 0.15 step 2.")
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
