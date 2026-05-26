@@ -102,7 +102,7 @@ When a `wire_swap` diff adds an extra `& ~<NewSignal>` term to an existing expre
 - Old: `<expr_A> & ~<expr_B>`
 - New: `<expr_A> & ~<expr_B> & ~<NewSignal>`
 
-Classify as `and_term` (NOT `wire_swap`). `old_token` = the final output net of the existing expression, `new_token` = `<NewSignal>` (the new term being added).
+Classify as `and_term` (NOT `wire_swap`). `old_token` = the **gate-level net** that drives the DFF's D pin (the existing chain's final output net at hop 0 — e.g. `SEQMAP_NET_70624`). NEVER use the target register's Q net name (e.g. `BlockScrubReq`) — that's the DFF output, not the D-input cone driver. `new_token` = `<NewSignal>` (the new term being added).
 
 **MANDATORY insertion pattern — DFF-pin-rewire, NOT driver-rename:**
 

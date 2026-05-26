@@ -501,19 +501,45 @@ def main():
             continue
         tgt = c.get('target_register') or c.get('new_token') or '?'
         and_term_pref_issues.append(
-            f"WARN: changes[{idx}] target={tgt}: wire_swap+{c.get('fallback_strategy')} "
+            f"HIGH/AND-TERM-PREF: changes[{idx}] target={tgt}: wire_swap+{c.get('fallback_strategy')} "
             f"used but ONE new else-if branch + compound cell '{old_driver[:30]}' "
-            f"at hop 0 suggests `and_term` is feasible. Per rtl_diff_analyzer.md "
+            f"at hop 0 — `and_term` is FEASIBLE and MANDATORY. Per rtl_diff_analyzer.md "
             f"`PREFER and_term WHEN FEASIBLE` rule, fall back only when polarity "
-            f"check fails on BOTH NOR2 and INR2 candidates. d_input_decompose_failed "
-            f"does NOT disqualify and_term. Reconsider classification.")
-    # WARN — not blocking — agent may have legitimate reason; just flag for review
+            f"check fails on BOTH NOR2 and INR2 candidates with explicit reason in "
+            f"mux_select_reasoning. d_input_decompose_failed does NOT disqualify "
+            f"and_term. Reclassify as `and_term` with DFF-pin-rewire pattern: chain "
+            f"output to fresh n_eco_<jira>_andterm_<seq>, emit separate rewire on "
+            f"the consuming DFF.D pin from old_token to the new net. Leave existing "
+            f"driver untouched.")
+    if and_term_pref_issues:
+        overall_pass = False  # HARD FAIL — driver_substitution when and_term is feasible
+                              # destroys LATCG cone matching and wastes FM rounds
 
     # ── SE/SI scan-pin check — new ECO DFFs MUST be isolated from scan chain
     # in ALL 3 stages (Synth/PrePlace/Route). Bridge wires (e.g.
     # eco<jira>_si_bridge, ECO_*_SI_out, neighbor_dff's scan pins) MUST NOT be
     # copied from a neighbor_dff lookup. See rtl_diff_analyzer.md Step D-SE-SI
     # and eco_netlist_studier.md HARD RULE 1.
+    # ── and_term old_token sanity check — old_token MUST be the gate-level
+    # DFF.D net (e.g. SEQMAP_NET_70624), NOT the target register's Q net
+    # (e.g. BlockScrubReq). Confusing them means the studier emits gate
+    # entries that target the DFF output instead of the D-input cone driver.
+    and_term_old_token_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') not in ('and_term', 'wire_swap'): continue
+        old_token = (c.get('old_token') or '').strip()
+        target = (c.get('target_register') or '').strip()
+        if not old_token or not target: continue
+        if old_token == target:
+            and_term_old_token_issues.append(
+                f"changes[{idx}] target={target}: old_token={old_token!r} "
+                f"equals target_register — this is the DFF Q-output net name, "
+                f"NOT the D-input cone driver. old_token MUST be the gate-level "
+                f"net that drives DFF.D (e.g. SEQMAP_NET_<N>). Re-extract from "
+                f"the existing chain's hop-0 driver output.")
+    if and_term_old_token_issues:
+        overall_pass = False
+
     # ── and_term insertion-pattern check — chain output MUST be a fresh
     # n_eco_* net, NOT a reuse of old_token. Reusing old_token = driver-rename
     # pattern, which breaks LATCG/clock-gating equivalence in FM. See
@@ -1618,8 +1644,10 @@ def main():
         'bus_dff_issue_count':            len(bus_dff_issues),
         'scan_pin_issue_count':           len(scan_pin_issues),
         'scan_pin_issues':                scan_pin_issues,
-        'and_term_pref_warn_count':       len(and_term_pref_issues),
-        'and_term_pref_warns':            and_term_pref_issues,
+        'and_term_pref_issue_count':      len(and_term_pref_issues),
+        'and_term_pref_issues':           and_term_pref_issues,
+        'and_term_old_token_issue_count': len(and_term_old_token_issues),
+        'and_term_old_token_issues':      and_term_old_token_issues,
         'and_term_pattern_issue_count':   len(and_term_pattern_issues),
         'and_term_pattern_issues':        and_term_pattern_issues,
         'bus_dff_issues':                 bus_dff_issues,
