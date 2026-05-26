@@ -195,6 +195,34 @@ def main():
             decl_issues.append(f'changes[{idx}] duplicate new_port for module={key[0]!r} signal={key[1]!r} (first at index {seen[key]})')
         else:
             seen[key] = idx
+    # new_port(output) + flat_net_exists:true → must also query <signal>_d1
+    # so studier can trace to the pure combinational source (not DFF D-input).
+    nq_paths = {q.get('net_path', '') for q in rtl_diff.get('nets_to_query', [])}
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') != 'new_port':
+            continue
+        if c.get('declaration_type') != 'output':
+            continue
+        if not c.get('flat_net_exists'):
+            continue
+        sig  = c.get('new_token', '')
+        insts = c.get('instances') or [None]
+        for inst in insts:
+            prefix = f'{inst}/' if inst else ''
+            d1_path = f'{prefix}{sig}_d1'
+            # Accept any nets_to_query entry whose path contains <signal>_d1
+            if not any(d1_path in p or f'{sig}_d1' in p for p in nq_paths):
+                decl_issues.append(
+                    f"changes[{idx}] [FAIL/NEW-PORT-MISSING-D1-QUERY]: "
+                    f"new_port(output) '{sig}' has flat_net_exists:true but "
+                    f"nets_to_query is missing '{d1_path}'. "
+                    f"Add query for <signal>_d1 so Step 2 FM can resolve the "
+                    f"pure combinational source per instance. Without it, "
+                    f"studier uses DFF D-input wire (which has extra AND gating) "
+                    f"as buffer chain source → wrong PhArbFineGater value → FM fail. "
+                    f"See rtl_diff_analyzer.md §D new_port(output) rule.")
+                overall_pass = False
+
     if decl_issues:
         overall_pass = False
 
