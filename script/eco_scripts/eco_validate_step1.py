@@ -486,6 +486,41 @@ def main():
     if missing_wire_issues:
         overall_pass = False
 
+    # ── Phantom n_eco_* alias for new_port signals in chain inputs ─────────
+    # When the D-input of a new_logic DFF is a new_port signal from the same
+    # ECO (e.g. REG_PageRetEn), the analyzer must use the bare port name
+    # directly with input_from_change set — NOT an n_eco_* alias.
+    # An n_eco_* alias with input_from_change means the analyzer wrapped the
+    # port name in a phantom net name that no gate produces → undriven wire
+    # → FM globally unmatched. Flag CRITICAL so the analyzer corrects to use
+    # the actual port name and the studier can emit input_from_new_port.
+    phantom_alias_issues = []
+    # Build set of actual new_port token names in this ECO
+    new_port_tokens = {c.get('new_token') for c in rtl_diff.get('changes', [])
+                       if c.get('change_type') == 'new_port' and c.get('new_token')}
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        tgt = c.get('target_register') or c.get('new_token') or '?'
+        for fld in ('d_input_gate_chain', 'new_enable_gate_chain', 'new_condition_gate_chain'):
+            for g in (c.get(fld) or []):
+                ifc = g.get('input_from_change')
+                for inp in (g.get('inputs') or []):
+                    if not isinstance(inp, str): continue
+                    if not inp.startswith('n_eco_'): continue
+                    if ifc is None: continue
+                    # n_eco_* input WITH input_from_change = phantom alias
+                    # Determine what the actual port name should be
+                    ref_change = rtl_diff.get('changes', [])[ifc] if ifc < len(rtl_diff.get('changes',[])) else {}
+                    actual_name = ref_change.get('new_token') or ref_change.get('old_token') or '?'
+                    phantom_alias_issues.append(
+                        f"changes[{idx}] target={tgt!r} {fld} seq={g.get('seq','?')}: "
+                        f"input {inp!r} is a phantom n_eco_* alias for new_port signal "
+                        f"'{actual_name}' (input_from_change={ifc}). "
+                        f"Use the bare port name '{actual_name}' directly — "
+                        f"the phantom alias has no producing gate and will be an "
+                        f"undriven wire → FM globally unmatched on DFF D-input.")
+    if phantom_alias_issues:
+        overall_pass = False
+
     # ── MUX2 in gate chains ──────────────────────────────────────────────────
     # MUX2 cells in any gate chain cause FM cone divergence — the MUX select
     # path creates globally-unmatched compare points because synthesis never
@@ -1760,6 +1795,8 @@ def main():
         'dup_chain_issues':               dup_chain_issues,
         'missing_wire_issue_count':        len(missing_wire_issues),
         'missing_wire_issues':            missing_wire_issues,
+        'phantom_alias_issue_count':       len(phantom_alias_issues),
+        'phantom_alias_issues':           phantom_alias_issues,
         'mux2_in_chain_issue_count':      len(mux2_in_chain_issues),
         'mux2_in_chain_issues':           mux2_in_chain_issues,
         'port_promo_issue_count':          len(port_promo_issues),
