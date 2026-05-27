@@ -559,10 +559,39 @@ def main():
                 statuses.append({'name': inst, 'status':'SKIPPED',
                                  'reason': f'cell_type empty for {inst} in {args.stage} — cannot insert without cell type (SVR-4 risk)'})
                 continue
-            # Sanitize bracket-bit form in gate pin nets (e.g. X[0] → X_0_)
-            # so the emitted Verilog is consistent with flat-net convention.
+            # For gate pin net connections: prefer the bracket form when valid.
+            # Bracket form X[N] is legal in .PIN(X[N]) pin connections (unlike
+            # wire declarations). Only fall back to underscore form when the net
+            # truly uses flat-net convention in the netlist.
+            # Important: do NOT check PostEco existence for nets that will be
+            # CREATED by this batch (e.g. RowUpperMask[N] from INV gate output,
+            # or bus-port accesses after `input [W:0] X` is declared) — they
+            # don't exist in PostEco yet but will be valid after insertion.
             def _san_net(n):
-                return _sanitize_named_net(n)[0] if isinstance(n, str) else n
+                if not isinstance(n, str):
+                    return n
+                if '[' not in n:
+                    return n
+                base = n.split('[')[0]
+                # If base is an output_net prefix of any entry in this batch,
+                # the bracket form will be valid after insertion — keep it.
+                for _e in entries:
+                    _on = (_e.get('output_net') or '')
+                    if _on.startswith(base) or _on == base:
+                        return n  # bracket form valid — new bus gate output
+                # If base appears in a port_declaration (bus port being added),
+                # bracket access will be valid after port is declared — keep it.
+                for _e in entries:
+                    if (_e.get('change_type') in ('port_declaration','port_promotion')
+                            and _e.get('signal_name','') == base):
+                        return n  # bracket form valid — bus port being declared
+                # Check if bracket form exists in PostEco netlist already
+                bracket_count = zgrep_count(n, posteco, timeout=30)
+                if bracket_count > 0:
+                    return n   # bracket form is the real net — use as-is
+                # Bracket form absent and not being created — use underscore form
+                flat, _ = _sanitize_named_net(n)
+                return flat
             pins_str  = ', '.join(f'.{pin}({_san_net(net)})' for pin, net in pcs.items())
             gate_line = f'  // ECO {args.jira} TAG={args.tag} Round={args.round}'
             changes[mod]['gates'].append(gate_line)
