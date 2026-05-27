@@ -395,6 +395,97 @@ def main():
     if enable_swap_issues:
         overall_pass = False
 
+    # ── has_sync_reset vs context_line reset detection ────────────────────────
+    # The rtl_diff_analyzer detects reset from context_line, but context_line
+    # may span multiple lines when the always block is captured in full.  When
+    # has_sync_reset=False but the context_line contains a visible if(<reset>)
+    # pattern, the analyzer's single-line regex silently missed the reset clause.
+    # This causes the DFF to be emitted without a reset path → FM mismatch on the
+    # new DFF because RTL has reset=0 while gate-level D-input never resets.
+    reset_detection_issues = []
+    _RESET_RE = re.compile(r'if\s*\(\s*(\w+)\s*\)\s*(?:begin\s*)?(?:\w+)\s*<=\s*[01]')
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') not in ('new_logic', 'new_logic_dff'):
+            continue
+        if c.get('has_sync_reset'):
+            continue  # already detected — OK
+        ctx = c.get('context_line', '') or ''
+        tgt = c.get('target_register') or c.get('new_token') or '?'
+        # Multi-line context: look for if(<signal>) ... <= 0/1 pattern
+        m = _RESET_RE.search(ctx)
+        if m:
+            reset_signal_candidate = m.group(1)
+            reset_detection_issues.append(
+                f"changes[{idx}] target={tgt!r}: has_sync_reset=false but "
+                f"context_line contains 'if({reset_signal_candidate})' reset clause. "
+                f"rtl_diff_analyzer reset detection failed on multi-line context. "
+                f"Must set has_sync_reset=true, reset_signal='{reset_signal_candidate}', "
+                f"and bake reset into d_input_gate_chain (or use DFF reset pin).")
+    if reset_detection_issues:
+        overall_pass = False
+
+    # ── Duplicate gate chains between standalone wire and parent change ────────
+    # Standalone wire assignments (wire_change_type=new_logic_gate) that have
+    # a d_input_gate_chain must NOT duplicate gate chain entries already present
+    # in another change's new_enable_gate_chain or d_input_gate_chain.
+    # Duplication causes the studier to insert gates twice → duplicate wire decls
+    # → FM-599 ABORT_NETLIST.
+    dup_chain_issues = []
+    # Collect all output nets from embedded gate chains (enable_swap, wire_swap)
+    embedded_out_nets = set()
+    for c in rtl_diff.get('changes', []):
+        for fld in ('new_enable_gate_chain', 'd_input_gate_chain', 'new_condition_gate_chain'):
+            if c.get('change_type') in ('enable_swap', 'wire_swap', 'and_term'):
+                for g in (c.get(fld) or []):
+                    out = g.get('output_net', '')
+                    if out: embedded_out_nets.add(out)
+    # Flag standalone wire changes that duplicate those embedded nets
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('wire_change_type') != 'new_logic_gate':
+            continue
+        chain = c.get('d_input_gate_chain') or []
+        dup = [g.get('output_net') for g in chain if g.get('output_net') in embedded_out_nets]
+        if dup:
+            dup_chain_issues.append(
+                f"changes[{idx}] wire='{c.get('wire_name','?')}': standalone wire change "
+                f"has d_input_gate_chain with output nets {dup} that are ALREADY in another "
+                f"change's gate chain. This creates duplicate gate insertions. "
+                f"Standalone wire assignments must only appear embedded in their parent "
+                f"enable_swap/wire_swap gate chain — never as independent changes.")
+    if dup_chain_issues:
+        overall_pass = False
+
+    # ── Missing connector wire for new_logic DFF D-input ─────────────────────
+    # When a new_logic DFF uses a signal from a new_port(output) in another module
+    # as its d_input_resolved_net, a new_port(wire) connector must exist in the
+    # DFF's declaring module.  If absent, no wire declaration is emitted for that
+    # net and the DFF's D-input is an undeclared reference → FM-599 ABORT.
+    missing_wire_issues = []
+    # Collect all new_port(output) tokens and new_port(wire) tokens per module
+    new_outputs = {c.get('new_token') for c in rtl_diff.get('changes', [])
+                   if c.get('change_type') == 'new_port' and c.get('declaration_type') == 'output'}
+    wire_decls = {(c.get('module_name'), c.get('new_token'))
+                  for c in rtl_diff.get('changes', [])
+                  if c.get('change_type') == 'new_port' and c.get('declaration_type') == 'wire'}
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') not in ('new_logic', 'new_logic_dff'):
+            continue
+        d_in = c.get('d_input_resolved_net', '')
+        if not d_in or d_in.startswith(('n_eco_', "1'b")):
+            continue
+        if d_in in new_outputs:
+            # Signal comes from a new_port(output) — needs a wire connector in DFF module
+            mod = c.get('module_name', '')
+            if (mod, d_in) not in wire_decls:
+                tgt = c.get('target_register') or c.get('new_token') or '?'
+                missing_wire_issues.append(
+                    f"changes[{idx}] target={tgt!r}: d_input_resolved_net={d_in!r} is a "
+                    f"new_port(output) from another module but no new_port(wire) for "
+                    f"'{d_in}' exists in module '{mod}'. Add a new_port(wire) change so "
+                    f"the studier emits a port_declaration(wire) connector in this module.")
+    if missing_wire_issues:
+        overall_pass = False
+
     # ── MUX2 in gate chains ──────────────────────────────────────────────────
     # MUX2 cells in any gate chain cause FM cone divergence — the MUX select
     # path creates globally-unmatched compare points because synthesis never
@@ -1663,6 +1754,12 @@ def main():
         'pending_structural_issues':      pending_structural_issues,
         'enable_swap_issue_count':        len(enable_swap_issues),
         'enable_swap_issues':             enable_swap_issues,
+        'reset_detection_issue_count':     len(reset_detection_issues),
+        'reset_detection_issues':         reset_detection_issues,
+        'dup_chain_issue_count':           len(dup_chain_issues),
+        'dup_chain_issues':               dup_chain_issues,
+        'missing_wire_issue_count':        len(missing_wire_issues),
+        'missing_wire_issues':            missing_wire_issues,
         'mux2_in_chain_issue_count':      len(mux2_in_chain_issues),
         'mux2_in_chain_issues':           mux2_in_chain_issues,
         'port_promo_issue_count':          len(port_promo_issues),
