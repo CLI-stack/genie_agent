@@ -2045,6 +2045,18 @@ def main():
                     f"dff_clock combo OR per-stage map post-processing dropped it. "
                     f"Re-spawn fenets to add the clock query.")
 
+    # Build set of named_nets from unconnected_rewires — these are new wires
+    # declared by the applier and absent in PreEco by design. Used to exempt
+    # them from existence checks in Check 36 and the NET-ABSENT check below.
+    _unconn_rewire_named_nets = set()
+    for _stage_name in ('Synthesize', 'PrePlace', 'Route'):
+        for _e in study.get(_stage_name, []):
+            for _ur in (_e.get('unconnected_rewires') or []):
+                _nn = _ur.get('named_net', '')
+                if _nn:
+                    _unconn_rewire_named_nets.add(_nn)
+                    _unconn_rewire_named_nets.add(_nn.split('[')[0])
+
     # ── 36. chain leaf inputs MUST be resolvable in PreEco netlist OR have
     # an explicit skip-existence flag (input_from_new_port,
     # input_from_unconnected_rewire, input_from_change). Without the flag,
@@ -2067,10 +2079,12 @@ def main():
                 if pin in OUT_PINS or not isinstance(val, str):
                     continue
                 v = val.strip()
-                # Skip constants, n_eco_* (intra-batch refs), explicit skip flags
+                # Skip constants, n_eco_* (intra-batch refs), explicit skip flags,
+                # and named_nets from unconnected_rewires (new wires created by applier)
                 if v.startswith(("1'b", "0'b", "1'h", "0'h")): continue
                 if v.startswith('n_eco_'): continue
                 if any(e.get(f) == v for f in skip_flags): continue
+                if v in _unconn_rewire_named_nets: continue
                 # Bracket-form bus-bit names (e.g. SIG[0]) need to be matched
                 # against the netlist as bracket form — flat form (SIG_0_) is a
                 # leak from sympy-eval-friendly representation. Detect and
@@ -2415,6 +2429,7 @@ def main():
     _new_eco_ports = {c.get('new_token','') or c.get('signal_name','')
                       for c in rtl_diff.get('changes',[])
                       if c.get('change_type') in ('new_port','port_declaration','port_promotion')}
+    # _unconn_rewire_named_nets built above (before Check 36)
     for stage_check in ('Synthesize', 'PrePlace', 'Route'):
         gz = _gz.get(stage_check, '')
         if not gz or not os.path.exists(gz):
@@ -2437,6 +2452,7 @@ def main():
                 if net.startswith("1'"): continue
                 if net == ifnp: continue  # new ECO port (input_from_new_port) — absent in PreEco by design
                 if net.split('[')[0] in _new_eco_ports: continue  # new ECO port from rtl_diff
+                if net in _unconn_rewire_named_nets: continue  # new wire from unconnected_rewires
                 base = net.split('[')[0]
                 try:
                     import subprocess as _sp3
