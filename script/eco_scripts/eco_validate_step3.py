@@ -2330,6 +2330,43 @@ def main():
     _ENTRY_TYPES_38 = ('new_logic_gate', 'new_logic_dff')
     _placeholder_prefixes = ("MODE_H_ROUTE_SKIP", "UNRESOLVABLE",
                               "PENDING_FM_RESOLUTION", "NEEDS_NAMED_WIRE")
+    # Pre-index instance_name -> entry per stage array so we can fall back to
+    # the stage's OWN entry when per_stage_per_stage schema drift hides the pin.
+    # Defends Check 38 against the (unfortunately common) studier schema where
+    # port_connections_per_stage.Synthesize uses {A1, A2, ZN} (canonical) but
+    # PrePlace/Route use {A, B, ZN} for the same gate — fall back to Synth
+    # value would then false-fire polarity mismatch even though the actual
+    # netlist (applied from each stage-array's bare port_connections) is fine.
+    _stage_inst_map_38 = {
+        stg: {ee.get('instance_name', ''): ee for ee in study.get(stg, [])}
+        for stg in ('Synthesize', 'PrePlace', 'Route')
+    }
+
+    def _lookup_pin_net_38(inst_name, pin, stage, pcs_per_stage, synth_v):
+        """Resolve the net wired to <inst_name>.<pin> in <stage>.
+        Priority: (1) Synth-entry's port_connections_per_stage[stage][pin]
+                  (2) stage-array's own entry's port_connections[pin]
+                  (3) fall back to Synth value (last-resort, matches old behavior)
+        Returns None when no reliable answer is available so the caller can SKIP
+        Check 38 for this pin/stage instead of false-firing.
+        """
+        stg_dict = pcs_per_stage.get(stage) or {}
+        if pin in stg_dict and stg_dict[pin]:
+            return stg_dict[pin]
+        own = _stage_inst_map_38.get(stage, {}).get(inst_name)
+        if own:
+            own_pcs = own.get('port_connections') or {}
+            if pin in own_pcs and own_pcs[pin]:
+                return own_pcs[pin]
+            # Try the per_stage dict of the stage's OWN entry too — sometimes
+            # only that has the resolved net.
+            own_ps = (own.get('port_connections_per_stage') or {}).get(stage) or {}
+            if pin in own_ps and own_ps[pin]:
+                return own_ps[pin]
+        # Last-resort: Synth value (preserves old behavior in the rare case
+        # where no per-stage data exists at all).
+        return synth_v
+
     for e in study.get('Synthesize', []):
         if e.get('change_type') not in _ENTRY_TYPES_38:
             continue
@@ -2342,11 +2379,12 @@ def main():
             if pin in _NO_CHECK_PINS_38 or not isinstance(val, str): continue
             v = val.strip()
             if v.startswith(("1'b","0'b","1'h","0'h","n_eco_")): continue
-            # Per-stage nets (fall back to Synth value if absent)
             per_stage_nets = {
                 'Synthesize': v,
-                'PrePlace':   (pcs_per_stage.get('PrePlace') or {}).get(pin) or v,
-                'Route':      (pcs_per_stage.get('Route')   or {}).get(pin) or v,
+                'PrePlace':   _lookup_pin_net_38(inst, pin, 'PrePlace',
+                                                 pcs_per_stage, v),
+                'Route':      _lookup_pin_net_38(inst, pin, 'Route',
+                                                 pcs_per_stage, v),
             }
             # Skip parity check for placeholder/unresolved nets (per stage)
             parities = {}
