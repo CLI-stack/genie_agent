@@ -3336,6 +3336,147 @@ def main():
                     f"the netlist. Downstream consumer(s) will be undriven → "
                     f"FM Mode A. Set module_name to the actual host module.{hint}")
 
+    # ── 45. MISSING-BRIDGE-PARTNER (cross-module port_connection symmetry) ───
+    # When a port_connection P1 patches an UNCONNECTED bit at
+    # <parent>.<wrapper_inst>.<port>[bit] (its net_name_before per-stage matches
+    # UNCONNECTED_*), the consumer relies on the WRAPPER module being able to
+    # drive that bit. If the wrapper's PreEco body still has the same bit
+    # UNCONNECTED at its INTERNAL sub-instance, the parent-side patch alone
+    # leaves the consumer net undriven — guaranteed FM Mode A.
+    #
+    # Required: study must contain a SECOND port_connection P2 with
+    # parent_module = P1.child_module_name AND bus_bit_index = P1.bus_bit_index
+    # (the "inner" port_connection that wires the wrapper's sub-instance bit
+    # to the wrapper's own output port). Mode I emits both as
+    # suggested_parent_port_connection_entry + suggested_child_port_connection_entry.
+    #
+    # Failure mode this catches: Mode I returned NO_PARENT_UNC because of a
+    # caller bug (e.g. doubled tile prefix in host_module) and the LLM-studier
+    # manually emitted only the parent port_connection — leaving the bridge
+    # broken (run 20260527010014 R1 root cause).
+    import re as _re45, gzip as _gz45
+    _UNC_RE_45 = _re45.compile(r'^(SYNOPSYS_)?UNCONNECTED_\d+$')
+    # Index existing port_connections by (stage, parent_module_base, bit).
+    pc_index_45 = set()
+    all_pcs_45 = []
+    for stage_name in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage_name, []):
+            if e.get('change_type') != 'port_connection':
+                continue
+            pm = e.get('parent_module') or e.get('module_name') or ''
+            bi = e.get('bus_bit_index')
+            if pm and bi is not None:
+                pc_index_45.add(
+                    (stage_name,
+                     _re45.sub(r'(_\d+)+$', '', pm),
+                     bi))
+            all_pcs_45.append((stage_name, e))
+
+    # Call Mode I helper to determine whether a (host_module, port[bit])
+    # parent UNCONNECTED actually requires an inner sub-instance fix.
+    # Mode I returns MODEI_DETECTED only when BOTH parent AND wrapper inner
+    # sub-instance are UNCONNECTED — that's exactly when an inner port_connection
+    # is required. Cache by (host_module, port, bit).
+    import subprocess as _sp45, tempfile as _tmp45, json as _j45
+    _mode_i_path = os.path.join(os.path.dirname(__file__),
+                                'eco_modei_chain_input_check.py')
+    _mode_i_cache = {}
+    def _mode_i_requires_inner(host_module, port_name, bit):
+        cache_key = (host_module, port_name, bit)
+        if cache_key in _mode_i_cache:
+            return _mode_i_cache[cache_key]
+        if not os.path.exists(_mode_i_path):
+            _mode_i_cache[cache_key] = False
+            return False
+        chain_input = f'{port_name}[{bit}]'
+        with _tmp45.NamedTemporaryFile(mode='w', suffix='.json',
+                                       delete=False) as tf:
+            out_path = tf.name
+        try:
+            _sp45.run(['python3', _mode_i_path,
+                       '--ref-dir', args.ref_dir,
+                       '--host-module', host_module,
+                       '--chain-input', chain_input,
+                       '--output', out_path],
+                      capture_output=True, timeout=120)
+            try:
+                with open(out_path) as fh:
+                    r = _j45.load(fh)
+                requires = (r.get('status') == 'MODEI_DETECTED')
+            except Exception:
+                requires = False
+        except Exception:
+            requires = False
+        finally:
+            try:
+                os.unlink(out_path)
+            except Exception:
+                pass
+        _mode_i_cache[cache_key] = requires
+        return requires
+
+    seen_45 = set()
+    for stage_name, e in all_pcs_45:
+        nnb = e.get('net_name_before') or {}
+        unc_for_stage = nnb.get(stage_name) if isinstance(nnb, dict) else None
+        if not (isinstance(unc_for_stage, str)
+                and _UNC_RE_45.match(unc_for_stage)):
+            continue
+        wrapper_mod = e.get('child_module_name') or ''
+        wrapper_mod_base = _re45.sub(r'(_\d+)+$', '', wrapper_mod)
+        bit = e.get('bus_bit_index')
+        if not wrapper_mod or bit is None:
+            continue
+        key = (stage_name, wrapper_mod_base, bit)
+        if key in seen_45:
+            continue
+        seen_45.add(key)
+        # Inner partner already in study? Done.
+        partner_in_study = any(
+            (s2 == stage_name and bi2 == bit
+             and _re45.sub(r'(_\d+)+$', '', pm2) == wrapper_mod_base)
+            for (s2, pm2, bi2) in pc_index_45
+            for s2 in (s2,)  # bind tuple
+        )
+        if partner_in_study:
+            continue
+        # No partner — does the wrapper actually have UNCONNECTED at sub-
+        # instance level for the same bit? If not, this is a leaf register
+        # file or otherwise self-driving — no inner PC needed.
+        # Authoritative test: does Mode I detect an inner UNCONNECTED for
+        # (parent_module, port[bit])? Mode I returns MODEI_DETECTED only when
+        # both the parent slot AND the wrapper's internal sub-instance are
+        # UNCONNECTED at the same bit — i.e. when an inner PC is genuinely
+        # required. If Mode I returns NO_PARENT_UNC / NO_INNER_DRIVER, no
+        # inner PC is needed (wrapper is a leaf or already self-driving).
+        parent_host = e.get('parent_module') or e.get('module_name') or ''
+        parent_host_base = _re45.sub(r'(_\d+)+$', '', parent_host)
+        port_name = e.get('port_name', '')
+        if not parent_host_base or not port_name:
+            continue
+        if not _mode_i_requires_inner(parent_host_base, port_name, bit):
+            continue
+        inst = e.get('instance_name', '?')
+        port = e.get('port_name', '?')
+        net  = e.get('net_name', '?')
+        issues.append(
+            f"HIGH/45-MISSING-BRIDGE-PARTNER: stage={stage_name} "
+            f"port_connection {e.get('parent_module','?')}.{inst}.{port}[{bit}] "
+            f"= {net!r} patches an UNCONNECTED slot "
+            f"(net_name_before[{stage_name}]={unc_for_stage!r}) at the PARENT "
+            f"of wrapper module {wrapper_mod!r}, AND the wrapper's PreEco "
+            f"body still has its INNER sub-instance UNCONNECTED at the same "
+            f"bit[{bit}] — no inner port_connection in study to fix it. "
+            f"Without the inner port_connection the wrapper's output bit is "
+            f"undriven and the parent-side patch reads X → guaranteed FM "
+            f"Mode A. Fix: add a sibling port_connection with "
+            f"parent_module={wrapper_mod_base!r}, bus_bit_index={bit} that "
+            f"wires the wrapper's sub-instance source pin to the wrapper's "
+            f"own output port bit[{bit}]. Mode I normally emits this as "
+            f"suggested_child_port_connection_entry; if Mode I returned "
+            f"NO_PARENT_UNC the caller may have passed a wrong host_module "
+            f"(e.g. doubled tile prefix).")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}

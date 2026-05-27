@@ -360,7 +360,7 @@ Read `width` (integer N) from output. If `resolved: false` → log `BUS_WIDTH_UN
 python3 script/eco_scripts/eco_emit_dff_entry.py \
     --rtl-change <change_json> --ref-dir <REF_DIR>      \
     --rename-map data/<TAG>_eco_fenets_rename_map.json  \
-    --tag <TAG> --jira <JIRA> --tile-module <TILE>      \
+    --tag <TAG> --jira <JIRA> --tile-module ddrss_<TILE>_t \
     --base-dir <BASE_DIR>                               \
     --bus-width N                                       \
     --output data/<TAG>_eco_dff_entry_<target>.json

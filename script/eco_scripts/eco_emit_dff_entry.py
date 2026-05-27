@@ -495,8 +495,19 @@ def main():
     target_reg  = rtl_change.get('target_register') or rtl_change.get('new_token', '')
     host_module = (rtl_change.get('declaring_module') or rtl_change.get('module_name', ''))
     if not host_module.startswith('ddrss_') and host_module:
-        # Heuristic: prepend tile prefix if missing
-        host_module = f'{args.tile_module}_{host_module}'
+        # Heuristic: prepend tile prefix if missing — but guard against
+        # double-prepend when the caller passes a tile_module that already
+        # contains host_module (e.g. tile_module='ddrss_umccmd_t_umccmd'
+        # while host_module='umccmd' would otherwise produce the doubled
+        # 'ddrss_umccmd_t_umccmd_umccmd'). Run 20260527010014 root cause —
+        # Mode I helper got that doubled name and returned NO_PARENT_UNC,
+        # leaving the LLM-studier to manually compensate and ship a broken
+        # bridge.
+        tm = args.tile_module or ''
+        if tm.endswith(f'_{host_module}') or tm == host_module:
+            host_module = tm
+        elif tm:
+            host_module = f'{tm}_{host_module}'
     dff_clock   = rtl_change.get('dff_clock', '')
     expr        = rtl_change.get('d_input_expected_function', '')
     input_names = []
