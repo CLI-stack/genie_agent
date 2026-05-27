@@ -492,10 +492,14 @@ def main():
             # port is declared as 'input [7:0] RowUpperMask', bracket-indexing
             # IS valid Verilog — do NOT sanitize. Sanitize only for genuinely
             # new standalone wire declarations (not bus-port bit accesses).
-            is_bus_bit_output = (e.get('is_bus_gate_bit') and
-                                 out_net_raw and '[' in out_net_raw)
-            if is_bus_bit_output:
-                out_net = out_net_raw   # keep bracket form — valid bus-bit access
+            # For is_bus_gate_bit entries the verifier resolves per-stage output
+            # ZN to flat form (e.g. RowUpperMask_0_ in PP/Route) but downstream
+            # AND2 consumers use bracket form (RowUpperMask[0]) via _san_net fix.
+            # These must be consistent — always use entry.output_net (bracket) for
+            # the gate line so INV ZN and AND2 A2 both reference RowUpperMask[0].
+            canonical_out = e.get('output_net', '')
+            if e.get('is_bus_gate_bit') and canonical_out and '[' in canonical_out:
+                out_net = canonical_out   # bracket form, consistent with AND2 A2
                 _ow_san = False
             else:
                 out_net, _ow_san = _sanitize_named_net(out_net_raw)
