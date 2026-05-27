@@ -451,6 +451,40 @@ def main():
         'source':              'eco_modei_chain_input_check.py',
     }
 
+    # PARENT-side port_connection — wires the WRAPPER instance (parent_inst,
+    # e.g. REGCMD) bit at the host module's level, replacing the UNCONNECTED_*
+    # slot in the bus concat with the flat consumer net (e.g. REG_UmcCfgEco_12_).
+    #
+    # Without this entry, the wrapper's output bit reaches the host module
+    # bus concat at position [bit] as `UNCONNECTED_*` (or never reaches),
+    # leaving the consumer wire `<bus>_<bit>_` declared but undriven in the
+    # host module — guaranteed FM Mode A on the new ECO gate's input cone.
+    suggested_parent_port_conn = {
+        'change_type':         'port_connection',
+        'module_name':         args.host_module,
+        'parent_module':       args.host_module,
+        'instance_name':       parent_inst,
+        'instance_name_per_stage': {s: parent_inst for s in parent_unc_per_stage},
+        'child_module_name':   child_module_canon,
+        'child_module_name_per_stage': {s: child_module_canon
+                                        for s in parent_unc_per_stage},
+        'port_name':           bus,
+        'bus_bit_index':       bit,
+        'net_name':            flat_net,
+        'net_name_after':      flat_net,
+        'net_name_before':     parent_unc_per_stage,
+        'force_reapply':       True,
+        'confirmed':           True,
+        'reason':              f'Mode I parent-bridge — wrapper instance '
+                               f'{parent_inst}.{bus} bit[{bit}] was UNCONNECTED at '
+                               f'host module {args.host_module!r}; wire to consumer net '
+                               f'{flat_net} so the wrapper\'s exported bit lands on the '
+                               f'flat wire the new ECO cell consumes (closes the cross-'
+                               f'module driver chain — without this, the consumer is undriven '
+                               f'and FM fails Mode A).',
+        'source':              'eco_modei_chain_input_check.py',
+    }
+
     out = {
         'status':       'MODEI_DETECTED',
         'chain_input':  args.chain_input,
@@ -467,13 +501,20 @@ def main():
         'sub_inst_per_stage':    sub_inst_per_stage,
         'suggested_chain_input_replacement': flat_net,
         'suggested_unconnected_rewires_entry': suggested_unconnected_rewires,
-        'suggested_child_port_connection_entry': suggested_child_port_conn,
+        'suggested_child_port_connection_entry':  suggested_child_port_conn,
+        'suggested_parent_port_connection_entry': suggested_parent_port_conn,
         'note': (
             f'Splice suggested_unconnected_rewires_entry into the new_logic_dff '
-            f'entry whose chain references {args.chain_input}. Splice '
-            f'suggested_child_port_connection_entry into ALL three stage arrays '
-            f'(Synthesize, PrePlace, Route). Update the chain leaf input from '
-            f'{args.chain_input!r} to {flat_net!r} on all relevant '
+            f'entry whose chain references {args.chain_input}. Splice BOTH '
+            f'suggested_child_port_connection_entry AND '
+            f'suggested_parent_port_connection_entry into ALL three stage arrays '
+            f'(Synthesize, PrePlace, Route) — the child entry wires the inner '
+            f'sub-instance bit to the wrapper\'s internal bus wire, and the '
+            f'parent entry wires the wrapper instance\'s output bit at the host '
+            f'module level to {flat_net!r} so the consumer is actually driven. '
+            f'Omitting the parent entry leaves the consumer wire declared but '
+            f'undriven → guaranteed FM Mode A fail. Update the chain leaf input '
+            f'from {args.chain_input!r} to {flat_net!r} on all relevant '
             f'new_logic_gate entries (port_connections + port_connections_per_stage).'
         ),
     }

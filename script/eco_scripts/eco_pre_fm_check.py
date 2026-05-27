@@ -592,6 +592,154 @@ def check_eco_input_drivers(study_path, ref_dir):
     return failures
 
 
+def check_input_net_strict_driver(study_path, ref_dir):
+    """Strict driver check for new-ECO-cell input nets — closes the gap in
+    check_eco_input_drivers, which collects ALL submodule port connections
+    (input AND output, since direction is unknown for user-defined modules)
+    and so treats consumer-only `.A1(W)` references on the new ECO cell itself
+    as a "driver" for W.
+
+    For every input pin of every new_logic_gate/new_logic_dff entry, this
+    check requires the net to have at least one REAL driver in the host module
+    body:
+      1. Standard-cell output pin: `.(Z|ZN|ZN1|Q|QN|CO|CO1|S|SN|Q[1-8])(W)`
+      2. Continuous assign: `assign W = ...`
+      3. Module input/inout port: `input W;` / `inout W;` declared
+      4. Sub-instance OUTPUT port: `.<port>(W)` on an instance whose module's
+         declared port direction is `output`. Module port directions are
+         indexed from all module headers in the netlist.
+
+    Bare `wire W;` declarations + consumer-only references do NOT count.
+
+    Closes the specific failure mode of run 20260525085948 R1 and
+    20260526203822 R1, where `REG_UmcCfgEco_12_` was declared but only
+    consumed by a new ECO gate input — undriven cone → FM Mode A.
+    """
+    failures = []
+    OUT_PINS = ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'CO1', 'S', 'SN',
+                'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8')
+    out_pin_alt = '|'.join(OUT_PINS)
+    try:
+        study = json.loads(Path(study_path).read_text())
+    except Exception as e:
+        return [f'[STRICT_DRIVER_READ_ERR] {e}']
+
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        gz = os.path.join(ref_dir, 'data', 'PostEco', f'{stage}.v.gz')
+        if not os.path.exists(gz):
+            continue
+        try:
+            text = subprocess.run(['zcat', gz], capture_output=True, text=True,
+                                  timeout=240).stdout
+        except Exception:
+            continue
+        text = strip_verilog_comments(text)
+
+        # Build {module_name: {port_name: direction}} from module headers.
+        port_dir_map = {}
+        for mod_m in re.finditer(
+                r'^module\s+(\w+)\s*\(.*?^endmodule\b',
+                text, re.MULTILINE | re.DOTALL):
+            mod_name = mod_m.group(1)
+            body = mod_m.group(0)
+            ports = {}
+            for d in re.finditer(
+                    r'^\s*(input|output|inout)\s+(?:\[[^\]]+\]\s+)?([\w,\s]+?)\s*;',
+                    body, re.MULTILINE):
+                direction = d.group(1)
+                for p in d.group(2).split(','):
+                    p = p.strip()
+                    if p:
+                        ports[p] = direction
+            port_dir_map[mod_name] = ports
+
+        # Cache module body by host name.
+        body_cache = {}
+        def _body_of(mod):
+            if mod in body_cache:
+                return body_cache[mod]
+            for cand in (mod, mod + '_0'):
+                m = re.search(rf'^module\s+{re.escape(cand)}\b.*?^endmodule\b',
+                              text, re.MULTILINE | re.DOTALL)
+                if m:
+                    body_cache[mod] = m.group(0)
+                    return body_cache[mod]
+            body_cache[mod] = ''
+            return ''
+
+        def _net_has_driver(net, mod_body):
+            net_esc = re.escape(net)
+            # 1. Cell output pin
+            if re.search(rf'\.\s*(?:{out_pin_alt})\s*\(\s*{net_esc}\s*\)',
+                         mod_body):
+                return True
+            # 2. assign
+            if re.search(rf'^\s*assign\s+{net_esc}\s*=',
+                         mod_body, re.MULTILINE):
+                return True
+            # 3. Module input / inout port
+            if re.search(
+                    rf'^\s*(?:input|inout)\s+(?:\[[^\]]+\]\s+)?{net_esc}\s*[;,]',
+                    mod_body, re.MULTILINE):
+                return True
+            # 4. Sub-instance output port — resolve direction via port_dir_map.
+            # Match `<module_type> <inst_name> ( ... .<port>(net) ... );`
+            for inst_m in re.finditer(
+                    r'^\s*(\w+)\s+(\w+)\s*\(([^;]+?)\)\s*;',
+                    mod_body, re.MULTILINE | re.DOTALL):
+                inst_module = inst_m.group(1)
+                if inst_module in ('wire', 'reg', 'assign', 'input', 'output',
+                                   'inout', 'parameter', 'localparam',
+                                   'tri', 'tri0', 'tri1', 'wand', 'wor',
+                                   'supply0', 'supply1'):
+                    continue
+                inst_dir_map = port_dir_map.get(inst_module)
+                if not inst_dir_map:
+                    continue
+                inst_body = inst_m.group(3)
+                for pm in re.finditer(
+                        rf'\.\s*(\w+)\s*\(\s*{net_esc}\s*\)', inst_body):
+                    if inst_dir_map.get(pm.group(1)) == 'output':
+                        return True
+            return False
+
+        for entry in study.get(stage, []):
+            if entry.get('change_type') not in ('new_logic_gate',
+                                                'new_logic_dff'):
+                continue
+            if not entry.get('confirmed', True):
+                continue
+            inst = entry.get('instance_name', '?')
+            host = entry.get('module_name', '')
+            if not host:
+                continue
+            body = _body_of(host)
+            if not body:
+                continue
+            pcs = (entry.get('port_connections_per_stage') or {}).get(stage) \
+                  or entry.get('port_connections') or {}
+            for pin, val in pcs.items():
+                if pin in OUT_PINS or not isinstance(val, str):
+                    continue
+                base = re.sub(r'\[[^\]]*\]', '', val).strip()
+                if not base or base.startswith(("1'b", "0'b", "1'h", "0'h")):
+                    continue
+                if not _net_has_driver(base, body):
+                    failures.append(
+                        f'[INPUT_NET_STRICT_UNDRIVEN] {stage}: {inst}.{pin}={val!r} '
+                        f'in host module {host!r} — net is declared but has NO '
+                        f'driver in this module body (no cell output pin '
+                        f'connection, no `assign`, no module input port, no '
+                        f'sub-instance output port). A bare `wire {base};` plus '
+                        f"consumer-only `.<pin>({base})` references on new ECO "
+                        f'cells does NOT count as a driver. Likely missing '
+                        f'a parent-side port_connection that wires a '
+                        f'sub-instance OUTPUT port to {base!r} (e.g. REGCMD-like '
+                        f"bus rename didn't propagate to the consuming module). "
+                        f'Will fail FM with Mode A undriven cone.')
+    return failures
+
+
 def check_duplicate_ports(ref_dir):
     """Check D — no duplicate port names in any module port list header.
     Duplicate ports cause Verilog compile errors that block FM elaboration.
@@ -1451,6 +1599,19 @@ def main():
     # "agent recorded a stale or non-existent per-stage net name" class of bug.
     fails = check_eco_input_drivers(study_path, args.ref_dir)
     results['eco_input_drivers'] = 'PASS' if not fails else 'FAIL'
+    all_fails.extend(fails)
+
+    # Check 13b — STRICT driver presence for new-ECO-cell input nets. Closes
+    # the gap in Check 13: that check pollutes its driven-set with ALL
+    # submodule port connections (input AND output, since direction is unknown
+    # for user-defined modules), so it accepts the new ECO cell's own consumer
+    # reference `.A1(W)` as a "driver" for W. This stricter check requires a
+    # real driver: cell output pin, assign, module input/inout port, or
+    # sub-instance OUTPUT port (direction resolved from module headers).
+    # Catches the exact undriven-`REG_UmcCfgEco_12_` failure that bit
+    # 20260525085948 R1 and 20260526203822 R1 (Mode A undriven cone).
+    fails = check_input_net_strict_driver(study_path, args.ref_dir)
+    results['input_net_strict_driver'] = 'PASS' if not fails else 'FAIL'
     all_fails.extend(fails)
 
     # Check 14 — Duplicate port names in any module port list header.

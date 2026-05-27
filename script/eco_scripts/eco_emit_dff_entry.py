@@ -699,6 +699,13 @@ def main():
             child_pc = result.get('suggested_child_port_connection_entry')
             if child_pc:
                 modei_extra_entries.append(child_pc)
+            # Add parent-side port_connection to extras — closes the cross-
+            # module driver chain. Without this the wrapper's exported bit
+            # never lands on the consumer net at the host module → consumer
+            # wire declared but undriven → FM Mode A.
+            parent_pc = result.get('suggested_parent_port_connection_entry')
+            if parent_pc:
+                modei_extra_entries.append(parent_pc)
             # Rewrite chain leaves: original chain ref → flat-net replacement.
             # Also flag the gate with `input_from_unconnected_rewire` so
             # perl_spec skips the input-existence check (the flat-net is
