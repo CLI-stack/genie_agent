@@ -580,9 +580,31 @@ def main():
     # signal (B1) were left with the bare RTL name which causes DFF0X / cone
     # mismatch in PP/Route where CTS renames those nets.
     _OUT_PINS_SET = {'Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'S'}
+    # Collect all scope prefixes to try for rename map lookup.
+    # host_scope may be empty when the change entry's instance_scope wasn't
+    # propagated — also try instance_scope directly as a fallback so WDB-scoped
+    # signals (e.g. WDB/IReset) are found even when host_scope is unset.
+    _scope_candidates = list(dict.fromkeys(filter(None, [
+        host_scope,
+        rtl_change.get('instance_scope', ''),
+        rtl_change.get('scope', ''),
+    ])))
+    def _resolve_net(base, stage, net):
+        """Try scope-prefixed then bare rename map key; return renamed net."""
+        for scope in _scope_candidates:
+            entry = rmap.get(f'{scope}/{base}') or {}
+            if isinstance(entry, dict) and stage in entry:
+                return entry[stage]
+        entry = rmap.get(base) or {}
+        if isinstance(entry, dict) and stage in entry:
+            return entry[stage]
+        return net
+
     for g in chain_entries:
         pcs = g.get('port_connections') or {}
-        # Only add port_connections_per_stage when at least one stage differs
+        # Always emit port_connections_per_stage — even if no renames fire, it
+        # ensures the applier uses the correct per-stage dict for all stages
+        # rather than falling back to the bare Synthesize-only port_connections.
         pcs_per_stage = {s: {} for s in ('Synthesize', 'PrePlace', 'Route')}
         changed = False
         for pin, net in pcs.items():
@@ -590,20 +612,18 @@ def main():
                 if pin in _OUT_PINS_SET or not isinstance(net, str):
                     pcs_per_stage[stage][pin] = net
                     continue
-                # Look up net (strip bit-select for map key)
                 base = net.split('[')[0]
-                bit_suffix = net[len(base):]   # e.g. '[3]' or ''
-                key = f'{host_scope}/{base}' if host_scope else base
-                entry = rmap.get(key) or {}
-                renamed = entry.get(stage, net) if isinstance(entry, dict) else net
-                if bit_suffix and renamed and renamed != net:
+                bit_suffix = net[len(base):]
+                renamed = _resolve_net(base, stage, net)
+                if bit_suffix and renamed != net:
                     renamed = renamed + bit_suffix
                 pcs_per_stage[stage][pin] = renamed
                 if renamed != net:
                     changed = True
+        # Always set per-stage dict so applier never falls back to bare pcs
+        g['port_connections_per_stage'] = pcs_per_stage
         if changed:
-            g['port_connections_per_stage'] = pcs_per_stage
-            # Also update base port_connections to Synthesize form
+            # Update base port_connections to Synthesize-resolved form
             g['port_connections'] = dict(pcs_per_stage['Synthesize'])
 
     # ── Discover DFF cell type (for build_dff_entry) ─────────────────────
