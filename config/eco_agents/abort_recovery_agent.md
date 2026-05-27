@@ -101,6 +101,7 @@ Triggered when `abort_pattern == "unknown"` OR YAML pattern has `recovery.whitel
    - **Save MD5 of every netlist before edit.** If your fix doesn't change MD5, you didn't actually patch — abort with `PATCH_NOOP`.
    - Edit only `<TAG>_eco_preeco_study.json` and `<REF_DIR>/data/PostEco/<stage>.v.gz` files.
    - Touch the MINIMUM number of lines (one fix at a time).
+   - **Study cross-references — MANDATORY.** When renaming a pin on an ECO cell instance (e.g. `.B1` → `.A2`), the same instance appears once in EACH stage array (`Synthesize`, `PrePlace`, `Route`). Each of those 3 entries has its own `port_connections` AND a `port_connections_per_stage` dict with sub-keys for ALL 3 stages — so the same pin appears in 12 places total (3 entries × {bare + per_stage.Synth + per_stage.PP + per_stage.Route}). Patch ALL 12, not just the 3 owning-stage slots. Missing the cross-references leaves stale pin names (e.g. `A/B`) in the per_stage of other-stage entries — Step 3 Check 38 falls back to those stale values, traces them as undriven nets per-stage, and false-fires HIGH/38-CHAIN-LEAF-POLARITY-MISMATCH on the next round even though FM passes (run 20260527010014 root cause).
 
 6. **Refuse to guess** when:
    - The FM log doesn't have an actionable error (e.g., generic "Verification UNCLEAR" with no Error:)
