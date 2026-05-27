@@ -395,6 +395,31 @@ def main():
     if enable_swap_issues:
         overall_pass = False
 
+    # ── MUX2 in gate chains ──────────────────────────────────────────────────
+    # MUX2 cells in any gate chain cause FM cone divergence — the MUX select
+    # path creates globally-unmatched compare points because synthesis never
+    # emits bare MUX2 for conditional-assign RTL patterns.  Engineers use
+    # AO22 compound gates instead:
+    #   sel ? A : B  →  INV(sel)→eco_sel_inv; AO22(A1=sel,A2=A,B1=eco_sel_inv,B2=B)
+    # AO22 is structurally equivalent to synthesis output and FM-verifiable
+    # without SVF.  Flag FAIL so the analyzer corrects the gate type before
+    # the study phase runs.
+    mux2_in_chain_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        tgt = c.get('target_register') or c.get('new_token') or '?'
+        for fld in ('d_input_gate_chain', 'new_enable_gate_chain', 'new_condition_gate_chain'):
+            for g in (c.get(fld) or []):
+                gf = (g.get('gate_function') or '').upper()
+                if gf.startswith('MUX'):
+                    mux2_in_chain_issues.append(
+                        f"changes[{idx}] target={tgt!r} {fld} seq={g.get('seq','?')}: "
+                        f"gate_function={gf!r} — MUX cells cause FM cone divergence. "
+                        f"Use AO22 instead: INV(sel)→eco_sel_inv; "
+                        f"AO22(A1=sel,A2=A,B1=eco_sel_inv,B2=B)→output. "
+                        f"Reuse the shared INV output across all bits for bus signals.")
+    if mux2_in_chain_issues:
+        overall_pass = False
+
     # ── port_promotion hygiene ───────────────────────────────────────────────
     # port_promotion is valid ONLY for flat netlists where an existing `reg`
     # is being changed to `output reg` (diff hunk type `c`, not `a`).
@@ -1637,6 +1662,8 @@ def main():
         'pending_structural_issues':      pending_structural_issues,
         'enable_swap_issue_count':        len(enable_swap_issues),
         'enable_swap_issues':             enable_swap_issues,
+        'mux2_in_chain_issue_count':      len(mux2_in_chain_issues),
+        'mux2_in_chain_issues':           mux2_in_chain_issues,
         'port_promo_issue_count':          len(port_promo_issues),
         'port_promo_issues':              port_promo_issues,
         'bus_gate_issue_count':           len(bus_gate_issues),

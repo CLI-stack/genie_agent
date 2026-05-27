@@ -491,7 +491,7 @@ awk '/^module <declaring_module>/,/^endmodule/' /tmp/eco_study_<TAG>_Synthesize.
 - Chain non-empty → append reset-gating tail.
 - Chain empty (`d_input_resolved_net` set, e.g. direct-wire `REG_X[i]`) → BUILD chain from `d_input_resolved_net` (and per-stage UNCONNECTED variants) as AND2 source. NEVER invent undriven `n_eco_*`.
 
-Tail: `INV(<reset>) → n_eco_<jira>_d<N+1>`; combiner producing `chain_tail & ~<reset>` (active_high) or `& <reset>` (active_low) via AND2+INV / NR2 / etc. (cell type from PreEco, not hardcoded). Update `d_input_net` to combiner output → DFF `.D`. Same tail in all stages; per-stage nets via 0b-ALIAS / RULE 32.
+Tail: `INV(<reset>) → eco_<jira>_<reg>_rst_inv`; combiner `AND2(eco_<jira>_<reg>_rst_inv, chain_tail) → n_eco_<jira>_d<N+1>`. **The INV output `eco_<jira>_<reg>_rst_inv` is a new ECO net — stage-stable, no CTS renaming needed. Use it as the inverted-reset input for ALL gates in this DFF's chain that need `~<reset>`.** Never reference `<reset>` directly as a negated input; always invert it once into a shared ECO net first. For bus DFFs with N bits: emit ONE shared INV for `<reset>`, then N AND2 gates each consuming `eco_<jira>_<reg>_rst_inv` as A1. Update `d_input_net` to the AND2 output → DFF `.D`. Per-stage resolution: the INV input `<reset>` is the sole reference to the bare reset name — resolve it per-stage via rename map (Rule 32). The AND2 inputs downstream only reference the ECO-internal net, so no per-stage resolution is needed for them.
 
 **Self-check:** `has_sync_reset && !reset_pin_used && no chain references <reset>` → bake-in skipped → fix before writing JSON. DFF must never lack a reset path.
 
@@ -642,13 +642,32 @@ On (A)+(B) miss, emit `cell_name_per_stage[stage]: null` and `confirmed_per_stag
 
 ### Phase 0.16 — Process `enable_swap` changes  (was Phase 0e — was out-of-order at end of Phase 0)
 > **SKIP IF** no `enable_swap` changes in rtl_diff.
-> **DONE WHEN** for every enable_swap: the enable pin (CE/EN/WE/E) is identified on the target DFF, per-stage rewire entries are emitted (one per stage per bus bit), and new condition gate chain entries are emitted from `new_enable_gate_chain[]`.
+> **DONE WHEN** for every enable_swap: either (A) the clock gate E pin is rewired (preferred) or (B) the DFF CE/WE pin is rewired (fallback), AND new enable condition gate entries are emitted from `new_enable_gate_chain[]`.
 
 For each `enable_swap` change (clock-enable / write-enable pin rewire on an existing DFF):
 
-**Step 1 — Locate the DFF cell and its enable pin:**
+**Step 0 — Detect clock gate (MANDATORY before Step 1):**
+
+Check if the target DFF's CP (clock) is driven by a clock gate cell:
+```bash
+grep -E "\.(CP|CK)\s*\(\s*<clk_net>\s*\)" /tmp/eco_study_<TAG>_Synthesize.v | head -3
+# Then find what drives <clk_net>:
+grep -E "\.(Z|Q)\s*\(\s*<clk_net>\s*\)" /tmp/eco_study_<TAG>_Synthesize.v | head -3
+```
+If the driver cell is a clock gate type (`ICG*`, `CKOR*`, `CTG*`, `CKLNQ*`, `CKGT*`):
+- **Use Path A (clock gate E-pin rewire)** — engineers strongly prefer this
+- Record `enable_via_clock_gate: true`, `clock_gate_instance: <inst>`, `clock_gate_E_pin: <E|EN|TE>`
+- Emit a `rewire` on the clock gate's E pin: `old_enable_net → new_enable_net`
+- NO per-bit iteration — one clock gate serves all bus-width DFF bits
+- Immune to wrong-module cell name collisions
+
+If no clock gate (DFF's CP comes directly from a clock net):
+- **Use Path B (CE/WE pin rewire)** — as before
+
+**Step 1 — Locate enable target (Path A: clock gate / Path B: DFF CE pin):**
 - Get the FM fenets results for `old_enable_net` (queried in Step 2 as Cat 8).
-- From the FM `(+)` impl line, extract the cell name. The enable pin (CE/EN/WE/E) is the pin that `old_enable_net` connects to — grep the PreEco Synthesize cell block:
+- **Path A:** from the clock gate instance found in Step 0, emit the E-pin rewire directly. No FM fanout walk needed.
+- **Path B (fallback):** From the FM `(+)` impl line, extract the cell name. The enable pin (CE/EN/WE/E) is the pin that `old_enable_net` connects to — grep the PreEco Synthesize cell block:
   ```bash
   grep -A 20 "<cell_name>" /tmp/eco_study_<TAG>_Synthesize.v | grep -E "\.(CE|EN|WE|E)\s*\("
   ```

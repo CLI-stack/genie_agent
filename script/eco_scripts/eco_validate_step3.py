@@ -159,6 +159,48 @@ def main():
                             f"eco_emit_dff_entry.py must resolve this pin per-stage from rename map "
                             f"to avoid DFF0X/cone-mismatch in PP/Route stages.")
 
+    # ── 2e-pre-inv. Multiple INV inversions of same CTS-renamed signal ───────
+    # N separate INV gates each inverting the same CTS-renamed signal should be
+    # consolidated into ONE shared INV (eco_<jira>_<signal>_inv).  Downstream
+    # gates then reference the new ECO-internal net — stage-stable, no CTS
+    # renaming needed.  Multiple INV gates multiply per-stage resolution work
+    # and create redundant FM cone entries for logically-identical inversions.
+    import re as _re_inv
+    _RMAP_INV_PATH = Path(args.study).parent / f'{args.tag}_eco_fenets_rename_map.json'
+    _rmap_inv = {}
+    if _RMAP_INV_PATH.is_file():
+        try:
+            _rmap_inv = json.loads(_RMAP_INV_PATH.read_text())
+        except Exception:
+            pass
+    if _rmap_inv:
+        for stage in ['Synthesize']:
+            inv_inputs = {}   # base_net → [instance_names]
+            for e in study.get(stage, []):
+                if e.get('change_type') not in ('new_logic_gate', 'new_logic'):
+                    continue
+                if (e.get('gate_function') or '').upper() not in ('INV', 'INVD', 'INVLLKG', 'INVSKR'):
+                    continue
+                pcs = e.get('port_connections') or {}
+                inp = pcs.get('I') or pcs.get('A') or ''
+                if not inp or inp.startswith(('n_eco_', "1'b")):
+                    continue
+                base = _re_inv.sub(r'\[\d+\]$', '', inp)
+                scope = e.get('instance_scope', '')
+                key = f'{scope}/{base}' if scope else base
+                entry = _rmap_inv.get(key, {})
+                if isinstance(entry, dict):
+                    vals = [entry.get(s, base) for s in ('Synthesize', 'PrePlace', 'Route')]
+                    if len(set(vals)) > 1:   # CTS-renamed → shared INV needed
+                        inv_inputs.setdefault(base, []).append(e.get('instance_name', '?'))
+            for sig, insts in inv_inputs.items():
+                if len(insts) > 1:
+                    issues.append(
+                        f"HIGH: {len(insts)} separate INV gates invert the same "
+                        f"CTS-renamed signal '{sig}' ({insts[:3]}) — consolidate into ONE "
+                        f"shared ECO INV gate; downstream AND2/AO22 gates reference its "
+                        f"output (stage-stable ECO net, no per-stage resolution needed).")
+
     # ── 2e-pre. Rewire entries must have module_name ─────────────────────────
     # Without module_name, eco_applier's resolve_module_name() falls back to a
     # generic file-wide search and matches the FIRST cell of that name across ALL

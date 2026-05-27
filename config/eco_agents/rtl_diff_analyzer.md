@@ -48,7 +48,7 @@ For each diff hunk, classify as ONE of:
 | `port_promotion` | Existing local `reg` promoted to `output reg` | `reg X` → `output reg X` |
 | `new_logic` | New wire/always/assign/instance added | New always block |
 | `port_connection` | Port connection added on module instance | `.new_port(net)` added |
-| `enable_swap` | The clock-enable / write-enable condition of an existing DFF changes (the `else if (<condition>)` guard around the DFF assignment changes to a new expression). Emit this as a SEPARATE change entry alongside any `wire_swap`/`and_term` for the D-input if both change in the same always block. Fields: `old_enable_net`, `new_enable_net`, `new_enable_gate_chain` (MUX/AND/OR gates implementing the new enable condition), `dff_clock`. Step 2 queries `old_enable_net` via fenets to locate the CE pin; Step 3 emits a `rewire` entry for pin=CE/EN/WE on the discovered DFF cell. | `else if (en_old)` → `else if (en_new)` |
+| `enable_swap` | The clock-enable / write-enable condition of an existing DFF changes (the `else if (<condition>)` guard around the DFF assignment changes to a new expression). Emit this as a SEPARATE change entry alongside any `wire_swap`/`and_term` for the D-input if both change in the same always block. Fields: `old_enable_net`, `new_enable_net`, `new_enable_gate_chain` (AND/OR/AO22 gates — **NEVER MUX2**), `dff_clock`. **Implementation priority:** (1) If the DFF's CP is driven by a clock gate cell (`ICG*`, `CKOR*`, `CTG*`), the enable_swap targets that clock gate's E pin — NOT the DFF's CE pin. Step 3 inserts the new enable condition logic and rewires the existing clock gate's enable input. (2) Only if no clock gate exists: Step 2 queries `old_enable_net` via fenets to locate CE/EN/WE pin; Step 3 emits a rewire for that pin. Engineers prefer clock gate E-pin rewire over CE-pin rewire because it avoids iterating N per-bit DFF cells and is immune to wrong-module cell name collisions. | `else if (en_old)` → `else if (en_new)` |
 
 **Bus flag rule — `is_bus_dff` vs `is_bus_gate` (MANDATORY — never mix):**
 
@@ -520,7 +520,7 @@ Parse the expression recursively. For each sub-expression, assign a gate type:
 | `A \| B \| C` | OR3 | 3-input OR |
 | `A[N:0] == K'b0...0` | NOR-N | All bits zero: NOR of all N bits |
 | `A[N:0] == K` (general) | Per-bit INV + AND-N | For each bit i: if K[i]=0 insert INV(A[i]); if K[i]=1 use A[i] directly; AND all N terms |
-| `A ? B : C` | MUX2 | **`d_input_gate_chain` for new_logic DFF only.** FORBIDDEN in `new_condition_gate_chain` (intermediate_net_insertion). Use compound gates (OA12/OAI21/AN3/ND3) for condition chains instead. |
+| `A ? B : C` | **AO22** (preferred) or INV+AND2×2 | **NEVER MUX2.** `sel ? A : B` = `(sel & A) \| (~sel & B)` — emit `INV(sel) → ~sel`, then `AO22(A1=sel, A2=A, B1=~sel, B2=B) → output`. The shared `INV(sel)` is reused across all bits for bus signals. MUX2 cells create structural cone divergence from SynRtl — FM cannot verify because MUX select paths produce globally-unmatched compare points. Engineers consistently avoid MUX2 in ECO gate chains. |
 | Bit-select `A[i]` | Direct net | Use signal directly; gate-level name may be `A_i_` — verify by grep |
 
 **Assign names for D-input gate chain (combinational gates only):** `eco_<jira>_d<seq>` for instances, `n_eco_<jira>_d<seq>` for output nets. Seq starts from `d001` per DFF target register.
