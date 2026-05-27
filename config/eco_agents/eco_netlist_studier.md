@@ -417,6 +417,10 @@ for stage in ('Synthesize', 'PrePlace', 'Route'):
 
 eco_perl_spec.py automatically emits `wire [N-1:0] <signal_base> ;` after detecting the N `is_bus_gate_bit` entries — no extra action needed.
 
+**Step 4 — UNCONNECTED inputs on per-bit entries (MANDATORY):**
+
+After expansion, check each bit entry's input pins. If any input matches `UNCONNECTED_*` or `SYNOPSYS_UNCONNECTED_*`, add `unconnected_rewires` to that entry — same fields as Phase 0.4. Phase 0.4 ran before Phase 0.6 and never saw these expanded inputs; without this step, the gate reads from an undriven net → `INPUT_UNDRIVEN`. Validator Check 43 enforces this.
+
 ### Phase 0.7 — DFF entry assembly via `eco_emit_dff_entry.py` wrapper  (was 0b-DFF)
 > **SKIP IF** no `new_logic_dff` change (i.e., only gates / ports — no sequential insertions).
 > **DONE WHEN** wrapper output JSON exists per target_register AND its per-stage entries are spliced into study[stage], AND `diagnostics.modei_check[]` shows no unhandled leaves.

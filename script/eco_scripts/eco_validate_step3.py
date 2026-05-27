@@ -3243,6 +3243,32 @@ def main():
                     f"SVR-14 at FM elaboration. See eco_netlist_studier.md "
                     f"Phase 0.6 Step 2.")
 
+    # ── 43. BUS-GATE-BIT UNCONNECTED INPUT WITHOUT unconnected_rewires ────────
+    # Phase 0.6 expands bus gate bits AFTER Phase 0.4 runs, so UNCONNECTED_*
+    # inputs on per-bit entries are never renamed unless the studier explicitly
+    # adds unconnected_rewires post-expansion. Without it the gate reads from
+    # an undriven net → INPUT_UNDRIVEN in Step 5 pre-FM check.
+    _UNCONN_RE = re.compile(r'^(SYNOPSYS_)?UNCONNECTED_\d+$')
+    for stage_name in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage_name, []):
+            if not e.get('is_bus_gate_bit'):
+                continue
+            has_ur = bool(e.get('unconnected_rewires'))
+            inst = e.get('instance_name', '?')
+            for pin, net in (e.get('port_connections') or {}).items():
+                if pin in ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'S'):
+                    continue
+                if isinstance(net, str) and _UNCONN_RE.match(net):
+                    if not has_ur:
+                        issues.append(
+                            f"HIGH/43-BUS-GATE-BIT-UNCONN-NO-REWIRE: stage={stage_name} "
+                            f"is_bus_gate_bit entry {inst}.{pin}={net!r} reads an "
+                            f"UNCONNECTED net but has no unconnected_rewires entry. "
+                            f"Phase 0.4 ran before Phase 0.6 expansion and never saw "
+                            f"this input — the studier must add unconnected_rewires in "
+                            f"Phase 0.6 Step 4. See eco_netlist_studier.md Phase 0.6 "
+                            f"Step 4.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}
