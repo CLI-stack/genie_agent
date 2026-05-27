@@ -36,9 +36,16 @@ def read_gz(path):
     with gzip.open(path, 'rt', errors='replace') as f:
         return f.readlines()
 
+_NON_VERILOG_MARKER_RE = re.compile(
+    r'^(ECO_PERL_DONE|ECO_DONE|ECO_END|PERL_DONE|ECO_SCRIPT_DONE)\b')
+
 def write_gz(path, lines):
+    # Strip non-Verilog marker lines that agent-generated Perl scripts sometimes
+    # append (e.g. 'ECO_PERL_DONE: Synthesize'). These cause SVR-4 in FM because
+    # they appear at the Verilog top level without a '//' comment prefix.
+    clean = [l for l in lines if not _NON_VERILOG_MARKER_RE.match(l.strip())]
     with gzip.open(path, 'wt') as f:
-        f.writelines(lines)
+        f.writelines(clean)
 
 def grep_count(pattern, lines):
     return sum(1 for l in lines if re.search(pattern, l))

@@ -800,6 +800,16 @@ def check_input_net_strict_driver(study_path, ref_dir):
                         rf'\.\s*(\w+)\s*\(\s*{net_esc}\s*\)', inst_body):
                     if inst_dir_map.get(pm.group(1)) == 'output':
                         return True
+                # 4b. Bus-bit rename: net appears inside a concat {..., net, ...}
+                # on a sub-instance OUTPUT port (e.g. REGCMD.REG_UmcCfgEco bus).
+                # This covers UNCONNECTED renames where ECO bit is wired into
+                # a bus output port connection — identical to ECO 9868 pattern
+                # (eco9868_UmcCfgEco_1) which FM verified successfully.
+                for pm in re.finditer(
+                        rf'\.\s*(\w+)\s*\(\s*\{{[^}}]*\b{net_esc}\b[^}}]*\}}\s*\)',
+                        inst_body, re.DOTALL):
+                    if inst_dir_map.get(pm.group(1)) == 'output':
+                        return True
             return False
 
         for entry in study.get(stage, []):
@@ -1787,6 +1797,31 @@ def main():
     # this 1-second check would have flagged it before round 1's FM submit.
     fails = check_invalid_wire_decl_syntax(args.ref_dir)
     results['invalid_wire_decl_syntax'] = 'PASS' if not fails else 'FAIL'
+    all_fails.extend(fails)
+
+    # Check: non-Verilog markers in PostEco netlists (SVR-4 prevention)
+    # Agent-generated Perl scripts sometimes emit 'ECO_PERL_DONE: <stage>'
+    # without a '//' prefix — this appears at the Verilog top-level and causes
+    # SVR-4 "Expected 'module'" → FM-599 ABORT. Catch before FM submission.
+    _marker_re = re.compile(r'^(ECO_PERL_DONE|ECO_DONE|ECO_END|PERL_DONE|ECO_SCRIPT_DONE)\b')
+    fails = []
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        gz = os.path.join(args.ref_dir, 'data', 'PostEco', f'{stage}.v.gz')
+        if not os.path.exists(gz):
+            continue
+        try:
+            import subprocess as _sp3b
+            r = _sp3b.run(f'zcat {gz} | grep -nE "^(ECO_PERL_DONE|ECO_DONE|ECO_END|PERL_DONE|ECO_SCRIPT_DONE)"',
+                          shell=True, capture_output=True, text=True, timeout=60)
+            if r.stdout.strip():
+                for line in r.stdout.strip().splitlines():
+                    fails.append(f'[NON_VERILOG_MARKER] {stage}: {line.strip()} — '
+                                 f'non-Verilog marker in PostEco (no // prefix). '
+                                 f'Causes SVR-4 / FM-599 ABORT. '
+                                 f'Remove line or prefix with //.')
+        except Exception:
+            pass
+    results['non_verilog_markers'] = 'PASS' if not fails else 'FAIL'
     all_fails.extend(fails)
 
     # Check 22 — GAP-3: no ECO functional gate with constant input (1'b0 or 1'b1)
