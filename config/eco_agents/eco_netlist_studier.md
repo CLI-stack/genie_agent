@@ -620,7 +620,8 @@ On (A)+(B) miss, emit `cell_name_per_stage[stage]: null` and `confirmed_per_stag
 
 ### Phase 0.14 — Process `port_connection` entries  (was 0h)
 > **SKIP IF** no `port_connection` changes in rtl_diff.
-> **DONE WHEN** every port_connection has `parent_module`, `instance_name`, `port_name`, `net_name`, `child_module_name`, AND multi-instance entries are expanded via `flat_net_name_per_instance` into one entry per instance.
+> **DONE WHEN** every port_connection has `module_name` (the PARENT module where the child instance lives), `instance_name`, `port_name`, `net_name`, `child_module_name`, AND multi-instance entries are expanded via `flat_net_name_per_instance` into one entry per instance.
+> **`module_name` is MANDATORY on every port_connection — including Mode I bus-slot renames auto-generated in Phase 0.6 Step 4.** Without it the applier searches the whole netlist and may edit the wrong instance when multiple instantiations exist. Resolve: grep PreEco for `<child_module_type> <instance_name> (` and walk upward to the enclosing `^module` line — that is the `module_name`. Validator Check 3e will WARN if `module_name` is missing.
 
 1. Identify `parent_module`, `instance_name`, `port_name`, `net_name`, `submodule_type`
 2. **MANDATORY — Validate `submodule_pattern`:** `grep -c "<submodule_type> <instance_name>" /tmp/eco_study_<TAG>_Synthesize.v`. If 0 → check PrePlace and Route; record per-stage `instance_confirmed` flags.

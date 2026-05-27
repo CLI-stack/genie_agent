@@ -581,6 +581,25 @@ def main():
                     f"port_decls + assign + bridged SE/SI) or supply an "
                     f"auditable justification field.")
 
+    # ── 3e-WARN. port_connection entries must have module_name (parent module).
+    # Without module_name the applier searches the full netlist and may edit the
+    # wrong instance when multiple instantiations exist. Emit WARN (not FAIL) so
+    # single-instance ECOs still proceed — WARN is enough to flag the gap.
+    for stage_name in ('Synthesize',):  # check once (same JSON across stages)
+        for e in study.get(stage_name, []):
+            if e.get('change_type') != 'port_connection':
+                continue
+            if e.get('module_name') or e.get('parent_module'):
+                continue  # properly set
+            inst = e.get('instance_name', '?')
+            port = e.get('port_name', '?')
+            issues.append(
+                f"WARN/3e-MISSING-PARENT-MOD: port_connection {inst}.{port} has no "
+                f"module_name/parent_module set. Applier searches full netlist — safe only "
+                f"when instance appears exactly once globally. Set module_name to the "
+                f"enclosing module where {inst} is instantiated to ensure correct scope. "
+                f"See eco_netlist_studier.md Phase 0.14.")
+
     # ── 3e. Cross-check port_connection ↔ port_declaration. Every port_connection
     #        targeting a child instance MUST reference a port name that either
     #        (a) is already declared in the child module's PreEco SynRtl source,
