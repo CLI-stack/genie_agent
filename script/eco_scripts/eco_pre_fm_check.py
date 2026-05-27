@@ -222,15 +222,49 @@ def check_check8(check8_json_path):
     return failures
 
 
-def check_cells_in_netlist(applied, ref_dir):
+def check_cells_in_netlist(applied, ref_dir, study_path=None):
     """
     FAIL if any gate marked INSERTED in applied JSON is physically absent
-    from the PostEco netlist. eco_perl_spec can mark INSERTED but fail to
-    actually inject the cell (e.g., module not found in large hierarchical netlist).
-    eco_pre_fm_check reads JSON status — this check reads the actual netlist.
+    from the PostEco netlist OR is present but inserted into the WRONG host
+    module.
+
+    Two failure modes covered:
+      (a) GHOST_INSERT — applier reported INSERTED but Perl pipe couldn't
+          inject anywhere (module not found, module_name="UNKNOWN" silently
+          dropped, etc.). Caught by full-netlist grep returning zero.
+      (b) WRONG_MODULE — cell is in the netlist but lives in a module
+          different from study's `module_name` for that instance. This
+          previously slipped past because the global grep returned >=1.
+          Now we restrict the grep to the host module's body and fail if
+          the cell isn't in there.
+
+    When `study_path` is provided, we build {instance_name: host_module}
+    from the study and enforce per-host-module presence. When `study_path`
+    is None we fall back to the legacy global-grep behavior (backwards
+    compatible).
     """
     gate_types = ('new_logic_gate', 'new_logic_dff', 'new_logic')
     failures = []
+
+    # Build {instance_name: host_module} from study, if available.
+    inst_to_host = {}
+    if study_path and os.path.exists(study_path):
+        try:
+            study = json.loads(Path(study_path).read_text())
+            for stage in ('Synthesize', 'PrePlace', 'Route'):
+                for e in study.get(stage, []):
+                    if e.get('change_type') not in gate_types:
+                        continue
+                    inst = e.get('instance_name', '')
+                    mod  = e.get('module_name', '')
+                    if inst and mod:
+                        # Last write wins — per-stage module_name may differ
+                        # in Route (suffix _0) but we'll handle that below
+                        # via try (mod, mod+'_0') variants.
+                        inst_to_host[(stage, inst)] = mod
+        except Exception:
+            pass
+
     for stage in ('Synthesize', 'PrePlace', 'Route'):
         entries = applied.get(stage, [])
         if not isinstance(entries, list):
@@ -244,24 +278,89 @@ def check_cells_in_netlist(applied, ref_dir):
                     and e.get('name','')]
         if not inserted:
             continue
-        # Grep PostEco for each inserted instance name
+
+        # Cache module body extracts per host module name (Route may use _0
+        # suffix). Lazy-extract on first lookup.
+        mod_body_cache = {}
+        def _body_of(mod):
+            if mod in mod_body_cache:
+                return mod_body_cache[mod]
+            for cand in (mod, mod + '_0', mod + '_1'):
+                try:
+                    r = subprocess.run(
+                        f"zcat {gz} | awk '/^module {re.escape(cand)}\\b/,/^endmodule/'",
+                        shell=True, capture_output=True, text=True, timeout=120
+                    )
+                    body = r.stdout or ''
+                    if body:
+                        mod_body_cache[mod] = body
+                        return body
+                except Exception:
+                    pass
+            mod_body_cache[mod] = ''
+            return ''
+
         for inst in inserted:
             if not inst:
                 continue
-            try:
-                r = subprocess.run(
-                    f'zcat {gz} | grep -cF " {inst} ("',
-                    shell=True, capture_output=True, text=True, timeout=120
-                )
-                count = int(r.stdout.strip()) if r.stdout.strip().isdigit() else 0
-                if count == 0:
+            host = inst_to_host.get((stage, inst), '')
+            if host:
+                # Per-host-module presence check (preferred path)
+                body = _body_of(host)
+                if not body:
                     failures.append(
-                        f'[GHOST_INSERT] {stage}: {inst} marked INSERTED in JSON '
-                        f'but NOT found in PostEco/{stage}.v.gz — Perl spec generated '
-                        f'but module not found in netlist'
+                        f'[HOST_MODULE_NOT_FOUND] {stage}: instance {inst!r} '
+                        f'has study module_name={host!r} but that module body '
+                        f"could not be extracted from PostEco/{stage}.v.gz "
+                        f'(tried {host}, {host}_0, {host}_1). Either '
+                        f'module_name is wrong or this module was uniquified '
+                        f'with an unexpected suffix.')
+                    continue
+                if re.search(rf'\b{re.escape(inst)}\s*\(', body):
+                    continue  # ✓ present in host module
+                # Not in host module — check if it landed in some OTHER module
+                # (catches the "wrong module" silent-misroute case)
+                try:
+                    r2 = subprocess.run(
+                        f"zcat {gz} | grep -cF ' {inst} ('",
+                        shell=True, capture_output=True, text=True, timeout=120
                     )
-            except Exception:
-                pass
+                    elsewhere = (int(r2.stdout.strip())
+                                 if r2.stdout.strip().isdigit() else 0)
+                except Exception:
+                    elsewhere = 0
+                if elsewhere > 0:
+                    failures.append(
+                        f'[WRONG_MODULE] {stage}: {inst!r} marked INSERTED '
+                        f'but is NOT in host module {host!r}; found '
+                        f'{elsewhere} occurrence(s) elsewhere in '
+                        f'PostEco/{stage}.v.gz. Likely module_name placeholder '
+                        f'or perl_spec emitted to wrong module.')
+                else:
+                    failures.append(
+                        f'[GHOST_INSERT] {stage}: {inst!r} marked INSERTED but '
+                        f'absent from BOTH host module {host!r} AND the rest '
+                        f'of PostEco/{stage}.v.gz. Perl pipe silently dropped '
+                        f"the cell (module_name=UNKNOWN or non-existent "
+                        f"module). Check 44 should have caught this at Step 3.")
+            else:
+                # Legacy global-grep fallback when study_path unavailable or
+                # entry has no host mapping.
+                try:
+                    r = subprocess.run(
+                        f'zcat {gz} | grep -cF " {inst} ("',
+                        shell=True, capture_output=True, text=True, timeout=120
+                    )
+                    count = (int(r.stdout.strip())
+                             if r.stdout.strip().isdigit() else 0)
+                    if count == 0:
+                        failures.append(
+                            f'[GHOST_INSERT] {stage}: {inst} marked INSERTED '
+                            f'in JSON but NOT found in PostEco/{stage}.v.gz — '
+                            f'Perl spec generated but module not found '
+                            f'in netlist')
+                except Exception:
+                    pass
     return failures
 
 
@@ -1552,8 +1651,14 @@ def main():
     all_fails.extend([f'[ZERO_CELLS] {f}' for f in fails])
 
     # Check 7 — Verify INSERTED gates actually exist in PostEco netlist
-    # Catches: eco_perl_spec marks INSERTED but Perl fails to find module (ghost insert)
-    fails = check_cells_in_netlist(applied, args.ref_dir)
+    # AND are in the host module the study assigned. Catches:
+    #   (a) GHOST_INSERT — applier reports INSERTED but Perl pipe silently
+    #       dropped the cell (e.g. module_name="UNKNOWN" / nonexistent module).
+    #   (b) WRONG_MODULE — cell landed in netlist but in a different module
+    #       than study's `module_name`. Run 20260526225832 R1 root cause was
+    #       (a); the legacy global-grep would have missed (b).
+    study_path_check7 = f'{base}/data/{tag}_eco_preeco_study.json'
+    fails = check_cells_in_netlist(applied, args.ref_dir, study_path=study_path_check7)
     results['cells_in_netlist'] = 'PASS' if not fails else 'FAIL'
     all_fails.extend(fails)
 
