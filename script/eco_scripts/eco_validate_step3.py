@@ -68,11 +68,22 @@ def main():
         if change.get('change_type') not in ('new_logic', 'new_logic_dff'):
             continue
         target = change.get('target_register', '') or change.get('new_token', '')
-        expected_n = change.get('bus_width_resolved')  # set by studier after calling eco_resolve_bus_width.py
+        # bus_width_resolved is set by the studier after calling eco_resolve_bus_width.py.
+        # If absent, derive from bus_width_expr (e.g. "6:0" → 7, or integer string).
+        expected_n = change.get('bus_width_resolved')
+        if not expected_n:
+            bwe = str(change.get('bus_width_expr', ''))
+            import re as _re_bw
+            m_range = _re_bw.match(r'^\s*(\d+)\s*:\s*(\d+)\s*$', bwe)
+            if m_range:
+                expected_n = int(m_range.group(1)) - int(m_range.group(2)) + 1
+            elif bwe.isdigit():
+                expected_n = int(bwe)
         if not expected_n:
             issues.append(
-                f"HIGH: bus DFF '{target}' missing `bus_width_resolved` — "
-                f"eco_netlist_studier must call eco_resolve_bus_width.py and record the result")
+                f"HIGH: bus DFF '{target}' missing `bus_width_resolved` and "
+                f"cannot derive width from bus_width_expr={change.get('bus_width_expr')!r} — "
+                f"eco_netlist_studier must call eco_resolve_bus_width.py")
             continue
         for stage in ['Synthesize', 'PrePlace', 'Route']:
             bit_entries = [

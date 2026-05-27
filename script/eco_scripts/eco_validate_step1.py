@@ -1054,8 +1054,9 @@ def main():
     # Check 9f-PREECO-FIRST — gates in new_condition_gate_chain must use PreEco compound
     # types (cell_type_from_preeco: true) when compound gates exist in scope.
     # SCOPE: new_condition_gate_chain (wire_swap/intermediate_net_insertion) only.
-    # d_input_gate_chain for new_logic DFFs may use simple gates (MUX2/AND/OR/INV
+    # d_input_gate_chain for new_logic DFFs may use simple gates (AND/OR/INV/AO22
     # for ternary/boolean decomposition) — E4c rule does not apply there.
+    # NOTE: MUX2 is FORBIDDEN in all chains (see mux2_in_chain_issues check above).
     _SIMPLE_GATES = {'OR2','AND2','NR2','NOR2','AN2','OR3','AND3','NR3','OR4','AND4',
                      'OR','AND','NR','AN','INV'}
     for idx, c in enumerate(rtl_diff.get('changes', [])):
