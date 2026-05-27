@@ -581,10 +581,11 @@ def main():
                     f"port_decls + assign + bridged SE/SI) or supply an "
                     f"auditable justification field.")
 
-    # ── 3e-WARN. port_connection entries must have module_name (parent module).
-    # Without module_name the applier searches the full netlist and may edit the
-    # wrong instance when multiple instantiations exist. Emit WARN (not FAIL) so
-    # single-instance ECOs still proceed — WARN is enough to flag the gap.
+    # ── 3e-MOD. port_connection entries MUST have module_name or parent_module.
+    # Without either, the applier searches the full netlist and edits the wrong
+    # instance when multiple instantiations exist. HARD FAIL — studier must always
+    # populate the enclosing parent module. Applier reads:
+    #   parent_mod = entry.get('module_name','') or entry.get('parent_module','')
     for stage_name in ('Synthesize',):  # check once (same JSON across stages)
         for e in study.get(stage_name, []):
             if e.get('change_type') != 'port_connection':
@@ -594,11 +595,11 @@ def main():
             inst = e.get('instance_name', '?')
             port = e.get('port_name', '?')
             issues.append(
-                f"WARN/3e-MISSING-PARENT-MOD: port_connection {inst}.{port} has no "
-                f"module_name/parent_module set. Applier searches full netlist — safe only "
-                f"when instance appears exactly once globally. Set module_name to the "
-                f"enclosing module where {inst} is instantiated to ensure correct scope. "
-                f"See eco_netlist_studier.md Phase 0.14.")
+                f"HIGH/3e-MISSING-PARENT-MOD: port_connection {inst}.{port} has no "
+                f"module_name or parent_module. Applier searches full netlist — will "
+                f"edit wrong instance when multiple instantiations exist. Set "
+                f"module_name/parent_module to the enclosing module where {inst!r} "
+                f"is instantiated. See eco_netlist_studier.md Phase 0.14.")
 
     # ── 3e. Cross-check port_connection ↔ port_declaration. Every port_connection
     #        targeting a child instance MUST reference a port name that either
