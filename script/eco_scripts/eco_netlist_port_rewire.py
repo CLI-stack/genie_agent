@@ -149,10 +149,18 @@ def apply_port_declaration(lines, entry, stage='Synthesize'):
     # Without this, bus ports declared as scalar cause SVR-14 when the
     # consumer references RowUpperMask[N] bit-select indexing.
     bus_width = entry.get('bus_width')
-    if bus_width and isinstance(bus_width, int) and bus_width > 1:
-        range_pfx = f'[{bus_width - 1}:0] '
-    else:
-        range_pfx = ''
+    # bus_width may be an int (e.g. 8) or a range string (e.g. "7:0").
+    # Parse both forms to extract the range prefix [W-1:0].
+    range_pfx = ''
+    if bus_width:
+        if isinstance(bus_width, int) and bus_width > 1:
+            range_pfx = f'[{bus_width - 1}:0] '
+        elif isinstance(bus_width, str) and ':' in bus_width:
+            # Range string form e.g. "7:0" — use verbatim as [7:0]
+            range_pfx = f'[{bus_width}] '
+        elif isinstance(bus_width, str) and bus_width.isdigit() and int(bus_width) > 1:
+            w = int(bus_width)
+            range_pfx = f'[{w - 1}:0] '
     decl_line = f'  {direction} {range_pfx}{signal} ;\n'
     lines.insert(port_close + 1, decl_line)
 
