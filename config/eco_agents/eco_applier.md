@@ -169,10 +169,13 @@ for STAGE in Synthesize PrePlace Route; do
         --round      <ROUND> \
         --output     runs/eco_apply_<TAG>_${STAGE}.pl \
         --status     data/<TAG>_eco_perl_spec_${STAGE}.json \
+        --apply \
         ${PREV_APPLIED:+--prev-applied $PREV_APPLIED}
     echo "Exit: $?"
 done
 ```
+
+**MANDATORY `--apply` flag** — without it, `eco_perl_spec.py` only GENERATES the .pl file but does NOT execute it against the PostEco netlist. Cells get listed as INSERTED in the status JSON but never actually appear in `<Stage>.v.gz`. Result: new_logic_gate/new_logic_dff entries silently never materialize — Step 5 (or worse, FM) catches the gap when downstream nets are undriven.
 
 Where `PREV_APPLIED=data/<TAG>_eco_applied_round<ROUND-1>.json` for Round 2+ (omit for Round 1).
 

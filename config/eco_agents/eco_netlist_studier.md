@@ -277,6 +277,21 @@ FM cannot trace `UNCONNECTED_*` / `SYNOPSYS_UNCONNECTED_*` across hierarchy → 
 
 **Scope:** each `unconnected_rewires` entry targets exactly ONE `(module, instance, port_name, bus_bit)` tuple. Do not emit N entries sharing the same `original`+`named_net` across N modules — that's a scope-leak symptom. Emit only what the ECO needs.
 
+**MANDATORY — paired `port_connection` entry for every `unconnected_rewires` / `a1_unconnected_rename`:** Whenever you emit `unconnected_rewires` on a DFF entry OR `a1_unconnected_rename` on a gate entry, you MUST ALSO emit a SEPARATE `port_connection` study entry (per stage) that renames the parent's child-instance bus bit. The applier (`eco_perl_spec.py` + `eco_netlist_port_rewire.py`) does NOT introspect embedded fields — it only acts on `port_connection` change_type entries. Without the paired entry, the bus rename never lands in the netlist → gate input net stays UNCONNECTED → undriven → FM globally unmatched.
+
+```json
+{
+  "change_type":       "port_connection",
+  "parent_module":     "<host_module>",
+  "instance_name":     "<child_instance_name>",         // e.g. REGCMD
+  "child_module_name": "<child_module_type>",           // e.g. ddrss_umccmd_t_umcregcmd
+  "port_name":         "<child_port_bus_name>",         // e.g. oQ_UmcCfgEco_UmcCfgEco
+  "bus_bit_index":     <bit>,                           // e.g. 12
+  "net_name":          "<named_net from rewires>",      // matches unconnected_rewires.named_net
+  "net_name_before":   {<per-stage UNCONNECTED_*>}      // from original_per_stage
+}
+```
+
 **Rule** — for each such net:
 1. `named_net = "n_eco_<jira>_<rtl_hint>"` (sanitized from `new_token`/port/RTL). Same name across all stages, flat-net form.
 2. Find bus position **per stage independently** by scanning `.<port>( { ..., <UNCONNECTED_N>, ... } )`. Each stage assigns fresh UNCONNECTED names — locate by MSB-first bit index, not by name match.

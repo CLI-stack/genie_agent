@@ -599,6 +599,34 @@ def main():
             statuses.append({'name': inst, 'status':'INSERTED',
                              'reason': f'Added to Perl spec for module {mod}'})
 
+        # ── Synthesize unconnected_rewires from a1_unconnected_rename if present ─
+        # New studier schema (eco_emit_dff_entry.py modei wrapper) sometimes
+        # emits `a1_unconnected_rename` on gate entries instead of the
+        # canonical `unconnected_rewires` list. Treat the embedded field as
+        # an equivalent unconnected_rewires entry so the existing handler
+        # below performs the bus rename. Without this, gate input nets stay
+        # UNCONNECTED → undriven → FM fails.
+        a1_ren = e.get('a1_unconnected_rename')
+        if a1_ren and not e.get('unconnected_rewires'):
+            synth_ur = {
+                'named_net':                  a1_ren.get('named_net', ''),
+                'original':                   (a1_ren.get('original_per_stage') or {}).get(args.stage, ''),
+                'original_per_stage':         a1_ren.get('original_per_stage', {}),
+                'port_bus_instance':          a1_ren.get('instance_name', ''),
+                'port_bus_instance_per_stage': {s: a1_ren.get('instance_name','')
+                                                for s in ('Synthesize','PrePlace','Route')},
+                'port_bus_name':              a1_ren.get('port_name', ''),
+                'port_bus_bit':               a1_ren.get('bus_bit_index'),
+                'needs_explicit_wire_decl':   e.get('needs_explicit_wire_decl', True),
+            }
+            e.setdefault('unconnected_rewires', []).append(synth_ur)
+            statuses.append({'name': e.get('instance_name','?'),
+                             'status': 'INFO',
+                             'reason': f'synthesized unconnected_rewires from a1_unconnected_rename '
+                                       f'(bus={a1_ren.get("port_name","")}[{a1_ren.get("bus_bit_index")}] '
+                                       f'→ {a1_ren.get("named_net","")}) — studier should emit a separate '
+                                       f'port_connection entry per studier MD'})
+
         # ── unconnected_rewires — applies to ANY change type carrying this field ─
         # Gap B: rename UNCONNECTED_* → named wire + rewire port bus bit.
         # Processed once per entry regardless of change_type.
