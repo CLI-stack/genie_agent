@@ -3285,6 +3285,57 @@ def main():
                             f"Phase 0.6 Step 4. See eco_netlist_studier.md Phase 0.6 "
                             f"Step 4.")
 
+    # ── 44. MODULE NAME RESOLUTION (UNKNOWN / empty placeholder) ─────────────
+    # eco_perl_spec.py routes new_logic_gate / new_logic_dff entries to the
+    # module named in `module_name`. When that field is empty OR the literal
+    # placeholder "UNKNOWN" (which the LLM-studier sometimes emits when
+    # uncertain), perl_spec emits `Added to Perl spec for module UNKNOWN` and
+    # the Perl pipe cannot insert into a nonexistent module — the cell is
+    # silently DROPPED. The DFF.D consumer then references an undriven net →
+    # guaranteed FM Mode A on the new cone (run 20260526225832 R1 root cause).
+    #
+    # HARD FAIL on any new_logic_* gate/dff entry whose `module_name` is
+    # missing / empty / "UNKNOWN". Studier must set `module_name` to the
+    # actual host module (typically the same module as the DFF whose D-input
+    # the gate feeds).
+    _BAD_MODULE_VALUES = {'', 'UNKNOWN', 'unknown', None}
+    for stage_name in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage_name, []):
+            if e.get('change_type') not in ('new_logic_gate', 'new_logic_dff',
+                                            'new_logic'):
+                continue
+            mod = e.get('module_name')
+            if isinstance(mod, str):
+                mod_check = mod.strip()
+            else:
+                mod_check = mod
+            if mod_check in _BAD_MODULE_VALUES:
+                inst = e.get('instance_name', '?')
+                ct   = e.get('change_type', '?')
+                # Best-effort hint: if this is a chain gate feeding a DFF in
+                # the same stage, point at that DFF's module.
+                hint = ''
+                out_net = (e.get('output_net') or '').strip()
+                if out_net:
+                    for d in study.get(stage_name, []):
+                        if d.get('change_type') != 'new_logic_dff':
+                            continue
+                        d_pcs = d.get('port_connections') or {}
+                        if d_pcs.get('D') == out_net and d.get('module_name'):
+                            hint = (f' Hint: this gate\'s output {out_net!r} '
+                                    f'feeds new_logic_dff {d.get("instance_name")!r} '
+                                    f'in module {d.get("module_name")!r} — set '
+                                    f'this gate\'s module_name to the same value.')
+                            break
+                issues.append(
+                    f"CRITICAL/44-MODULE-NAME-UNRESOLVED: stage={stage_name} "
+                    f"{ct} entry {inst!r} has module_name={mod!r} (empty or "
+                    f"\"UNKNOWN\" placeholder). eco_perl_spec.py will emit "
+                    f"'Added to Perl spec for module UNKNOWN' and the Perl "
+                    f"pipe will silently DROP the cell — it will never reach "
+                    f"the netlist. Downstream consumer(s) will be undriven → "
+                    f"FM Mode A. Set module_name to the actual host module.{hint}")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}

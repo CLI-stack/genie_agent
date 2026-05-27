@@ -553,6 +553,16 @@ def main():
     dff_prefix = re.sub(r'[^A-Za-z0-9]+', '_', (target_reg or '').lower()).strip('_')
     chain_entries, chain_d_net = build_d_input_chain(expr, input_names, args.jira, prefix=dff_prefix)
 
+    # Propagate host_module to every chain gate entry — without this the entries
+    # land in the study with `module_name` unset (or, when the LLM-studier sees
+    # the missing field, with the placeholder literal "UNKNOWN"), which causes
+    # perl_spec to emit "Added to Perl spec for module UNKNOWN" and the cell
+    # silently never reaches the netlist. The DFF.D consumer then has no driver
+    # → guaranteed FM Mode A on the new DFF cone (run 20260526225832 R1 root
+    # cause). Chain gates ALWAYS live in the same module as the DFF they feed.
+    for g in chain_entries:
+        g['module_name'] = host_module
+
     # Convert chain leaf names from flat-form (`SIG_0_`, used by eco_synth_chain
     # for sympy eval-friendliness) back to the bracket form (`SIG[0]`) that
     # matches the actual netlist. perl_spec's input-existence check greps the
@@ -739,6 +749,16 @@ def main():
                 m = re.match(r'^([A-Za-z_]\w*)\[(\d+)\]$', leaf)
                 if m:
                     rewrite_targets.add(f'{m.group(1)}_{m.group(2)}_')
+                # Also include the per-stage UNCONNECTED_* literals as
+                # rewrite targets — port_connections_per_stage may carry the
+                # raw bus-bit UNCONNECTED name from the chain expansion, and
+                # if left in place the gate's per-stage A1 still references
+                # the dead UNCONNECTED slot even after the bus rename.
+                unc_targets = set()
+                for stage_unc in (result.get('parent_unc_per_stage') or {}).values():
+                    if isinstance(stage_unc, str) and stage_unc:
+                        unc_targets.add(stage_unc.strip())
+                rewrite_targets |= unc_targets
                 for g in chain_entries:
                     pcs = g.get('port_connections') or {}
                     rewired = False
@@ -746,6 +766,17 @@ def main():
                         if isinstance(val, str) and val.strip() in rewrite_targets:
                             pcs[pin] = replacement
                             rewired = True
+                    # ALSO rewrite per-stage entries — without this the chain
+                    # gate's port_connections_per_stage.<stage>.A1 retains the
+                    # original UNCONNECTED_* per-stage value, leaving the
+                    # per-stage view inconsistent with the bare port_connections
+                    # and breaking any downstream tool that reads per-stage.
+                    pcs_ps = g.get('port_connections_per_stage') or {}
+                    for stage_name, stage_pcs in pcs_ps.items():
+                        for pin, val in list(stage_pcs.items()):
+                            if isinstance(val, str) and val.strip() in rewrite_targets:
+                                stage_pcs[pin] = replacement
+                                rewired = True
                     if rewired:
                         # Tell perl_spec: this input is created by Pass 2/4,
                         # don't pre-check existence (would falsely SKIP).
