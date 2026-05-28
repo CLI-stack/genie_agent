@@ -3855,6 +3855,92 @@ def main():
                 f"Fix: set net_name={_expected!r} in the port_connection entry AND in the "
                 f"consuming gate's port_connections input pin.")
 
+    # ── 49. INNER-PARTNER-NET-NAME: must use wrapper's own output port name ──
+    # When a port_connection inner partner entry renames a bus slot inside a
+    # wrapper module, the net_name MUST be the flat form of the WRAPPER's own
+    # output port at that bit — NOT the sub-instance's port name.
+    #
+    # If the studier uses the sub-instance's port name (e.g. oQ_Xxx_5_), it
+    # creates a floating wire inside the wrapper that is never connected to
+    # the wrapper's output port. FM sees the wrapper's output port bit as
+    # undriven (Impl Und) → all downstream compare points fail (8F in
+    # FmEqvEcoSynthesizeVsSynRtl). Root cause of 10036 8F failure.
+    #
+    # Detection: for each port_connection entry with bus_bit_index that has
+    # parent_module = wrapper AND net_name does NOT equal <output_port>_<N>_,
+    # check if the wrapper module's output port at the same module-level bus
+    # position is being driven by the same named wire. If the wrapper has an
+    # output port whose name differs from net_name → HIGH.
+    import re as _re49, gzip as _gz49
+    _UNDRIVEN49_CACHE = {}
+    def _get_module_output_ports(mod_name, stage='Synthesize'):
+        cache_key = (mod_name, stage)
+        if cache_key in _UNDRIVEN49_CACHE:
+            return _UNDRIVEN49_CACHE[cache_key]
+        path = os.path.join(args.ref_dir, 'data', 'PreEco', f'{stage}.v.gz')
+        if not os.path.exists(path):
+            _UNDRIVEN49_CACHE[cache_key] = set(); return set()
+        try:
+            with _gz49.open(path, 'rt') as fh:
+                text = fh.read()
+        except Exception:
+            _UNDRIVEN49_CACHE[cache_key] = set(); return set()
+        m = _re49.search(rf'^module\s+{_re49.escape(mod_name)}\b', text, _re49.MULTILINE)
+        if not m:
+            _UNDRIVEN49_CACHE[cache_key] = set(); return set()
+        # Extract output ports
+        end_m = _re49.search(r'\bendmodule\b', text[m.start():])
+        body = text[m.start(): m.start() + end_m.start()] if end_m else text[m.start():m.start()+50000]
+        ports = set()
+        for pm in _re49.finditer(r'^\s*output\s+(?:\[[^\]]+\]\s+)?([A-Za-z_]\w*)\s*;', body, _re49.MULTILINE):
+            ports.add(pm.group(1))
+        _UNDRIVEN49_CACHE[cache_key] = ports
+        return ports
+
+    _seen49 = set()
+    for _e49 in study.get('Synthesize', []):
+        if not isinstance(_e49, dict): continue
+        if _e49.get('change_type') != 'port_connection': continue
+        _bbi = _e49.get('bus_bit_index')
+        _net = _e49.get('net_name', '')
+        _mod = _e49.get('module_name') or _e49.get('parent_module', '')
+        _inst = _e49.get('instance_name', '')
+        _port = _e49.get('port_name', '')
+        if _bbi is None or not _net or not _mod or not _inst:
+            continue
+        key49 = (_mod, _inst, _port, _bbi)
+        if key49 in _seen49:
+            continue
+        _seen49.add(key49)
+        # Get wrapper module's output ports
+        out_ports = _get_module_output_ports(_mod)
+        if not out_ports:
+            continue
+        # If net_name starts with the sub-instance port name instead of a
+        # wrapper output port name → likely wrong (floating wire)
+        _port_base = _re49.sub(r'_\d+_$', '', _net)  # strip _N_ suffix to get base name
+        _port_base2 = _re49.sub(r'\[\d+\]$', '', _port_base)  # also handle [N] form
+        # net_name base should match one of the wrapper's output ports
+        if _port_base2 and _port_base2 not in out_ports:
+            # Check if there IS an output port that this SHOULD have used
+            _expected_base = None
+            for op in out_ports:
+                # Heuristic: an output port whose name contains similar keywords
+                # to the sub-instance's port_name (e.g. UmcCfgEco in both)
+                if any(part in op for part in _port.split('_') if len(part) > 3):
+                    _expected_base = op
+                    break
+            if _expected_base:
+                _expected_net = f'{_expected_base}_{_bbi}_'
+                issues.append(
+                    f"HIGH/49-INNER-PARTNER-NET-NAME: port_connection "
+                    f"{_mod}.{_inst}.{_port}[{_bbi}] has net_name={_net!r} "
+                    f"whose base {_port_base2!r} is NOT an output port of wrapper "
+                    f"module {_mod!r}. This creates a floating wire — the wrapper's "
+                    f"output port bit[{_bbi}] remains undriven (FM Impl Und → 8F). "
+                    f"Fix: set net_name={_expected_net!r} (flat form of wrapper output "
+                    f"port {_expected_base!r} at bit {_bbi}).")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}

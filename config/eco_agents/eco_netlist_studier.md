@@ -307,10 +307,11 @@ eco_perl_spec declares `wire <named_net>;` once, applies per-stage replacement i
 **EXCEPTION — child output port internally undriven (auto-detect, MANDATORY in studier):** if the renamed bus is `output` of the child AND a child sub-instance has `UNCONNECTED_*` at the same bit, the parent rename leaves the port undriven → FM `X` → DFF0X.
 
 Algorithm: walk the child module body, find any sub-instance whose output bus has `UNCONNECTED_<N>` at the same `bus_bit_index` (MSB-first `{}` parse). Emit a SECOND `port_connection` inside the child module:
-- `module_name`: child module name
+- `module_name`: child module name (the wrapper)
 - `instance_name`: the sub-instance whose bus output is undriven
-- `port_name`/`bus_bit_index`: same bit position
-- `net_name`: `<port_name>[<bit>]` (self-loop to OWN output port — legal in port_connections only). Pair with the matching `<port_name>_<bit>_` flat-net form in `unconnected_rewires.named_net`.
+- `port_name`/`bus_bit_index`: same bit position (sub-instance's port)
+- `net_name`: **`<HOST_OUTPUT_PORT>_<N>_`** — the FLAT FORM of the WRAPPER MODULE'S OWN output port at that bit, NOT the sub-instance's port name. The wrapper exports `net_name` to its parent; the sub-instance renaming must use a name that IS the wrapper's output wire so the DFF Q actually drives the wrapper output. If you use the sub-instance port name (`oQ_Xxx_5_`) instead, you create a floating wire — FM sees the wrapper's output port as undriven (`Impl Und`) → all downstream compare points fail.
+  - Example: wrapper `ddrss_umccmd_t_umcregcmd` has output port `REG_UmcCfgEco[31:0]`. Inner partner for bit 5 → `net_name = REG_UmcCfgEco_5_`. Wrong: `net_name = oQ_UmcCfgEco_UmcCfgEco_5_` (sub-instance port name — floating wire, doesn't connect to wrapper output).
 - `net_name_before`: per-stage map of internal UNCONNECTED placeholders
 
 This is wire-up (real driver), not invention. Engineers do this manually when a register output bit is spare.
