@@ -2199,6 +2199,16 @@ def main():
     OUT_PINS = ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'S')
     skip_flags = ('input_from_new_port', 'input_from_unconnected_rewire',
                   'input_from_change')
+    # Collect all port_connection bus_rename net_names — these wires are created
+    # by the ECO (eco_netlist_port_rewire renames UNCONNECTED → new_name), so they
+    # don't exist in PreEco and are exempt from the flat-form check.
+    _bus_rename_nets = set()
+    for _e36 in study.get('Synthesize', []):
+        if not isinstance(_e36, dict): continue
+        if _e36.get('change_type') == 'port_connection' and _e36.get('bus_bit_index') is not None:
+            _n = _e36.get('net_name', '')
+            if _n:
+                _bus_rename_nets.add(_n)
     for stage in ('Synthesize',):  # Synth is enough — same chain across stages
         for e in study.get(stage, []):
             if e.get('change_type') != 'new_logic_gate':
@@ -2211,11 +2221,13 @@ def main():
                     continue
                 v = val.strip()
                 # Skip constants, n_eco_* (intra-batch refs), explicit skip flags,
-                # and named_nets from unconnected_rewires (new wires created by applier)
+                # named_nets from unconnected_rewires, and bus_rename targets
+                # (port_connection bus renames create new wires — exempt from flat-form check)
                 if v.startswith(("1'b", "0'b", "1'h", "0'h")): continue
                 if v.startswith('n_eco_'): continue
                 if any(e.get(f) == v for f in skip_flags): continue
                 if v in _unconn_rewire_named_nets: continue
+                if v in _bus_rename_nets: continue  # ECO-created wire, doesn't pre-exist
                 # Bracket-form bus-bit names (e.g. SIG[0]) need to be matched
                 # against the netlist as bracket form — flat form (SIG_0_) is a
                 # leak from sympy-eval-friendly representation. Detect and
