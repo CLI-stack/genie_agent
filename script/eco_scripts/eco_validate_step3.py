@@ -3807,6 +3807,32 @@ def main():
                 f"Use flat _N_ form when the wire is scalar in the parent module; "
                 f"use bracket [N] only when the wire is declared as a bus array.")
 
+    # Shared helper for Check 48 and 49: get output port names of a module
+    import re as _re49, gzip as _gz49
+    _UNDRIVEN49_CACHE = {}
+    def _get_module_output_ports(mod_name, stage='Synthesize'):
+        cache_key = (mod_name, stage)
+        if cache_key in _UNDRIVEN49_CACHE:
+            return _UNDRIVEN49_CACHE[cache_key]
+        path = os.path.join(args.ref_dir, 'data', 'PreEco', f'{stage}.v.gz')
+        if not os.path.exists(path):
+            _UNDRIVEN49_CACHE[cache_key] = set(); return set()
+        try:
+            with _gz49.open(path, 'rt') as fh:
+                text = fh.read()
+        except Exception:
+            _UNDRIVEN49_CACHE[cache_key] = set(); return set()
+        m = _re49.search(rf'^module\s+{_re49.escape(mod_name)}\b', text, _re49.MULTILINE)
+        if not m:
+            _UNDRIVEN49_CACHE[cache_key] = set(); return set()
+        end_m = _re49.search(r'\bendmodule\b', text[m.start():])
+        body = text[m.start(): m.start() + end_m.start()] if end_m else text[m.start():m.start()+50000]
+        ports = set()
+        for pm in _re49.finditer(r'^\s*output\s+(?:\[[^\]]+\]\s+)?([A-Za-z_]\w*)\s*;', body, _re49.MULTILINE):
+            ports.add(pm.group(1))
+        _UNDRIVEN49_CACHE[cache_key] = ports
+        return ports
+
     # ── 48. GATE-INPUT-NET-NAMING: bus_rename net directly consumed by ECO gate ─
     # When a port_connection bus_rename renames an UNCONNECTED slot to a new wire,
     # AND that wire is immediately consumed as an input pin of a new_logic_gate,
@@ -3846,14 +3872,24 @@ def main():
         # Expected flat form: <port_name>_<bit>_
         _expected = f'{_port}_{_bbi}_'
         if _net != _expected:
-            _inst = _e48.get('instance_name', '?')
-            issues.append(
-                f"HIGH/48-GATE-INPUT-NET-NAMING: port_connection {_inst}.{_port}[{_bbi}] "
-                f"net_name={_net!r} is consumed directly as a gate input but is NOT the "
-                f"flat port form {_expected!r}. FM cannot trace through a generic eco_ "
-                f"prefix across Synth→PrePlace stages — causes non-equivalent DFF D-pins. "
-                f"Fix: set net_name={_expected!r} in the port_connection entry AND in the "
-                f"consuming gate's port_connections input pin.")
+            # Exempt when net_name matches the wrapper module's output port
+            # (Check 49 pattern): the net drives the wrapper output, not a
+            # standalone wire. For these entries the wrapper output port name
+            # takes precedence over the sub-instance port name.
+            _parent_mod = _e48.get('module_name') or _e48.get('parent_module', '')
+            _wrapper_ports = _get_module_output_ports(_parent_mod) if _parent_mod else set()
+            _net_base = _re48.sub(r'_\d+_$', '', _net)
+            if _net_base in _wrapper_ports:
+                pass  # Check 49 handles this — wrapper output port name is correct
+            else:
+                _inst = _e48.get('instance_name', '?')
+                issues.append(
+                    f"HIGH/48-GATE-INPUT-NET-NAMING: port_connection {_inst}.{_port}[{_bbi}] "
+                    f"net_name={_net!r} is consumed directly as a gate input but is NOT the "
+                    f"flat port form {_expected!r}. FM cannot trace through a generic eco_ "
+                    f"prefix across Synth→PrePlace stages — causes non-equivalent DFF D-pins. "
+                    f"Fix: set net_name={_expected!r} in the port_connection entry AND in the "
+                    f"consuming gate's port_connections input pin.")
 
     # ── 49. INNER-PARTNER-NET-NAME: must use wrapper's own output port name ──
     # When a port_connection inner partner entry renames a bus slot inside a
@@ -3871,32 +3907,7 @@ def main():
     # check if the wrapper module's output port at the same module-level bus
     # position is being driven by the same named wire. If the wrapper has an
     # output port whose name differs from net_name → HIGH.
-    import re as _re49, gzip as _gz49
-    _UNDRIVEN49_CACHE = {}
-    def _get_module_output_ports(mod_name, stage='Synthesize'):
-        cache_key = (mod_name, stage)
-        if cache_key in _UNDRIVEN49_CACHE:
-            return _UNDRIVEN49_CACHE[cache_key]
-        path = os.path.join(args.ref_dir, 'data', 'PreEco', f'{stage}.v.gz')
-        if not os.path.exists(path):
-            _UNDRIVEN49_CACHE[cache_key] = set(); return set()
-        try:
-            with _gz49.open(path, 'rt') as fh:
-                text = fh.read()
-        except Exception:
-            _UNDRIVEN49_CACHE[cache_key] = set(); return set()
-        m = _re49.search(rf'^module\s+{_re49.escape(mod_name)}\b', text, _re49.MULTILINE)
-        if not m:
-            _UNDRIVEN49_CACHE[cache_key] = set(); return set()
-        # Extract output ports
-        end_m = _re49.search(r'\bendmodule\b', text[m.start():])
-        body = text[m.start(): m.start() + end_m.start()] if end_m else text[m.start():m.start()+50000]
-        ports = set()
-        for pm in _re49.finditer(r'^\s*output\s+(?:\[[^\]]+\]\s+)?([A-Za-z_]\w*)\s*;', body, _re49.MULTILINE):
-            ports.add(pm.group(1))
-        _UNDRIVEN49_CACHE[cache_key] = ports
-        return ports
-
+    # (_get_module_output_ports defined above before Check 48)
     _seen49 = set()
     for _e49 in study.get('Synthesize', []):
         if not isinstance(_e49, dict): continue
