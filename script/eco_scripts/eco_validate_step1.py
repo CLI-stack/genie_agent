@@ -395,6 +395,31 @@ def main():
     if enable_swap_issues:
         overall_pass = False
 
+    # ── enable_swap clock gate detection field ────────────────────────────────
+    # rtl_diff_analyzer Step 0 (Phase 0.16) must check whether the target DFF's
+    # CP is driven by a clock gate cell (ICG*/CKOR*/CTG*).  If so,
+    # enable_via_clock_gate=true must be set so the studier uses Path A (clock
+    # gate E-pin rewire) instead of Path B (DFF CE-pin rewire).  Path A is
+    # immune to wrong-module cell name collisions and serves all bus-width DFF
+    # bits with ONE rewire instead of N.  Without this field the studier always
+    # falls back to CE-pin rewire — which caused the xbar module corruption in
+    # previous rounds.  Require the field to be explicitly set (true or false).
+    clk_gate_field_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') != 'enable_swap':
+            continue
+        tgt = c.get('target_register') or c.get('new_token') or '?'
+        if c.get('enable_via_clock_gate') is None:
+            clk_gate_field_issues.append(
+                f"changes[{idx}] target={tgt!r}: enable_swap missing "
+                f"`enable_via_clock_gate` field (must be true or false). "
+                f"rtl_diff_analyzer Step 0 must grep PreEco for a clock gate cell "
+                f"(ICG*/CKOR*/CTG*) driving the DFF CP and set this field accordingly. "
+                f"Omitting it forces CE-pin rewire (wrong-module risk) even when a "
+                f"clock gate exists and should be used instead.")
+    if clk_gate_field_issues:
+        overall_pass = False
+
     # ── has_sync_reset vs context_line reset detection ────────────────────────
     # The rtl_diff_analyzer detects reset from context_line, but context_line
     # may span multiple lines when the always block is captured in full.  When
@@ -425,11 +450,11 @@ def main():
         overall_pass = False
 
     # ── Duplicate gate chains between standalone wire and parent change ────────
-    # Standalone wire assignments (wire_change_type=new_logic_gate) that have
-    # a d_input_gate_chain must NOT duplicate gate chain entries already present
-    # in another change's new_enable_gate_chain or d_input_gate_chain.
-    # Duplication causes the studier to insert gates twice → duplicate wire decls
-    # → FM-599 ABORT_NETLIST.
+    # Any new_logic change whose gate chain output nets are ALREADY produced by
+    # another change's embedded gate chain (enable_swap/wire_swap/and_term) is a
+    # duplicate — studier would insert the gates twice → duplicate wire decls
+    # → FM-599 ABORT_NETLIST.  Check covers both wire_change_type=new_logic_gate
+    # (old naming) and plain change_type=new_logic (newer analyzer output).
     dup_chain_issues = []
     # Collect all output nets from embedded gate chains (enable_swap, wire_swap)
     embedded_out_nets = set()
@@ -439,18 +464,24 @@ def main():
                 for g in (c.get(fld) or []):
                     out = g.get('output_net', '')
                     if out: embedded_out_nets.add(out)
-    # Flag standalone wire changes that duplicate those embedded nets
+    # Flag ANY new_logic change whose d_input_gate_chain overlaps with embedded nets
     for idx, c in enumerate(rtl_diff.get('changes', [])):
-        if c.get('wire_change_type') != 'new_logic_gate':
+        # Match standalone wire changes regardless of naming convention
+        is_standalone_wire = (
+            c.get('wire_change_type') == 'new_logic_gate' or
+            (c.get('change_type') == 'new_logic' and c.get('wire_name'))
+        )
+        if not is_standalone_wire:
             continue
         chain = c.get('d_input_gate_chain') or []
         dup = [g.get('output_net') for g in chain if g.get('output_net') in embedded_out_nets]
         if dup:
             dup_chain_issues.append(
-                f"changes[{idx}] wire='{c.get('wire_name','?')}': standalone wire change "
-                f"has d_input_gate_chain with output nets {dup} that are ALREADY in another "
-                f"change's gate chain. This creates duplicate gate insertions. "
-                f"Standalone wire assignments must only appear embedded in their parent "
+                f"changes[{idx}] wire='{c.get('wire_name', c.get('new_token','?'))}': "
+                f"standalone wire change has gate chain output nets {dup} that are ALREADY "
+                f"in another change's embedded gate chain. "
+                f"Duplicate gate insertions → duplicate wire decls → FM-599 ABORT. "
+                f"Wire assignments must only appear embedded in their parent "
                 f"enable_swap/wire_swap gate chain — never as independent changes.")
     if dup_chain_issues:
         overall_pass = False
@@ -1789,6 +1820,8 @@ def main():
         'pending_structural_issues':      pending_structural_issues,
         'enable_swap_issue_count':        len(enable_swap_issues),
         'enable_swap_issues':             enable_swap_issues,
+        'clk_gate_field_issue_count':      len(clk_gate_field_issues),
+        'clk_gate_field_issues':          clk_gate_field_issues,
         'reset_detection_issue_count':     len(reset_detection_issues),
         'reset_detection_issues':         reset_detection_issues,
         'dup_chain_issue_count':           len(dup_chain_issues),

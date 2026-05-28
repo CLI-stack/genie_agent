@@ -862,7 +862,10 @@ Write to `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json` (always use the full absolute
       "missing_in_stages": [],
       "old_enable_net": null,
       "new_enable_net": null,
-      "new_enable_gate_chain": null
+      "new_enable_gate_chain": null,
+      "enable_via_clock_gate": false,
+      "clock_gate_instance": null,
+      "clock_gate_E_pin": null
     }
   ],
   "nets_to_query": [

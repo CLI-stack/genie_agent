@@ -495,6 +495,12 @@ awk '/^module <declaring_module>/,/^endmodule/' /tmp/eco_study_<TAG>_Synthesize.
 - Chain non-empty → append reset-gating tail.
 - Chain empty (`d_input_resolved_net` set, e.g. direct-wire `REG_X[i]`) → BUILD chain from `d_input_resolved_net` (and per-stage UNCONNECTED variants) as AND2 source. NEVER invent undriven `n_eco_*`.
 
+**INR2 in rtl_diff d_input_gate_chain — replace with shared INV + AND2:**
+If the rtl_diff `d_input_gate_chain` contains an `INR2` gate with the reset signal as B1 input, do NOT emit the INR2 directly. Instead:
+1. Check if a shared INV for this reset signal already exists in the study JSON for this module (e.g. `eco_<jira>_<module>_rst_inv`). If not, emit ONE shared INV: `INV(<reset>) → eco_<jira>_<module>_rst_inv`.
+2. Replace the INR2 with `AND2(data_input, eco_<jira>_<module>_rst_inv) → output_net`.
+This ensures all DFF chains in the same module share one INV output (stage-stable ECO net) rather than each referencing the bare reset signal directly.
+
 Tail: `INV(<reset>) → eco_<jira>_<reg>_rst_inv`; combiner `AND2(eco_<jira>_<reg>_rst_inv, chain_tail) → n_eco_<jira>_d<N+1>`. **The INV output `eco_<jira>_<reg>_rst_inv` is a new ECO net — stage-stable, no CTS renaming needed. Use it as the inverted-reset input for ALL gates in this DFF's chain that need `~<reset>`.** Never reference `<reset>` directly as a negated input; always invert it once into a shared ECO net first. For bus DFFs with N bits: emit ONE shared INV for `<reset>`, then N AND2 gates each consuming `eco_<jira>_<reg>_rst_inv` as A1. Update `d_input_net` to the AND2 output → DFF `.D`. Per-stage resolution: the INV input `<reset>` is the sole reference to the bare reset name — resolve it per-stage via rename map (Rule 32). The AND2 inputs downstream only reference the ECO-internal net, so no per-stage resolution is needed for them.
 
 **Self-check:** `has_sync_reset && !reset_pin_used && no chain references <reset>` → bake-in skipped → fix before writing JSON. DFF must never lack a reset path.
@@ -651,9 +657,9 @@ On (A)+(B) miss, emit `cell_name_per_stage[stage]: null` and `confirmed_per_stag
 
 For each `enable_swap` change (clock-enable / write-enable pin rewire on an existing DFF):
 
-**Step 0 — Detect clock gate (MANDATORY before Step 1):**
+**Step 0 — Detect clock gate (MANDATORY — set `enable_via_clock_gate` in JSON before Step 1):**
 
-Check if the target DFF's CP (clock) is driven by a clock gate cell:
+`enable_via_clock_gate` MUST be explicitly set on the enable_swap change entry (`true` or `false`) — eco_validate_step1.py FAILs if absent. Check if the target DFF's CP (clock) is driven by a clock gate cell:
 ```bash
 grep -E "\.(CP|CK)\s*\(\s*<clk_net>\s*\)" /tmp/eco_study_<TAG>_Synthesize.v | head -3
 # Then find what drives <clk_net>:
