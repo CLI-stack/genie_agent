@@ -228,6 +228,17 @@ def main():
             out = e.get('output_net', '')
             if out:
                 new_port_nets.add(out)
+            # DFF entries store Q output net in port_connections.Q (output_net may be None)
+            pcs_any = (e.get('port_connections_per_stage', {}) or {}).get(args.stage) or e.get('port_connections', {}) or {}
+            q_net = pcs_any.get('Q', '')
+            if q_net and isinstance(q_net, str) and not q_net.startswith("1'b"):
+                new_port_nets.add(q_net)
+                # Also add flattened underscore form for bus nets (e.g. bus[0] -> bus_0_)
+                # P&R stages use flat-form signal names so mux gates referencing bus_N_ must not be SKIPPED
+                import re as _re
+                flat_q = _re.sub(r'\[(\d+)\]', lambda m: f'_{m.group(1)}_', q_net)
+                if flat_q != q_net:
+                    new_port_nets.add(flat_q)
 
     # Build set of nets that will be implicitly declared by other passes in this
     # batch — do NOT add explicit wire_decl for these (prevents FM-599 duplicate).
@@ -346,6 +357,13 @@ def main():
                 # output_net for a bus gate bit: e.g. "wdbptr_org0_d2_nxt[3]"
                 out_net = e.get('output_net', '')
                 base_net = re.sub(r'\[\d+\]$', '', out_net)
+                # Fallback: extract bit index from output_net bracket form when
+                # bus_bit_index is not set on the entry (e.g. INV bus gate bits
+                # generated without explicit bus_bit_index field).
+                if bit_idx is None and out_net and '[' in out_net:
+                    _m = re.search(r'\[(\d+)\]$', out_net)
+                    if _m:
+                        bit_idx = int(_m.group(1))
                 if bit_idx is not None and base_net:
                     key = (mod, base_net)
                     bus_dff_groups.setdefault(key, set()).add(int(bit_idx))
