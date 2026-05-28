@@ -3795,6 +3795,54 @@ def main():
                 f"Use flat _N_ form when the wire is scalar in the parent module; "
                 f"use bracket [N] only when the wire is declared as a bus array.")
 
+    # ── 48. GATE-INPUT-NET-NAMING: bus_rename net directly consumed by ECO gate ─
+    # When a port_connection bus_rename renames an UNCONNECTED slot to a new wire,
+    # AND that wire is immediately consumed as an input pin of a new_logic_gate,
+    # the net_name MUST be the flat form of the port + bit: <port_name>_<N>_.
+    # Using a generic eco_{jira}_ prefix instead creates an extra indirection level
+    # that FM cannot resolve across Synth→PrePlace stages — FM traces the cone to
+    # the renamed wire, hits an unmatched boundary at the intermediate name, and
+    # reports non-equivalent DFF D-pins (8 failing compare points per ECO-modified
+    # DFF). The flat port form (<port_name>_<N>_) is the sanitized version of the
+    # register output compare point itself, letting FM trace through cleanly.
+    import re as _re48
+    _GATE_INPUT_PINS = {'I', 'A', 'A1', 'A2', 'B', 'B1', 'B2', 'D', 'IN'}
+    # Build set of gate input nets for Synthesize
+    _gate_input_nets = set()
+    for _e48 in study.get('Synthesize', []):
+        if not isinstance(_e48, dict): continue
+        if _e48.get('change_type') not in ('new_logic_gate', 'and_term', 'new_logic'): continue
+        for _pin, _val in (_e48.get('port_connections') or {}).items():
+            if _pin in _GATE_INPUT_PINS and isinstance(_val, str) and _val:
+                _gate_input_nets.add(_val)
+    # Check port_connection bus_rename nets consumed by gates
+    _seen48 = set()
+    for _e48 in study.get('Synthesize', []):
+        if not isinstance(_e48, dict): continue
+        if _e48.get('change_type') != 'port_connection': continue
+        _bbi = _e48.get('bus_bit_index')
+        _net = _e48.get('net_name', '')
+        _port = _e48.get('port_name', '')
+        if _bbi is None or not _net or not _port:
+            continue
+        if _net not in _gate_input_nets:
+            continue  # not consumed by a gate — no constraint
+        key48 = (_net, _port, _bbi)
+        if key48 in _seen48:
+            continue
+        _seen48.add(key48)
+        # Expected flat form: <port_name>_<bit>_
+        _expected = f'{_port}_{_bbi}_'
+        if _net != _expected:
+            _inst = _e48.get('instance_name', '?')
+            issues.append(
+                f"HIGH/48-GATE-INPUT-NET-NAMING: port_connection {_inst}.{_port}[{_bbi}] "
+                f"net_name={_net!r} is consumed directly as a gate input but is NOT the "
+                f"flat port form {_expected!r}. FM cannot trace through a generic eco_ "
+                f"prefix across Synth→PrePlace stages — causes non-equivalent DFF D-pins. "
+                f"Fix: set net_name={_expected!r} in the port_connection entry AND in the "
+                f"consuming gate's port_connections input pin.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}

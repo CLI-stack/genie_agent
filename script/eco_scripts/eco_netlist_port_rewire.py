@@ -113,9 +113,11 @@ def apply_port_declaration(lines, entry, stage='Synthesize'):
         return lines, 'SKIPPED', 'wire type — implicitly declared by port connections'
 
     # Find module start: try exact, _0 suffix (P&R rename), then any '<prefix>_<bare>' (tile-prefixed netlist)
-    re_bare   = re.compile(rf'^module\s+{re.escape(mod_name)}\b')
-    re_p0     = re.compile(rf'^module\s+{re.escape(mod_name)}_0\b')
-    re_prefix = re.compile(rf'^module\s+(\S+_{re.escape(mod_name)})\b')
+    # Also handles '<prefix>_<bare>_0' (P&R uniquification of tile-prefixed modules)
+    re_bare     = re.compile(rf'^module\s+{re.escape(mod_name)}\b')
+    re_p0       = re.compile(rf'^module\s+{re.escape(mod_name)}_0\b')
+    re_prefix   = re.compile(rf'^module\s+(\S+_{re.escape(mod_name)})\b(?!_\d)')
+    re_prefix_p0= re.compile(rf'^module\s+(\S+_{re.escape(mod_name)}_0)\b')
     mod_start = -1
     for i, line in enumerate(lines):
         if re_bare.match(line):
@@ -123,6 +125,10 @@ def apply_port_declaration(lines, entry, stage='Synthesize'):
             break
         if re_p0.match(line):
             mod_start, mod_name = i, mod_name + '_0'
+            break
+        m = re_prefix_p0.match(line)
+        if m:
+            mod_start, mod_name = i, m.group(1)
             break
         m = re_prefix.match(line)
         if m:
@@ -271,12 +277,28 @@ def _cleanup_orphan_wire_and_add_new_decl(lines, mod_start, mod_end, old_net, ne
     # ABORT (Duplicate wire/tri/wand/wor declaration) — see run 20260511083831.
     added_decl = False
     if new_net and not _is_wire_declared_in_module(body, new_net):
-        # Insert after the last `wire ... ;` decl in the body, before any non-decl content
-        last_wire_idx = -1
+        # Insert BEFORE the first occurrence of new_net in the module body.
+        # Inserting after the last `wire` decl risks placing the declaration
+        # AFTER the first use of new_net when Perl-inserted ECO wires appear
+        # near endmodule (Perl script appends to module end) — the REGCMD port
+        # connection (first use) is in the middle, causing SVR-9 implicit/explicit
+        # duplicate when the explicit decl lands after it.
+        net_ref_re = re.compile(rf'\b{re.escape(new_net)}\b')
+        first_use_idx = -1
         for i, ln in enumerate(body):
-            if re.match(r'^\s*wire\s+', ln):
-                last_wire_idx = i
-        insert_at = last_wire_idx + 1 if last_wire_idx >= 0 else 1  # after `module` line as fallback
+            if net_ref_re.search(ln):
+                first_use_idx = i
+                break
+        if first_use_idx > 0:
+            # Insert just before first use, staying after any leading `module` / port decls
+            insert_at = first_use_idx
+        else:
+            # Fallback: after last wire decl if new_net not yet in body
+            last_wire_idx = -1
+            for i, ln in enumerate(body):
+                if re.match(r'^\s*wire\s+', ln):
+                    last_wire_idx = i
+            insert_at = last_wire_idx + 1 if last_wire_idx >= 0 else 1
         indent = '  '
         body.insert(insert_at, f'{indent}wire {new_net} ;\n')
         added_decl = True
@@ -651,16 +673,18 @@ def apply_port_connection(lines, entry, gz_path=None, stage='Synthesize'):
         # Bus-position renames belong on the _apply_bus_rename path (set bus_bit_index in study JSON).
         if re.search(rf'\.\s*{re.escape(port_name)}\s*\(\s*\{{', inst_block):
             return lines, 'SKIPPED', f'.{port_name} on {inst_name} is a {{}} bus concat — entry must set bus_bit_index for _apply_bus_rename'
-        # Port exists with a single-net value — safe to rewire it
-        before_line = lines[inst_close]
-        lines[inst_close] = re.sub(
-            rf'\.\s*{re.escape(port_name)}\s*\([^)]*\)',
-            f'.{port_name}( {net_name} )',
-            lines[inst_close]
-        )
-        # Post-edit verify: regex sub didn't actually fire if the line is unchanged
-        if lines[inst_close] == before_line or net_name not in lines[inst_close]:
-            return lines, 'SKIPPED', f'VERIFY_FAILED rewire: .{port_name} on {inst_name} — regex matched in inst_block but not on inst_close line {inst_close} (likely on different line)'
+        # Port exists with a single-net value — scan the full instance block for the line
+        rewire_pat = re.compile(rf'\.\s*{re.escape(port_name)}\s*\([^)]*\)')
+        rewire_applied = False
+        for ri in range(inst_start, inst_close + 1):
+            if rewire_pat.search(lines[ri]):
+                before_ri = lines[ri]
+                lines[ri] = rewire_pat.sub(f'.{port_name}( {net_name} )', lines[ri])
+                if lines[ri] != before_ri and net_name in lines[ri]:
+                    rewire_applied = True
+                    break
+        if not rewire_applied:
+            return lines, 'SKIPPED', f'VERIFY_FAILED rewire: .{port_name} on {inst_name} — regex matched in inst_block but substitution failed on all lines'
         return lines, 'APPLIED', f'rewired existing .{port_name} to ({net_name}) in {inst_name}'
 
     # Insert new port as a separate line before inst_close.
