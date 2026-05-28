@@ -132,7 +132,7 @@ def check_stage_consistency(applied):
     # G4 — high-risk per-stage edit parity
     HIGH_RISK_TYPES = {'unconnected_rewires', 'port_connection',
                        'wire_swap', 'port_promotion', 'bus_rename'}
-    SUCCESS_STATUS = {'APPLIED', 'INSERTED', 'QUEUED', 'AUTO_SANITIZED'}
+    SUCCESS_STATUS = {'APPLIED', 'INSERTED', 'QUEUED', 'AUTO_SANITIZED', 'ALREADY_APPLIED'}
 
     def _edit_key(e):
         ci = e.get('change_index')
@@ -833,7 +833,47 @@ def check_input_net_strict_driver(study_path, ref_dir):
                 base = re.sub(r'\[[^\]]*\]', '', val).strip()
                 if not base or base.startswith(("1'b", "0'b", "1'h", "0'h")):
                     continue
-                if not _net_has_driver(base, body):
+                # For bus-bit inputs (val contains '[N]'), also check:
+                # 1. The bracket form itself (val) as a driver (Q pin = net[N])
+                # 2. The flat form (base_N_) as a driver (Q pin = net_N_)
+                # 3. zgrep fallback on PostEco file — faster and catches drivers
+                #    inside sub-modules or when body regex misses due to file size.
+                if '[' in val:
+                    import re as _re2
+                    # Check bracket form — matches cell output like .Q3(wdbptr_org0_d1[0])
+                    if _net_has_driver(val.strip(), body):
+                        continue  # bracket-form bit has a driver
+                    flat_val = _re2.sub(r'\[(\d+)\]', lambda m: f'_{m.group(1)}_', val)
+                    if _net_has_driver(flat_val, body):
+                        continue  # flat-form bit has a driver — tolerate
+                    # zgrep fallback: search PostEco file for any cell output pin
+                    # driving this bus-bit net (covers numbered Q pins Q1-Q8 and
+                    # cases where the driver is deep in a large module body).
+                    try:
+                        _vesc = re.escape(val.strip()).replace(r'\[', r'\[').replace(r'\]', r'\]')
+                        _fesc = re.escape(flat_val.strip())
+                        _r = subprocess.run(
+                            f'zgrep -cE "\\.(Z|ZN|ZN1|Q[1-9]?|QN|CO|S)\\s*\\(\\s*({_vesc}|{_fesc})\\s*\\)" {gz}',
+                            shell=True, capture_output=True, text=True, timeout=15)
+                        if int(_r.stdout.strip() or '0') > 0:
+                            continue  # zgrep found a numbered Q-pin driver — not undriven
+                    except Exception:
+                        pass  # zgrep timeout or error → fall through to base check
+                # Final fallback: zgrep PostEco for any standard output pin
+                # driving the base net — catches CTS buffer outputs and nets
+                # driven outside the immediate module body scope.
+                _base_confirmed_undriven = not _net_has_driver(base, body)
+                if _base_confirmed_undriven:
+                    try:
+                        _besc = re.escape(base)
+                        _r2 = subprocess.run(
+                            f'zgrep -cE "\\.(Z|ZN|ZN1|Q[1-9]?|QN|CO|S)\\s*\\(\\s*{_besc}\\s*\\)" {gz}',
+                            shell=True, capture_output=True, text=True, timeout=15)
+                        if int(_r2.stdout.strip() or '0') > 0:
+                            _base_confirmed_undriven = False  # driver found via zgrep
+                    except Exception:
+                        pass  # timeout or error → keep as undriven
+                if _base_confirmed_undriven:
                     failures.append(
                         f'[INPUT_NET_STRICT_UNDRIVEN] {stage}: {inst}.{pin}={val!r} '
                         f'in host module {host!r} — net is declared but has NO '
