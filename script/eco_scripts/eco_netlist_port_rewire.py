@@ -163,8 +163,9 @@ def apply_port_declaration(lines, entry, stage='Synthesize'):
         if isinstance(bus_width, int) and bus_width > 1:
             range_pfx = f'[{bus_width - 1}:0] '
         elif isinstance(bus_width, str) and ':' in bus_width:
-            # Range string form e.g. "7:0" — use verbatim as [7:0]
-            range_pfx = f'[{bus_width}] '
+            # Range string form e.g. "7:0" or "[7:0]" — strip outer brackets first
+            bw = bus_width.strip().strip('[]')
+            range_pfx = f'[{bw}] '
         elif isinstance(bus_width, str) and bus_width.isdigit() and int(bus_width) > 1:
             w = int(bus_width)
             range_pfx = f'[{w - 1}:0] '

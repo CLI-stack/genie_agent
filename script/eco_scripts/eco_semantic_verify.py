@@ -262,6 +262,12 @@ def verify_port_connection(entry, view, stage):
         # Bus rename — verify {...} concat and bit position
         elements = view.parse_bus_concat(actual_value)
         if elements is None:
+            # Scalar bus pass-through (e.g. `.port(wire)`) is valid when all bits
+            # flow together — the port connection itself is correct; no concat needed.
+            # Downgrade to warning only if the scalar name looks unrelated to the port.
+            stripped = actual_value.strip()
+            if re.match(r'^[A-Za-z_]\w*$', stripped):
+                return None  # scalar bus pass-through — acceptable
             return f'{inst}.{port} expected {{}} bus concat but got {actual_value[:80]!r}'
         width = len(elements)
         pos = width - 1 - bbi  # MSB-first

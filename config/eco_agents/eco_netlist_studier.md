@@ -335,6 +335,10 @@ Log: `UNCONNECTED_RENAME: <N_syn>/<N_pp>/<N_rt> → n_eco_<jira>_<hint> | bus=<i
 
 **`net_name_before` per-stage map REQUIRED** — eco_netlist_port_rewire prefers scope-search by exact old name (mode a). Bit-index parsing (mode b) is fallback only. Omitting `net_name_before` causes wrong-instance edits when multiple instances share the same port name.
 
+**MANDATORY: read the actual PreEco netlist to obtain each `net_name_before` value.** Never infer or guess UNCONNECTED numbers — locate the `.<port>( { ... } )` concat in the PreEco netlist for the exact stage, parse it MSB-first, and record the literal string at that bit position. A wrong UNCONNECTED number causes the applier to SKIP the entry silently (validator Check 46 catches this).
+
+**MANDATORY: all `net_name` values for bits of the same `(instance_name, port_name)` must use the same form** — either all flat (`_N_`) or all bracket (`[N]`). Use flat form when the wire is declared as a scalar in the parent module; use bracket only when the wire is an array. Mixed forms cause SVR-14 in FM (validator Check 47 catches this).
+
 ---
 
 ### Phase 0.5 — Bus DFF expansion  (was 0b-BUS-DFF)

@@ -3588,6 +3588,108 @@ def main():
             f"NO_PARENT_UNC the caller may have passed a wrong host_module "
             f"(e.g. doubled tile prefix).")
 
+    # ── 46. BOGUS-NET-NAME-BEFORE: UNCONNECTED not on targeted port ──────────
+    # If net_name_before[stage] = UNCONNECTED_N but that string does NOT appear
+    # in instance.port's connection in the PreEco netlist, the entry is bogus —
+    # the applier's _apply_bus_rename will search for it, fail to find it, and
+    # SKIP the entry silently. Catch at Step 3 so the studier fixes/removes it.
+    import subprocess as _sp46, re as _re46, gzip as _gz46
+    _UNC46_RE = _re46.compile(r'^(SYNOPSYS_)?UNCONNECTED_\d+$')
+    _preeco46_cache = {}
+    def _load_preeco46(stage):
+        if stage in _preeco46_cache:
+            return _preeco46_cache[stage]
+        path = os.path.join(args.ref_dir, 'data', 'PreEco', f'{stage}.v.gz')
+        if not os.path.exists(path):
+            _preeco46_cache[stage] = ''; return ''
+        try:
+            with _gz46.open(path, 'rt') as fh:
+                text = fh.read()
+        except Exception:
+            text = ''
+        _preeco46_cache[stage] = text
+        return text
+
+    def _unc_in_port(text, inst, port, unc):
+        """True if unc appears inside .<port>( ... ) of instance inst."""
+        # Find any instance block containing inst
+        inst_m = _re46.search(rf'\b{_re46.escape(inst)}\s*\(', text)
+        if not inst_m:
+            return True  # instance not found — can't verify, assume ok
+        block_start = inst_m.start()
+        block_end = text.find(') ;', block_start)
+        block = text[block_start: block_end + 3] if block_end > 0 else text[block_start:block_start + 50000]
+        # Find port connection (may be multi-line concat)
+        port_m = _re46.search(
+            rf'\.{_re46.escape(port)}\s*\(\s*(\{{[^{{}}]*\}}|[^)]+)\)',
+            block, _re46.DOTALL)
+        if not port_m:
+            return True  # port not parsed — assume ok
+        return unc in port_m.group(1)
+
+    _seen46 = set()
+    for stage_name in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage_name, []):
+            if e.get('change_type') != 'port_connection':
+                continue
+            nnb = e.get('net_name_before') or {}
+            unc = nnb.get(stage_name) if isinstance(nnb, dict) else None
+            if not (isinstance(unc, str) and _UNC46_RE.match(unc)):
+                continue
+            inst = e.get('instance_name', '')
+            port = e.get('port_name', '')
+            if not inst or not port:
+                continue
+            key = (stage_name, inst, port, unc)
+            if key in _seen46:
+                continue
+            _seen46.add(key)
+            text46 = _load_preeco46(stage_name)
+            if text46 and not _unc_in_port(text46, inst, port, unc):
+                mod = e.get('parent_module') or e.get('module_name', '?')
+                issues.append(
+                    f"HIGH/46-BOGUS-NET-NAME-BEFORE: stage={stage_name} "
+                    f"port_connection {mod}.{inst}.{port} has "
+                    f"net_name_before[{stage_name}]={unc!r} but that UNCONNECTED "
+                    f"does NOT appear in {inst}.{port} in PreEco/{stage_name}. "
+                    f"Applier will SKIP this entry. Either the UNCONNECTED number "
+                    f"is wrong (read the actual netlist) or this entry is not "
+                    f"needed (port already connected — remove it).")
+
+    # ── 47. INCONSISTENT-NET-NAME-FORM: mixed flat/bracket across bits ────────
+    # All net_name values for the same (inst, port) must use the same form:
+    # either all flat (_N_) or all bracket ([N]). Mixed form causes SVR-14 in FM
+    # when some renamed nets use bracket indexing on a scalar wire.
+    import re as _re47
+    _BRACKET47 = _re47.compile(r'\[\d+\]$')
+    pc_net_forms = {}  # (inst, port) → list of (bit, net_name, stage)
+    for stage_name in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage_name, []):
+            if e.get('change_type') != 'port_connection':
+                continue
+            bbi = e.get('bus_bit_index')
+            net = e.get('net_name') or ''
+            if bbi is None or not net:
+                continue
+            inst = e.get('instance_name', '')
+            port = e.get('port_name', '')
+            if not inst or not port:
+                continue
+            key = (inst, port)
+            pc_net_forms.setdefault(key, []).append((bbi, net, stage_name))
+
+    for (inst, port), entries in pc_net_forms.items():
+        has_bracket = any(_BRACKET47.search(net) for _, net, _ in entries)
+        has_flat    = any(not _BRACKET47.search(net) for _, net, _ in entries)
+        if has_bracket and has_flat:
+            mixed = [(bit, net) for bit, net, _ in entries]
+            issues.append(
+                f"HIGH/47-INCONSISTENT-NET-NAME-FORM: port_connection {inst}.{port} "
+                f"has mixed flat/bracket net_name across bits: {mixed[:6]}. "
+                f"All bits of the same port must use the same form. "
+                f"Use flat _N_ form when the wire is scalar in the parent module; "
+                f"use bracket [N] only when the wire is declared as a bus array.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}

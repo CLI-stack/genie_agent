@@ -403,7 +403,7 @@ def check_port_edits_in_netlist(ref_dir, applied):
                 direction = m.group(2) if m else e.get('declaration_type', 'input')
                 if direction == 'wire' or not signal:
                     continue
-                if not re.search(rf'^\s*(input|output|inout)\s+{re.escape(signal)}\b', text, re.MULTILINE):
+                if not re.search(rf'^\s*(input|output|inout)\s+(?:\[[^\]]+\]\s+)?{re.escape(signal)}\b', text, re.MULTILINE):
                     failures.append(f'[PORT_DECL_MISSING] {stage}: port_declaration APPLIED for {signal!r} ({direction}) but no input/output decl found in netlist')
             elif ct == 'port_connection':
                 # Skip bus_bit_index entries (handled by Check 9 / bus_concat_intact)
