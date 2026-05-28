@@ -125,6 +125,58 @@ def main():
                 f"CRITICAL: bus gate '{target_base}' has inconsistent entry counts across stages "
                 f"({counts}) — all 3 stages must have the same N bit entries")
 
+    # ── 2e-pre00. Bus bit output port SYNOPSYS_UNCONNECTED used as gate input ──
+    # When a gate chain uses a bus bit in flat form (e.g. signal_N_) as input,
+    # and that bit is an OUTPUT PORT with SYNOPSYS_UNCONNECTED internal driver in
+    # any PreEco stage, using it produces an undriven gate input → FM Mode A.
+    # The actual data wire is actual_wire_<stage> from the rename map.
+    _RMAP_PATH_UNC = Path(args.study).parent / f'{args.tag}_eco_fenets_rename_map.json'
+    _rmap_unc = {}
+    if _RMAP_PATH_UNC.is_file():
+        try:
+            _rmap_unc = json.loads(_RMAP_PATH_UNC.read_text())
+        except Exception:
+            pass
+    _OUT_CHECK_UNC = {'Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'S'}
+    if _rmap_unc and args.ref_dir:
+        for stage in ['Route', 'PrePlace']:  # Route most common for UNCONNECTED
+            gz = Path(args.ref_dir) / 'data' / 'PreEco' / f'{stage}.v.gz'
+            if not gz.is_file():
+                continue
+            try:
+                import subprocess as _sp_unc2
+                r2 = _sp_unc2.run(
+                    f'zgrep "SYNOPSYS_UNCONNECTED" {gz}',
+                    shell=True, capture_output=True, text=True, timeout=30)
+                unc_text = r2.stdout
+            except Exception:
+                unc_text = ''
+            if not unc_text:
+                continue
+            for e in study.get(stage, []):
+                if e.get('change_type') not in ('new_logic_gate', 'new_logic'):
+                    continue
+                pcps = e.get('port_connections_per_stage', {})
+                st_pcs = pcps.get(stage) or e.get('port_connections') or {}
+                inst = e.get('instance_name', '?')
+                scope = e.get('instance_scope', '')
+                for pin, net in st_pcs.items():
+                    if pin in _OUT_CHECK_UNC or not isinstance(net, str):
+                        continue
+                    if net.startswith(('n_eco_', "1'b")):
+                        continue
+                    base = net.split('[')[0]
+                    # Quick check: does this base name appear near SYNOPSYS_UNCONNECTED?
+                    if base in unc_text and 'SYNOPSYS_UNCONNECTED' in unc_text:
+                        key1 = f'{scope}/{base}' if scope else base
+                        actual = (_rmap_unc.get(key1) or {}).get(f'actual_wire_{stage}', '')
+                        if actual and actual != net:
+                            issues.append(
+                                f"HIGH: gate '{inst}' {stage} {pin}={net!r} — this port has "
+                                f"SYNOPSYS_UNCONNECTED internal driver in PreEco {stage}; "
+                                f"undriven as gate input. Use actual_wire_{stage}={actual!r} "
+                                f"from rename map instead of the flat output port form.")
+
     # ── 2e-pre0. Chain gate per-stage input resolution check ─────────────────
     # Every non-output input pin on a new_logic_gate that has port_connections_per_stage
     # must NOT have the same bare value across all 3 stages when the rename map

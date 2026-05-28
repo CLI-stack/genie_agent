@@ -610,15 +610,26 @@ def main():
         rtl_change.get('instance_scope', ''),
         rtl_change.get('scope', ''),
     ])))
+    # Build tile-prefixed scope variants.  The rename map stores keys with the
+    # full tile scope prefix (e.g. 'umcdat/WDB/wr_vld0_d1') but host_scope is
+    # usually just the module scope without tile prefix ('WDB').  Extract the
+    # tile name from tile_module (e.g. 'ddrss_umcdat_t' → 'umcdat') and prepend
+    # it to each scope candidate so both 'WDB/sig' and 'umcdat/WDB/sig' are tried.
+    _tile_scope = re.sub(r'^ddrss_', '', args.tile_module or '').rstrip('_t').rstrip('_')
+    _scope_candidates_extended = list(dict.fromkeys(
+        _scope_candidates +
+        [f'{_tile_scope}/{s}' for s in _scope_candidates if _tile_scope] +
+        ([_tile_scope] if _tile_scope else [])
+    ))
     def _resolve_net(base, stage, net):
-        """Try scope-prefixed then bare rename map key; return renamed net."""
-        for scope in _scope_candidates:
+        """Try scope-prefixed (with and without tile prefix) then bare key."""
+        for scope in _scope_candidates_extended:
             entry = rmap.get(f'{scope}/{base}') or {}
             if isinstance(entry, dict) and stage in entry:
-                return entry[stage]
+                return entry.get(f'actual_wire_{stage}') or entry[stage]
         entry = rmap.get(base) or {}
         if isinstance(entry, dict) and stage in entry:
-            return entry[stage]
+            return entry.get(f'actual_wire_{stage}') or entry[stage]
         return net
 
     for g in chain_entries:
