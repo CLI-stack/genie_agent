@@ -3637,6 +3637,19 @@ def main():
                 txt45 = _load_preeco_text(stage_name)
                 if txt45 and not _inner_unc_confirmed(txt45, sub_i, sub_p, inner_unc):
                     continue  # Mode I false-positive: inner UNC not confirmed on sub_inst.sub_port
+                # Additional gate: if the wrapper module has ANOTHER sub-instance
+                # that drives the same port as a scalar bus (.<port>(port)), then
+                # the flagged sub-instance's UNCONNECTED is a floating/unused output
+                # — not the actual driver.  The scalar bus already drives all bits
+                # of the port, so no inner partner is needed.
+                # Example: uumccmdrb drives oQ_UmcCfgEco_UmcCfgEco as a scalar bus
+                # inside ddrss_umccmd_t_umccmdregs, making MCPM_*.Z UNCONNECTED
+                # irrelevant — MCPM is just a floating output, not the driver.
+                if txt45 and port_name:
+                    scalar_re = _re45.compile(
+                        rf'\.{_re45.escape(port_name)}\s*\(\s*{_re45.escape(port_name)}\s*\)')
+                    if scalar_re.search(txt45):
+                        continue  # Scalar bus in wrapper drives the port — inner not needed
         inst = e.get('instance_name', '?')
         port = e.get('port_name', '?')
         net  = e.get('net_name', '?')
