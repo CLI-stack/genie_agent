@@ -780,7 +780,109 @@ if check["passed"]:
     # All checks passed (fixes applied inline if needed) → proceed to Step 6
     pass
 else:
-    # Inline fixes exhausted — attempt self-healing within this same round before escalating:
+    # Inline fixes exhausted — attempt self-healing within this same round before escalating.
+    #
+    # ── Step 5-UNDRIVEN: Inline fix for INPUT_NET_STRICT_UNDRIVEN ──────────────────
+    # Before re-enriching, patch any INPUT_NET_STRICT_UNDRIVEN failures directly
+    # in the study JSON + PostEco netlist. These failures occur when a new ECO gate
+    # input net has no driver in its host module — most commonly caused by:
+    #   (a) A flat bus-bit net (wdbptr_org0_d1_N_) whose actual_wire_Route was not
+    #       resolved by eco_emit_dff_entry.py (the flat _N_ suffix strips the lookup).
+    #   (b) A net that exists in the original module but NOT in its _0 copy (e.g.
+    #       wr_vld0_d1 driven in ddrss_umcdat_t_umcwdb but undriven in _0 copy).
+    #
+    # Algorithm (run in Python inline — do NOT spawn a sub-agent for this):
+    #
+    # ```python
+    # import json, re, subprocess, os
+    # check_json = load(f"data/{TAG}_eco_pre_fm_check_round{NEXT_ROUND}.json")
+    # study_path = f"data/{TAG}_eco_preeco_study.json"
+    # study = load(study_path)
+    # rmap   = load(f"data/{TAG}_eco_fenets_rename_map.json")
+    # ref_dir = REF_DIR
+    # patched_any = False
+    #
+    # for failure in check_json.get("failures", []):
+    #     if "INPUT_NET_STRICT_UNDRIVEN" not in failure:
+    #         continue
+    #     # Parse: "Route: eco_9855_en002.B2='wr_vld0_d1' in host module '...'"
+    #     m = re.search(r'\[(INPUT_NET_STRICT_UNDRIVEN)\]\s+(\w+):\s+(\S+)\.(\w+)=\'([^\']+)\'.*host module \'([^\']+)\'', failure)
+    #     if not m:
+    #         continue
+    #     stage, inst, pin, bad_net, host_mod = m.group(2), m.group(3), m.group(4), m.group(5), m.group(6)
+    #
+    #     # Step 1 — find a candidate replacement net from the rename map
+    #     # Strip flat _N_ suffix OR bracket [N] to get the base bus name
+    #     base = re.sub(r'_\d+_$', '', bad_net.split('[')[0])
+    #     candidate = None
+    #     ALT_STAGES = [s for s in ('Synthesize', 'PrePlace', 'Route') if s != stage]
+    #     for rmap_key in [f"umcdat/WDB/{base}", f"WDB/{base}", base]:
+    #         entry = rmap.get(rmap_key, {})
+    #         if not isinstance(entry, dict):
+    #             continue
+    #         # Prefer actual_wire_<same_stage> first, then other stages
+    #         if entry.get(f"actual_wire_{stage}"):
+    #             candidate = entry[f"actual_wire_{stage}"]
+    #             break
+    #         for alt in ALT_STAGES:
+    #             if entry.get(f"actual_wire_{alt}"):
+    #                 candidate = entry[f"actual_wire_{alt}"]
+    #                 break
+    #         if candidate:
+    #             break
+    #
+    #     if not candidate or candidate == bad_net:
+    #         continue  # no rename-map fix available — leave for self-heal loop
+    #
+    #     # Step 2 — verify candidate is DRIVEN in host_mod within the stage PostEco
+    #     gz = os.path.join(ref_dir, "data", "PostEco", f"{stage}.v.gz")
+    #     OUT_PIN_RE = r'\.(Z|ZN|ZN1|Q|QN|CO|CO1|S|SN|Q[1-9])\s*\(\s*' + re.escape(candidate) + r'\s*\)'
+    #     try:
+    #         r = subprocess.run(
+    #             f'zgrep -cE "{OUT_PIN_RE}" {gz}',
+    #             shell=True, capture_output=True, text=True, timeout=30)
+    #         if int(r.stdout.strip() or '0') == 0:
+    #             continue  # candidate not driven in PostEco — skip
+    #     except Exception:
+    #         continue
+    #
+    #     # Step 3 — patch study JSON: update port_connections_per_stage[stage][pin]
+    #     for stage_list in [stage, 'Synthesize', 'PrePlace', 'Route']:
+    #         for entry in study.get(stage_list, []):
+    #             if not isinstance(entry, dict): continue
+    #             if entry.get('instance_name') != inst: continue
+    #             pcs = entry.setdefault('port_connections_per_stage', {})
+    #             if not isinstance(pcs, dict): continue
+    #             stage_pcs = pcs.setdefault(stage, {})
+    #             if stage_pcs.get(pin) == bad_net:
+    #                 stage_pcs[pin] = candidate
+    #                 patched_any = True
+    #
+    #     # Step 4 — surgical patch of PostEco netlist (instance-specific sed)
+    #     # Only replace the pin connection on the specific instance line
+    #     try:
+    #         # Decompress, replace only the exact .pin(bad_net) on the inst line, recompress
+    #         raw = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+    #         # Replace .pin(bad_net) → .pin(candidate) but only on lines containing inst
+    #         pin_esc   = re.escape(f'.{pin}({bad_net})')
+    #         pin_new   = f'.{pin}({candidate})'
+    #         new_lines = []
+    #         for line in raw.splitlines(keepends=True):
+    #             if inst in line:
+    #                 line = re.sub(rf'\\.{re.escape(pin)}\s*\(\s*{re.escape(bad_net)}\s*\)', pin_new, line)
+    #             new_lines.append(line)
+    #         new_text = ''.join(new_lines)
+    #         import gzip
+    #         with gzip.open(gz, 'wt') as f:
+    #             f.write(new_text)
+    #     except Exception:
+    #         pass  # netlist patch failed — study JSON fix still helps re-applier
+    #
+    # if patched_any:
+    #     save(study, study_path)  # write back patched study JSON
+    # ```
+    #
+    # After the undriven inline fix, proceed with the standard self-heal loop:
     #
     # Step 5 Self-Healing Loop (one attempt):
     #   1. Re-spawn eco_netlist_verifier (re-enrich study JSON — checks 7/8/9 auto-add missing entries)

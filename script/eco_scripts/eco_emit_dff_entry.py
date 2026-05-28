@@ -626,7 +626,11 @@ def main():
         ([_tile_scope] if _tile_scope else [])
     ))
     def _resolve_net(base, stage, net):
-        """Try scope-prefixed (with and without tile prefix) then bare key."""
+        """Try scope-prefixed (with and without tile prefix) then bare key.
+        Also strips flat _N_ suffix (e.g. wdbptr_org0_d1_0_ → wdbptr_org0_d1)
+        so bus-bit nets in flat P&R form resolve via the bus-level rename map
+        entry. When the resolved value is a scalar replacement (actual_wire_*),
+        the caller must NOT re-append the _N_ suffix."""
         for scope in _scope_candidates_extended:
             entry = rmap.get(f'{scope}/{base}') or {}
             if isinstance(entry, dict) and stage in entry:
@@ -634,6 +638,21 @@ def main():
         entry = rmap.get(base) or {}
         if isinstance(entry, dict) and stage in entry:
             return entry.get(f'actual_wire_{stage}') or entry[stage]
+        # Flat bus-bit form: try stripping trailing _N_ digit suffix and
+        # look up the base bus signal (e.g. wdbptr_org0_d1_0_ → wdbptr_org0_d1).
+        # ONLY use this result when actual_wire_<stage> is explicitly set —
+        # that marks a true scalar replacement (e.g. copt_net_600462 covers all
+        # bits). If only the plain stage key is present (same name or positional
+        # rename), the bit suffix is still significant and must be preserved.
+        flat_base = re.sub(r'_\d+_$', '', base)
+        if flat_base != base:
+            for scope in _scope_candidates_extended:
+                entry = rmap.get(f'{scope}/{flat_base}') or {}
+                if isinstance(entry, dict) and entry.get(f'actual_wire_{stage}'):
+                    return entry[f'actual_wire_{stage}']
+            entry = rmap.get(flat_base) or {}
+            if isinstance(entry, dict) and entry.get(f'actual_wire_{stage}'):
+                return entry[f'actual_wire_{stage}']
         return net
 
     for g in chain_entries:
@@ -650,9 +669,22 @@ def main():
                     continue
                 base = net.split('[')[0]
                 bit_suffix = net[len(base):]
+                flat_base = re.sub(r'_\d+_$', '', base)
+                is_flat_bit = (flat_base != base)
                 renamed = _resolve_net(base, stage, net)
+                # For bracket-form bus bits ([N]): append the suffix only when
+                # the renamed value is a plain rename (e.g. FxPrePlace_HFSNET_N),
+                # not when it's a scalar replacement (actual_wire returns a
+                # single net that covers all bits, e.g. copt_net_600462).
+                # Heuristic: if renamed starts with the base and only differs by
+                # a suffix, it's a rename — keep the bit suffix. Otherwise the
+                # actual_wire is a full scalar replacement — drop the suffix.
                 if bit_suffix and renamed != net:
-                    renamed = renamed + bit_suffix
+                    if renamed.startswith(flat_base if is_flat_bit else base):
+                        renamed = renamed + bit_suffix
+                    # else: scalar replacement — no suffix appended
+                # For flat-form bus bits (_N_): _resolve_net already returns
+                # a scalar replacement; do NOT re-append _N_.
                 pcs_per_stage[stage][pin] = renamed
                 if renamed != net:
                     changed = True
