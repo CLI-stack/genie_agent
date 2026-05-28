@@ -615,7 +615,11 @@ def main():
     # usually just the module scope without tile prefix ('WDB').  Extract the
     # tile name from tile_module (e.g. 'ddrss_umcdat_t' → 'umcdat') and prepend
     # it to each scope candidate so both 'WDB/sig' and 'umcdat/WDB/sig' are tried.
-    _tile_scope = re.sub(r'^ddrss_', '', args.tile_module or '').rstrip('_t').rstrip('_')
+    # Extract tile scope from tile_module: 'ddrss_umcdat_t' → 'umcdat'
+    # Use re.sub to strip the trailing _t suffix as a substring (not rstrip which
+    # strips individual characters and would incorrectly strip 'umcda' from 'umcdat')
+    _tile_scope = re.sub(r'^ddrss_', '', args.tile_module or '')
+    _tile_scope = re.sub(r'_t$', '', _tile_scope)
     _scope_candidates_extended = list(dict.fromkeys(
         _scope_candidates +
         [f'{_tile_scope}/{s}' for s in _scope_candidates if _tile_scope] +
