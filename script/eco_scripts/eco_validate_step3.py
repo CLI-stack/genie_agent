@@ -674,7 +674,13 @@ def main():
                 continue
             in_pre = port in pre_existing_ports.get(child_mod, set())
             in_study = port in study_ports_per_mod.get(child_mod, set())
-            if not (in_pre or in_study):
+            # Black-box gate-level cells (not in SynRtl) cannot be verified via
+            # pre_existing_ports — skip rather than false-firing FE-LINK-7.
+            # A module absent from SynRtl but present in gate-level netlists is
+            # a tech cell (e.g. techind_mcpm, clock-gate, stdlib); its ports are
+            # authoritative in the gate-level netlist, not SynRtl.
+            is_blackbox = child_mod not in pre_existing_ports
+            if not (in_pre or in_study or is_blackbox):
                 issues.append(
                     f"HIGH: port_connection {inst}.{port} → child_module={child_mod!r} "
                     f"references a port that is NEITHER pre-existing in PreEco SynRtl "
@@ -3467,6 +3473,53 @@ def main():
     # broken (run 20260527010014 R1 root cause).
     import re as _re45, gzip as _gz45
     _UNC_RE_45 = _re45.compile(r'^(SYNOPSYS_)?UNCONNECTED_\d+$')
+    # Shared PreEco text cache and helpers for Check 45 + 46
+    _preeco_text_cache_shared = {}
+    def _load_preeco_text(stage):
+        if stage in _preeco_text_cache_shared:
+            return _preeco_text_cache_shared[stage]
+        path = os.path.join(args.ref_dir, 'data', 'PreEco', f'{stage}.v.gz')
+        if not os.path.exists(path):
+            _preeco_text_cache_shared[stage] = ''; return ''
+        try:
+            with _gz45.open(path, 'rt') as fh:
+                text = fh.read()
+        except Exception:
+            text = ''
+        _preeco_text_cache_shared[stage] = text
+        return text
+
+    def _unc_in_port(text, inst, port, unc):
+        """Conservative: True if unc appears in inst.port, or if inst/port can't be located."""
+        inst_m = _re45.search(rf'\b{_re45.escape(inst)}\s*\(', text)
+        if not inst_m:
+            return True
+        block_start = inst_m.start()
+        block_end = text.find(') ;', block_start)
+        block = text[block_start: block_end + 3] if block_end > 0 else text[block_start:block_start + 50000]
+        port_m = _re45.search(
+            rf'\.{_re45.escape(port)}\s*\(\s*(\{{[^{{}}]*\}}|[^)]+)\)',
+            block, _re45.DOTALL)
+        if not port_m:
+            return True
+        return unc in port_m.group(1)
+
+    def _inner_unc_confirmed(text, inst, port, unc):
+        """Strict: True ONLY when unc is positively confirmed in inst.port."""
+        inst_m = _re45.search(rf'\b{_re45.escape(inst)}\s*\(', text)
+        if not inst_m:
+            return False
+        block_start = inst_m.start()
+        block_end = text.find(') ;', block_start)
+        block = text[block_start: block_end + 3] if block_end > 0 else text[block_start:block_start + 50000]
+        if f'.{port}' not in block:
+            return False
+        port_m = _re45.search(
+            rf'\.{_re45.escape(port)}\s*\(\s*(\{{[^{{}}]*\}}|[^)]+)\)',
+            block, _re45.DOTALL)
+        if not port_m:
+            return False
+        return unc in port_m.group(1)
     # Index existing port_connections by (stage, parent_module_base, bit).
     pc_index_45 = set()
     all_pcs_45 = []
@@ -3514,6 +3567,9 @@ def main():
                 with open(out_path) as fh:
                     r = _j45.load(fh)
                 requires = (r.get('status') == 'MODEI_DETECTED')
+                if requires:
+                    _mode_i_cache[cache_key] = r  # cache full result for verification
+                    return requires
             except Exception:
                 requires = False
         except Exception:
@@ -3567,6 +3623,20 @@ def main():
             continue
         if not _mode_i_requires_inner(parent_host_base, port_name, bit):
             continue
+        # Verify Mode I's inner UNCONNECTED actually exists on the identified
+        # sub-instance port in PreEco — scalar bus connections and per-stage
+        # module variants can cause Mode I to find a false UNCONNECTED from a
+        # different port. Only fire if the inner_unc is confirmed in the netlist.
+        modei_result = _mode_i_cache.get((parent_host_base, port_name, bit))
+        if modei_result and isinstance(modei_result, dict):
+            inner_unc = modei_result.get('inner_unc_per_stage', {}).get(stage_name)
+            sub_i     = (modei_result.get('sub_inst_per_stage') or {}).get(stage_name,
+                          modei_result.get('sub_inst', ''))
+            sub_p     = modei_result.get('sub_port', '')
+            if inner_unc and sub_i and sub_p:
+                txt45 = _load_preeco_text(stage_name)
+                if txt45 and not _inner_unc_confirmed(txt45, sub_i, sub_p, inner_unc):
+                    continue  # Mode I false-positive: inner UNC not confirmed on sub_inst.sub_port
         inst = e.get('instance_name', '?')
         port = e.get('port_name', '?')
         net  = e.get('net_name', '?')
@@ -3595,37 +3665,7 @@ def main():
     # SKIP the entry silently. Catch at Step 3 so the studier fixes/removes it.
     import subprocess as _sp46, re as _re46, gzip as _gz46
     _UNC46_RE = _re46.compile(r'^(SYNOPSYS_)?UNCONNECTED_\d+$')
-    _preeco46_cache = {}
-    def _load_preeco46(stage):
-        if stage in _preeco46_cache:
-            return _preeco46_cache[stage]
-        path = os.path.join(args.ref_dir, 'data', 'PreEco', f'{stage}.v.gz')
-        if not os.path.exists(path):
-            _preeco46_cache[stage] = ''; return ''
-        try:
-            with _gz46.open(path, 'rt') as fh:
-                text = fh.read()
-        except Exception:
-            text = ''
-        _preeco46_cache[stage] = text
-        return text
-
-    def _unc_in_port(text, inst, port, unc):
-        """True if unc appears inside .<port>( ... ) of instance inst."""
-        # Find any instance block containing inst
-        inst_m = _re46.search(rf'\b{_re46.escape(inst)}\s*\(', text)
-        if not inst_m:
-            return True  # instance not found — can't verify, assume ok
-        block_start = inst_m.start()
-        block_end = text.find(') ;', block_start)
-        block = text[block_start: block_end + 3] if block_end > 0 else text[block_start:block_start + 50000]
-        # Find port connection (may be multi-line concat)
-        port_m = _re46.search(
-            rf'\.{_re46.escape(port)}\s*\(\s*(\{{[^{{}}]*\}}|[^)]+)\)',
-            block, _re46.DOTALL)
-        if not port_m:
-            return True  # port not parsed — assume ok
-        return unc in port_m.group(1)
+    _load_preeco46 = _load_preeco_text  # reuse shared cache from Check 45
 
     _seen46 = set()
     for stage_name in ('Synthesize', 'PrePlace', 'Route'):
