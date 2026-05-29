@@ -8,8 +8,8 @@ source /tool/site-config/cshrc
 source /proj/verif_release_ro/cbwa_initscript/current/cbwa_init.csh
 
 if ($tile_name == umc_top) then
-    bootenv -x $ip_name
-    
+    bootenv -v $ip_name
+
     # Run appropriate static check based on checktype_name
     if ("$checktype_name" == "cdc_rdc") then
         echo "Running CDC/RDC checks..."
@@ -93,12 +93,12 @@ if ($tile_name == umc_top) then
         set current_dir = $refdir_name
 
         # Launch CDC/RDC in xterm (xterm itself runs in background)
-        xterm -T "CDC/RDC Check" -e /bin/tcsh -c "cd $current_dir && bootenv -x $ip_name && source $source_dir/script/rtg_oss_feint/umc/command/run_cdc_rdc.csh" &
+        xterm -T "CDC/RDC Check" -e /bin/tcsh -c "cd $current_dir && bootenv -v $ip_name && source $source_dir/script/rtg_oss_feint/umc/command/run_cdc_rdc.csh" &
         set cdc_xterm_pid = "$!"
         echo "CDC/RDC xterm launched (PID: $cdc_xterm_pid)"
 
         # Launch Spyglass DFT in xterm (xterm itself runs in background)
-        xterm -T "Spyglass DFT Check" -e /bin/tcsh -c "cd $current_dir && set ip_name = $ip_name && bootenv -x $ip_name && source $source_dir/script/rtg_oss_feint/umc/command/run_spg_dft.csh" &
+        xterm -T "Spyglass DFT Check" -e /bin/tcsh -c "cd $current_dir && set ip_name = $ip_name && bootenv -v $ip_name && source $source_dir/script/rtg_oss_feint/umc/command/run_spg_dft.csh" &
         set spg_xterm_pid = "$!"
         echo "Spyglass DFT xterm launched (PID: $spg_xterm_pid)"
 
