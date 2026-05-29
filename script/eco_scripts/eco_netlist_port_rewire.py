@@ -290,8 +290,16 @@ def _cleanup_orphan_wire_and_add_new_decl(lines, mod_start, mod_end, old_net, ne
                 first_use_idx = i
                 break
         if first_use_idx > 0:
-            # Insert just before first use, staying after any leading `module` / port decls
-            insert_at = first_use_idx
+            # Find the START of the statement containing the first use by scanning
+            # backward for the previous ';' (end of prior statement). This prevents
+            # inserting inside a multi-line concat or port-connection block, which
+            # would produce invalid Verilog (SVR-4).
+            stmt_start = first_use_idx
+            for j in range(first_use_idx - 1, -1, -1):
+                if ';' in body[j]:
+                    stmt_start = j + 1
+                    break
+            insert_at = stmt_start
         else:
             # Fallback: after last wire decl if new_net not yet in body
             last_wire_idx = -1
