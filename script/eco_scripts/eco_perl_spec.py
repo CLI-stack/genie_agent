@@ -356,17 +356,23 @@ def main():
                 bit_idx = e.get('bus_bit_index')
                 # output_net for a bus gate bit: e.g. "wdbptr_org0_d2_nxt[3]"
                 out_net = e.get('output_net', '')
-                base_net = re.sub(r'\[\d+\]$', '', out_net)
-                # Fallback: extract bit index from output_net bracket form when
-                # bus_bit_index is not set on the entry (e.g. INV bus gate bits
-                # generated without explicit bus_bit_index field).
-                if bit_idx is None and out_net and '[' in out_net:
-                    _m = re.search(r'\[(\d+)\]$', out_net)
-                    if _m:
-                        bit_idx = int(_m.group(1))
-                if bit_idx is not None and base_net:
-                    key = (mod, base_net)
-                    bus_dff_groups.setdefault(key, set()).add(int(bit_idx))
+                # Only declare a bus vector if the output_net IS a bus bit (bracket form).
+                # Scalar intermediate gates (e.g. n_eco_9855_d003_b0) should NOT
+                # be declared as a bus vector — they are individual scalar wires.
+                if '[' not in (out_net or ''):
+                    pass  # scalar output — no bus vector declaration needed
+                else:
+                    base_net = re.sub(r'\[\d+\]$', '', out_net)
+                    # Fallback: extract bit index from output_net bracket form when
+                    # bus_bit_index is not set on the entry (e.g. INV bus gate bits
+                    # generated without explicit bus_bit_index field).
+                    if bit_idx is None and out_net and '[' in out_net:
+                        _m = re.search(r'\[(\d+)\]$', out_net)
+                        if _m:
+                            bit_idx = int(_m.group(1))
+                    if bit_idx is not None and base_net:
+                        key = (mod, base_net)
+                        bus_dff_groups.setdefault(key, set()).add(int(bit_idx))
 
             # GAP-7: existing-signal reuse — skip cell insertion entirely when
             # the studier marked this gate as reusing an existing wire. The
@@ -921,6 +927,16 @@ def main():
         if zgrep_count(target_reg, posteco) > 0:
             statuses.append({'name': target_reg, 'status': 'INFO',
                              'reason': f'bus wire_decl SKIPPED for {decl}: signal already in PostEco'})
+            continue
+        # Skip if the signal appears as a port connection in the batch — the
+        # port connection (e.g. .RowUpperMask(RowUpperMask)) creates an implicit
+        # wire that Verilog already tracks. Adding an explicit bus decl AFTER the
+        # port connection (near endmodule) causes SVR-9 duplicate declaration.
+        # eco_netlist_port_rewire.py handles the explicit decl via its own
+        # "insert before first use" mechanism, so we defer to that.
+        if target_reg in port_conn_nets:
+            statuses.append({'name': target_reg, 'status': 'INFO',
+                             'reason': f'bus wire_decl DEFERRED for {decl}: signal used as port_connection net — eco_netlist_port_rewire inserts before first use'})
             continue
         changes[mod]['wire_decls'].append(decl)
         statuses.append({'name': target_reg, 'status': 'INFO',
