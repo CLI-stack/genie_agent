@@ -310,11 +310,7 @@ Algorithm: walk the child module body, find any sub-instance whose output bus ha
 - `module_name`: child module name (the wrapper)
 - `instance_name`: the sub-instance whose bus output is undriven
 - `port_name`/`bus_bit_index`: same bit position (sub-instance's port)
-- `net_name`: **`<WRAPPER_OUTPUT_PORT>[<bus_bit_index>]`** — bracket form of the WRAPPER MODULE'S OWN output port at that bit position. This is a self-reference to the wrapper's `output [W:0] <port>` bus. Using `<port>[N]` inside the module body directly drives the output bus bit — the sub-instance's DFF Q propagates out to the parent. Three wrong alternatives all create floating wires:
-  - Flat form `<port>_<N>_` → separate 1-bit wire, never connects to output bus → FM `Ref Und` → 8F
-  - Sub-instance port name (e.g. sub_port_name_N_) → different floating wire → FM `Impl Und` → 8F
-  - Generic `eco_{jira}_` prefix → opaque intermediate → FM compare-point boundary → 8F
-  - Validator Check 49 enforces bracket self-reference form.
+- `net_name`: **`<WRAPPER_OUTPUT_PORT>[<bus_bit_index>]`** — bracket form of the WRAPPER MODULE'S OWN output port at that bit. `<port>[N]` inside the module body is a self-reference to `output [W:0] <port>` — it directly drives the output bus bit, so the sub-instance DFF Q propagates out. Any other name (flat form, sub-instance port name, generic prefix) creates a separate floating wire that never connects to the output bus. Validator Check 49 enforces this.
 - `net_name_before`: per-stage map of internal UNCONNECTED placeholders
 
 This is wire-up (real driver), not invention. Engineers do this manually when a register output bit is spare.
