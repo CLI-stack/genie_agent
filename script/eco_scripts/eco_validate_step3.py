@@ -1051,6 +1051,35 @@ def main():
                         f"(e.g. {sample}); using the raw UCLK clock leaves the new "
                         f"DFF on a different clock domain from siblings.")
 
+    # ── 25b. CROSS-STAGE-CLOCK-MISMATCH: Route uses CTS/wrapper clock but
+    # PrePlace still uses raw UCLK. Topology-agnostic — does NOT require
+    # pre-existing neighbor DFFs (the gap in Check 25).
+    # Root case: ECO 9868 NeedFreqAdj_reg — brand-new module umcarbctrlsw had
+    # 0 pre-existing DFFs so Check 25's wrp_clk neighbor scan skipped it;
+    # PP=UCLK01 but Route=FxCts_ZCTSNET_5 → clock gater cone present in PP
+    # but absent in Route → FM FmEqvEcoRouteVsEcoPrePlace non-equiv after 6 rounds.
+    for e in study.get('Synthesize', []):
+        if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
+            continue
+        if not e.get('confirmed', True):
+            continue
+        pcs_per_stage = e.get('port_connections_per_stage') or {}
+        inst = e.get('instance_name', '?')
+        rt_cp_cs = (pcs_per_stage.get('Route', {}) or {}).get('CP', '').strip()
+        pp_cp_cs = (pcs_per_stage.get('PrePlace', {}) or {}).get('CP', '').strip()
+        if (rt_cp_cs and pp_cp_cs
+                and _re.match(r'(FxCts_|FxOptCts_|wrp_clk_)', rt_cp_cs, _re.IGNORECASE)
+                and _re.match(r'UCLK', pp_cp_cs, _re.IGNORECASE)):
+            issues.append(
+                f"HIGH/25b-STAGE-CLOCK-MISMATCH: ECO DFF {inst}.CP Route={rt_cp_cs!r} "
+                f"(CTS-renamed) but PrePlace={pp_cp_cs!r} (raw UCLK). "
+                f"PrePlace must use wrp_clk_* so FM can trace the CTS rename "
+                f"Route→PrePlace cleanly — FmEqvEcoRouteVsEcoPrePlace fails when "
+                f"PP has the ungated UCLK cone but Route has the post-CTS cone "
+                f"(clock gater present in PP cone, absent in Route cone). "
+                f"Fix: set port_connections_per_stage['PrePlace'].CP to the "
+                f"wrp_clk_* net used by sibling DFFs in the parent module.")
+
     # ── 15. Every confirmed entry must have non-empty `reason`, `notes`, and
     # `source` — these populate the Step 3 RPT and serve as the audit trail for
     # round-N re-studier. Empty fields = un-traceable change.
