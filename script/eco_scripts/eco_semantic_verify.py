@@ -86,9 +86,10 @@ class NetlistView:
         """
         if module_name in self._module_cache:
             return self._module_cache[module_name]
-        # Try exact, _0 suffix, then any '<prefix>_<bare>' tile-prefix variant
+        # Try exact, _0 suffix, '<prefix>_<bare>', '<prefix>_<bare>_0' tile-prefix variants
         for cand_pat in (rf'^module\s+{re.escape(module_name)}\b',
                          rf'^module\s+{re.escape(module_name)}_0\b',
+                         rf'^module\s+\S+_{re.escape(module_name)}_0\b',
                          rf'^module\s+\S+_{re.escape(module_name)}\b'):
             m = re.search(cand_pat, self.text, re.MULTILINE)
             if m:
@@ -224,8 +225,15 @@ def verify_new_logic(entry, view, stage):
         if actual is None:
             return f'instance {inst}.{pin} not present in netlist'
         # Strip whitespace for comparison
-        if actual.strip() != expected_net.strip():
-            return f'instance {inst}.{pin} = {actual.strip()!r} but expected {expected_net.strip()!r}'
+        actual_s = actual.strip()
+        expected_s = expected_net.strip()
+        if actual_s != expected_s:
+            # Tolerate bracket↔flat form equivalence: 'net[N]' ↔ 'net_N_'
+            import re as _re
+            def _to_flat(n):
+                return _re.sub(r'\[(\d+)\]', lambda m: f'_{m.group(1)}_', n)
+            if _to_flat(actual_s) != _to_flat(expected_s):
+                return f'instance {inst}.{pin} = {actual_s!r} but expected {expected_s!r}'
     return None
 
 

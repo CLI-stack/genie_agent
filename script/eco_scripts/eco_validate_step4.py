@@ -234,7 +234,7 @@ def main():
                 e.get('signal_name') or e.get('name') or '?')
 
     def _is_success(status):
-        return status in ('APPLIED', 'INSERTED', 'QUEUED', 'AUTO_SANITIZED')
+        return status in ('APPLIED', 'INSERTED', 'QUEUED', 'AUTO_SANITIZED', 'ALREADY_APPLIED')
 
     per_edit = {}  # key → { stage → status }
     for stage in ('Synthesize', 'PrePlace', 'Route'):
