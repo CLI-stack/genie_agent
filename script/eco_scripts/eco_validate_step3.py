@@ -3878,9 +3878,12 @@ def main():
             # takes precedence over the sub-instance port name.
             _parent_mod = _e48.get('module_name') or _e48.get('parent_module', '')
             _wrapper_ports = _get_module_output_ports(_parent_mod) if _parent_mod else set()
-            _net_base = _re48.sub(r'_\d+_$', '', _net)
-            if _net_base in _wrapper_ports:
-                pass  # Check 49 handles this — wrapper output port name is correct
+            # Exempt bracket form <port>[N] or flat form <port>_N_ when base is a
+            # wrapper output port — Check 49 validates these (self-reference to output bus)
+            _net_base_flat = _re48.sub(r'_\d+_$', '', _net)   # strip _N_
+            _net_base_bracket = _re48.sub(r'\[\d+\]$', '', _net)  # strip [N]
+            if _net_base_flat in _wrapper_ports or _net_base_bracket in _wrapper_ports:
+                pass  # Check 49 handles this — wrapper output port form is correct
             else:
                 _inst = _e48.get('instance_name', '?')
                 issues.append(
@@ -3927,30 +3930,26 @@ def main():
         out_ports = _get_module_output_ports(_mod)
         if not out_ports:
             continue
-        # If net_name starts with the sub-instance port name instead of a
-        # wrapper output port name → likely wrong (floating wire)
-        _port_base = _re49.sub(r'_\d+_$', '', _net)  # strip _N_ suffix to get base name
-        _port_base2 = _re49.sub(r'\[\d+\]$', '', _port_base)  # also handle [N] form
-        # net_name base should match one of the wrapper's output ports
-        if _port_base2 and _port_base2 not in out_ports:
-            # Check if there IS an output port that this SHOULD have used
+        # net_name MUST be <wrapper_output_port>[N] — bracket self-reference.
+        # Flat form <port>_N_ creates a separate floating wire that does NOT
+        # connect to the output bus → FM Impl/Ref Und → 8F.
+        # Evidence: engineer uses REG_UmcCfgEco[5] (bracket) not REG_UmcCfgEco_5_.
+        _net_base = _re49.sub(r'\[\d+\]$', '', _net)   # strip [N] bracket suffix
+        _is_bracket = bool(_re49.search(r'\[\d+\]$', _net))
+        if not (_net_base in out_ports and _is_bracket):
             _expected_base = None
             for op in out_ports:
-                # Heuristic: an output port whose name contains similar keywords
-                # to the sub-instance's port_name (e.g. UmcCfgEco in both)
                 if any(part in op for part in _port.split('_') if len(part) > 3):
                     _expected_base = op
                     break
             if _expected_base:
-                _expected_net = f'{_expected_base}_{_bbi}_'
+                _expected_net = f'{_expected_base}[{_bbi}]'
                 issues.append(
                     f"HIGH/49-INNER-PARTNER-NET-NAME: port_connection "
-                    f"{_mod}.{_inst}.{_port}[{_bbi}] has net_name={_net!r} "
-                    f"whose base {_port_base2!r} is NOT an output port of wrapper "
-                    f"module {_mod!r}. This creates a floating wire — the wrapper's "
-                    f"output port bit[{_bbi}] remains undriven (FM Impl Und → 8F). "
-                    f"Fix: set net_name={_expected_net!r} (flat form of wrapper output "
-                    f"port {_expected_base!r} at bit {_bbi}).")
+                    f"{_mod}.{_inst}.{_port}[{_bbi}] has net_name={_net!r}. "
+                    f"Must be bracket form {_expected_net!r} — self-reference to "
+                    f"wrapper output port {_expected_base!r}[{_bbi}]. "
+                    f"Flat/wrong form creates floating wire → FM Impl/Ref Und → 8F.")
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
