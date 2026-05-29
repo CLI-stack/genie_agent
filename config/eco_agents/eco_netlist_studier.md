@@ -310,8 +310,11 @@ Algorithm: walk the child module body, find any sub-instance whose output bus ha
 - `module_name`: child module name (the wrapper)
 - `instance_name`: the sub-instance whose bus output is undriven
 - `port_name`/`bus_bit_index`: same bit position (sub-instance's port)
-- `net_name`: **`<HOST_OUTPUT_PORT>[<N>]`** — the BRACKET FORM of the WRAPPER MODULE'S OWN output port at that bit. This is a self-reference to the wrapper's `output [31:0] <port>` bus: using `PORT[N]` inside the module directly drives the output bus bit — the DFF Q output propagates out. Using flat form `PORT_N_` creates a SEPARATE 1-bit floating wire that never connects to the bus → FM sees the output port bit as undriven (`Ref Und`) → 8F non-equivalent. Using sub-instance port name (`oQ_Xxx_5_`) creates a different floating wire → FM `Impl Und` → 8F.
-  - Example: wrapper `ddrss_umccmd_t_umcregcmd` has `output [31:0] REG_UmcCfgEco`. Inner partner for bit 5 → `net_name = REG_UmcCfgEco[5]` (bracket, self-ref). Wrong: `net_name = REG_UmcCfgEco_5_` (flat — floating wire, FM Ref Und → 8F). Wrong: `net_name = oQ_UmcCfgEco_UmcCfgEco_5_` (sub-instance port — floating wire, FM Impl Und → 8F). Validator Check 49 enforces this.
+- `net_name`: **`<WRAPPER_OUTPUT_PORT>[<bus_bit_index>]`** — bracket form of the WRAPPER MODULE'S OWN output port at that bit position. This is a self-reference to the wrapper's `output [W:0] <port>` bus. Using `<port>[N]` inside the module body directly drives the output bus bit — the sub-instance's DFF Q propagates out to the parent. Three wrong alternatives all create floating wires:
+  - Flat form `<port>_<N>_` → separate 1-bit wire, never connects to output bus → FM `Ref Und` → 8F
+  - Sub-instance port name (e.g. sub_port_name_N_) → different floating wire → FM `Impl Und` → 8F
+  - Generic `eco_{jira}_` prefix → opaque intermediate → FM compare-point boundary → 8F
+  - Validator Check 49 enforces bracket self-reference form.
 - `net_name_before`: per-stage map of internal UNCONNECTED placeholders
 
 This is wire-up (real driver), not invention. Engineers do this manually when a register output bit is spare.
