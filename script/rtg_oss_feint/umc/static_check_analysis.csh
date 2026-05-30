@@ -22,6 +22,14 @@ else
 endif
 echo "Kernel detected: $kernel_version -> using $kernel_dir"
 
+# For umc17 family: both Grimlock (umc17_0) and Godavari (umc17_x) share umc17_x output paths
+if (! $?path_ip_name) then
+    set path_ip_name = $ip_name
+endif
+if ("$ip_name" == "umc17_0") then
+    set path_ip_name = "umc17_x"
+endif
+
 # Route to appropriate analysis based on check type
 if ("$checktype_name" == "cdc_rdc") then
     echo "#text#" >> $source_dir/data/${tag}_spec
@@ -52,7 +60,7 @@ if ("$checktype_name" == "cdc_rdc") then
         else
             set cdc_rpt_path = "$refdir_name/$look_for_rpt_cdc"
             set rdc_rpt_path = "$refdir_name/$look_for_rpt_rdc"
-            python $source_dir/script/rtg_oss_feint/umc/cdc_rdc_extract_violation.py $cdc_rpt_path $rdc_rpt_path $tile_name >> $source_dir/data/${tag}_spec
+            python $source_dir/script/rtg_oss_feint/umc/cdc_rdc_extract_violation.py $cdc_rpt_path $rdc_rpt_path $tile_name $path_ip_name >> $source_dir/data/${tag}_spec
         endif
     else
         echo "WARNING: CDC/RDC analysis only supports umc_top tile (current: $tile_name)" >> $source_dir/data/${tag}_spec
@@ -107,7 +115,7 @@ else if ("$checktype_name" == "spg_dft") then
             exit 1
         else
             set spg_rpt_path = "$refdir_name/$look_for_rpt_spg_dft"
-            perl $error_extract_pl $spg_rpt_path $error_filter $tile_name $refdir_name $ip_name >> $source_dir/data/${tag}_spec
+            perl $error_extract_pl $spg_rpt_path $error_filter $tile_name $refdir_name $path_ip_name >> $source_dir/data/${tag}_spec
         endif
     else
         echo "WARNING: Spyglass DFT analysis only supports umc_top tile (current: $tile_name)" >> $source_dir/data/${tag}_spec

@@ -8,6 +8,13 @@ source /tool/site-config/cshrc
 source /proj/verif_release_ro/cbwa_initscript/current/cbwa_init.csh
 
 if ($tile_name == umc_top) then
+    # For umc17 family: bootenv differentiates Grimlock (umc17_0) vs Godavari (umc17_x)
+    # but both share umc17_x as DJ_CONTEXT, so report paths always use umc17_x
+    set path_ip_name = $ip_name
+    if ("$ip_name" == "umc17_0") then
+        set path_ip_name = "umc17_x"
+    endif
+
     bootenv -v $ip_name
 
     # Run appropriate static check based on checktype_name
@@ -218,7 +225,7 @@ if ($tile_name == umc_top) then
         # Generate final summary and write to data spec
         echo "Generating final summary..."
         set error_filter = "$source_dir/script/rtg_oss_feint/umc/spg_dft_error_filter.txt"
-        perl $source_dir/script/rtg_oss_feint/umc/static_check_summary.pl $refdir_name $tile_name $error_filter $refdir_name $ip_name >> $source_dir/data/${tag}_spec
+        perl $source_dir/script/rtg_oss_feint/umc/static_check_summary.pl $refdir_name $tile_name $error_filter $refdir_name $path_ip_name >> $source_dir/data/${tag}_spec
 
         echo "Full static check suite completed successfully"
         
