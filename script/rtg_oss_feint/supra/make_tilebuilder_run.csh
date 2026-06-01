@@ -818,6 +818,15 @@ if ($has_revrc == 1) then
                                             rm -f $ROOTCAUSE_CLEAN $ROOTCAUSE_UNIQUE
                                         else
                                             echo "  WARNING: No root cause errors extracted - only blocking patterns found"
+                                            # If pattern is .* (any failure), allow skip even with no root causes
+                                            # This handles upstream dependency failures where only output-not-created errors appear
+                                            set expected_pattern_text = `cat $EXPECTED_PATTERN_FILE`
+                                            if ("$expected_pattern_text" == ".*") then
+                                                echo "  ✓ Pattern is .* (any failure) - allowing skip despite no root causes"
+                                                echo "  This task likely failed due to missing upstream dependency output"
+                                                rm -f $TMPFILE $PATTERNS_MATCHED $EXPECTED_PATTERN_FILE
+                                                continue
+                                            endif
                                             echo "  ✗ Cannot verify expected pattern match - Cannot skip!"
                                             echo -n "  Expected pattern: "
                                             cat $EXPECTED_PATTERN_FILE

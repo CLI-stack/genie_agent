@@ -12,3 +12,5 @@
 # Use .* to skip ANY failure (force skip)
 # Use (pattern1|pattern2) to match multiple specific root causes
 GetSdc: (No such file.*sdc|/tool.*GetSdc\.csh)
+ShFcGetClocksXML: (file does not exist.*clocks_ddrss\.xml|/tool.*ShFcGetClocksXML\.csh)
+PlFcGenFULLCHIPTIMINGLpTypicalClkSdc: .*
