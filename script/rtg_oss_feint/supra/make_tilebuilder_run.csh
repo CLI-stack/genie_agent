@@ -508,21 +508,6 @@ if ($has_revrc == 1) then
         endif
     endif
 
-    # Phase 2.5: Enable ULVTLL cells in douse_or_dontuse.tcl (umccmd and umcdat only)
-    echo ""
-    if ("$tile_name" == "umccmd" || "$tile_name" == "umcdat") then
-        echo "Phase 2.5: Enabling ULVTLL cells in douse_or_dontuse.tcl for $tile_name..."
-        set dontuse_tcl = "${final_tile_dir}/tune/project/Opt/douse_or_dontuse.tcl"
-        if (-f $dontuse_tcl) then
-            perl -i -pe 's/exclude(.*CPDULVTLL)/include$1/' $dontuse_tcl
-            echo "  ✓ ULVTLL cells enabled in $dontuse_tcl"
-        else
-            echo "  WARNING: douse_or_dontuse.tcl not found: $dontuse_tcl"
-        endif
-    else
-        echo "Phase 2.5: SKIPPED (tile $tile_name is not umccmd or umcdat)"
-    endif
-
     # Phase 3: Monitor until target is RUNNING
     echo ""
     echo "Phase 3: Monitoring until target is RUNNING"
