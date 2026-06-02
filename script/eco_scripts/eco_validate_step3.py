@@ -3980,6 +3980,91 @@ def main():
                     f"wrapper output port {_expected_base!r}[{_bbi}]. "
                     f"Flat/wrong form creates floating wire → FM Impl/Ref Und → 8F.")
 
+    # ── Check 50: enable_swap with clock gate → shadow gate + CP/D rewires ──
+    # When enable_via_clock_gate=true the correct implementation is:
+    #   (a) a NEW shadow clock gate cell (CKOR*/ICG*/CTG* type) in the study
+    #   (b) rewire entries switching the existing DFF array CP to the new gate
+    #   (c) rewire entries switching the existing DFF array D-inputs to the new mux output
+    # Rewiring only the existing gate's E-pin is wrong — it corrupts other
+    # consumers of that enable net and leaves DFF D-inputs unchanged.
+    _CG_RE = re.compile(r'^(CKOR|ICG|CTG|CKLNQ|CKGT)', re.I)
+    for _c in rtl_diff.get('changes', []):
+        if _c.get('change_type') != 'enable_swap':
+            continue
+        if not _c.get('enable_via_clock_gate'):
+            continue
+        _tgt = _c.get('target_register') or '?'
+        # (a) shadow clock gate — new_logic_gate with a CG cell type
+        _has_shadow_gate = any(
+            e.get('change_type') == 'new_logic_gate' and
+            _CG_RE.match(str(e.get('cell_type') or e.get('cell_name') or ''))
+            for stage in ('Synthesize', 'PrePlace', 'Route')
+            for e in study.get(stage, [])
+        )
+        if not _has_shadow_gate:
+            issues.append(
+                f"Check 50 FAIL: enable_swap target={_tgt!r} has enable_via_clock_gate=true "
+                f"but study JSON has NO new shadow clock gate (CKOR*/ICG*/CTG* new_logic_gate). "
+                f"Pattern: create clk_gate_ECO_<jira>_<original> driven by an OR/AND gate whose "
+                f"inputs include the new enable net. Do NOT rewire the existing clock gate E-pin.")
+        # (b) CP rewire for existing DFF array
+        _has_cp_rewire = any(
+            e.get('change_type') == 'rewire' and
+            str(e.get('pin', '')).upper() in ('CP', 'CK', 'CLK', 'C', 'CPN')
+            for stage in ('Synthesize', 'PrePlace', 'Route')
+            for e in study.get(stage, [])
+        )
+        if not _has_cp_rewire:
+            issues.append(
+                f"Check 50 FAIL: enable_swap target={_tgt!r} has enable_via_clock_gate=true "
+                f"but study JSON has NO CP rewire entry. The existing DFF array CP pins must be "
+                f"switched from the old clock gate output to the new shadow gate output.")
+        # (c) D-input rewire for existing DFF array
+        _has_d_rewire = any(
+            e.get('change_type') == 'rewire' and
+            str(e.get('pin', '')).upper() in ('D', 'D1', 'D2', 'D3', 'D4', 'DI', 'DIN')
+            for stage in ('Synthesize', 'PrePlace', 'Route')
+            for e in study.get(stage, [])
+        )
+        if not _has_d_rewire:
+            issues.append(
+                f"Check 50 FAIL: enable_swap target={_tgt!r} has enable_via_clock_gate=true "
+                f"but study JSON has NO D-input rewire entry. The existing DFF array D-input pins "
+                f"must be rewired from the old data path to the new mux output (ECO_<jira>_net*).")
+
+    # ── Check 51: enable_via_clock_gate=False — verify against PreEco netlist ──
+    # The rtl_diff_analyzer may wrongly classify an enable_swap as not having a
+    # clock gate. If the PreEco Synthesize netlist contains a CKOR*/ICG*/CTG* cell
+    # named clk_gate_<target>_reg, the field should be True. This catches the
+    # mismatch before Step 3 generates the wrong (E-pin rewire) implementation.
+    _CG_TYPE_RE = re.compile(r'^(CKOR|ICG|CTG|CKLNQ|CKGT)', re.I)
+    _preeco_syn_gz = os.path.join(args.ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
+    if os.path.exists(_preeco_syn_gz):
+        for _c in rtl_diff.get('changes', []):
+            if _c.get('change_type') != 'enable_swap':
+                continue
+            if _c.get('enable_via_clock_gate'):
+                continue  # already True — Check 50 covers this path
+            _tgt = _c.get('target_register', '?')
+            try:
+                _r = subprocess.run(
+                    f'zgrep -E "clk_gate_{re.escape(_tgt)}_reg" {_preeco_syn_gz}',
+                    shell=True, capture_output=True, text=True, timeout=20)
+                if _r.returncode == 0 and _r.stdout.strip():
+                    for _line in _r.stdout.strip().splitlines():
+                        _parts = _line.strip().split()
+                        if _parts and _CG_TYPE_RE.match(_parts[0]):
+                            issues.append(
+                                f"Check 51 FAIL: enable_swap target={_tgt!r} has "
+                                f"enable_via_clock_gate=False but PreEco Synthesize contains "
+                                f"clock gate cell 'clk_gate_{_tgt}_reg' ({_parts[0]}). "
+                                f"Set enable_via_clock_gate=true and add clock_gate_instance "
+                                f"+ dff_cp_net to the RTL diff entry. Step 3 will then create "
+                                f"a shadow clock gate instead of rewiring the existing E-pin.")
+                            break
+            except Exception:
+                pass
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}

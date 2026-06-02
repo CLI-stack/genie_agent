@@ -655,52 +655,30 @@ On (A)+(B) miss, emit `cell_name_per_stage[stage]: null` and `confirmed_per_stag
 
 ### Phase 0.16 — Process `enable_swap` changes  (was Phase 0e — was out-of-order at end of Phase 0)
 > **SKIP IF** no `enable_swap` changes in rtl_diff.
-> **DONE WHEN** for every enable_swap: either (A) the clock gate E pin is rewired (preferred) or (B) the DFF CE/WE pin is rewired (fallback), AND new enable condition gate entries are emitted from `new_enable_gate_chain[]`.
+> **DONE WHEN** for every enable_swap with clock gate (Path A): shadow clock gate emitted + CP rewires + D-input rewires + new enable logic gates. Path B (no clock gate): CE/WE rewire + enable logic gates.
 
-For each `enable_swap` change (clock-enable / write-enable pin rewire on an existing DFF):
+For each `enable_swap` change:
 
-**Step 0 — Detect clock gate (MANDATORY — set `enable_via_clock_gate` in JSON before Step 1):**
+**Step 0 — Detect clock gate (MANDATORY):**
+Check if DFF CP is driven by `ICG*`/`CKOR*`/`CTG*` — grep PreEco Synthesize for `.CP(<clk_net>)` then find the driver cell. Set `enable_via_clock_gate` accordingly on the RTL diff entry.
 
-`enable_via_clock_gate` MUST be explicitly set on the enable_swap change entry (`true` or `false`) — eco_validate_step1.py FAILs if absent. Check if the target DFF's CP (clock) is driven by a clock gate cell:
-```bash
-grep -E "\.(CP|CK)\s*\(\s*<clk_net>\s*\)" /tmp/eco_study_<TAG>_Synthesize.v | head -3
-# Then find what drives <clk_net>:
-grep -E "\.(Z|Q)\s*\(\s*<clk_net>\s*\)" /tmp/eco_study_<TAG>_Synthesize.v | head -3
-```
-If the driver cell is a clock gate type (`ICG*`, `CKOR*`, `CTG*`, `CKLNQ*`, `CKGT*`):
-- **Use Path A (clock gate E-pin rewire)** — engineers strongly prefer this
-- Record `enable_via_clock_gate: true`, `clock_gate_instance: <inst>`, `clock_gate_E_pin: <E|EN|TE>`
-- Emit a `rewire` on the clock gate's E pin: `old_enable_net → new_enable_net`
-- NO per-bit iteration — one clock gate serves all bus-width DFF bits
-- Immune to wrong-module cell name collisions
+**Path A — Clock gate exists (`enable_via_clock_gate: true`):**
 
-If no clock gate (DFF's CP comes directly from a clock net):
-- **Use Path B (CE/WE pin rewire)** — as before
+1. **New shadow clock gate** — emit `new_logic_gate` for `clk_gate_ECO_<jira>_<original_name>` (same CKOR*/ICG* cell type as original). Its E-pin is driven by an OR/AND gate whose input is the new enable net. Its Q output is `ECO_<jira>_umcdat_WDB_uclkg_clk_gate_<dff_name>`. Do NOT touch the existing clock gate.
 
-**Step 1 — Locate enable target (Path A: clock gate / Path B: DFF CE pin):**
-- Get the FM fenets results for `old_enable_net` (queried in Step 2 as Cat 8).
-- **Path A:** from the clock gate instance found in Step 0, emit the E-pin rewire directly. No FM fanout walk needed.
-- **Path B (fallback):** From the FM `(+)` impl line, extract the cell name. The enable pin (CE/EN/WE/E) is the pin that `old_enable_net` connects to — grep the PreEco Synthesize cell block:
-  ```bash
-  grep -A 20 "<cell_name>" /tmp/eco_study_<TAG>_Synthesize.v | grep -E "\.(CE|EN|WE|E)\s*\("
-  ```
-- Use `eco_cell_truth_tables.py` to confirm the enable pin name for that cell type.
-- For bus DFFs (is_bus_dff: true on the companion new_logic change): repeat for all N per-bit DFF cells; the enable net is shared across all bits.
+2. **OR/gate for E-pin** — emit `new_logic_gate` for the cell driving the shadow gate's E-pin (e.g. OR2D1), using `dff_cp_net`-scope to anchor it in the correct module. This OR/AND gate combines any existing gating condition (`rep_*` / fan-in of old enable) with the new enable net.
 
-**Step 2 — Emit rewire entries:**
+3. **CP rewires** — grep PreEco Synthesize for all DFF cells with `.CP(<dff_cp_net>)` in the target module. Emit one `rewire` per cell (per stage using rename_map): `pin: CP`, `old_net: <dff_cp_net>`, `new_net: <shadow_gate_Q_net>`, `module_name: <module>`.
 
-For each stage, emit a `rewire` entry for the enable pin:
-```json
-{ "change_type": "rewire",
-  "cell_name": "<cell_name_per_stage>",
-  "pin": "<CE|EN|WE|E>",
-  "old_net": "<old_enable_net>",
-  "new_net": "<new_enable_net>",
-  "confirmed": true,
-  "reason": "enable_swap: CE pin rewired from old condition to new condition",
-  "cell_name_per_stage": {"Synthesize": "...", "PrePlace": "...", "Route": "..."},
-  "module_name": "<gate-level module name containing the cell>" }
-```
+4. **D-input rewires** — emit `rewire` entries for each existing DFF cell's D-pin: `old_net: <N69..N75>`, `new_net: <ECO_<jira>_net<N>>` (the AND-gated mux output from the companion gate chain). Per-stage names via rename_map.
+
+5. **New enable logic gates** — emit `new_logic_gate` entries for `new_enable_gate_chain[]` (AO22/INV etc.) that produce the new enable net feeding into the OR gate (step 2).
+
+**Path B — No clock gate (`enable_via_clock_gate: false`):**
+
+Get FM fenets result for `old_enable_net`. From the `(+)` impl line, extract the DFF CE/EN/WE pin and emit a `rewire` entry per stage. Then emit `new_logic_gate` entries for `new_enable_gate_chain[]`.
+
+**`module_name` is MANDATORY on every `rewire` entry.**
 
 **`module_name` is MANDATORY on every `rewire` entry** — including enable_swap rewires. Tool-generated cell names (`ctmi_*`, `phs_*`, `copt_*`) repeat across many modules in the hierarchical netlist. Without `module_name`, eco_applier matches the first cell of that name in the entire file — which may be in a completely unrelated module, silently corrupting unrelated logic while leaving the intended target unchanged. Extract `module_name` from the FM impl path: `i:/FMWORK_IMPL_<TILE>/<TILE>/<INST_A>/<INST_B>/<cell>/<pin>` — the declaring module is derived from `<INST_A>/<INST_B>` hierarchy using `resolve_module_name()` against the PostEco netlist.
 

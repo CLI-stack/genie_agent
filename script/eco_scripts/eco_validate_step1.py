@@ -420,6 +420,31 @@ def main():
     if clk_gate_field_issues:
         overall_pass = False
 
+    # ── enable_via_clock_gate=true → require clock_gate_instance + dff_cp_net ─
+    # When enable_swap targets a clock-gated DFF (enable_via_clock_gate=true),
+    # Step 3 must create a shadow clock gate and rewire the DFF array CPs.
+    # It needs: clock_gate_instance (old CG cell name, for per-stage lookup)
+    # and dff_cp_net (old CG output net, to find all DFF cells using it).
+    shadow_gate_field_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') != 'enable_swap':
+            continue
+        if not c.get('enable_via_clock_gate'):
+            continue
+        tgt = c.get('target_register') or c.get('new_token') or '?'
+        if not c.get('clock_gate_instance'):
+            shadow_gate_field_issues.append(
+                f"changes[{idx}] target={tgt!r}: enable_via_clock_gate=true but "
+                f"`clock_gate_instance` missing — record the existing clock gate cell name "
+                f"so Step 3 can look up its per-stage name via rename_map for the CP rewire.")
+        if not c.get('dff_cp_net'):
+            shadow_gate_field_issues.append(
+                f"changes[{idx}] target={tgt!r}: enable_via_clock_gate=true but "
+                f"`dff_cp_net` missing — record the clock gate's Q/output net "
+                f"so Step 3 can find all DFF cells connected to it for CP rewiring.")
+    if shadow_gate_field_issues:
+        overall_pass = False
+
     # ── has_sync_reset vs context_line reset detection ────────────────────────
     # The rtl_diff_analyzer detects reset from context_line, but context_line
     # may span multiple lines when the always block is captured in full.  When
@@ -1822,6 +1847,8 @@ def main():
         'enable_swap_issues':             enable_swap_issues,
         'clk_gate_field_issue_count':      len(clk_gate_field_issues),
         'clk_gate_field_issues':          clk_gate_field_issues,
+        'shadow_gate_field_issue_count':   len(shadow_gate_field_issues),
+        'shadow_gate_field_issues':        shadow_gate_field_issues,
         'reset_detection_issue_count':     len(reset_detection_issues),
         'reset_detection_issues':         reset_detection_issues,
         'dup_chain_issue_count':           len(dup_chain_issues),
