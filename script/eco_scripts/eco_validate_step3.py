@@ -2954,13 +2954,13 @@ def main():
             _prefix_found = bool(_re_ct.search(rf'\b{_re_ct.escape(_prefix)}\w*\b', _mod_body))
             if not _prefix_found:
                 issues.append(
-                    f"WARN/GATE-TYPE-NOT-IN-PREECO: {_e.get('instance_name','?')} "
+                    f"FAIL/GATE-TYPE-NOT-IN-PREECO: {_e.get('instance_name','?')} "
                     f"uses cell_type '{_ct}' (prefix {_prefix}) but this cell family "
                     f"has 0 occurrences in PreEco module '{_mod}'. "
-                    f"Synthesis never used this cell type in that module — likely an "
-                    f"invented gate decomposition. Use E4c: grep PreEco Synthesize for "
-                    f"cells implementing the same boolean function near the pivot cone "
-                    f"and use that exact cell type instead.")
+                    f"Using an invented cell type causes FM scan-path structural mismatch "
+                    f"even when logic is correct. FIX: grep PreEco Synthesize for cells "
+                    f"implementing the same boolean function near the pivot cone (E4c) "
+                    f"and use that exact cell type (e.g. AO22EQ2AD1AMDB not AO22D1AMDB).")
 
     # ── cell pin name vs library check ────────────────────────────────────────
     # Verify that pin names used in port_connections actually exist on the cell type.
