@@ -425,6 +425,45 @@ def main():
     if clk_gate_field_issues:
         overall_pass = False
 
+    # ── enable_via_clock_gate=False — verify against PreEco netlist ───────────
+    # The analyzer may set enable_via_clock_gate=False even when the target DFF
+    # is actually clock-gated.  If --ref-dir is provided, grep the PreEco
+    # Synthesize netlist: if clk_gate_<target>_reg exists as a CKOR*/ICG*/CTG*
+    # cell, the field is wrong and Step 3 will generate the wrong implementation.
+    cg_verify_issues = []
+    if args.ref_dir:
+        _gz = os.path.join(args.ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
+        if not os.path.exists(_gz):
+            _gz = os.path.join(args.ref_dir, 'data', 'PostEco', 'Synthesize.v.gz')
+        _CG_TYPE_RE = re.compile(r'^(CKOR|ICG|CTG|CKLNQ|CKGT)', re.I)
+        for idx, c in enumerate(rtl_diff.get('changes', [])):
+            if c.get('change_type') != 'enable_swap':
+                continue
+            if c.get('enable_via_clock_gate'):
+                continue  # already True — no need to verify
+            tgt = c.get('target_register') or c.get('new_token') or '?'
+            try:
+                import subprocess as _sp
+                _r = _sp.run(
+                    f'zgrep -E "clk_gate_{re.escape(tgt)}_reg" {_gz}',
+                    shell=True, capture_output=True, text=True, timeout=20)
+                if _r.returncode == 0 and _r.stdout.strip():
+                    for _line in _r.stdout.strip().splitlines():
+                        _parts = _line.strip().split()
+                        if _parts and _CG_TYPE_RE.match(_parts[0]):
+                            cg_verify_issues.append(
+                                f"changes[{idx}] target={tgt!r}: enable_via_clock_gate=False "
+                                f"but PreEco Synthesize has clock gate cell "
+                                f"'clk_gate_{tgt}_reg' ({_parts[0]}). "
+                                f"Set enable_via_clock_gate=true and add clock_gate_instance "
+                                f"+ dff_cp_net. Step 3 will create a shadow gate instead of "
+                                f"rewiring the existing E-pin.")
+                            break
+            except Exception:
+                pass
+    if cg_verify_issues:
+        overall_pass = False
+
     # ── enable_via_clock_gate=true → require clock_gate_instance + dff_cp_net ─
     # When enable_swap targets a clock-gated DFF (enable_via_clock_gate=true),
     # Step 3 must create a shadow clock gate and rewire the DFF array CPs.
@@ -1859,6 +1898,8 @@ def main():
         'enable_swap_issues':             enable_swap_issues,
         'clk_gate_field_issue_count':      len(clk_gate_field_issues),
         'clk_gate_field_issues':          clk_gate_field_issues,
+        'cg_verify_issue_count':           len(cg_verify_issues),
+        'cg_verify_issues':               cg_verify_issues,
         'shadow_gate_field_issue_count':   len(shadow_gate_field_issues),
         'shadow_gate_field_issues':        shadow_gate_field_issues,
         'reset_detection_issue_count':     len(reset_detection_issues),
