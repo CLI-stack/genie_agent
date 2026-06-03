@@ -384,10 +384,15 @@ def main():
                     f"changes[{idx}] target={tgt}: enable_swap missing `{f}` — "
                     f"Step 3 needs both old and new enable net names to rewire the CE pin")
         chain = c.get('new_enable_gate_chain') or []
-        if not chain:
+        new_en = c.get('new_enable_net') or ''
+        # Empty chain is valid when new_enable_net is a plain existing signal wired
+        # directly to the E/EN pin. Only fail when new_enable_net is an n_eco_*
+        # synthesized net — that net MUST be produced by at least one gate in the chain.
+        if not chain and new_en.startswith('n_eco_'):
             enable_swap_issues.append(
-                f"changes[{idx}] target={tgt}: enable_swap `new_enable_gate_chain` empty — "
-                f"emit the MUX/AND/OR gates implementing the new enable condition")
+                f"changes[{idx}] target={tgt}: enable_swap `new_enable_gate_chain` empty "
+                f"but new_enable_net={new_en!r} is a synthesized n_eco_* net — "
+                f"emit the MUX/AND/OR gates that produce it")
         if not c.get('dff_clock'):
             enable_swap_issues.append(
                 f"changes[{idx}] target={tgt}: enable_swap missing `dff_clock` — "
@@ -436,12 +441,19 @@ def main():
             shadow_gate_field_issues.append(
                 f"changes[{idx}] target={tgt!r}: enable_via_clock_gate=true but "
                 f"`clock_gate_instance` missing — record the existing clock gate cell name "
-                f"so Step 3 can look up its per-stage name via rename_map for the CP rewire.")
-        if not c.get('dff_cp_net'):
+                f"so Step 3 can find the E-pin to rewire (Path B) or build the shadow gate "
+                f"and per-stage CP lookup via rename_map (Path A).")
+        # dff_cp_net only required when a companion wire_swap/and_term exists for the
+        # same target (both enable and data path changing → shadow gate + CP rewire needed).
+        _has_companion = any(
+            c2.get('change_type') in ('wire_swap', 'and_term') and
+            c2.get('target_register') == tgt
+            for c2 in rtl_diff.get('changes', []))
+        if _has_companion and not c.get('dff_cp_net'):
             shadow_gate_field_issues.append(
-                f"changes[{idx}] target={tgt!r}: enable_via_clock_gate=true but "
-                f"`dff_cp_net` missing — record the clock gate's Q/output net "
-                f"so Step 3 can find all DFF cells connected to it for CP rewiring.")
+                f"changes[{idx}] target={tgt!r}: enable_via_clock_gate=true with companion "
+                f"wire_swap/and_term but `dff_cp_net` missing — record the clock gate's "
+                f"Q output net so Step 3 can find all DFF CP pins to rewire to shadow gate.")
     if shadow_gate_field_issues:
         overall_pass = False
 
