@@ -668,9 +668,20 @@ Check if DFF CP is driven by `ICG*`/`CKOR*`/`CTG*` — grep PreEco Synthesize fo
 
 2. **OR/gate for E-pin** — emit `new_logic_gate` for the cell driving the shadow gate's E-pin (e.g. OR2D1), using `dff_cp_net`-scope to anchor it in the correct module. This OR/AND gate combines any existing gating condition (`rep_*` / fan-in of old enable) with the new enable net.
 
-3. **CP rewires** — grep PreEco Synthesize for all DFF cells with `.CP(<dff_cp_net>)` in the target module. Emit one `rewire` per cell (per stage using rename_map): `pin: CP`, `old_net: <dff_cp_net>`, `new_net: <shadow_gate_Q_net>`, `module_name: <module>`.
-
-4. **D-input rewires** — emit `rewire` entries for each existing DFF cell's D-pin: `old_net: <N69..N75>`, `new_net: <ECO_<jira>_net<N>>` (the AND-gated mux output from the companion gate chain). Per-stage names via rename_map.
+3 & 4. **CP + D-input rewires — use script (MANDATORY):**
+```bash
+python3 script/eco_scripts/eco_emit_shadow_gate.py \
+  --ref-dir   <REF_DIR> \
+  --base-dir  <BASE_DIR> \
+  --tag       <TAG> \
+  --target    <target_register> \
+  --dff-cp-net <dff_cp_net> \
+  --new-cp-net ECO_<jira>_<dff_cp_net> \
+  --d-map "0:<ECO_net_bit0>,1:<ECO_net_bit1>,..." \
+  --module    <module_name> \
+  --output    data/<TAG>_eco_shadow_gate_rewires.json
+```
+The script greps PreEco Synthesize, finds all MB DFF cells on that CP net, resolves D-pin→bit mapping via Q-pin nets, and emits CP + D-input rewires with correct bit ordering. Merge `rewires[]` from the output JSON into all 3 stage lists in the study JSON. Do NOT construct these entries manually — MB DFF MSB-first bit ordering makes manual mapping error-prone.
 
 5. **New enable logic gates** — emit `new_logic_gate` entries for `new_enable_gate_chain[]` (AO22/INV etc.) that produce the new enable net feeding into the OR gate (step 2).
 
