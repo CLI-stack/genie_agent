@@ -464,6 +464,46 @@ def main():
     if cg_verify_issues:
         overall_pass = False
 
+    # ── enable_swap + D-input change → companion wire_swap/and_term MANDATORY ──
+    # If the analyzer queried the old D-input net as part of an enable_swap
+    # (detectable via "D-input" in nets_to_query reason), the D-input also
+    # changed — a companion wire_swap/and_term for the same target_register
+    # MUST exist. Emitting only enable_swap leaves DFF D-inputs unchanged.
+    companion_issues = []
+    # nets_to_query is top-level in the rtl_diff JSON (not per-change)
+    _top_nq = rtl_diff.get('nets_to_query') or []
+    # Find enable_swap changes that have a D-input net queried at the top level
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') != 'enable_swap':
+            continue
+        tgt = c.get('target_register') or '?'
+        # Check top-level nets_to_query for D-input entries tied to this enable_swap
+        has_d_input_query = any(
+            isinstance(q, dict) and
+            ('d-input' in str(q.get('reason', '')).lower() or
+             'd_input' in str(q.get('reason', '')).lower()) and
+            'enable_swap' in str(q.get('reason', '')).lower()
+            for q in _top_nq
+        )
+        if not has_d_input_query:
+            continue
+        # D-input change detected — companion wire_swap/and_term must exist
+        has_companion = any(
+            c2.get('change_type') in ('wire_swap', 'and_term') and
+            c2.get('target_register') == tgt
+            for c2 in rtl_diff.get('changes', [])
+        )
+        if not has_companion:
+            companion_issues.append(
+                f"changes[{idx}] target={tgt!r}: enable_swap nets_to_query contains "
+                f"a D-input net (D-input also changed in same always block) but NO "
+                f"companion wire_swap/and_term for the same target_register exists. "
+                f"Emit a wire_swap entry with new D-input gate chain (AO22 mux + AND "
+                f"reset per bit). Without it Step 3 cannot generate D-input rewires "
+                f"→ FM will fail on the DFF cone.")
+    if companion_issues:
+        overall_pass = False
+
     # ── enable_via_clock_gate=true → require clock_gate_instance + dff_cp_net ─
     # When enable_swap targets a clock-gated DFF (enable_via_clock_gate=true),
     # Step 3 must create a shadow clock gate and rewire the DFF array CPs.
@@ -1900,6 +1940,8 @@ def main():
         'clk_gate_field_issues':          clk_gate_field_issues,
         'cg_verify_issue_count':           len(cg_verify_issues),
         'cg_verify_issues':               cg_verify_issues,
+        'companion_issue_count':           len(companion_issues),
+        'companion_issues':               companion_issues,
         'shadow_gate_field_issue_count':   len(shadow_gate_field_issues),
         'shadow_gate_field_issues':        shadow_gate_field_issues,
         'reset_detection_issue_count':     len(reset_detection_issues),
