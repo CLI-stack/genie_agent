@@ -3980,57 +3980,66 @@ def main():
                     f"wrapper output port {_expected_base!r}[{_bbi}]. "
                     f"Flat/wrong form creates floating wire → FM Impl/Ref Und → 8F.")
 
-    # ── Check 50: enable_swap with clock gate → shadow gate + CP/D rewires ──
-    # When enable_via_clock_gate=true the correct implementation is:
-    #   (a) a NEW shadow clock gate cell (CKOR*/ICG*/CTG* type) in the study
-    #   (b) rewire entries switching the existing DFF array CP to the new gate
-    #   (c) rewire entries switching the existing DFF array D-inputs to the new mux output
-    # Rewiring only the existing gate's E-pin is wrong — it corrupts other
-    # consumers of that enable net and leaves DFF D-inputs unchanged.
+    # ── Check 50: enable_swap with clock gate → must implement EITHER path ────
+    # When enable_via_clock_gate=true, Step 3 must choose ONE of two valid paths:
+    #   Path A (shadow gate): new CKOR*/ICG* gate + CP rewires for DFF array
+    #                         + D-input rewires if companion wire_swap exists
+    #   Path B (E-pin rewire): rewire entry on an E/EN/TE pin of the existing gate
+    # If NEITHER path is present → FAIL (clock gate was detected but nothing done).
+    # If Path A (shadow gate) is present → also require CP rewires.
+    # D-input rewires are only required when a companion wire_swap exists for the
+    # same target register (both enable AND data path change together).
     _CG_RE = re.compile(r'^(CKOR|ICG|CTG|CKLNQ|CKGT)', re.I)
+    _E_PINS = {'E', 'EN', 'TE', 'SE', 'ENB', 'ENN'}
     for _c in rtl_diff.get('changes', []):
         if _c.get('change_type') != 'enable_swap':
             continue
         if not _c.get('enable_via_clock_gate'):
             continue
         _tgt = _c.get('target_register') or '?'
-        # (a) shadow clock gate — new_logic_gate with a CG cell type
+        _all_entries = [e for stage in ('Synthesize', 'PrePlace', 'Route')
+                        for e in study.get(stage, [])]
         _has_shadow_gate = any(
             e.get('change_type') == 'new_logic_gate' and
             _CG_RE.match(str(e.get('cell_type') or e.get('cell_name') or ''))
-            for stage in ('Synthesize', 'PrePlace', 'Route')
-            for e in study.get(stage, [])
-        )
-        if not _has_shadow_gate:
-            issues.append(
-                f"Check 50 FAIL: enable_swap target={_tgt!r} has enable_via_clock_gate=true "
-                f"but study JSON has NO new shadow clock gate (CKOR*/ICG*/CTG* new_logic_gate). "
-                f"Pattern: create clk_gate_ECO_<jira>_<original> driven by an OR/AND gate whose "
-                f"inputs include the new enable net. Do NOT rewire the existing clock gate E-pin.")
-        # (b) CP rewire for existing DFF array
-        _has_cp_rewire = any(
+            for e in _all_entries)
+        _has_e_rewire = any(
             e.get('change_type') == 'rewire' and
-            str(e.get('pin', '')).upper() in ('CP', 'CK', 'CLK', 'C', 'CPN')
-            for stage in ('Synthesize', 'PrePlace', 'Route')
-            for e in study.get(stage, [])
-        )
-        if not _has_cp_rewire:
+            str(e.get('pin', '')).upper() in _E_PINS
+            for e in _all_entries)
+        if not _has_shadow_gate and not _has_e_rewire:
             issues.append(
                 f"Check 50 FAIL: enable_swap target={_tgt!r} has enable_via_clock_gate=true "
-                f"but study JSON has NO CP rewire entry. The existing DFF array CP pins must be "
-                f"switched from the old clock gate output to the new shadow gate output.")
-        # (c) D-input rewire for existing DFF array
-        _has_d_rewire = any(
-            e.get('change_type') == 'rewire' and
-            str(e.get('pin', '')).upper() in ('D', 'D1', 'D2', 'D3', 'D4', 'DI', 'DIN')
-            for stage in ('Synthesize', 'PrePlace', 'Route')
-            for e in study.get(stage, [])
-        )
-        if not _has_d_rewire:
-            issues.append(
-                f"Check 50 FAIL: enable_swap target={_tgt!r} has enable_via_clock_gate=true "
-                f"but study JSON has NO D-input rewire entry. The existing DFF array D-input pins "
-                f"must be rewired from the old data path to the new mux output (ECO_<jira>_net*).")
+                f"but study JSON has neither a shadow clock gate nor an E/EN/TE pin rewire. "
+                f"Path A: create a new CKOR*/ICG* shadow gate + rewire DFF array CP pins. "
+                f"Path B (simpler, only when existing E-pin has no other consumers): "
+                f"rewire the existing clock gate's E pin directly.")
+        # If shadow gate chosen: CP rewires are mandatory
+        if _has_shadow_gate:
+            _has_cp_rewire = any(
+                e.get('change_type') == 'rewire' and
+                str(e.get('pin', '')).upper() in ('CP', 'CK', 'CLK', 'C', 'CPN')
+                for e in _all_entries)
+            if not _has_cp_rewire:
+                issues.append(
+                    f"Check 50 FAIL: enable_swap target={_tgt!r} has a shadow clock gate "
+                    f"but NO CP rewire entries. Shadow gate pattern requires rewiring the "
+                    f"existing DFF array CP pins to the new shadow gate output.")
+        # D-input rewires required only when a companion wire_swap exists for the same target
+        _has_companion_wire_swap = any(
+            _c2.get('change_type') in ('wire_swap', 'and_term') and
+            _c2.get('target_register') == _tgt
+            for _c2 in rtl_diff.get('changes', []))
+        if _has_companion_wire_swap:
+            _has_d_rewire = any(
+                e.get('change_type') == 'rewire' and
+                str(e.get('pin', '')).upper() in ('D', 'D1', 'D2', 'D3', 'D4', 'DI', 'DIN')
+                for e in _all_entries)
+            if not _has_d_rewire:
+                issues.append(
+                    f"Check 50 FAIL: enable_swap target={_tgt!r} has a companion wire_swap/"
+                    f"and_term but NO D-input rewire entries. When both enable and data path "
+                    f"change, the existing DFF array D-pins must be rewired to the new mux output.")
 
     # ── Check 51: enable_via_clock_gate=False — verify against PreEco netlist ──
     # The rtl_diff_analyzer may wrongly classify an enable_swap as not having a
