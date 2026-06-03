@@ -504,6 +504,35 @@ def main():
     if companion_issues:
         overall_pass = False
 
+    # ── wire_swap with is_bus_gate=True must have non-empty d_input_gate_chain ─
+    # When wire_swap has is_bus_gate=True and new_token is a computed net (not
+    # already an n_eco_* net), the gate chain MUST be populated. An empty chain
+    # means Step 3 cannot generate the per-bit mux/AND gates — eco_emit_shadow_gate
+    # --d-map has no ECO net names to fill in, so D-input rewires are skipped.
+    # Acceptable empty-chain cases: d_input_decompose_failed=True (decomp blocked)
+    # OR d_input_resolved_net set (signal wired directly, no gates needed).
+    bus_gate_chain_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') not in ('wire_swap', 'and_term'):
+            continue
+        if not c.get('is_bus_gate'):
+            continue
+        tgt = c.get('target_register') or '?'
+        chain = c.get('d_input_gate_chain') or []
+        new_tok = c.get('new_token') or ''
+        resolved = c.get('d_input_resolved_net')
+        decompose_failed = c.get('d_input_decompose_failed')
+        if not chain and not resolved and not decompose_failed:
+            bus_gate_chain_issues.append(
+                f"changes[{idx}] target={tgt!r}: wire_swap is_bus_gate=True but "
+                f"d_input_gate_chain is empty and d_input_decompose_failed is not set. "
+                f"Decompose new_token={new_tok!r} into per-bit gate chain (e.g. INV + "
+                f"AO22 mux per bit + optional AND reset gate). Without this, Step 3 "
+                f"cannot generate D-input mux gates and eco_emit_shadow_gate --d-map "
+                f"has no ECO net names — DFF D-inputs will not be rewired.")
+    if bus_gate_chain_issues:
+        overall_pass = False
+
     # ── enable_via_clock_gate=true → require clock_gate_instance + dff_cp_net ─
     # When enable_swap targets a clock-gated DFF (enable_via_clock_gate=true),
     # Step 3 must create a shadow clock gate and rewire the DFF array CPs.
@@ -1942,6 +1971,8 @@ def main():
         'cg_verify_issues':               cg_verify_issues,
         'companion_issue_count':           len(companion_issues),
         'companion_issues':               companion_issues,
+        'bus_gate_chain_issue_count':      len(bus_gate_chain_issues),
+        'bus_gate_chain_issues':          bus_gate_chain_issues,
         'shadow_gate_field_issue_count':   len(shadow_gate_field_issues),
         'shadow_gate_field_issues':        shadow_gate_field_issues,
         'reset_detection_issue_count':     len(reset_detection_issues),
