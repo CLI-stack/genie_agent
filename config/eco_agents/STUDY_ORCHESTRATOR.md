@@ -100,15 +100,30 @@ Wait for the sub-agent to complete and read `data/<TAG>_eco_rtl_diff.json`.
 ```bash
 cd <BASE_DIR> && python3 script/eco_scripts/eco_validate_step1.py \
     --rtl-diff data/<TAG>_eco_rtl_diff.json \
+    --ref-dir  <REF_DIR> \
     --output   data/<TAG>_eco_validate_step1.json
+STEP1_EXIT=$?
 ```
+
+**HARD GATE — check exit code before ANY further action:**
+```python
+import json
+v = json.load(open(f"data/{TAG}_eco_validate_step1.json"))
+if not v.get("overall_pass"):
+    issues = [i for k,vals in v.items() if "issues" in k and "count" not in k
+              for i in (vals if isinstance(vals,list) else [])]
+    raise RuntimeError(f"Step 1 validator FAIL ({len(issues)} issues) — "
+                       f"DO NOT proceed to Step 2. Re-spawn rtl_diff_analyzer.")
+```
+**Step 2 MUST NOT run if `overall_pass != true`. No exceptions.**
+
 **Retry-on-fail policy (MAX 2 retries):**
 - Exit 1 with `chain_compactness_issues` containing `FAIL/9d-OVERSIZED` or `FAIL/9c-MULTI-INV-NO-REUSE`:
   → re-spawn rtl_diff_analyzer with explicit instruction "apply §E2.5 boolean simplification (De Morgan + bus equality fold + existing-INV reuse) and emit `simplification_applied: true`"
 - Exit 1 with `new_logic_field_issues` containing `mode_s_anchor MISSING`:
   → re-spawn rtl_diff_analyzer with explicit instruction "emit `mode_s_anchor: { sibling_module, anchor_dff, anchor_scope }` for every new_logic_dff with requires_scan_stitching=true"
-- Other failures: re-spawn with the failing-issue list and instruction to fix
-- After 2 failed retries on the same root issue → block flow and report.
+- Other failures: re-spawn rtl_diff_analyzer with the full failing-issue list as context and instruction to fix each issue
+- After 2 failed retries on the same root issue → write `STUDY_VALIDATOR_UNFIXABLE` to SPEC_FILE, block flow, EXIT.
 
 ---
 
