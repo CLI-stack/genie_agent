@@ -4250,6 +4250,54 @@ def main():
                     f"Set CP to the shadow gate Q via eco_emit_dff_entry.py --shadow-cp-net "
                     f"{shadow_q!r}. Using wrong/bare clock = ungated domain → FM cone mismatch.")
 
+    # ── Check 56: shadow gate E-pin driver must include other_enable_inputs ──
+    # If rtl_diff enable_swap has clock_gate_other_enable_inputs (e.g. ['rep_3']),
+    # the OR gate driving the shadow gate E-pin must include those nets.
+    # Missing them means the clock enable function differs from SynRtl → FM fail.
+    for _c in rtl_diff.get('changes', []):
+        if _c.get('change_type') != 'enable_swap':
+            continue
+        if not _c.get('enable_via_clock_gate'):
+            continue
+        _other = _c.get('clock_gate_other_enable_inputs') or []
+        if not _other:
+            continue
+        _tgt = _c.get('target_register', '?')
+        # Find the shadow gate in study JSON
+        _cg_entries = [e for s in ('Synthesize', 'PrePlace', 'Route')
+                       for e in study.get(s, [])
+                       if e.get('change_type') == 'new_logic_gate' and
+                       _CG_RE.match(str(e.get('cell_type') or e.get('cell_name') or ''))]
+        if not _cg_entries:
+            continue
+        _shadow_q = (_cg_entries[0].get('port_connections') or {}).get('Q', '')
+        # Find the gate driving the shadow gate's E-pin (the OR gate)
+        _e_pin_net = (_cg_entries[0].get('port_connections') or {}).get('E', '')
+        if not _e_pin_net:
+            continue
+        # Find the gate whose output == _e_pin_net
+        _e_driver = None
+        for e in [x for s in ('Synthesize',) for x in study.get(s, [])
+                  if x.get('change_type') == 'new_logic_gate']:
+            pcs = e.get('port_connections') or {}
+            if pcs.get('Z') == _e_pin_net or pcs.get('ZN') == _e_pin_net:
+                _e_driver = e
+                break
+        if not _e_driver:
+            issues.append(
+                f"Check 56 FAIL: enable_swap target={_tgt!r} shadow gate E-pin={_e_pin_net!r} "
+                f"has no driver gate in study JSON. Need OR gate with inputs: "
+                f"{_other + [_c.get('new_enable_net','<new_enable>')]}.")
+            continue
+        _e_inputs = list((_e_driver.get('port_connections') or {}).values())
+        missing = [o for o in _other if o not in str(_e_inputs)]
+        if missing:
+            issues.append(
+                f"Check 56 FAIL: enable_swap target={_tgt!r} shadow gate E-pin driver "
+                f"{_e_driver.get('instance_name')!r} is missing other_enable_inputs {missing}. "
+                f"The OR gate must combine {_other} with the new enable net — "
+                f"omitting them causes FM mismatch vs SynRtl which preserves these terms.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}

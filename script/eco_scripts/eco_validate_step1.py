@@ -625,6 +625,28 @@ def main():
     if shadow_gate_field_issues:
         overall_pass = False
 
+    # ── enable_via_clock_gate=true → require clock_gate_other_enable_inputs ───
+    # The existing clock gate E-pin may have other inputs besides old_enable_net
+    # (e.g. rep_3 in OR(rep_3, wr_vld0_d1)). The shadow gate E-pin OR gate must
+    # include them. Set via eco_query_cg_context.py. Use [] if none found.
+    cg_other_inputs_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') != 'enable_swap':
+            continue
+        if not c.get('enable_via_clock_gate'):
+            continue
+        tgt = c.get('target_register') or '?'
+        if c.get('clock_gate_other_enable_inputs') is None:
+            cg_other_inputs_issues.append(
+                f"changes[{idx}] target={tgt!r}: enable_via_clock_gate=true but "
+                f"`clock_gate_other_enable_inputs` missing — run eco_query_cg_context.py "
+                f"(--cg-inst <clock_gate_instance> --old-en <old_enable_net>) to find "
+                f"other fan-in of the existing CG E-pin driver. Set [] if none. "
+                f"Missing this causes shadow gate E-pin to omit existing enable terms "
+                f"(e.g. rep_3) → FM mismatch on all DFFs clocked by shadow gate.")
+    if cg_other_inputs_issues:
+        overall_pass = False
+
     # ── has_sync_reset vs context_line reset detection ────────────────────────
     # The rtl_diff_analyzer detects reset from context_line, but context_line
     # may span multiple lines when the always block is captured in full.  When
@@ -2029,6 +2051,8 @@ def main():
         'clk_gate_field_issues':          clk_gate_field_issues,
         'cg_verify_issue_count':           len(cg_verify_issues),
         'cg_verify_issues':               cg_verify_issues,
+        'cg_other_inputs_issue_count':     len(cg_other_inputs_issues),
+        'cg_other_inputs_issues':         cg_other_inputs_issues,
         'companion_issue_count':           len(companion_issues),
         'companion_issues':               companion_issues,
         'bus_gate_chain_issue_count':      len(bus_gate_chain_issues),
