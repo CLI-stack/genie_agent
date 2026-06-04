@@ -647,6 +647,43 @@ def main():
     if cg_other_inputs_issues:
         overall_pass = False
 
+    # ── enable_via_clock_gate=true + companion wire_swap → d_input_reset_gate ─
+    # When the existing DFF D-inputs are reset-gated (AN2D1/INR2), the companion
+    # wire_swap chain must end with a reset AND gate. eco_query_cg_context.py
+    # provides d_input_reset_gate. If True, the wire_swap chain must have >2
+    # gates (mux gates + final AND reset gate).
+    d_reset_gate_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') != 'enable_swap':
+            continue
+        if not c.get('enable_via_clock_gate'):
+            continue
+        tgt = c.get('target_register') or '?'
+        if c.get('d_input_reset_gate') is None:
+            d_reset_gate_issues.append(
+                f"changes[{idx}] target={tgt!r}: enable_via_clock_gate=true but "
+                f"`d_input_reset_gate` missing — run eco_query_cg_context.py to check "
+                f"whether existing DFF D-inputs are reset-gated (AN2D1/INR2). "
+                f"Set true/false. If true, companion wire_swap chain must end with "
+                f"AND reset gate to preserve existing D-path reset behavior.")
+        elif c.get('d_input_reset_gate'):
+            # Verify companion wire_swap chain has reset gate as last element
+            for c2 in rtl_diff.get('changes', []):
+                if (c2.get('change_type') in ('wire_swap', 'and_term') and
+                        c2.get('target_register') == tgt):
+                    chain = c2.get('d_input_gate_chain') or []
+                    if chain:
+                        last = chain[-1]
+                        last_cell = last.get('cell_type', '')
+                        if not re.match(r'^(AN2|AND2|INR2)', last_cell, re.I):
+                            d_reset_gate_issues.append(
+                                f"changes[{idx}] target={tgt!r}: d_input_reset_gate=true "
+                                f"but wire_swap chain last gate {last.get('instance_name')!r} "
+                                f"cell={last_cell!r} is not AN2D1/INR2. "
+                                f"Add AND reset gate as last chain element.")
+    if d_reset_gate_issues:
+        overall_pass = False
+
     # ── has_sync_reset vs context_line reset detection ────────────────────────
     # The rtl_diff_analyzer detects reset from context_line, but context_line
     # may span multiple lines when the always block is captured in full.  When
@@ -2053,6 +2090,8 @@ def main():
         'cg_verify_issues':               cg_verify_issues,
         'cg_other_inputs_issue_count':     len(cg_other_inputs_issues),
         'cg_other_inputs_issues':         cg_other_inputs_issues,
+        'd_reset_gate_issue_count':        len(d_reset_gate_issues),
+        'd_reset_gate_issues':            d_reset_gate_issues,
         'companion_issue_count':           len(companion_issues),
         'companion_issues':               companion_issues,
         'bus_gate_chain_issue_count':      len(bus_gate_chain_issues),

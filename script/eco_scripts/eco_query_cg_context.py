@@ -190,11 +190,14 @@ def main():
                         re.match(r'^(AN2|AND2|INR2)', ct, re.I) is not None
                     )
                     if is_reset_gate:
-                        # Verify it has IReset as an input
-                        ireset_in_cb = bool(re.search(r'\bIReset\b', cb))
-                        result['d_input_has_reset_gate'] = ireset_in_cb
-                        result['reset_gate_cell_type'] = ct if ireset_in_cb else ''
-                        print(f'D-input reset gate: {ct} (IReset={ireset_in_cb})',
+                        # AN2D1/INR2 on D-input path = reset gate. Don't require
+                        # literal "IReset" — the reset signal may be routed via an
+                        # intermediate net (e.g. N439 = IReset_inv). Any AND/INR2
+                        # on the D-path means the existing design has reset gating
+                        # that must be preserved in the new ECO D-input chain.
+                        result['d_input_has_reset_gate'] = True
+                        result['reset_gate_cell_type'] = ct
+                        print(f'D-input reset gate: {ct} (confirmed)',
                               file=sys.stderr)
                     break
 

@@ -669,7 +669,7 @@ Check if DFF CP is driven by `ICG*`/`CKOR*`/`CTG*` — grep PreEco Synthesize fo
 
 1. **New shadow clock gate** — emit `new_logic_gate` for `clk_gate_ECO_<jira>_<original_name>` (same CKOR*/ICG* cell type as original). Its E-pin is driven by an OR/AND gate whose input is the new enable net. Its Q output is `ECO_<jira>_umcdat_WDB_uclkg_clk_gate_<dff_name>`. Do NOT touch the existing clock gate.
 
-2. **OR/gate for E-pin** — emit `new_logic_gate` for the cell driving the shadow gate's E-pin. **MANDATORY: use `clock_gate_other_enable_inputs` from the rtl_diff entry.** If `clock_gate_other_enable_inputs` is non-empty (e.g. `["rep_3"]`), emit `OR2D1(other_input, new_enable_net)` as the E-pin driver. If empty, connect the new enable net directly to E. Omitting `other_enable_inputs` causes FM mismatch because SynRtl preserves the original enable fan-in terms.
+2. **OR/gate for E-pin** — emit `new_logic_gate` for the cell driving the shadow gate's E-pin. **MANDATORY: check `clock_gate_other_enable_inputs` in the rtl_diff entry.** If non-empty, the E-pin driver must be an OR gate combining those inputs with the new enable net. If empty, connect the new enable directly. This preserves existing enable fan-in terms that SynRtl also produces.
 
 3 & 4. **CP + D-input rewires — use script (MANDATORY):**
 ```bash

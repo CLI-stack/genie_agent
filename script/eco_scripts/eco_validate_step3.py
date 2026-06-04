@@ -4298,6 +4298,47 @@ def main():
                 f"The OR gate must combine {_other} with the new enable net — "
                 f"omitting them causes FM mismatch vs SynRtl which preserves these terms.")
 
+    # ── Check 57: d_input_reset_gate=true → study JSON D-input rewires must go
+    # through an AND reset gate (AN2D1/INR2) before reaching the MB DFF D-pins.
+    # When the existing D-path was reset-gated and we replace it, the new path
+    # must preserve that behavior — a plain AO22 mux output on D-pin fails FM.
+    _AND_RESET_RE = re.compile(r'^(AN2|AND2|INR2)', re.I)
+    for _c in rtl_diff.get('changes', []):
+        if _c.get('change_type') != 'enable_swap':
+            continue
+        if not _c.get('d_input_reset_gate'):
+            continue
+        _tgt = _c.get('target_register', '?')
+        # Find companion wire_swap chain last gate output net
+        _chain_final_out = None
+        for _c2 in rtl_diff.get('changes', []):
+            if (_c2.get('change_type') in ('wire_swap', 'and_term') and
+                    _c2.get('target_register') == _tgt):
+                _chain = _c2.get('d_input_gate_chain') or []
+                if _chain:
+                    _last = _chain[-1]
+                    if _AND_RESET_RE.match(_last.get('cell_type', '')):
+                        _chain_final_out = _last.get('output_net', '')
+        if _chain_final_out is None:
+            continue  # no chain or chain doesn't end in AND reset — step1 catches this
+        # Check that MB DFF D-pin rewires use the AND reset gate output, not raw mux
+        _d_rewires = [e for s in ('Synthesize', 'PrePlace', 'Route')
+                      for e in study.get(s, [])
+                      if e.get('change_type') == 'rewire' and
+                      str(e.get('pin', '')).upper().startswith('D') and
+                      re.match(r'.*_MB_.*|.*_reg_\d+_.*', e.get('cell_name', ''))]
+        for _rw in _d_rewires[:3]:  # check first few samples
+            _new = _rw.get('new_net', '')
+            # new_net should NOT be a plain AO22 output (would contain 'ao22' without reset)
+            if _new and 'ao22' in _new.lower() and 'reset' not in _new.lower():
+                issues.append(
+                    f"Check 57 FAIL: d_input_reset_gate=true but D-pin rewire "
+                    f"{_rw.get('cell_name','?')!r}.{_rw.get('pin')}→{_new!r} "
+                    f"goes directly to AO22 mux output without AND reset gate. "
+                    f"The D-input must pass through AN2D1(reset_inv, mux_out) to "
+                    f"preserve existing reset-gated D-path behavior.")
+                break
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}
