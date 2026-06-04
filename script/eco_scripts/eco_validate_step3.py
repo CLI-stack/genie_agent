@@ -975,6 +975,11 @@ def main():
                     if v.strip() in ("1'b0", "1'b1") and pin in ('SE', 'SI'):
                         continue
                     if v.strip() not in neigh[pin]:
+                        # ECO shadow gate exemption: a new CKOR*/ICG* shadow gate Q
+                        # won't appear in any pre-existing DFF CP — it's a new net by
+                        # design. Skip when CP contains 'ECO_' (shadow gate Q net).
+                        if pin == 'CP' and 'ECO_' in v:
+                            continue
                         sample = list(neigh[pin])[:3]
                         # CP mismatch: HIGH (real failure mode — clock cone divergence).
                         # SE/SI mismatch: MEDIUM (engineer may legitimately use parent-scope
@@ -2639,6 +2644,22 @@ def main():
     _new_eco_ports = {c.get('new_token','') or c.get('signal_name','')
                       for c in rtl_diff.get('changes',[])
                       if c.get('change_type') in ('new_port','port_declaration','port_promotion')}
+    # Also collect Q/Z/ZN output nets of ALL new ECO gates/DFFs in the study JSON —
+    # these are ECO-internal nets produced by new cells and absent in PreEco by design
+    # (e.g. wdbptr_org0_d1p5[N] as Q of new DFF, wdbptr_org0_d1p5_N_ in flat form).
+    _eco_internal_output_nets = set()
+    for _stage in ('Synthesize', 'PrePlace', 'Route'):
+        for _e in study.get(_stage, []):
+            if _e.get('change_type') not in ('new_logic_gate', 'new_logic_dff', 'new_logic'):
+                continue
+            _pcs = _e.get('port_connections') or {}
+            for _pin in ('Q', 'Z', 'ZN', 'ZN1', 'CO'):
+                _v = _pcs.get(_pin, '')
+                if _v and isinstance(_v, str):
+                    _eco_internal_output_nets.add(_v)
+                    _eco_internal_output_nets.add(_v.split('[')[0])
+                    import re as _re2
+                    _eco_internal_output_nets.add(_re2.sub(r'\[(\d+)\]', r'_\1_', _v))
     # _unconn_rewire_named_nets built above (before Check 36)
     for stage_check in ('Synthesize', 'PrePlace', 'Route'):
         gz = _gz.get(stage_check, '')
@@ -2662,6 +2683,8 @@ def main():
                 if net.startswith("1'"): continue
                 if net == ifnp: continue  # new ECO port (input_from_new_port) — absent in PreEco by design
                 if net.split('[')[0] in _new_eco_ports: continue  # new ECO port from rtl_diff
+                if net in _eco_internal_output_nets: continue  # Q/Z of new ECO cell — absent in PreEco by design
+                if net.split('[')[0] in _eco_internal_output_nets: continue
                 if net in _unconn_rewire_named_nets: continue  # new wire from unconnected_rewires
                 base = net.split('[')[0]
                 try:
