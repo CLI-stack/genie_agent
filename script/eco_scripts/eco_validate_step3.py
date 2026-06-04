@@ -1075,6 +1075,23 @@ def main():
         if (rt_cp_cs and pp_cp_cs
                 and _re.match(r'(FxCts_|FxOptCts_|wrp_clk_)', rt_cp_cs, _re.IGNORECASE)
                 and _re.match(r'UCLK', pp_cp_cs, _re.IGNORECASE)):
+            # Exempt when the raw UCLK clock is actually a valid CP in the PrePlace netlist
+            # (i.e. existing DFFs already use it in PP — UCLK01 domain DFFs may not get
+            # CTS-renamed in PrePlace, only in Route). Skip if PP netlist has the raw CP.
+            _pp_gz = os.path.join(args.ref_dir, 'data', 'PreEco', 'PrePlace.v.gz')
+            _pp_cp_ok = False
+            if os.path.exists(_pp_gz):
+                try:
+                    import subprocess as _sp25b
+                    _r25b = _sp25b.run(
+                        f'zgrep -cE "\\.CP\\s*\\(\\s*{_re.escape(pp_cp_cs)}\\s*\\)" {_pp_gz}',
+                        shell=True, capture_output=True, text=True, timeout=15)
+                    if int(_r25b.stdout.strip() or '0') > 0:
+                        _pp_cp_ok = True  # raw clock IS a valid PrePlace CP — skip 25b
+                except Exception:
+                    pass
+            if _pp_cp_ok:
+                continue
             issues.append(
                 f"HIGH/25b-STAGE-CLOCK-MISMATCH: ECO DFF {inst}.CP Route={rt_cp_cs!r} "
                 f"(CTS-renamed) but PrePlace={pp_cp_cs!r} (raw UCLK). "
@@ -2781,7 +2798,8 @@ def main():
             continue
         pps = e.get('port_connections_per_stage') or {}
         synth_pins = {pin: net for pin, net in (pps.get('Synthesize') or {}).items()
-                      if pin not in ('ZN', 'Z', 'Q', 'CO', 'Y', 'S')
+                      if not pin.startswith('_')  # skip metadata keys (_input_from_new_port_*)
+                      and pin not in ('ZN', 'Z', 'Q', 'CO', 'Y', 'S')
                       and isinstance(net, str)
                       and not any(net.startswith(p) for p in _skip_net_prefixes)
                       and not net.startswith("1'")}
