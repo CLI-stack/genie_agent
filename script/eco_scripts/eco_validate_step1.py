@@ -533,6 +533,52 @@ def main():
     if bus_gate_chain_issues:
         overall_pass = False
 
+    # ── Gate chain: cell_type must be non-None + chain input coverage check ───
+    # Every gate in d_input_gate_chain and new_enable_gate_chain must have a
+    # non-None cell_type. Also: every gate input that looks like a computed net
+    # (not a plain RTL signal, not 1'b0/1'b1) must be produced by a preceding
+    # gate in the same chain — uncovered inputs mean a missing chain gate.
+    chain_cell_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        tgt = c.get('target_register') or '?'
+        chains = []
+        if c.get('change_type') == 'enable_swap':
+            chains = [('new_enable_gate_chain', c.get('new_enable_gate_chain') or [])]
+        elif c.get('change_type') in ('wire_swap', 'and_term', 'new_logic'):
+            chains = [('d_input_gate_chain', c.get('d_input_gate_chain') or [])]
+        for chain_name, chain in chains:
+            produced = set()
+            for gi, g in enumerate(chain):
+                ct = g.get('cell_type')
+                inst = g.get('instance_name', '?')
+                out = g.get('output_net', '')
+                if out:
+                    produced.add(out)
+                # cell_type must not be None
+                if ct is None:
+                    chain_cell_issues.append(
+                        f"changes[{idx}] target={tgt!r} {chain_name}[{gi}] "
+                        f"{inst!r}: cell_type is None. "
+                        f"Look up the exact cell type from PreEco Synthesize "
+                        f"(grep for the gate function near the pivot) and set "
+                        f"cell_type + cell_type_from_preeco=True.")
+                # Check each input: if it looks like a computed net (n_eco_* or
+                # named *_inv/*_nxt/*_en + not a plain RTL name) it must have
+                # been produced by an earlier gate
+                for inp in (g.get('inputs') or []):
+                    if inp in ("1'b0", "1'b1"):
+                        continue
+                    if (inp.startswith('n_eco_') or inp.endswith('_inv') or
+                            inp.endswith('_nxt') or inp.endswith('_en')):
+                        if inp not in produced:
+                            chain_cell_issues.append(
+                                f"changes[{idx}] target={tgt!r} {chain_name}[{gi}] "
+                                f"{inst!r}: input {inp!r} looks like a computed net "
+                                f"but is not produced by any earlier gate in this chain. "
+                                f"Missing an upstream gate (e.g. INV for an _inv net).")
+    if chain_cell_issues:
+        overall_pass = False
+
     # ── enable_via_clock_gate=true → require clock_gate_instance + dff_cp_net ─
     # When enable_swap targets a clock-gated DFF (enable_via_clock_gate=true),
     # Step 3 must create a shadow clock gate and rewire the DFF array CPs.
@@ -1973,6 +2019,8 @@ def main():
         'companion_issues':               companion_issues,
         'bus_gate_chain_issue_count':      len(bus_gate_chain_issues),
         'bus_gate_chain_issues':          bus_gate_chain_issues,
+        'chain_cell_issue_count':          len(chain_cell_issues),
+        'chain_cell_issues':              chain_cell_issues,
         'shadow_gate_field_issue_count':   len(shadow_gate_field_issues),
         'shadow_gate_field_issues':        shadow_gate_field_issues,
         'reset_detection_issue_count':     len(reset_detection_issues),
