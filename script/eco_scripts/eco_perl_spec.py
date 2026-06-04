@@ -620,7 +620,10 @@ def main():
                 # Bracket form absent and not being created — use underscore form
                 flat, _ = _sanitize_named_net(n)
                 return flat
-            pins_str  = ', '.join(f'.{pin}({_san_net(net)})' for pin, net in pcs.items())
+            # Filter out underscore-prefixed metadata keys (_input_from_new_port_*, etc.)
+            # — these are studier annotations and must never appear as Verilog pin connections
+            pins_str  = ', '.join(f'.{pin}({_san_net(net)})' for pin, net in pcs.items()
+                                  if not pin.startswith('_'))
             gate_line = f'  // ECO {args.jira} TAG={args.tag} Round={args.round}'
             changes[mod]['gates'].append(gate_line)
             changes[mod]['gates'].append(f'  {cell_type} {inst} ( {pins_str} ) ;')
