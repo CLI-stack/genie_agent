@@ -469,6 +469,11 @@ def main():
                    help='Bus width N for vector registers (is_bus_dff=true). '
                         'When N>1, emits N individual DFF entries with per-bit D/Q nets. '
                         'Use eco_resolve_bus_width.py to determine N before calling.')
+    p.add_argument('--shadow-cp-net', default='',
+                   help='Override DFF CP pin with this net for all stages. '
+                        'Use when the DFF should be clocked by an ECO shadow clock gate '
+                        'rather than the bare rename-map-resolved clock (e.g. wdbptr_org0_d1p5 '
+                        'shares the same shadow gate as the enable_swap target d2_reg).')
     args = p.parse_args()
 
     # Load rtl_change
@@ -536,6 +541,17 @@ def main():
     # ── Step B: per-stage CP/SI/SE ────────────────────────────────────────
     host_scope = rtl_change.get('host_scope', '') or rtl_change.get('hierarchy', '')
     cp_per_stage = resolve_cp_per_stage(rmap, host_scope, dff_clock)
+
+    # --shadow-cp-net override: replace CP with the ECO shadow clock gate Q
+    # output for all stages. Used when the DFF shares the same shadow gate as
+    # an enable_swap target (e.g. wdbptr_org0_d1p5 shares clk_gate_ECO_9855_*
+    # with wdbptr_org0_d2). The studier passes this flag after emitting the
+    # shadow gate so both DFF arrays use the same gated clock domain.
+    if args.shadow_cp_net:
+        for stage in ('Synthesize', 'PrePlace', 'Route'):
+            cp_per_stage[stage] = args.shadow_cp_net
+        print(f'  shadow_cp_net override: CP → {args.shadow_cp_net!r} for all stages',
+              file=sys.stderr)
 
     if strategy_info['strategy'] == 'bridge_port':
         # SE/SI come from bridge port names

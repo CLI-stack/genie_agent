@@ -4144,6 +4144,50 @@ def main():
                         f"the applier matches the FIRST occurrence (often wrong module). "
                         f"Remove this rewire; the MB DFF D-pins are already directly rewired.")
 
+    # ── Check 55: new DFF CP = bare clock when shadow gate exists in module ──
+    # When a CKOR*/ICG* shadow gate is present in a module, ALL new_logic_dff
+    # entries in that module whose CP equals the bare ungated clock (uclkg,
+    # UCLK01, etc.) should use the shadow gate Q instead. Bare CP means the DFF
+    # runs on the ungated clock — FM sees it in a different clock domain from
+    # the enable_swap target and the DFF cone is unmatched.
+    _CG_TYPE_RE55 = re.compile(r'^(CKOR|ICG|CTG|CKLNQ|CKGT)', re.I)
+    for stage in ('Synthesize',):
+        # Collect shadow gates per module: {module → (shadow_gate_Q_net, shadow_gate_CP)}
+        shadow_gates_by_mod = {}
+        for e in study.get(stage, []):
+            ct = e.get('change_type', '')
+            cell = str(e.get('cell_type') or e.get('cell_name') or '')
+            mod = e.get('module_name', '')
+            if ct == 'new_logic_gate' and _CG_TYPE_RE55.match(cell) and mod:
+                pcs = e.get('port_connections') or {}
+                q_net = pcs.get('Q', '')
+                ck = pcs.get('CK') or pcs.get('CP') or pcs.get('C', '')
+                if q_net and 'ECO' in q_net:  # only ECO shadow gates
+                    shadow_gates_by_mod[mod] = (q_net, ck)
+        # Check DFFs in same module with bare CP matching the shadow gate's clock domain
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
+                continue
+            mod = e.get('module_name', '')
+            shadow_info = shadow_gates_by_mod.get(mod)
+            if not shadow_info:
+                continue
+            shadow_q, shadow_ck = shadow_info
+            inst = e.get('instance_name', '?')
+            cp = (e.get('port_connections') or {}).get('CP', '')
+            # Only flag DFFs in the SAME clock domain as the shadow gate
+            # (bare CP must equal the shadow gate's own clock input)
+            if cp != shadow_ck:
+                continue  # different clock domain — not affected by this shadow gate
+            # Bare clock: short net name with no ECO/CTS prefix
+            if cp and not any(x in cp for x in ('ECO', 'FxCts', 'FxPlace', 'FxPrePlace',
+                                                  'HFSNET', 'ZCTSNET', 'clk_gate_ECO')):
+                issues.append(
+                    f"Check 55 FAIL: DFF {inst!r} in module {mod!r} has CP={cp!r} "
+                    f"(bare clock) but module has shadow gate with Q={shadow_q!r}. "
+                    f"Set CP to the shadow gate Q via eco_emit_dff_entry.py --shadow-cp-net "
+                    f"{shadow_q!r}. Bare CP = ungated clock domain → FM cone mismatch.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}

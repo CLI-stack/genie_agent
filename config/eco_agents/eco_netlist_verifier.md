@@ -382,6 +382,8 @@ for scan_pin in ('SE', 'SI'):
 
 **HARD RULE — Do NOT auto-add new CKOR*/ICG* shadow clock gate cells.** Shadow gates are added by eco_netlist_studier Phase 0.16 and eco_emit_shadow_gate.py. If a new DFF CP resolves to a bare clock net (e.g. `uclkg`) and the study JSON already contains an enable_swap shadow gate in the same module, set the DFF CP to the **existing** shadow gate's Q output net — do NOT insert a new CKOR*/ICG* cell. Creating a second shadow gate for the same module produces an unneeded clock gate, wrong enable logic, and FM structural mismatch.
 
+**Check 3 shadow-gate CP correction:** After resolving all DFF CP pins, scan for new_logic_dff entries whose CP still resolves to a bare clock net (e.g. `uclkg`) in a module that also contains a `clk_gate_ECO_*` shadow gate entry. For each such DFF: set `port_connections_per_stage[stage]['CP'] = <shadow_gate_Q_net>` for all 3 stages. This ensures all DFFs in the same enable_swap clock domain use the gated shadow clock, not the free-running parent clock.
+
 **GAP-CTS-1 — Verify CP net exists in Route before recording:**
 ```bash
 grep -cw "<resolved_cp_net>" /tmp/eco_verify_<TAG>_Route.v
