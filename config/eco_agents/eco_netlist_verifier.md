@@ -380,6 +380,8 @@ for scan_pin in ('SE', 'SI'):
         port_connections_per_stage[stage][scan_pin] = bridge_port_wire(scan_pin)
 ```
 
+**HARD RULE — Do NOT auto-add new CKOR*/ICG* shadow clock gate cells.** Shadow gates are added by eco_netlist_studier Phase 0.16 and eco_emit_shadow_gate.py. If a new DFF CP resolves to a bare clock net (e.g. `uclkg`) and the study JSON already contains an enable_swap shadow gate in the same module, set the DFF CP to the **existing** shadow gate's Q output net — do NOT insert a new CKOR*/ICG* cell. Creating a second shadow gate for the same module produces an unneeded clock gate, wrong enable logic, and FM structural mismatch.
+
 **GAP-CTS-1 — Verify CP net exists in Route before recording:**
 ```bash
 grep -cw "<resolved_cp_net>" /tmp/eco_verify_<TAG>_Route.v

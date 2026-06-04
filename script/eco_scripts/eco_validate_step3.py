@@ -4074,6 +4074,76 @@ def main():
             except Exception:
                 pass
 
+    # ── Check 52: Duplicate instance_name within same stage ─────────────────
+    # eco_emit_dff_entry.py emits bus DFF chain gates; if the studier also
+    # emits the same gate independently, duplicate instance names cause SVR-9.
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        seen_insts = {}
+        for e in study.get(stage, []):
+            inst = e.get('instance_name', '')
+            if not inst or inst == '?':
+                continue
+            if inst in seen_insts:
+                issues.append(
+                    f"Check 52 FAIL: duplicate instance_name {inst!r} in {stage} "
+                    f"(change_types: {seen_insts[inst]!r} and {e.get('change_type')!r}). "
+                    f"eco_emit_dff_entry.py already emitted this gate — studier must not re-emit it.")
+            else:
+                seen_insts[inst] = e.get('change_type', '?')
+
+    # ── Check 53: Spurious shadow clock gate (not connected to any CP rewire) ─
+    # A new CKOR*/ICG* gate that has no corresponding CP rewire (no DFF CP pin
+    # rewired to its Q output) is likely an erroneous auto-add. The enable_swap
+    # shadow gate must have at least one rewire consuming its Q output.
+    _CG_TYPE_RE53 = re.compile(r'^(CKOR|ICG|CTG|CKLNQ|CKGT)', re.I)
+    for stage in ('Synthesize',):
+        cg_gates = {}
+        cp_rewire_targets = set()
+        for e in study.get(stage, []):
+            ct = e.get('change_type', '')
+            cell = str(e.get('cell_type') or e.get('cell_name') or '')
+            if ct == 'new_logic_gate' and _CG_TYPE_RE53.match(cell):
+                inst = e.get('instance_name', '?')
+                q_net = (e.get('port_connections') or {}).get('Q', '')
+                cg_gates[inst] = q_net
+            elif ct == 'rewire':
+                new_net = e.get('new_net', '')
+                if new_net:
+                    cp_rewire_targets.add(new_net)
+        for inst, q_net in cg_gates.items():
+            if q_net and q_net not in cp_rewire_targets:
+                issues.append(
+                    f"Check 53 FAIL: shadow clock gate {inst!r} Q={q_net!r} has NO rewire entry "
+                    f"pointing to it (no DFF CP rewired to this gate's output). "
+                    f"Likely a spurious auto-added shadow gate — verifier must NOT create new "
+                    f"CKOR*/ICG* cells; only reuse the existing enable_swap shadow gate's Q output.")
+
+    # ── Check 54: Tool-generated cell rewire in wrong module ─────────────────
+    # ctmi_*/phs_*/copt_* cells appear in multiple modules. If D-pin rewires for
+    # the target MB DFFs are already present in the study JSON, any additional
+    # rewire on a tool-generated upstream cell in the same module is redundant
+    # and likely targets the wrong module copy (xbar afifo vs WDB).
+    _TOOL_CELL_RE = re.compile(r'^(ctmi_|phs_|copt_|aps_rename_)', re.I)
+    for stage in ('Synthesize',):
+        mb_dff_d_rewires = {
+            e.get('cell_name', '') for e in study.get(stage, [])
+            if e.get('change_type') == 'rewire' and
+            str(e.get('pin', '')).upper().startswith('D') and
+            re.match(r'.*_MB_.*|.*_reg_\d+_.*', e.get('cell_name', ''))
+        }
+        if mb_dff_d_rewires:
+            for e in study.get(stage, []):
+                if e.get('change_type') != 'rewire':
+                    continue
+                cell = e.get('cell_name', '') or e.get('instance_name', '')
+                if _TOOL_CELL_RE.match(cell):
+                    issues.append(
+                        f"Check 54 FAIL: rewire on tool-generated cell {cell!r} "
+                        f"(pin={e.get('pin')}) exists alongside direct MB DFF D-pin rewires. "
+                        f"Tool-generated cells like ctmi_*/phs_* appear in multiple modules — "
+                        f"the applier matches the FIRST occurrence (often wrong module). "
+                        f"Remove this rewire; the MB DFF D-pins are already directly rewired.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}

@@ -693,6 +693,10 @@ Get FM fenets result for `old_enable_net`. From the `(+)` impl line, extract the
 
 **`module_name` is MANDATORY on every `rewire` entry** — including enable_swap rewires. Tool-generated cell names (`ctmi_*`, `phs_*`, `copt_*`) repeat across many modules in the hierarchical netlist. Without `module_name`, eco_applier matches the first cell of that name in the entire file — which may be in a completely unrelated module, silently corrupting unrelated logic while leaving the intended target unchanged. Extract `module_name` from the FM impl path: `i:/FMWORK_IMPL_<TILE>/<TILE>/<INST_A>/<INST_B>/<cell>/<pin>` — the declaring module is derived from `<INST_A>/<INST_B>` hierarchy using `resolve_module_name()` against the PostEco netlist.
 
+**MANDATORY cell-type scope check for tool-generated cell names** — before emitting any rewire entry for a `ctmi_*`, `phs_*`, or `copt_*` cell: `grep -cw "<cell_name>" /tmp/eco_verify_<TAG>_Synthesize.v` within the declared `module_name` body. If the cell appears in multiple modules, verify the **cell type** matches the expected type (e.g. AN2D1 vs AO2222D1) — same name in a different module is a different cell. If the cell type does not match the expected function, skip this rewire; the correct target is the direct MB DFF D-pin rewire, not the upstream gate.
+
+**Do NOT duplicate gates already emitted by eco_emit_dff_entry.py** — before adding any `new_logic_gate` entry, check whether an entry with the same `instance_name` already exists in the study JSON. If it does, skip. Wire_swap chain gates for bus DFFs are emitted by eco_emit_dff_entry.py bus expansion; the studier should not re-emit them.
+
 For bus DFFs: emit N rewire entries (one per bit cell), all sharing the same enable pin name and old/new net names.
 
 **Step 3 — Emit new_logic_gate entries for the new enable condition gates:**
