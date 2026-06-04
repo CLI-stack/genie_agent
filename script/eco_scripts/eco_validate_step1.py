@@ -264,6 +264,18 @@ def main():
                 if mod not in mod_sig_cache:
                     mod_sig_cache[mod] = signals_in_module(raw, mod) if raw else set()
                 return mod_sig_cache[mod]
+            # Collect signals intentionally added by this ECO (new_port / port_connection
+            # / port_promotion changes). These won't exist in PreEco — exempting them
+            # avoids false positives when a new port is used in a gate chain.
+            _eco_new_signals = set()
+            for _c in rtl_diff.get('changes', []):
+                if _c.get('change_type') in ('new_port', 'port_connection', 'port_promotion'):
+                    for _fld in ('new_token', 'signal_name', 'target_register', 'net_name'):
+                        _v = _c.get(_fld)
+                        if _v and isinstance(_v, str):
+                            _eco_new_signals.add(_v)
+                            _eco_new_signals.add(re.sub(r'\[[^\]]*\]', '', _v).strip())
+
             for idx, c in enumerate(rtl_diff.get('changes', [])):
                 target_mod = c.get('declaring_module') or c.get('module_name')
                 if not target_mod:
@@ -281,6 +293,8 @@ def main():
                                 continue
                             if base.startswith('n_eco_'):
                                 continue  # internal ECO net, may not yet exist
+                            if base in _eco_new_signals:
+                                continue  # signal added by this ECO — won't be in PreEco
                             if base not in sigs:
                                 # Suggest closest in-scope match (heuristic: same prefix)
                                 cand = next((s for s in sigs if s.startswith(base) or base.startswith(s)), None)
