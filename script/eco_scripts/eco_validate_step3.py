@@ -4074,11 +4074,13 @@ def main():
             except Exception:
                 pass
 
-    # ── Check 52: Duplicate instance_name within same stage ─────────────────
-    # eco_emit_dff_entry.py emits bus DFF chain gates; if the studier also
-    # emits the same gate independently, duplicate instance names cause SVR-9.
+    # ── Check 52: Duplicate instance_name OR output net within same stage ────
+    # Catches: (a) same instance_name from two agents; (b) different instance
+    # names (eco_9855_nxt_ao22_0 vs eco_9855_nxt_ao22_0_) that drive the same
+    # output net — both cause SVR-9 multiply-driven net in PostEco netlist.
     for stage in ('Synthesize', 'PrePlace', 'Route'):
         seen_insts = {}
+        seen_out_nets = {}
         for e in study.get(stage, []):
             inst = e.get('instance_name', '')
             if not inst or inst == '?':
@@ -4090,6 +4092,17 @@ def main():
                     f"eco_emit_dff_entry.py already emitted this gate — studier must not re-emit it.")
             else:
                 seen_insts[inst] = e.get('change_type', '?')
+            # Also check for same output net driven by different instances
+            pcs = e.get('port_connections') or {}
+            out_net = pcs.get('Z') or pcs.get('ZN') or pcs.get('Q', '')
+            if out_net and out_net not in ("1'b0", "1'b1"):
+                if out_net in seen_out_nets and seen_out_nets[out_net] != inst:
+                    issues.append(
+                        f"Check 52 FAIL: output net {out_net!r} driven by both "
+                        f"{seen_out_nets[out_net]!r} and {inst!r} in {stage} — "
+                        f"SVR-9 multiply-driven net. Remove the duplicate gate entry.")
+                else:
+                    seen_out_nets[out_net] = inst
 
     # ── Check 53: Spurious shadow clock gate (not connected to any CP rewire) ─
     # A new CKOR*/ICG* gate that has no corresponding CP rewire (no DFF CP pin
@@ -4175,18 +4188,26 @@ def main():
             shadow_q, shadow_ck = shadow_info
             inst = e.get('instance_name', '?')
             cp = (e.get('port_connections') or {}).get('CP', '')
-            # Only flag DFFs in the SAME clock domain as the shadow gate
-            # (bare CP must equal the shadow gate's own clock input)
-            if cp != shadow_ck:
-                continue  # different clock domain — not affected by this shadow gate
-            # Bare clock: short net name with no ECO/CTS prefix
-            if cp and not any(x in cp for x in ('ECO', 'FxCts', 'FxPlace', 'FxPrePlace',
-                                                  'HFSNET', 'ZCTSNET', 'clk_gate_ECO')):
+            # Flag DFFs in the SAME clock domain as the shadow gate
+            # whose CP is NOT the shadow gate Q output.
+            # Two cases: (a) bare clock same as shadow_ck, (b) an existing
+            # (non-ECO) clock gate — verifier picked the wrong neighbor gate.
+            if cp == shadow_q:
+                continue  # already correct — using ECO shadow gate
+            # Skip DFFs on a completely different clock (different base clock)
+            # by checking if the DFF clock and shadow_ck share the same base name
+            ck_base = re.sub(r'clk_gate_.*', '', shadow_ck).strip('_') or shadow_ck
+            if ck_base and ck_base not in cp and cp not in (shadow_ck, ''):
+                # Check if at least one of the clocks is related to the other
+                if not (shadow_ck in cp or cp in shadow_ck or
+                        re.sub(r'clk_gate_.*', '', cp).strip('_') == ck_base):
+                    continue  # truly different clock domain
+            if cp and shadow_q not in cp:
                 issues.append(
                     f"Check 55 FAIL: DFF {inst!r} in module {mod!r} has CP={cp!r} "
-                    f"(bare clock) but module has shadow gate with Q={shadow_q!r}. "
+                    f"but module has ECO shadow gate with Q={shadow_q!r}. "
                     f"Set CP to the shadow gate Q via eco_emit_dff_entry.py --shadow-cp-net "
-                    f"{shadow_q!r}. Bare CP = ungated clock domain → FM cone mismatch.")
+                    f"{shadow_q!r}. Using wrong/bare clock = ungated domain → FM cone mismatch.")
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
