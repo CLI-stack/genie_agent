@@ -841,35 +841,71 @@ def main():
                         g['input_from_unconnected_rewire'] = replacement
 
     # ── Bus DFF expansion (--bus-width N > 1) ────────────────────────────
-    # When the RTL register is a vector (reg [N-1:0] sig), synthesis produces N
-    # individual DFF cells (one per bit).  We replicate the single-bit DFF entry
-    # N times with bit-indexed D and Q net names so the applier can insert each
-    # cell independently.  Chain entries and Mode-I extras are NOT replicated —
-    # a bus DFF passthrough has no combinational D-input chain.
+    # Expand to N per-bit DFF entries. When a D-input chain exists (chain_entries
+    # non-empty), expand the chain gates to N per-bit instances and set each DFF
+    # D-pin to the corresponding per-bit chain output. Without a chain, use the
+    # resolved net directly (pure passthrough bus DFF).
     bus_width = max(1, args.bus_width)
     if bus_width > 1:
+        import copy as _copy
         bus_dff_entries = []
+        bus_chain_entries = []  # per-bit chain gate entries
+
+        # When a chain exists, the representative gate covers bit 0; expand to N.
+        # Per-bit naming: append _{bit}_ to instance names and output nets.
+        # Input nets that end in _0_ (flat bus-bit form) are also renamed to _{bit}_.
+        if chain_entries:
+            for bit in range(bus_width):
+                for g in chain_entries:
+                    ge = _copy.deepcopy(g)
+                    ge['bus_bit_index'] = bit
+                    # Instance name: append _{bit}_ (strip trailing _0_ first if present)
+                    base_inst = re.sub(r'_0_$', '', ge.get('instance_name', '').rstrip('_'))
+                    ge['instance_name'] = f'{base_inst}_{bit}_'
+                    # Output net: append _{bit}_
+                    def _bitname(net, b):
+                        n = re.sub(r'_0_$', '', net.rstrip('_'))
+                        return f'{n}_{b}_'
+                    for out_pin in ('ZN', 'Z'):
+                        if out_pin in ge.get('port_connections', {}):
+                            ge['port_connections'][out_pin] = _bitname(
+                                ge['port_connections'][out_pin], bit)
+                    if 'output_net' in ge:
+                        ge['output_net'] = _bitname(ge['output_net'], bit)
+                    # Input nets with flat bus-bit suffix _0_ → _{bit}_
+                    for pin, val in list(ge.get('port_connections', {}).items()):
+                        if pin in ('ZN', 'Z'): continue
+                        if isinstance(val, str) and val.endswith('_0_'):
+                            ge['port_connections'][pin] = re.sub(r'_0_$', f'_{bit}_', val)
+                    ge['module_name'] = host_module
+                    bus_chain_entries.append(ge)
+
         for bit in range(bus_width):
-            import copy as _copy
             e = _copy.deepcopy(dff_entry)
-            # Instance name follows DC synthesis convention: <reg>_reg_<bit>_
             e['instance_name']  = f'{target_reg}_reg_{bit}_'
             e['bus_bit_index']  = bit
             e['is_bus_dff_bit'] = True
-            # Per-stage D and Q use bracket notation inside port_connections
             for stage in ('Synthesize', 'PrePlace', 'Route'):
                 pcs = e.get('port_connections_per_stage', {}).get(stage, {})
-                # D input: the source bus signal at this bit
-                d_src = rtl_change.get('d_input_resolved_net') or ''
-                if d_src:
-                    pcs['D'] = f'{d_src}[{bit}]'
-                # Q output: target register bus bit
+                if chain_entries:
+                    # D = per-bit chain gate output for this bit
+                    rep_out = chain_entries[-1].get('port_connections', {}).get('ZN') or \
+                              chain_entries[-1].get('port_connections', {}).get('Z') or \
+                              chain_entries[-1].get('output_net', '')
+                    n = re.sub(r'_0_$', '', rep_out.rstrip('_'))
+                    pcs['D'] = f'{n}_{bit}_'
+                else:
+                    # No chain — D = resolved source bus bit
+                    d_src = rtl_change.get('d_input_resolved_net') or ''
+                    if d_src:
+                        pcs['D'] = f'{d_src}[{bit}]'
                 pcs['Q'] = f'{target_reg}[{bit}]'
                 if stage == 'Synthesize':
                     e['port_connections'] = dict(pcs)
             bus_dff_entries.append(e)
-        synth_entries  = bus_dff_entries + modei_extra_entries
-        pp_rte_entries = bus_dff_entries + modei_extra_entries
+
+        synth_entries  = bus_dff_entries + bus_chain_entries + modei_extra_entries
+        pp_rte_entries = bus_dff_entries + bus_chain_entries + modei_extra_entries
     else:
         synth_entries  = [dff_entry] + chain_entries + modei_extra_entries
         pp_rte_entries = [dff_entry] + chain_entries + modei_extra_entries
