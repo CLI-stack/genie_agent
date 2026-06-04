@@ -374,7 +374,12 @@ python3 script/eco_scripts/eco_emit_dff_entry.py \
 ```
 The wrapper emits N entries (`<target>_reg_<bit>_`) with per-bit D (`<d_src>[bit]`) and Q (`<target>[bit]`) nets, plus shared CP/SI/SE derived from a sibling DFF in the same clock domain.
 
-**`--shadow-cp-net` MANDATORY when DFF shares an enable_swap shadow gate:** If the study JSON already contains a `clk_gate_ECO_<jira>_*` (CKOR*/ICG*) shadow gate in the same module and the new DFF's clock domain (`dff_clock`) feeds that shadow gate, pass `--shadow-cp-net <shadow_gate_Q_net>`. This sets the DFF CP to the shadow gate output for all 3 stages instead of the bare rename-map clock. Example: wdbptr_org0_d1p5 shares `clk_gate_ECO_9855_wdbptr_org0_d2_reg` — pass `--shadow-cp-net umcdat_WDB_uclkg_clk_gate_ECO_9855_wdbptr_org0_d2_reg`.
+**`--shadow-cp-net` usage depends on DFF role:**
+
+- **Companion new DFF** (new register introduced alongside the enable_swap, e.g. wdbptr_org0_d1p5): pass `--shadow-cp-net <dff_cp_net>` — the **OLD existing** clock gate Q net from the enable_swap entry. The new companion DFF should be clocked by the same gate that clocked the existing DFF array BEFORE the ECO. This matches SynRtl's synthesis and the engineer's implementation.
+- **Existing DFF array** (the DFFs being rewired by enable_swap, e.g. wdbptr_org0_d2_reg): their CP is handled by the CP rewires from `eco_emit_shadow_gate.py` — they switch to the NEW ECO shadow gate.
+
+Do NOT use the new ECO shadow gate Q for companion new DFFs — that creates a different enable function from what SynRtl produces and causes FM failure.
 
 **D-input gate chain — must also be per-bit (MANDATORY when chain is non-empty):**
 If the bus DFF has a D-input gate chain (e.g., reset-baked `INR2(data, reset)` → D), that chain gate must be replicated N times with bit-indexed data inputs — one gate per DFF bit. Never emit a single scalar chain gate shared across all N bits: each bit's DFF connects to its own gate output, and each gate's data input is the bit-indexed form of the source bus signal (e.g., `data[bit]`). Scalar inputs such as reset signals are shared unchanged across all N gate entries.

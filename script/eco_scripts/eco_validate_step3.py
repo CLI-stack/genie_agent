@@ -4339,6 +4339,39 @@ def main():
                     f"preserve existing reset-gated D-path behavior.")
                 break
 
+    # ── Check 58: companion new DFF CP must use OLD gate, not NEW ECO gate ───
+    # New DFFs introduced alongside an enable_swap (e.g. d1p5 pipeline stage)
+    # must be clocked by the OLD existing clock gate (dff_cp_net), NOT the new
+    # ECO shadow gate. Using the ECO gate gives a different enable function from
+    # SynRtl and causes FM mismatch on those DFF compare points.
+    for _c in rtl_diff.get('changes', []):
+        if _c.get('change_type') != 'enable_swap':
+            continue
+        if not _c.get('enable_via_clock_gate'):
+            continue
+        _dff_cp_net = _c.get('dff_cp_net', '')
+        _tgt = _c.get('target_register', '?')
+        if not _dff_cp_net:
+            continue
+        # Find companion new_logic_dff entries in same module (not the rewired target)
+        for stage in ('Synthesize',):
+            for e in study.get(stage, []):
+                if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
+                    continue
+                inst = e.get('instance_name', '')
+                if _tgt in inst:
+                    continue  # skip the existing rewired DFF array itself
+                pcs = e.get('port_connections') or {}
+                cp = pcs.get('CP', '')
+                # Flag if CP uses the NEW ECO shadow gate instead of old gate
+                if cp and 'ECO_' in cp and _dff_cp_net and 'ECO_' not in _dff_cp_net:
+                    issues.append(
+                        f"Check 58 FAIL: new DFF {inst!r} CP={cp!r} uses the NEW ECO "
+                        f"shadow gate but should use the OLD gate (dff_cp_net={_dff_cp_net!r}). "
+                        f"Companion new DFFs must be clocked by the same gate the existing "
+                        f"DFF array used BEFORE the ECO — pass "
+                        f"--shadow-cp-net {_dff_cp_net!r} to eco_emit_dff_entry.py.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}
