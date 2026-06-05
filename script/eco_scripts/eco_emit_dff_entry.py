@@ -646,14 +646,28 @@ def main():
         Also strips flat _N_ suffix (e.g. wdbptr_org0_d1_0_ → wdbptr_org0_d1)
         so bus-bit nets in flat P&R form resolve via the bus-level rename map
         entry. When the resolved value is a scalar replacement (actual_wire_*),
-        the caller must NOT re-append the _N_ suffix."""
+        the caller must NOT re-append the _N_ suffix.
+
+        FM path sanitization: if the rename map returns a cell/pin path format
+        (contains '/'), it is an FM implementation address, not a wire name.
+        Prefer actual_wire_<stage> which is the real gate-level wire. If no
+        actual_wire is available, fall through and return the original net so
+        the applier can use its own net-rename recovery."""
+        def _sanitize(val, fallback):
+            if val and '/' in val:
+                return None  # FM path format — not a wire name
+            return val
         for scope in _scope_candidates_extended:
             entry = rmap.get(f'{scope}/{base}') or {}
             if isinstance(entry, dict) and stage in entry:
-                return entry.get(f'actual_wire_{stage}') or entry[stage]
+                resolved = entry.get(f'actual_wire_{stage}') or _sanitize(entry[stage], net)
+                if resolved:
+                    return resolved
         entry = rmap.get(base) or {}
         if isinstance(entry, dict) and stage in entry:
-            return entry.get(f'actual_wire_{stage}') or entry[stage]
+            resolved = entry.get(f'actual_wire_{stage}') or _sanitize(entry[stage], net)
+            if resolved:
+                return resolved
         # Flat bus-bit form: try stripping trailing _N_ digit suffix and
         # look up the base bus signal (e.g. wdbptr_org0_d1_0_ → wdbptr_org0_d1).
         # ONLY use this result when actual_wire_<stage> is explicitly set —
@@ -905,26 +919,41 @@ def main():
                     # Input nets: rename _0_ suffix AND handle base bus names
                     # that eco_synth_chain stripped (e.g. wdbptr_org0_d1 → _N_).
                     # Also update port_connections_per_stage with same per-bit values.
-                    def _per_bit(val, b, base_to_zero):
+                    def _per_bit_flat(val, b, base_to_zero):
+                        """Flat-form per-bit rename for PP/Route stages."""
                         if val.endswith('_0_'):
                             return re.sub(r'_0_$', f'_{b}_', val)
                         if val in base_to_zero:
                             return re.sub(r'_0_$', f'_{b}_', base_to_zero[val])
                         return val
+
+                    def _per_bit_bracket(val, b, base_to_zero):
+                        """Bracket-form per-bit rename for Synthesize stage.
+                        Strip _0_ suffix then add [N] for bus-bit bracket form."""
+                        if val.endswith('_0_'):
+                            base = re.sub(r'_0_$', '', val)  # wdbptr_org0_d1_0_ → wdbptr_org0_d1
+                            return f'{base}[{b}]'
+                        if val in base_to_zero:
+                            base = re.sub(r'_0_$', '', base_to_zero[val])
+                            return f'{base}[{b}]'
+                        return val
+
+                    # Base port_connections: use bracket form (Synthesize canonical)
                     for pin, val in list(ge.get('port_connections', {}).items()):
                         if pin in ('ZN', 'Z'): continue
                         if not isinstance(val, str): continue
-                        new_val = _per_bit(val, bit, _base_to_zero)
+                        new_val = _per_bit_bracket(val, bit, _base_to_zero)
                         if new_val != val:
                             ge['port_connections'][pin] = new_val
-                    # Also propagate per-bit renaming to port_connections_per_stage
+                    # Per-stage: Synthesize=bracket, PP/Route=flat
                     pcs_ps = ge.get('port_connections_per_stage') or {}
                     for stage_name, stage_pcs in pcs_ps.items():
                         if not isinstance(stage_pcs, dict): continue
+                        _fn = _per_bit_bracket if stage_name == 'Synthesize' else _per_bit_flat
                         for pin, val in list(stage_pcs.items()):
                             if pin in ('ZN', 'Z', 'Q'): continue
                             if not isinstance(val, str): continue
-                            new_val = _per_bit(val, bit, _base_to_zero)
+                            new_val = _fn(val, bit, _base_to_zero)
                             if new_val != val:
                                 stage_pcs[pin] = new_val
                     ge['module_name'] = host_module
