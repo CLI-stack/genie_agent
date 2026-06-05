@@ -870,7 +870,21 @@ def main():
         # When a chain exists, the representative gate covers bit 0; expand to N.
         # Per-bit naming: append _{bit}_ to instance names and output nets.
         # Input nets that end in _0_ (flat bus-bit form) are also renamed to _{bit}_.
+        # Also handle inputs where eco_synth_chain.py stripped the _0_ suffix
+        # (leaving base bus name e.g. 'wdbptr_org0_d1' instead of 'wdbptr_org0_d1_0_').
         if chain_entries:
+            # Build map: base_name → _0_ input from rtl_diff chain template
+            # eco_synth_chain.py strips the _0_ suffix for sympy symbols, so
+            # port_connections may have base name. Detect these via rtl_diff inputs.
+            _rtl_chain_inputs = []
+            for _cg in (rtl_change.get('d_input_gate_chain') or []):
+                for _inp in (_cg.get('inputs') or []):
+                    if isinstance(_inp, str) and _inp.endswith('_0_'):
+                        _rtl_chain_inputs.append(_inp)
+            # base_name → _0_suffixed form mapping
+            _base_to_zero = {re.sub(r'_0_$', '', _i.rstrip('_')): _i
+                             for _i in _rtl_chain_inputs if _i.endswith('_0_')}
+
             for bit in range(bus_width):
                 for g in chain_entries:
                     ge = _copy.deepcopy(g)
@@ -888,11 +902,31 @@ def main():
                                 ge['port_connections'][out_pin], bit)
                     if 'output_net' in ge:
                         ge['output_net'] = _bitname(ge['output_net'], bit)
-                    # Input nets with flat bus-bit suffix _0_ → _{bit}_
+                    # Input nets: rename _0_ suffix AND handle base bus names
+                    # that eco_synth_chain stripped (e.g. wdbptr_org0_d1 → _N_).
+                    # Also update port_connections_per_stage with same per-bit values.
+                    def _per_bit(val, b, base_to_zero):
+                        if val.endswith('_0_'):
+                            return re.sub(r'_0_$', f'_{b}_', val)
+                        if val in base_to_zero:
+                            return re.sub(r'_0_$', f'_{b}_', base_to_zero[val])
+                        return val
                     for pin, val in list(ge.get('port_connections', {}).items()):
                         if pin in ('ZN', 'Z'): continue
-                        if isinstance(val, str) and val.endswith('_0_'):
-                            ge['port_connections'][pin] = re.sub(r'_0_$', f'_{bit}_', val)
+                        if not isinstance(val, str): continue
+                        new_val = _per_bit(val, bit, _base_to_zero)
+                        if new_val != val:
+                            ge['port_connections'][pin] = new_val
+                    # Also propagate per-bit renaming to port_connections_per_stage
+                    pcs_ps = ge.get('port_connections_per_stage') or {}
+                    for stage_name, stage_pcs in pcs_ps.items():
+                        if not isinstance(stage_pcs, dict): continue
+                        for pin, val in list(stage_pcs.items()):
+                            if pin in ('ZN', 'Z', 'Q'): continue
+                            if not isinstance(val, str): continue
+                            new_val = _per_bit(val, bit, _base_to_zero)
+                            if new_val != val:
+                                stage_pcs[pin] = new_val
                     ge['module_name'] = host_module
                     bus_chain_entries.append(ge)
 
