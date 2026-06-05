@@ -4235,6 +4235,14 @@ def main():
             # (non-ECO) clock gate — verifier picked the wrong neighbor gate.
             if cp == shadow_q:
                 continue  # already correct — using ECO shadow gate
+            # Exempt companion new DFFs that are allowed to use the OLD gate Q
+            # (dff_cp_net from the enable_swap entry). Per engineer scheme, companion
+            # new DFFs (e.g. wdbptr_org0_d1p5) use the OLD existing gate, not the new
+            # ECO shadow gate. Check 58 enforces this separately.
+            _dff_cp_nets = {_c.get('dff_cp_net','') for _c in rtl_diff.get('changes',[])
+                            if _c.get('change_type')=='enable_swap' and _c.get('dff_cp_net')}
+            if cp and any(cp == _n for _n in _dff_cp_nets if _n):
+                continue  # companion DFF using OLD gate Q — allowed per scheme
             # Skip DFFs on a completely different clock (different base clock)
             # by checking if the DFF clock and shadow_ck share the same base name
             ck_base = re.sub(r'clk_gate_.*', '', shadow_ck).strip('_') or shadow_ck
