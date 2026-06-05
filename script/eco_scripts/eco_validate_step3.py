@@ -4363,14 +4363,17 @@ def main():
                     continue  # skip the existing rewired DFF array itself
                 pcs = e.get('port_connections') or {}
                 cp = pcs.get('CP', '')
-                # Flag if CP uses the NEW ECO shadow gate instead of old gate
-                if cp and 'ECO_' in cp and _dff_cp_net and 'ECO_' not in _dff_cp_net:
+                # Flag if CP is a shadow gate (contains 'clk_gate_ECO') but differs
+                # from dff_cp_net (the old gate Q). Use net name comparison — not
+                # 'ECO_' prefix check — because dff_cp_net may itself be wrong.
+                if cp and cp != _dff_cp_net and 'clk_gate_ECO' in cp and _dff_cp_net:
                     issues.append(
-                        f"Check 58 FAIL: new DFF {inst!r} CP={cp!r} uses the NEW ECO "
-                        f"shadow gate but should use the OLD gate (dff_cp_net={_dff_cp_net!r}). "
+                        f"Check 58 FAIL: new DFF {inst!r} CP={cp!r} uses the ECO shadow "
+                        f"gate but should use the OLD gate (dff_cp_net={_dff_cp_net!r}). "
                         f"Companion new DFFs must be clocked by the same gate the existing "
                         f"DFF array used BEFORE the ECO — pass "
-                        f"--shadow-cp-net {_dff_cp_net!r} to eco_emit_dff_entry.py.")
+                        f"--shadow-cp-net {_dff_cp_net!r} to eco_emit_dff_entry.py. "
+                        f"Also verify dff_cp_net in rtl_diff is the PRE-ECO gate Q net.")
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0

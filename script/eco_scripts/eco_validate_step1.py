@@ -622,6 +622,17 @@ def main():
                 f"changes[{idx}] target={tgt!r}: enable_via_clock_gate=true with companion "
                 f"wire_swap/and_term but `dff_cp_net` missing — record the clock gate's "
                 f"Q output net so Step 3 can find all DFF CP pins to rewire to shadow gate.")
+        # dff_cp_net must be the PRE-ECO existing clock gate Q (the OLD net the DFF
+        # array currently uses). If it contains 'ECO_', the analyzer set it to the
+        # NEW shadow gate Q — which is wrong and defeats Check 58 validation.
+        _cp_net = c.get('dff_cp_net', '')
+        if _cp_net and 'ECO_' in _cp_net:
+            shadow_gate_field_issues.append(
+                f"changes[{idx}] target={tgt!r}: `dff_cp_net`={_cp_net!r} contains 'ECO_' — "
+                f"this must be the PRE-ECO existing clock gate Q output net (the net the "
+                f"DFF array currently uses BEFORE the ECO), not the new shadow gate Q. "
+                f"Grep PreEco Synthesize for `.Q` on `{c.get('clock_gate_instance','')}` "
+                f"to get the correct old gate Q net.")
     if shadow_gate_field_issues:
         overall_pass = False
 
