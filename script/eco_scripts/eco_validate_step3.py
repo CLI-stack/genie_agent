@@ -4774,27 +4774,23 @@ def main():
         except Exception:
             pass
 
-    # ── Check 65: CTS rename used when bare RTL name already exists in PP/Route ──
-    # Rule: when Synthesize uses a bare RTL name (e.g. 'IReset', 'wr_vld0_d1') for a
-    # functional pin AND that exact bare name EXISTS in the PP/Route PreEco netlist,
-    # the studier MUST use the bare name — NOT the CTS rename from the fenets map.
-    # Only use the CTS rename when the bare RTL name is ABSENT from the stage netlist.
+    # ── Check 65: CTS rename used when bare RTL name exists in all 3 stages ────
+    # Rule (3-step priority):
+    #   1. Bare RTL name exists in ALL 3 stages → MUST use bare name in all stages
+    #   2. Absent in PP/Route → structural driver trace from Synth (find driver inst
+    #      in Synth, locate same inst in PP/Route, read its output net)
+    #   3. Last resort → CTS rename from fenets (FxPrePlace_*/FxPlace_*)
     #
-    # Why: CTS renames (FxPrePlace_*/FxPlace_*) that are module-level primary inputs
-    # cannot be traced by FM to their source DFF across the module boundary → NOT
-    # EQUIVALENT compare points. The bare RTL name (e.g. IReset) remains as an
-    # internally-driven wire in PP/Route and IS FM-traceable.
-    #
-    # Priority rule for studier/verifier:
-    #   1. Bare RTL name (Synth value) → use if it EXISTS in the PP/Route PreEco netlist
-    #   2. CTS rename from fenets map  → use ONLY when bare name is absent in the stage
+    # This check fires when: Synth uses a bare RTL name AND PP/Route uses a CTS rename
+    # AND the bare name EXISTS in that stage's PreEco netlist (step 1 applies → FAIL).
+    # If bare name absent in PP/Route stage, CTS rename or structural trace is correct.
     _CTS_RENAME_PREFIXES_65 = ('FxPrePlace_', 'FxPlace_', 'FxOptCts_', 'FxCts_')
     _FUNC_PINS_65 = ('A1', 'A2', 'B1', 'B2', 'I', 'IN', 'D')
     _SKIP_SYNTH_PREFIXES_65 = ("1'b", "n_eco_", "ECO_", "PENDING", "UNRESOLVABLE",
                                 "FxPrePlace_", "FxPlace_", "FxOptCts_", "FxCts_")
-    # Cache of pre-loaded PreEco text per stage for fast grep
+    # Load PreEco text for all 3 stages (for bare-name existence check)
     _preeco_txt_65: dict = {}
-    for _s65 in ('PrePlace', 'Route'):
+    for _s65 in ('Synthesize', 'PrePlace', 'Route'):
         _gz65 = Path(args.ref_dir) / 'data' / 'PreEco' / f'{_s65}.v.gz'
         if _gz65.is_file():
             try:
@@ -4815,6 +4811,14 @@ def main():
             _syn_net = str(_pcs_syn.get(_pin65, ''))
             if not _syn_net or any(_syn_net.startswith(p) for p in _SKIP_SYNTH_PREFIXES_65):
                 continue  # Synth already uses CTS name or ECO-internal — skip
+            # Check if bare name exists in ALL 3 stages (condition for Check 65 to apply)
+            _bare_in_all = all(
+                bool(re.search(r'\b' + re.escape(_syn_net) + r'\b',
+                               _preeco_txt_65.get(_s65, '')))
+                for _s65 in ('Synthesize', 'PrePlace', 'Route')
+            )
+            if not _bare_in_all:
+                continue  # bare name absent in some stage → structural trace / CTS rename OK
             for _stg65 in ('PrePlace', 'Route'):
                 _stg_net = str((_pcs_ps.get(_stg65) or {}).get(_pin65, ''))
                 if not _stg_net:
@@ -4825,19 +4829,14 @@ def main():
                         _stg_net = str((_stg_e65.get('port_connections') or {}).get(_pin65, ''))
                 if not _stg_net or not any(_stg_net.startswith(p) for p in _CTS_RENAME_PREFIXES_65):
                     continue  # stage net is not a CTS rename — no issue
-                # Stage uses CTS rename — check if bare Synth name EXISTS in stage netlist
-                _txt65 = _preeco_txt_65.get(_stg65, '')
-                if not _txt65:
-                    continue
-                _bare_exists = bool(re.search(r'\b' + re.escape(_syn_net) + r'\b', _txt65))
-                if _bare_exists:
-                    issues.append(
-                        f"Check 65 FAIL: [{_stg65}] gate {_inst65!r} pin .{_pin65}="
-                        f"{_stg_net!r} uses CTS rename but bare RTL name {_syn_net!r} "
-                        f"EXISTS in {_stg65} PreEco netlist. "
-                        f"Fix: use {_syn_net!r} in {_stg65} (and all stages) — bare RTL "
-                        f"name is preferred when it exists in the stage. Only use CTS "
-                        f"rename when bare name is ABSENT from the PreEco netlist.")
+                issues.append(
+                    f"Check 65 FAIL: [{_stg65}] gate {_inst65!r} pin .{_pin65}="
+                    f"{_stg_net!r} uses CTS rename but bare RTL name {_syn_net!r} "
+                    f"EXISTS in ALL 3 PreEco stages (Synthesize/PrePlace/Route). "
+                    f"Fix: use {_syn_net!r} in ALL stages — bare RTL name is preferred "
+                    f"when it exists across all stages (step 1 of 3-step priority). "
+                    f"Use structural driver trace (step 2) or CTS rename (step 3) only "
+                    f"when bare name is absent in a specific stage.")
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0

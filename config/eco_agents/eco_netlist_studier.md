@@ -278,18 +278,45 @@ P&R renames DFF outputs (CTS/optimization in Route). A wire may exist in scope b
 
 **Per-stage resolution priority** (all ECO input pins, anything except `{Z, ZN, ZN1, Q, QN, CO}`):
 
-0. **Bare RTL name existence check (MANDATORY FIRST STEP — new Rule 65).** Before consulting the fenets rename map, check whether the Synthesize bare RTL name (e.g. `IReset`, `wr_vld0_d1`) EXISTS in the PP/Route PreEco netlist:
+0. **Bare RTL name existence check — ALL THREE STAGES (MANDATORY FIRST STEP — Rule 65).**
+   Before consulting the fenets rename map, check whether the Synthesize bare RTL name
+   (e.g. `IReset`) EXISTS in **all three** PreEco stage netlists:
    ```bash
-   zgrep -cw "<bare_rtl_name>" <REF_DIR>/data/PreEco/<Stage>.v.gz
+   zgrep -cw "<bare_rtl_name>" <REF_DIR>/data/PreEco/Synthesize.v.gz
+   zgrep -cw "<bare_rtl_name>" <REF_DIR>/data/PreEco/PrePlace.v.gz
+   zgrep -cw "<bare_rtl_name>" <REF_DIR>/data/PreEco/Route.v.gz
    ```
-   - **Count ≥ 1 → bare RTL name EXISTS in stage** → **USE the bare RTL name directly for that stage.** Do NOT use the CTS rename from fenets. The bare name is FM-traceable and avoids module-boundary primary-input issues. Step 3 validator Check 65 hard-fails when a CTS rename is used but the bare RTL name exists in the stage.
-   - **Count = 0 → bare RTL name ABSENT in stage** → fall through to Priority 1 (fenets rename map). Only then use the CTS rename.
+   - **All three ≥ 1 → bare RTL name exists everywhere** → **USE the bare RTL name in ALL stages.**
+     Do NOT use CTS renames. The bare name is FM-traceable across all stage comparisons.
+     Step 3 validator Check 65 hard-fails when a CTS rename is used but the bare name exists.
+   - **Absent in PP or Route** → do NOT force bare name there. Fall through to Priority 1
+     (structural driver trace) for that specific stage.
 
-   **Why:** CTS renames (`FxPrePlace_HFSNET_*` / `FxPlace_HFSNET_*`) that are module-level primary inputs cannot be traced by FM to their source DFF across the module boundary → NOT EQUIVALENT compare points. When the bare RTL name (e.g. `IReset`) still exists as an internally-driven wire in PP/Route, using it directly keeps FM's cone intact. Use CTS renames only as a fallback when the original name is gone.
+   **Why:** CTS renames (`FxPrePlace_HFSNET_*` / `FxPlace_HFSNET_*`) that are module-level
+   primary inputs cannot be traced by FM to their source DFF → NOT EQUIVALENT compare points.
+   When the bare RTL name still exists as a driven wire in PP/Route, use it. Use CTS renames
+   only as a last resort when the original name is gone.
 
-1. **`<BASE_DIR>/data/<TAG>_eco_fenets_rename_map.json`** — use ONLY when Priority 0 determined the bare RTL name is absent from the stage. The rename map provides the CTS-renamed equivalent. USE ITS VALUES VERBATIM (polarity-correct by construction).
-2. **Neighbor-DFF inference** (only when signal absent from rename map): find a pre-existing DFF in same module scope whose Synth value of the same pin matches the ECO logical signal; copy its per-stage net verbatim, including CTS-renamed names.
-3. **Module-body grep for internal wire**: when a chain leaf is a local internal wire driven by a sync-flop inside the host module, grep each stage's PostEco for `.Q(<net>)` on the source DFF instance:
+1. **Structural driver trace from Synthesize** (when bare RTL name absent in PP or Route).
+   How the signal is driven in Synth reveals what its renamed equivalent is in PP/Route:
+   - Find the driver of `<bare_rtl_name>` in Synth PreEco:
+     `grep "\.Q\|\.Z\|\.ZN" Synthesize.v | grep "<bare_rtl_name>"` → get `driver_inst`
+   - Search `driver_inst` in the PP/Route PreEco → read its output net → that is the
+     stage-specific equivalent of the bare RTL name.
+   ```bash
+   grep "<driver_inst>" PreEco/<Stage>.v.gz | grep "\.Q\b\|\.ZN\b\|\.Z\b" | head -1
+   ```
+   Use the output net found. This is more reliable than the fenets rename map when the bare
+   name is absent because it traces the actual driver cell across P&R stages.
+
+2. **`<BASE_DIR>/data/<TAG>_eco_fenets_rename_map.json`** — last resort, use ONLY when
+   Priorities 0 and 1 failed to find the signal in the stage. The rename map provides the
+   CTS-renamed equivalent. USE ITS VALUES VERBATIM (polarity-correct by construction).
+
+3. **Neighbor-DFF inference** (only when signal absent from rename map): find a pre-existing
+   DFF in same module scope whose Synth value matches; copy its per-stage net verbatim.
+4. **Module-body grep for internal wire**: when a chain leaf is driven by a sync-flop inside
+   the host module, grep each stage's PostEco for `.Q(<net>)` on the source DFF instance:
 
 ```python
 def find_driver_in_module(host_mod_text, original_signal, source_dff_inst):
@@ -298,8 +325,6 @@ def find_driver_in_module(host_mod_text, original_signal, source_dff_inst):
 ```
 
 **SE/SI on new ECO DFFs: hardwire `1'b0` in ALL stages (Synth/PP/Route).** Scan stitching is out of scope; DFT team handles it.
-
-**Path 1 vs Path 3:** rename_map is FM-anchored to a combinational path through CTS inverters; module-body grep may resolve a topologically-equivalent net (e.g., a `.Qn` of a registered replica). Both can be FM-equivalent — choose based on consuming gate; FM equivalence is the arbiter.
 
 Log: `PR_ALIAS: <gate>.<pin> Syn=<net> PP=<alias> Route=<alias>` or `PR_ALIAS_SAME`.
 

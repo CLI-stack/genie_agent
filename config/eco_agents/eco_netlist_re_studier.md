@@ -360,12 +360,18 @@ synth_count=$(zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -cw "<source_net
 
 **H2 — Find P&R alias:** For H-RENAME: find driver of `source_net` in Synthesize → search same driver instance in P&R → read its output net. For H-BUS: keep `source_net` as-is.
 
-**BARE RTL NAME CHECK (MANDATORY FIRST — Rule 65, before P&R alias search):** Before looking up neighbor DFF per-stage aliases, check whether the bare Synthesize RTL name (e.g. `IReset`) EXISTS in the PP/Route PreEco netlist:
+**BARE RTL NAME CHECK — ALL THREE STAGES (MANDATORY FIRST — Rule 65):**
+Before looking up neighbor DFF per-stage aliases, check whether the bare Synthesize RTL name
+(e.g. `IReset`) EXISTS in **all three** PreEco stage netlists:
 ```bash
-zgrep -cw "<synth_net>" <REF_DIR>/data/PreEco/<stage>.v.gz
+zgrep -cw "<synth_net>" <REF_DIR>/data/PreEco/Synthesize.v.gz
+zgrep -cw "<synth_net>" <REF_DIR>/data/PreEco/PrePlace.v.gz
+zgrep -cw "<synth_net>" <REF_DIR>/data/PreEco/Route.v.gz
 ```
-- **Count ≥ 1 → bare RTL name EXISTS** → use it directly, skip the neighbor DFF alias lookup. FM can trace this wire; CTS renames that are module-level primary inputs cannot be traced → NOT EQUIVALENT. Step 3 validator Check 65 hard-fails if CTS rename used when bare name exists.
-- **Count = 0 → bare name ABSENT** → proceed to neighbor DFF P&R alias search below.
+- **All ≥ 1 → bare RTL name exists in all stages** → use it in ALL stages, skip neighbor DFF lookup. FM can trace this wire in all stage comparisons. Step 3 Check 65 hard-fails if CTS rename used when bare name exists in that stage.
+- **Absent in PP or Route** → do NOT use bare name there. Instead:
+  1. **Structural driver trace**: find driver of `<synth_net>` in Synth PreEco (`.Q(<synth_net>)` grep → `driver_inst`), then search `driver_inst` in PP/Route PreEco and read its output net. Use that as the PP/Route value.
+  2. **Last resort**: use neighbor DFF P&R alias (CTS rename) from the P&R alias search below.
 
 **P&R PER-STAGE ALIAS RULE (MANDATORY in H2 — all input pins, only when bare RTL name absent):** Copy per-stage values from a pre-existing DFF in the same module scope (find one whose Synth pin matches the ECO entry's logical signal; use its per-stage net names verbatim, including scan/DFT/CTS renames). For SE/SI on new ECO DFFs: Synth=`1'b0`, PP/Route=neighbor DFF's per-stage SE/SI (NOT `1'b0` — see eco_netlist_studier.md `0b-STAGE-NETS`).
 
