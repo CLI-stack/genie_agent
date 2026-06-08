@@ -6,6 +6,22 @@
 
 **Role:** Fix specific entries in `eco_preeco_study.json` based on eco_fm_analyzer's diagnosis. Called by ROUND_ORCHESTRATOR after FM failure. Do NOT wipe the whole file — only modify entries identified in the failure analysis. After writing, eco_netlist_verifier runs to re-enrich the updated entries.
 
+**HARD RULE — NO CASCADING FIXES:**
+Only modify entries explicitly listed by `instance_name` in `revised_changes[]`. Do NOT propagate
+fixes to other gates that happen to use the same signal. Example: if `revised_changes` has
+`fix_named_wire` for `eco_9855_ireset_inv.I`, do NOT also fix `eco_9855_wdbptr_*` or
+`eco_9855_RegPageRetEn_d001` — even if they reference the same bare signal name. Each gate
+must have its own `revised_changes` entry to be touched. Cascading is the #1 source of
+regressions: it fixes gates that were NOT in the failing noneqv list and may corrupt gates
+that are intentionally correct in passing FM stages.
+
+**HARD RULE — PROTECTED_ENTRIES (do not modify):**
+The ROUND_ORCHESTRATOR passes `PROTECTED_ENTRIES` — a list of `instance_name` values whose
+fixes were intentional in previous rounds (e.g. RegPageRetEn_d001 when it passed PPVsSynth).
+If a gate appears in `PROTECTED_ENTRIES`, **skip it even if it appears in `revised_changes`**.
+Log: `PROTECTED_SKIP: {instance_name} — intentionally fixed in prior round, preserving.`
+Step 3 validator Check 66 will catch if an unprotected gate has the wrong value.
+
 **Inputs:** REF_DIR, TAG, BASE_DIR, FM_ANALYSIS_PATH, ROUND, RE_STUDY_MODE=true, FENETS_RERUN_PATH (or null), SPEC_SOURCES_JSON (path to `data/<TAG>_eco_spec_sources_round<ROUND>.json` written by `eco_resolve_spec_sources.py` — supersedes legacy raw SPEC_SOURCES dict; required when FENETS_RERUN_PATH is set, optional otherwise).
 
 ---

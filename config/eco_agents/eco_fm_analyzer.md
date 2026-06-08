@@ -292,6 +292,20 @@ These are quick disqualifications/confirmations that cut investigation time. App
 - **`evidence.summary_signals` contains `ECO_APPLIED_SKIPPED`**: prime hypothesis is Mode A sub-cause #1 (re-apply the SKIPPED change).
 - **`evidence.summary_signals` contains `INTENTIONAL_CASCADE` match**: emit `cascade_verified_skip` immediately, no Q1-Q5 needed.
 - **`xstage.deltas.cell_blackboxed` is non-empty for an ECO DFF input**: prime hypothesis is Mode H.
+- **FENETS ACTUAL_WIRE GUARD (MANDATORY before any Mode H `rename_to_named_wire` recipe):**
+  Before emitting `fix_named_wire` that replaces a CTS signal (e.g. `FxPrePlace_HFSNET_933`) with
+  a bare RTL name (e.g. `IReset`), check the fenets rename map (`data/<TAG>_eco_fenets_rename_map.json`):
+  if the CTS signal IS the `actual_wire_<stage>` for the signal's scope in the map, it is the
+  `(+)` polarity-correct authoritative value — do NOT suggest replacing it with the bare name.
+  The bare name in PP/Route scope may refer to a DIFFERENT DFF source (Rule 66).
+  Instead, the fix direction should be the OPPOSITE: bare_name → CTS actual_wire.
+  ```python
+  for scope_key, entry in rename_map.items():
+      if entry.get(f'actual_wire_{stage}') == current_cts_net:
+          # CTS net IS the fenets actual_wire → correct value, wrong fix direction
+          # Emit fix_named_wire REVERSED: new_net=current_cts_net, old_net=bare_name
+          # (if bare name was erroneously applied) or flag as FENETS_AUTHORITATIVE_SKIP
+  ```
 - **All 3 stages show SE pin = `1'b0`**: SE cone is trivially equivalent — failing point is on D/CP, not SE. (SE/SI are hardwired to 1'b0 on every new ECO DFF, so SE/SI cone divergence is never the root cause.)
 
 ---

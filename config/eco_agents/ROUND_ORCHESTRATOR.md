@@ -505,6 +505,33 @@ Pass `GAP15_CHECK_PATH=data/<TAG>_eco_and_term_port_check.json` to the studier s
 - `FM_ANALYSIS_PATH=<BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json`
 - `FENETS_RERUN_PATH=<BASE_DIR>/data/<TAG>_eco_fenets_rerun_round<ROUND>.json` if Step 6.5-FENETS ran, otherwise `null`
 - `SPEC_SOURCES` **(Fix #3):** If Step 6.5-FENETS ran AND `data/<TAG>_eco_spec_sources_round<ROUND>.json` exists → use that file (contains updated per-stage spec paths from the rerun). Otherwise fall back to extracting from `<BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt` footer. Never use the original Step 2 sources when a rerun has newer data.
+- `PROTECTED_ENTRIES` **(MANDATORY — prevents cascading regression):** Build from previous FM results before passing to re_studier:
+  ```python
+  # Read previous eco_fm_verify.json to find which gates PASSED in prior rounds
+  # and build a protected list so re_studier cannot revert them
+  prev_verify = json.load(open(f'data/{TAG}_eco_fm_verify.json'))
+  study = json.load(open(f'data/{TAG}_eco_preeco_study.json'))
+
+  # Gates whose output DFFs PASSED in all prior FM targets are "intentionally correct"
+  # Read the noneqv lists — any instance NOT in noneqv that uses an intentional fix is protected
+  protected = []
+  for target, result in prev_verify.items():
+      if result.get('verdict') == 'PASS':
+          # All ECO gates in the passing target's stages are protected
+          for e in study.get('Synthesize', []):
+              iname = e.get('instance_name','')
+              if iname and iname not in protected:
+                  protected.append(iname)
+
+  # Also: explicitly protect any gate not in revised_changes noneqv
+  revised_insts = {rc.get('cell_name') or rc.get('instance_name','') 
+                   for rc in fm_analysis.get('revised_changes',[])}
+  # Any gate with intentional non-default per-stage value NOT in revised_changes → protect
+  ```
+  Pass `PROTECTED_ENTRIES=<comma-separated instance_names>` to re_studier.
+  **Why:** Without this, re_studier cascades fixes to ALL gates using the same signal,
+  reverting intentional fixes (e.g. `RegPageRetEn_d001.B1=IReset` was correctly fixed,
+  but re_studier reverted it back to `FxPrePlace_HFSNET_31` in Round 3).
 - Task: fix failing entries only in `eco_preeco_study.json`; write `eco_step3_netlist_study_round<NEXT_ROUND>.rpt`
 
 Wait for eco_netlist_re_studier to complete and verify `eco_step3_netlist_study_round<NEXT_ROUND>.rpt` exists.
