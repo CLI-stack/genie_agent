@@ -4599,12 +4599,33 @@ def main():
             _pcs = _e.get('port_connections_per_stage', {}).get(_stage) or _e.get('port_connections') or {}
             for _pin in _FUNCTIONAL_PINS:
                 _net = str(_pcs.get(_pin, ''))
-                # Block definitively scan-chain prefixes
+                # Block scan-chain prefixes — BUT exempt when the net is a DFF Q output
+                # in the stage PreEco netlist. test_so* signals can be DFF .Q outputs that
+                # carry the functional value (e.g. test_so3618 = wr_vld0_d1_reg/Q2 in PP/Route
+                # after scan stitching). These are NOT scan-only paths and are FM-traceable.
                 if any(_net.startswith(pfx) for pfx in _SCAN_PREFIXES):
-                    issues.append(
-                        f"Check 61 FAIL: [{_stage}] gate {_e.get('instance_name')!r} "
-                        f"pin .{_pin}={_net!r} is a scan-domain net. "
-                        f"Use functional CTS rename (FxPrePlace_*/FxPlace_*) or bare RTL name instead.")
+                    # Exemption: allow test_so* when it is a DFF Q/Q2/Q3/... output in the
+                    # stage PreEco netlist. MB DFFs use numbered Q pins (Q2, Q4 etc.) that
+                    # carry functional values — these are NOT scan-only paths.
+                    # Use a direct grep since _index_module_body only matches plain .Q pins.
+                    _is_dff_q_61 = False
+                    if _stage in ('PrePlace', 'Route') and args.ref_dir:
+                        try:
+                            import subprocess as _sp61
+                            _gz61 = Path(args.ref_dir) / 'data' / 'PreEco' / f'{_stage}.v.gz'
+                            if _gz61.is_file():
+                                _r61 = _sp61.run(
+                                    f"zcat {_gz61} | grep -c '\\.Q[0-9]*\\s*(\\s*{re.escape(_net)}\\s*)'",
+                                    shell=True, capture_output=True, text=True, timeout=30)
+                                _is_dff_q_61 = int(_r61.stdout.strip() or 0) > 0
+                        except Exception:
+                            pass
+                    if not _is_dff_q_61:
+                        issues.append(
+                            f"Check 61 FAIL: [{_stage}] gate {_e.get('instance_name')!r} "
+                            f"pin .{_pin}={_net!r} is a scan-domain net (not a DFF Q output). "
+                            f"Use the DFF Q output wire directly if it is a functional signal, "
+                            f"or use the bare RTL name / fenets actual_wire instead.")
                 # Block dftopt* when the flat form <bus>_<N>_ exists in PreEco
                 elif _net.startswith('dftopt') and _stage in ('PrePlace', 'Route'):
                     # dftopt* is only valid when the flat form <bus>_<bit>_ does NOT exist
