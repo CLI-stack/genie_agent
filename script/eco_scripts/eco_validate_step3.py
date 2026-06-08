@@ -4925,21 +4925,35 @@ def main():
                 if _stg_net66 != _syn_net66:
                     continue  # different value — Check 65 handles this case, not 66
                 # PP/Route uses same bare name as Synth — check fenets map
-                # If fenets has actual_wire_<stage> ≠ bare name → wrong DFF source
+                # If fenets has actual_wire_<stage> ≠ bare name for the gate's scope → wrong DFF source
+                # Use gate's instance_scope to build the expected fenets key prefix:
+                #   instance_scope='umcdat/WDB' → key starts with 'umcdat/WDB/'
+                #   instance_scope='' (tile root) → key starts with tile module prefix (not WDB)
+                _modname66 = (_e66.get('module_name') or '').lower()
                 for _fk66, _fv66 in (_rmap or {}).items():
                     if not isinstance(_fv66, dict): continue
                     _fa66 = _fv66.get(f'actual_wire_{_stg66}', '')
                     if not _fa66 or _fa66 == _syn_net66:
                         continue  # no fenets entry or fenets agrees with bare name
-                    # fenets has a different actual_wire — check if this entry is for
-                    # our signal by matching the Synth value in the rename map
+                    # General scope check: all scope tokens in fenets key must appear
+                    # in the gate's module_name. 'umcdat/WDB/IReset' → tokens=['umcdat','wdb']
+                    # must all be substrings of 'ddrss_umcdat_t_umcwdb'. This is general
+                    # and works for any submodule (not WDB-specific).
+                    _fk_scope_toks66 = [t.lower() for t in _fk66.split('/')[:-1]]
+                    if not all(t in _modname66 for t in _fk_scope_toks66):
+                        continue  # fenets scope doesn't match gate's module
+                    # Synth path check: bare name must appear as an exact token in the
+                    # fenets Synth path. This avoids false matches where the bare name
+                    # is a substring of a different signal name.
+                    # e.g. 'IReset' in 'IReset_d1_reg/net0' splits as ['IReset','d1','reg','net0'] → match
+                    # but 'IReset' in 'DDR5En_pre_buf_reg/net0' → no match → skip
                     _syn_map66 = _fv66.get('actual_wire_Synthesize', '') or _fv66.get('Synthesize', '')
-                    if _syn_net66 not in _syn_map66:
-                        continue  # different signal scope
+                    if _syn_net66 not in re.split(r'[/_\s]', _syn_map66):
+                        continue  # bare name not a token in Synth path → different signal
                     issues.append(
                         f"Check 66 FAIL: [{_stg66}] gate {_inst66!r} pin .{_pin66}="
                         f"{_stg_net66!r} uses same bare RTL name as Synthesize, BUT "
-                        f"fenets map has actual_wire_{_stg66}={_fa66!r} for this signal — "
+                        f"fenets map {_fk66!r} has actual_wire_{_stg66}={_fa66!r} — "
                         f"the bare name {_stg_net66!r} in {_stg66} scope refers to a "
                         f"DIFFERENT DFF source than Synth. "
                         f"Fix: use fenets actual_wire {_fa66!r} for {_stg66} stage. "
