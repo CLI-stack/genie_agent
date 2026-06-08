@@ -360,7 +360,14 @@ synth_count=$(zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -cw "<source_net
 
 **H2 — Find P&R alias:** For H-RENAME: find driver of `source_net` in Synthesize → search same driver instance in P&R → read its output net. For H-BUS: keep `source_net` as-is.
 
-**P&R PER-STAGE ALIAS RULE (MANDATORY in H2 — all input pins):** Copy per-stage values from a pre-existing DFF in the same module scope (find one whose Synth pin matches the ECO entry's logical signal; use its per-stage net names verbatim, including scan/DFT/CTS renames). For SE/SI on new ECO DFFs: Synth=`1'b0`, PP/Route=neighbor DFF's per-stage SE/SI (NOT `1'b0` — see eco_netlist_studier.md `0b-STAGE-NETS`).
+**BARE RTL NAME CHECK (MANDATORY FIRST — Rule 65, before P&R alias search):** Before looking up neighbor DFF per-stage aliases, check whether the bare Synthesize RTL name (e.g. `IReset`) EXISTS in the PP/Route PreEco netlist:
+```bash
+zgrep -cw "<synth_net>" <REF_DIR>/data/PreEco/<stage>.v.gz
+```
+- **Count ≥ 1 → bare RTL name EXISTS** → use it directly, skip the neighbor DFF alias lookup. FM can trace this wire; CTS renames that are module-level primary inputs cannot be traced → NOT EQUIVALENT. Step 3 validator Check 65 hard-fails if CTS rename used when bare name exists.
+- **Count = 0 → bare name ABSENT** → proceed to neighbor DFF P&R alias search below.
+
+**P&R PER-STAGE ALIAS RULE (MANDATORY in H2 — all input pins, only when bare RTL name absent):** Copy per-stage values from a pre-existing DFF in the same module scope (find one whose Synth pin matches the ECO entry's logical signal; use its per-stage net names verbatim, including scan/DFT/CTS renames). For SE/SI on new ECO DFFs: Synth=`1'b0`, PP/Route=neighbor DFF's per-stage SE/SI (NOT `1'b0` — see eco_netlist_studier.md `0b-STAGE-NETS`).
 
 **H3 — Update study JSON:**
 ```python
@@ -398,8 +405,12 @@ for change in rtl_diff.get("changes", []):
                 entry = find_entry_by_instance(gate["instance_name"])
                 if entry and not already_updated(entry, stage, gate["inputs"]):
                     alias = priority3_structural_trace(gate["inputs"][0], stage)
+                    # BARE RTL CHECK (Rule 65): if bare Synth name exists in stage → use it.
+                    bare_exists = zgrep_count(gate["inputs"][0], preeco_stage_gz) > 0
+                    if bare_exists and gate["pin"] not in ('SE', 'SI'):
+                        alias = gate["inputs"][0]  # bare RTL name preferred
                     # P&R PER-STAGE ALIAS RULE: copy from neighbor's per-stage value
-                    # (scan/DFT/CTS-renamed names ARE the right answer in P&R).
+                    # (scan/DFT/CTS-renamed names) only when bare RTL name is absent.
                     # Only Synth-stage SE/SI uses the constant '1'b0'.
                     if gate["pin"] in ('SE', 'SI') and stage == 'Synthesize':
                         entry["port_connections_per_stage"][stage][gate["pin"]] = "1'b0"

@@ -662,6 +662,29 @@ def main():
     #        no matching port on umcarbctrlsw).
     rtl_dir = os.path.join(args.ref_dir, 'data', 'PreEco', 'SynRtl')
     pre_existing_ports = {}  # module_name → set(port_name)
+    # Gate-level global fallback: modules present + port names used as connections.
+    # Used to suppress false HIGH when a port is synthesis-generated (exists in the
+    # gate-level hierarchy but not as an explicit SynRtl port declaration).
+    _gl_modules_in_netlist: set = set()
+    _gl_portnames_in_netlist: set = set()
+    _gl_s = os.path.join(args.ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
+    if os.path.isfile(_gl_s):
+        try:
+            import gzip as _gz2
+            _gl_m_re = re.compile(r'^\s*module\s+(\w+)\b')
+            _gl_p_re = re.compile(r'\.\s*([A-Za-z_]\w*)\s*\(')
+            with _gz2.open(_gl_s, 'rt', errors='ignore') as _f2:
+                for _l in _f2:
+                    _mm = _gl_m_re.match(_l)
+                    if _mm:
+                        _mn = _mm.group(1)
+                        _gl_modules_in_netlist.add(_mn)
+                        _t = _mn.rfind('_t_')
+                        if _t >= 0: _gl_modules_in_netlist.add(_mn[_t+3:])
+                    for _pm in _gl_p_re.finditer(_l):
+                        _gl_portnames_in_netlist.add(_pm.group(1))
+        except Exception:
+            pass
     if os.path.isdir(rtl_dir):
         port_decl_re = re.compile(
             r'\b(?:input|output|inout)\b[^;]*?\b([A-Za-z_]\w*)\s*[;,)]',
@@ -693,6 +716,59 @@ def main():
                 # Mirror under the prefixed name(s) so lookups work either way
                 for prefix in ('ddrss_umccmd_t_', 'ddrss_'):
                     pre_existing_ports.setdefault(prefix + mod_name, set()).update(ports)
+    # Also load ports from gate-level PreEco Synthesize.v.gz — catches synthesis-
+    # generated ports (e.g. iQ_* readback ports) that exist in the gate netlist
+    # but were not present in the RTL source (SynRtl). We build a global set of
+    # all port names seen anywhere in the gate netlist and merge them into every
+    # module that is already in pre_existing_ports (conservative over-approximation).
+    # This avoids module-boundary parsing issues with large multi-module netlists.
+    gl_synth = os.path.join(args.ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
+    if os.path.isfile(gl_synth):
+        try:
+            import gzip as _gz
+            # Use same permissive regex as SynRtl loader — catches both inline
+            # port-list style and explicit 'input portname;' declaration style.
+            _port_decl_re = re.compile(
+                r'\b(?:input|output|inout)\b[^;]*?\b([A-Za-z_]\w*)\s*[;,)]', re.MULTILINE)
+            _gl_mod_re  = re.compile(r'^\s*module\s+(\w+)\b', re.MULTILINE)
+            _gl_end_re  = re.compile(r'\bendmodule\b')
+            _gl_ports: dict = {}  # module → set of port names
+            _cur_gl_mod = None
+            _buf = []
+            with _gz.open(gl_synth, 'rt', errors='ignore') as _glf:
+                for _gline in _glf:
+                    _mm = _gl_mod_re.match(_gline)
+                    if _mm:
+                        # Flush previous module block
+                        if _cur_gl_mod and _buf:
+                            _block = ''.join(_buf)
+                            for _pm in _port_decl_re.finditer(_block):
+                                _gl_ports.setdefault(_cur_gl_mod, set()).add(_pm.group(1))
+                        _cur_gl_mod = _mm.group(1)
+                        _buf = [_gline]
+                    elif _cur_gl_mod:
+                        _buf.append(_gline)
+                        if _gl_end_re.search(_gline):
+                            _block = ''.join(_buf)
+                            for _pm in _port_decl_re.finditer(_block):
+                                _gl_ports.setdefault(_cur_gl_mod, set()).add(_pm.group(1))
+                            _cur_gl_mod = None
+                            _buf = []
+            # Merge gate-level ports into pre_existing_ports for all known modules
+            for _gmod, _gports in _gl_ports.items():
+                # Add under the gate-level module name itself
+                pre_existing_ports.setdefault(_gmod, set()).update(_gports)
+                # Also add under the base name: strip tile prefix by taking everything
+                # after the last '_t_' separator (e.g. ddrss_umcdat_t_umcdatrdmux →
+                # umcdatrdmux). Works for any tile without hardcoding tile names.
+                _t_idx = _gmod.rfind('_t_')
+                if _t_idx >= 0:
+                    _base = _gmod[_t_idx + 3:]
+                    if _base:
+                        pre_existing_ports.setdefault(_base, set()).update(_gports)
+        except Exception:
+            pass
+
     # Add port_decls from study (mirror under prefixed + bare module names so
     # lookups work whether child_module_name uses tile prefix or not)
     study_ports_per_mod = {}  # module_name → set(port_name)
@@ -732,7 +808,13 @@ def main():
             # a tech cell (e.g. techind_mcpm, clock-gate, stdlib); its ports are
             # authoritative in the gate-level netlist, not SynRtl.
             is_blackbox = child_mod not in pre_existing_ports
-            if not (in_pre or in_study or is_blackbox):
+            # Gate-level fallback: if the child module exists in the gate-level
+            # netlist AND the port appears as a port connection anywhere in the
+            # gate-level (meaning it flows through the hierarchy), treat it as
+            # pre-existing. This covers synthesis-generated pass-through ports.
+            in_gl = (child_mod in _gl_modules_in_netlist
+                     and port in _gl_portnames_in_netlist)
+            if not (in_pre or in_study or is_blackbox or in_gl):
                 issues.append(
                     f"HIGH: port_connection {inst}.{port} → child_module={child_mod!r} "
                     f"references a port that is NEITHER pre-existing in PreEco SynRtl "
@@ -4126,13 +4208,27 @@ def main():
             inst = e.get('instance_name', '')
             if not inst or inst == '?':
                 continue
-            if inst in seen_insts:
-                issues.append(
-                    f"Check 52 FAIL: duplicate instance_name {inst!r} in {stage} "
-                    f"(change_types: {seen_insts[inst]!r} and {e.get('change_type')!r}). "
-                    f"eco_emit_dff_entry.py already emitted this gate — studier must not re-emit it.")
+            ct = e.get('change_type', '?')
+            # port_connection entries share the same instance_name (the child instance)
+            # but differ by port_name — allow multiple port_connections per instance.
+            # Only flag duplicates within the same (instance_name, change_type) pair
+            # when change_type is NOT port_connection.
+            if ct == 'port_connection':
+                port_key = (inst, ct, e.get('port_name', ''))
+                if port_key in seen_insts:
+                    issues.append(
+                        f"Check 52 FAIL: duplicate port_connection {inst!r}.{e.get('port_name')!r} "
+                        f"in {stage} — same instance+port already present.")
+                else:
+                    seen_insts[port_key] = ct
             else:
-                seen_insts[inst] = e.get('change_type', '?')
+                if inst in seen_insts:
+                    issues.append(
+                        f"Check 52 FAIL: duplicate instance_name {inst!r} in {stage} "
+                        f"(change_types: {seen_insts[inst]!r} and {ct!r}). "
+                        f"eco_emit_dff_entry.py already emitted this gate — studier must not re-emit it.")
+                else:
+                    seen_insts[inst] = ct
             # Also check for same output net driven by different instances
             pcs = e.get('port_connections') or {}
             out_net = pcs.get('Z') or pcs.get('ZN') or pcs.get('Q', '')
@@ -4382,6 +4478,366 @@ def main():
                         f"DFF array used BEFORE the ECO — pass "
                         f"--shadow-cp-net {_dff_cp_net!r} to eco_emit_dff_entry.py. "
                         f"Also verify dff_cp_net in rtl_diff is the PRE-ECO gate Q net.")
+
+    # ── Check 59: d_input_has_reset_context=true → shared INV + AN2D1 in study ─
+    # When the ECO'd RTL wraps the D-assignment in a reset condition the study JSON
+    # (not the rtl_diff chain) must contain:
+    #   1. A shared INVD1(reset_signal) → *ireset_inv* net
+    #   2. Per-bit AN2D1 gates with A1 = that ireset_inv net
+    # AN2D1 gates are emitted directly by the studier, not via the rtl_diff chain.
+    _AN2_RE = re.compile(r'^(AN2|AND2)', re.I)
+    _INV_RE = re.compile(r'^(INV|INVD)', re.I)
+    for _c in rtl_diff.get('changes', []):
+        if _c.get('change_type') not in ('wire_swap', 'and_term'): continue
+        if not _c.get('d_input_has_reset_context'): continue
+        _tgt = _c.get('target_register', '?')
+        # Use Synthesize as canonical stage for gate existence check
+        _study_syn = study.get('Synthesize', [])
+        # Sub-check A: shared INV → *ireset_inv* net
+        _ireset_inv_nets = [
+            str((e.get('port_connections') or {}).get('ZN', ''))
+            for e in _study_syn
+            if e.get('change_type') == 'new_logic_gate'
+            and _INV_RE.match(str(e.get('cell_type') or ''))
+            and 'ireset_inv' in str((e.get('port_connections') or {}).get('ZN', ''))
+        ]
+        if not _ireset_inv_nets:
+            issues.append(
+                f"Check 59 FAIL: wire_swap target={_tgt!r} has d_input_has_reset_context=true "
+                f"but study JSON (Synthesize) has no shared INVD1 → *ireset_inv* gate. "
+                f"Add INVD1(reset_signal) → n_eco_<jira>_ireset_inv as a new_logic_gate.")
+            continue
+        _ireset_inv_net = _ireset_inv_nets[0]
+        # Sub-check B: per-bit AN2D1 gates with A1 = ireset_inv net
+        _an2_gates = [
+            e for e in _study_syn
+            if e.get('change_type') == 'new_logic_gate'
+            and _AN2_RE.match(str(e.get('cell_type') or ''))
+            and str((e.get('port_connections') or {}).get('A1', '')) == _ireset_inv_net
+        ]
+        if not _an2_gates:
+            issues.append(
+                f"Check 59 FAIL: wire_swap target={_tgt!r} has d_input_has_reset_context=true "
+                f"but study JSON (Synthesize) has no AN2D1 gate with A1={_ireset_inv_net!r}. "
+                f"Add per-bit AN2D1(ireset_inv, mux_out) gates as new_logic_gate entries.")
+
+    # ── Check 60: oQ port_connection → net_name_before non-empty + companion iQ ─
+    # iQ and oQ changes are at DIFFERENT hierarchy levels:
+    #   oQ: parent module (e.g. umcregdat), instance=REG
+    #   iQ: child module (e.g. umcdatregs), instance=uumcdatrdmux (internal mux)
+    # The iQ companion entry has a DIFFERENT module_name and instance_name from oQ.
+    # Using the SAME instance_name for iQ as oQ → FE-LINK-7 ABORT (port not on module).
+    _pc_entries = [e for e in study.get('Synthesize', []) if e.get('change_type') == 'port_connection']
+    _oq_pcs = [e for e in _pc_entries if str(e.get('port_name', '')).startswith('oQ_')]
+    for _oq in _oq_pcs:
+        _oq_port = str(_oq.get('port_name', ''))
+        _oq_inst = _oq.get('instance_name', '')
+
+        # Sub-check A: oQ must have non-empty net_name_before
+        _oq_before = _oq.get('net_name_before') or {}
+        if not any(v for v in _oq_before.values()):
+            issues.append(
+                f"Check 60 FAIL: oQ port_connection {_oq_port!r} on instance {_oq_inst!r} "
+                f"has empty net_name_before. Grep PreEco for .{_oq_port}( inside the target "
+                f"instance block to find the real wire. Empty → applier adds duplicate → "
+                f"Step 5 input_net_strict_driver FAIL.")
+
+        # Sub-check B: a companion iQ entry must exist (ANY instance — iQ is in a
+        # different module/instance from oQ, so do NOT enforce same instance_name)
+        _iq_name = 'iQ_' + _oq_port[3:]
+        _iq_entries = [e for e in _pc_entries if e.get('port_name') == _iq_name]
+        if not _iq_entries:
+            issues.append(
+                f"Check 60 FAIL: oQ port {_oq_port!r} updated but no companion iQ "
+                f"port_connection for {_iq_name!r} found. "
+                f"iQ is on the internal mux instance INSIDE the child module — "
+                f"grep PreEco for .{_iq_name}( to find the instance and old wire.")
+        else:
+            for _iq_e in _iq_entries:
+                # Sub-check C: iQ must NOT use same instance_name as oQ (different hierarchy)
+                if _iq_e.get('instance_name') == _oq_inst:
+                    issues.append(
+                        f"Check 60 FAIL: iQ companion {_iq_name!r} uses same instance_name "
+                        f"{_oq_inst!r} as oQ — WRONG. The iQ port is on an internal mux "
+                        f"instance INSIDE the child module, NOT on {_oq_inst!r}. "
+                        f"Find the correct instance by grepping PreEco for .{_iq_name}(.")
+                # Sub-check D: iQ must have non-empty net_name_before
+                _iq_before = _iq_e.get('net_name_before') or {}
+                if not any(v for v in _iq_before.values()):
+                    issues.append(
+                        f"Check 60 FAIL: iQ companion {_iq_name!r} on instance "
+                        f"{_iq_e.get('instance_name')!r} has empty net_name_before. "
+                        f"Grep PreEco for .{_iq_name}( to find old wire and set net_name_before.")
+
+    # ── Check 61: scan-output nets + dftopt-when-flat-exists in functional pins ─
+    # test_so*/scan_* are definitively scan-chain outputs — always block.
+    # dftopt* may be valid (when no flat form exists, e.g. bit 3 of a bus in Route)
+    # but must NOT be used when the flat form <bus>_<N>_ exists in the PreEco netlist.
+    _SCAN_PREFIXES = ('test_so', 'scan_')
+    _FUNCTIONAL_PINS = ('A1', 'A2', 'B1', 'B2', 'I', 'IN', 'D')
+    # Load PreEco Synthesize text for flat-form existence check (best-effort)
+    _preeco_txt = ''
+    _preeco_gz = os.path.join(args.ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
+    if os.path.isfile(_preeco_gz):
+        try:
+            import gzip as _gz61
+            _preeco_txt = _gz61.open(_preeco_gz, 'rt', errors='ignore').read()
+        except Exception:
+            pass
+    for _stage in ('Synthesize', 'PrePlace', 'Route'):
+        for _e in study.get(_stage, []):
+            if _e.get('change_type') != 'new_logic_gate': continue
+            _pcs = _e.get('port_connections_per_stage', {}).get(_stage) or _e.get('port_connections') or {}
+            for _pin in _FUNCTIONAL_PINS:
+                _net = str(_pcs.get(_pin, ''))
+                # Block definitively scan-chain prefixes
+                if any(_net.startswith(pfx) for pfx in _SCAN_PREFIXES):
+                    issues.append(
+                        f"Check 61 FAIL: [{_stage}] gate {_e.get('instance_name')!r} "
+                        f"pin .{_pin}={_net!r} is a scan-domain net. "
+                        f"Use functional CTS rename (FxPrePlace_*/FxPlace_*) or bare RTL name instead.")
+                # Block dftopt* when the flat form <bus>_<N>_ exists in PreEco
+                elif _net.startswith('dftopt') and _stage in ('PrePlace', 'Route'):
+                    # dftopt* is only valid when the flat form <bus>_<bit>_ does NOT exist
+                    # in the PreEco netlist. If a sibling bit uses flat form AND the flat
+                    # form for THIS bit exists → dftopt* is wrong, use flat instead.
+                    _inst61 = _e.get('instance_name', '')
+                    _bit_m61 = re.search(r'_(\d+)_$', _inst61)
+                    if _bit_m61:
+                        _bit61  = _bit_m61.group(1)
+                        # Strip trailing _<N>_ to get base (handles 'bit0_' style names)
+                        _base61 = re.sub(r'_\d+_$', '', _inst61)
+                        for _sib61 in study.get(_stage, []):
+                            if (_sib61.get('change_type') != 'new_logic_gate' or
+                                    not _sib61.get('instance_name','').startswith(_base61) or
+                                    _sib61.get('instance_name') == _inst61):
+                                continue
+                            _sp61  = (_sib61.get('port_connections_per_stage') or {}).get(_stage) or _sib61.get('port_connections') or {}
+                            _sn61  = str(_sp61.get(_pin, ''))
+                            if (_sn61 and not _sn61.startswith('dftopt') and
+                                    not _sn61.startswith('copt_net') and
+                                    re.search(r'_\d+_$', _sn61)):
+                                # Derive expected flat form for this bit and check existence in PreEco
+                                _flat61 = re.sub(r'_\d+_$', f'_{_bit61}_', _sn61)
+                                if _preeco_txt and re.search(r'\b' + re.escape(_flat61) + r'\b', _preeco_txt):
+                                    issues.append(
+                                        f"Check 61 FAIL: [{_stage}] gate {_inst61!r} pin .{_pin}={_net!r} "
+                                        f"uses dftopt* but flat form {_flat61!r} exists in PreEco — "
+                                        f"use flat form instead of dftopt*.")
+                                # else: flat form absent → dftopt* is valid (e.g. bit 3 in Route)
+                                break
+
+    # ── Check 62: bus-DFF D-chain gates in PP/Route must have per-bit distinct inputs ─
+    # If all N per-bit D-chain gates share the same A1/A2 net in PP/Route, the
+    # rename map returned a bus-level collapse — all bits get the same wire (wrong).
+    # Detect bus-bit gate groups by instance name pattern: same prefix, trailing _N_.
+    import re as _re
+    _BIT_SUFFIX_RE = _re.compile(r'^(.+)_(\d+)_$')
+    for _stage in ('PrePlace', 'Route'):
+        _groups: dict = {}
+        for _e in study.get(_stage, []):
+            if _e.get('change_type') != 'new_logic_gate': continue
+            _m = _BIT_SUFFIX_RE.match(_e.get('instance_name', ''))
+            if not _m: continue
+            _base = _m.group(1)
+            _groups.setdefault(_base, []).append(_e)
+        for _base, _gates in _groups.items():
+            if len(_gates) < 2: continue
+            for _pin in ('A1', 'A2'):
+                _nets = set()
+                for _g in _gates:
+                    _pcs = (_g.get('port_connections_per_stage') or {}).get(_stage) or _g.get('port_connections') or {}
+                    _n = _pcs.get(_pin)
+                    if _n: _nets.add(_n)
+                _shared = next(iter(_nets)) if len(_nets) == 1 else None
+                if _shared and len(_gates) >= 2 and not _shared.startswith('n_eco_'):
+                    # ECO-internal nets (n_eco_*) are intentionally shared across bits;
+                    # only flag when a non-ECO net collapses all bits (bus-level rename collapse)
+                    issues.append(
+                        f"Check 62 FAIL: [{_stage}] bus gate group {_base!r} "
+                        f"has all {len(_gates)} bits with identical .{_pin}={_shared!r}. "
+                        f"Bus-level rename collapsed all bits — use per-bit flat form <bus>_<N>_ instead.")
+
+    # ── Check 63: oQ change → old wire must have ZERO remaining connections ──
+    # ALL instances in the child module referencing the old wire must be covered
+    # by port_connection entries. Any remaining → FM globally-unmatched → DFF fail.
+    if os.path.isfile(_gl_s):
+        try:
+            import gzip as _gz3
+            _port_re63 = re.compile(r'\.\s*([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)\s*\)')
+            _inst_re63 = re.compile(r'^\s*\w[\w:]+\s+(\w+)\s*\(')  # CellType InstName (
+            _mod_re63  = re.compile(r'^\s*module\s+(\w+)\b')
+            _end_re63  = re.compile(r'\bendmodule\b')
+
+            _pc_syn63 = [e for e in study.get('Synthesize', []) if e.get('change_type') == 'port_connection']
+            for _oq_e63 in [e for e in _pc_syn63 if str(e.get('port_name', '')).startswith('oQ_')]:
+                _old_wire63 = next((v for v in (_oq_e63.get('net_name_before') or {}).values() if v), None)
+                if not _old_wire63:
+                    continue
+                _iq_name63    = 'iQ_' + str(_oq_e63.get('port_name', ''))[3:]
+                _iq_mods63    = {e.get('module_name', '') for e in _pc_syn63 if e.get('port_name') == _iq_name63 and e.get('module_name')}
+                # (instance_name, port_name) pairs covered in study JSON for this old wire
+                _covered63 = {(_e.get('instance_name', ''), _e.get('port_name', ''))
+                               for _e in _pc_syn63
+                               if any(v == _old_wire63 for v in (_e.get('net_name_before') or {}).values())}
+                # Scan PreEco — track module, instance, paren-depth to get (inst, port) pairs
+                _in_child63 = _cur_inst63 = None
+                _depth63 = 0
+                with _gz3.open(_gl_s, 'rt', errors='ignore') as _f63:
+                    for _l63 in _f63:
+                        _mm = _mod_re63.match(_l63)
+                        if _mm:
+                            _mn = _mm.group(1)
+                            _base = _mn[_mn.rfind('_t_')+3:] if '_t_' in _mn else _mn
+                            _in_child63 = bool(_iq_mods63 & {_mn, _base})
+                            _cur_inst63 = None; _depth63 = 0
+                        if _end_re63.search(_l63):
+                            _in_child63 = False; _cur_inst63 = None; _depth63 = 0
+                        if not _in_child63:
+                            continue
+                        _im = _inst_re63.match(_l63)
+                        if _im and _depth63 == 0:
+                            _cur_inst63 = _im.group(1)
+                        _depth63 += _l63.count('(') - _l63.count(')')
+                        if _depth63 <= 0:
+                            _cur_inst63 = None; _depth63 = 0
+                        for _pm in _port_re63.finditer(_l63):
+                            _p63, _n63 = _pm.group(1), _pm.group(2)
+                            if _n63 == _old_wire63 and _cur_inst63 and (_cur_inst63, _p63) not in _covered63:
+                                issues.append(
+                                    f"Check 63 FAIL: old wire {_old_wire63!r} still used by "
+                                    f"instance {_cur_inst63!r} port .{_p63}() in child module "
+                                    f"— not covered by study JSON port_connection. "
+                                    f"Add: instance_name={_cur_inst63!r}, port_name={_p63!r}, "
+                                    f"net_name=<canonical>, net_name_before={_old_wire63!r}.")
+        except Exception:
+            pass
+
+    # ── Check 64: rewired pre-existing DFFs must have consistent SI across stages ─
+    # When a pre-existing DFF has its CP or D rewired, its SI pin may differ between
+    # stages (1'b0 in Synth from PreEco, scan-stitched value in PP/Route).
+    # FM sees this as a scan cone mismatch → d0nt_mux globally unmatched → DFF failures.
+    # Fix: add SI=1'b0 rewire entries for PP and Route to maintain consistency.
+    if os.path.isfile(_gl_s):
+        try:
+            import gzip as _gz4
+            _non_const_re64 = re.compile(r"^1'b[01]$")
+            _inst_si_re64   = re.compile(r'\.(SI|SE)\s*\(\s*([^)]+?)\s*\)')
+            _mod_re64        = re.compile(r'^\s*module\s+(\w+)\b')
+
+            # Collect all rewired DFF instance names (CP or D rewires)
+            _rewired_insts64 = set()
+            for _e64 in study.get('Synthesize', []):
+                if _e64.get('change_type') == 'rewire' and _e64.get('pin') in ('CP', 'D', 'D1','D2','D3','D4','D5','D6','D7','D8'):
+                    _rewired_insts64.add(_e64.get('cell_name') or _e64.get('instance_name',''))
+
+            # Collect SI/SE rewire entries already in study JSON (PP/Route)
+            _si_se_rewired64 = set()  # (cell_name, pin) pairs already covered
+            for _stage64 in ('PrePlace', 'Route'):
+                for _e64 in study.get(_stage64, []):
+                    if _e64.get('change_type') == 'rewire' and _e64.get('pin') in ('SI', 'SE'):
+                        _key64 = (_e64.get('cell_name') or _e64.get('instance_name',''), _e64.get('pin'),'')
+                        _si_se_rewired64.add(_key64)
+
+            # Scan PreEco netlists to find inconsistent SI
+            for _stage64, _stage_gz64 in [
+                ('PrePlace', os.path.join(args.ref_dir, 'data', 'PreEco', 'PrePlace.v.gz')),
+                ('Route',    os.path.join(args.ref_dir, 'data', 'PreEco', 'Route.v.gz')),
+            ]:
+                if not os.path.isfile(_stage_gz64): continue
+                # Build SI map for rewired instances in this stage
+                with _gz4.open(_stage_gz64, 'rt', errors='ignore') as _f64:
+                    _cur_inst64 = None
+                    _depth64 = 0
+                    for _l64 in _f64:
+                        _mm64 = _mod_re64.match(_l64)
+                        if _mm64: _cur_inst64 = None; _depth64 = 0
+                        # Detect instance line
+                        _im64 = re.match(r'^\s*\w[\w:]+\s+(\w+)\s*\(', _l64)
+                        if _im64 and _depth64 == 0: _cur_inst64 = _im64.group(1)
+                        _depth64 += _l64.count('(') - _l64.count(')')
+                        if _depth64 <= 0: _cur_inst64 = None; _depth64 = 0
+                        if _cur_inst64 and _cur_inst64 in _rewired_insts64:
+                            for _pm64 in _inst_si_re64.finditer(_l64):
+                                _pin64    = _pm64.group(1)   # SI or SE
+                                _val64    = _pm64.group(2).strip()
+                                _key64    = (_cur_inst64, _pin64, '')
+                                # If scan-stitched (non-constant) and no rewire entry covers it
+                                if not _non_const_re64.match(_val64) and _key64 not in _si_se_rewired64:
+                                    issues.append(
+                                        f"Check 64 FAIL: [{_stage64}] rewired pre-existing DFF "
+                                        f"{_cur_inst64!r} has .{_pin64}={_val64!r} (scan-stitched) "
+                                        f"but PreEco Synthesize has {_pin64}=1'b0. "
+                                        f"Add rewire entry: cell_name={_cur_inst64!r}, pin={_pin64!r}, "
+                                        f"old_net={_val64!r}, new_net=\"1'b0\" to maintain "
+                                        f"scan cone consistency across stages for FM.")
+        except Exception:
+            pass
+
+    # ── Check 65: CTS rename used when bare RTL name already exists in PP/Route ──
+    # Rule: when Synthesize uses a bare RTL name (e.g. 'IReset', 'wr_vld0_d1') for a
+    # functional pin AND that exact bare name EXISTS in the PP/Route PreEco netlist,
+    # the studier MUST use the bare name — NOT the CTS rename from the fenets map.
+    # Only use the CTS rename when the bare RTL name is ABSENT from the stage netlist.
+    #
+    # Why: CTS renames (FxPrePlace_*/FxPlace_*) that are module-level primary inputs
+    # cannot be traced by FM to their source DFF across the module boundary → NOT
+    # EQUIVALENT compare points. The bare RTL name (e.g. IReset) remains as an
+    # internally-driven wire in PP/Route and IS FM-traceable.
+    #
+    # Priority rule for studier/verifier:
+    #   1. Bare RTL name (Synth value) → use if it EXISTS in the PP/Route PreEco netlist
+    #   2. CTS rename from fenets map  → use ONLY when bare name is absent in the stage
+    _CTS_RENAME_PREFIXES_65 = ('FxPrePlace_', 'FxPlace_', 'FxOptCts_', 'FxCts_')
+    _FUNC_PINS_65 = ('A1', 'A2', 'B1', 'B2', 'I', 'IN', 'D')
+    _SKIP_SYNTH_PREFIXES_65 = ("1'b", "n_eco_", "ECO_", "PENDING", "UNRESOLVABLE",
+                                "FxPrePlace_", "FxPlace_", "FxOptCts_", "FxCts_")
+    # Cache of pre-loaded PreEco text per stage for fast grep
+    _preeco_txt_65: dict = {}
+    for _s65 in ('PrePlace', 'Route'):
+        _gz65 = Path(args.ref_dir) / 'data' / 'PreEco' / f'{_s65}.v.gz'
+        if _gz65.is_file():
+            try:
+                import gzip as _gz65mod
+                _preeco_txt_65[_s65] = _gz65mod.open(str(_gz65), 'rt', errors='ignore').read()
+            except Exception:
+                _preeco_txt_65[_s65] = ''
+        else:
+            _preeco_txt_65[_s65] = ''
+
+    for _e65 in study.get('Synthesize', []):
+        if _e65.get('change_type') not in ('new_logic_gate', 'new_logic_dff'):
+            continue
+        _inst65  = _e65.get('instance_name', '?')
+        _pcs_syn = _e65.get('port_connections') or {}
+        _pcs_ps  = _e65.get('port_connections_per_stage') or {}
+        for _pin65 in _FUNC_PINS_65:
+            _syn_net = str(_pcs_syn.get(_pin65, ''))
+            if not _syn_net or any(_syn_net.startswith(p) for p in _SKIP_SYNTH_PREFIXES_65):
+                continue  # Synth already uses CTS name or ECO-internal — skip
+            for _stg65 in ('PrePlace', 'Route'):
+                _stg_net = str((_pcs_ps.get(_stg65) or {}).get(_pin65, ''))
+                if not _stg_net:
+                    _stg_e65 = next(
+                        (ee for ee in study.get(_stg65, [])
+                         if ee.get('instance_name') == _inst65), None)
+                    if _stg_e65:
+                        _stg_net = str((_stg_e65.get('port_connections') or {}).get(_pin65, ''))
+                if not _stg_net or not any(_stg_net.startswith(p) for p in _CTS_RENAME_PREFIXES_65):
+                    continue  # stage net is not a CTS rename — no issue
+                # Stage uses CTS rename — check if bare Synth name EXISTS in stage netlist
+                _txt65 = _preeco_txt_65.get(_stg65, '')
+                if not _txt65:
+                    continue
+                _bare_exists = bool(re.search(r'\b' + re.escape(_syn_net) + r'\b', _txt65))
+                if _bare_exists:
+                    issues.append(
+                        f"Check 65 FAIL: [{_stg65}] gate {_inst65!r} pin .{_pin65}="
+                        f"{_stg_net!r} uses CTS rename but bare RTL name {_syn_net!r} "
+                        f"EXISTS in {_stg65} PreEco netlist. "
+                        f"Fix: use {_syn_net!r} in {_stg65} (and all stages) — bare RTL "
+                        f"name is preferred when it exists in the stage. Only use CTS "
+                        f"rename when bare name is ABSENT from the PreEco netlist.")
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0

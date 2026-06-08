@@ -82,7 +82,48 @@ Exit:
 ## HARD RULES — break these = fail the round (top 5)
 
 1. **SE/SI on new ECO DFFs = `1'b0` in ALL 3 stages.** Scan stitching is out of scope; DFT team handles it.
+6. **SI consistency rule for rewired pre-existing DFFs (Check 64).** When an ECO rewires the `CP` or `D` pin of a **pre-existing DFF** (i.e., a `rewire` change_type entry), check the DFF's `SI` pin in the PreEco netlist across all 3 stages:
+   - If PreEco Synthesize has `SI=1'b0` (not yet scan-stitched) AND PreEco PrePlace or Route has a non-constant SI (e.g. `dftopt*`, `FxPrePlace_HFSNET_*` — TileBuilder scan insertion), THEN the ECO MUST add `rewire` study entries to force `SI=1'b0` in PrePlace and Route as well.
+   - **Why:** FM compares stages pair-wise (Synth→PrePlace, PrePlace→Route). If the scan cone of the DFF changes between stages (SI=1'b0 in Synth, SI=dftopt* in PP), FM sees `d0nt_mux/Z` as globally unmatched → non-equivalent DFF compare points. Making SI consistent across all stages (all `1'b0`) keeps the scan cone identical → FM can compare correctly.
+   - **How to add:** For each rewired pre-existing DFF, emit one `rewire` study entry per MB cell per stage (PrePlace, Route) for BOTH `pin=SI` and `pin=SE` if they are non-constant in PreEco (i.e., TileBuilder scan-stitched). Set `old_net=<scan_stitched_net>`, `new_net=1'b0` for each. Both SI and SE must be forced to `1'b0` to ensure complete scan cone consistency across stages.
+   - **Scope:** Only applies to pre-existing DFFs being rewired. New ECO DFFs already have SI=1'b0 from insertion. Step 3 validator **Check 64** hard-fails when rewired pre-existing DFFs have inconsistent SI across stages without a corresponding rewire entry.
 2. **Rule 32 polarity check.** Never use a bare RTL name if inverter-parity differs across stages. Use `actual_wire_<stage>` from rename_map, or FM-resolved `<cell>/<pin>` wire. Step 3 validator Check 38 hard-fails violations.
+3. **Scan-output rejection and flat-form preference.** For functional gate pin inputs in PP/Route:
+   - **`test_so*` / `scan_*` nets** — always scan-chain outputs, never use as functional inputs → Check 61 FAIL
+   - **`dftopt*` nets** — may be either: (a) valid functional wire when no flat form exists (e.g. a bus bit whose flat wire was not emitted in Route), OR (b) wrong scan-renamed wire when the flat form DOES exist. Rule: **grep the PreEco netlist for `<bus>_<bit>_` flat form. If it exists → use flat form, NOT `dftopt*`. Only use `dftopt*` when the flat form is absent** → Check 61 FAIL when flat form exists
+   - **`FxPrePlace_HFSNET_*` / `FxPlace_HFSNET_*` nets** — valid functional CTS renames, but **ONLY use when the bare RTL name is absent from the stage PreEco netlist** (Phase 0.3 Priority 0 check). If the bare RTL name EXISTS in the stage, use it — `FxPrePlace_*/FxPlace_*` may be module-level primary inputs that FM cannot trace to their source DFF → NOT EQUIVALENT compare points → Check 65 FAIL.
+4. **D-chain gate per-bit distinctness in PP/Route.** For bus-DFF D-chain gates (INR2, AN2, etc.) in PrePlace/Route stages, each bit must have a DISTINCT A1/A2 input net. If all N bits share the same net, the rename map returned a bus-level collapse — reject it and use per-bit flat form `<bus>_<N>_` directly. Step 3 validator Check 62 hard-fails violations.
+5. **iQ/oQ companion rule.** When emitting a `port_connection` that changes an `oQ_*` output port, the matching `iQ_*` readback port and ALL other instances in the child module that reference the old wire MUST also be updated. The oQ and iQ changes are at **DIFFERENT hierarchy levels**:
+
+   **oQ change** (in the parent module that instantiates the register block):
+   - `module_name`: parent module containing the register instance
+   - `instance_name`: the register instance name
+   - `net_name`: new top-level wire created by the ECO
+   - `net_name_before`: old wire from inside the register instance block in PreEco. **Never use `UNCONNECTED_N`** — grep `<CellType> <InstanceName> (` in the PreEco netlist for the actual wire.
+
+   **Child module changes** (inside the register module itself — one entry PER occurrence):
+   - `module_name`: the child/register module name (different from oQ's module)
+   - `instance_name`: the specific instance that uses the old wire (there may be MULTIPLE)
+   - `net_name`: the canonical DFF.Q output wire of the register module (the `output <portname>` wire without `_0` suffix) — NOT the parent-scope ECO wire
+   - `net_name_before`: the old intermediate wire used by that instance
+
+   **How to find ALL instances to update (MANDATORY — do not stop at first hit):**
+   After identifying the old wire (`net_name_before`), grep the PreEco Synthesize.v.gz for **ALL occurrences** of that wire in the child module. The old wire may appear in multiple instances (both `oQ_*` and `iQ_*` ports on different sub-instances). Emit one `port_connection` study entry per occurrence — every occurrence must be updated:
+   ```bash
+   zcat PreEco/Synthesize.v.gz | grep "<old_wire>" | grep -v "//"
+   ```
+   For each hit that belongs to the child module scope, add a separate `port_connection` entry with the correct `instance_name`, `port_name`, and `net_name`.
+
+   **Old wire exhaustion rule (Check 63 — hard fail):** After all entries are emitted, the old wire must have ZERO remaining connections in the child module scope not covered by study JSON. Any leftover connection → FM sees the old wire as globally-unmatched → downstream DFF cone failure.
+
+   **Common mistakes:**
+   - Updating only ONE instance when MULTIPLE instances reference the old wire → FM globally-unmatched → DFF cone failure
+   - Adding companion port_connection to the SAME instance as oQ — the child module's sub-instances (not the register instance itself) have the `iQ_*` port → FE-LINK-7
+   - Using the parent-scope ECO wire inside the child module — not visible there → undriven
+   - Empty `net_name_before` → applier ADDs instead of REPLACING → duplicate port → Step 5 FAIL
+
+   Step 3 validator Check 60: (a) no companion iQ entry, (b) empty `net_name_before`, (c) iQ same instance as oQ.
+   Step 3 validator **Check 63**: old wire has ZERO remaining unmatched connections in child module scope.
 3. **Always use `eco_emit_dff_entry.py` wrapper for DFFs** — never call `eco_synth_chain.py` directly. Wrapper handles per-DFF prefix, chain decomposition, Mode-I detection, and validator-invariants.
 4. **Phase 0 fully complete BEFORE Phase 1 starts.** wire_swap (Phase 1) depends on new_logic outputs (Phase 0) being in the study JSON first.
 5. **`needs_explicit_wire_decl: true` ONLY on output pins (ZN/Z/Q).** Setting it on input pins causes SVR-9 duplicate wire declaration ABORT.
@@ -233,12 +274,21 @@ P&R renames DFF outputs (CTS/optimization in Route). A wire may exist in scope b
 4. Still absent → **CTS buffer search**: any cell in the module whose output is sole driver of a net feeding the same downstream consumers as `<net>` in Synthesize. CTS makes buffer chains with tool-generated names — accept the first driven net reaching the same fanout.
 5. Aliases differ across stages → set `entry["net_per_stage"][pin] = {Syn, PP, Route}`.
 
-**CRITICAL — this rule applies to EVERY non-output pin of EVERY chain gate, not just the primary data input (A1).** Scalar inputs to chain gates — including reset signals (B1), MUX selects (S), and any other non-ECO net — are equally subject to CTS renaming across stages. Using a bare RTL name (e.g. `IReset`) for all stages when the rename map has different per-stage values causes DFF0X or cone mismatch in PP/Route. The `eco_emit_dff_entry.py` wrapper performs this resolution automatically after building the chain entries; sub-agents must NOT override the per-stage values with bare names.
+**CRITICAL — this rule applies to EVERY non-output pin of EVERY chain gate, not just the primary data input (A1).** Scalar inputs to chain gates — including reset signals (B1), MUX selects (S), and any other non-ECO net — are equally subject to CTS renaming across stages.
 
 **Per-stage resolution priority** (all ECO input pins, anything except `{Z, ZN, ZN1, Q, QN, CO}`):
 
-1. **`<BASE_DIR>/data/<TAG>_eco_fenets_rename_map.json`** — Step 2 (eco_fenets_runner) builds the authoritative per-stage map for every queried signal. If the pin's logical signal is in the map, USE ITS VALUES VERBATIM. Single source of truth.
-2. **Neighbor-DFF inference** (only when signal absent from map): find a pre-existing DFF in same module scope whose Synth value of the same pin matches the ECO logical signal; copy its per-stage net verbatim, including CTS-renamed names.
+0. **Bare RTL name existence check (MANDATORY FIRST STEP — new Rule 65).** Before consulting the fenets rename map, check whether the Synthesize bare RTL name (e.g. `IReset`, `wr_vld0_d1`) EXISTS in the PP/Route PreEco netlist:
+   ```bash
+   zgrep -cw "<bare_rtl_name>" <REF_DIR>/data/PreEco/<Stage>.v.gz
+   ```
+   - **Count ≥ 1 → bare RTL name EXISTS in stage** → **USE the bare RTL name directly for that stage.** Do NOT use the CTS rename from fenets. The bare name is FM-traceable and avoids module-boundary primary-input issues. Step 3 validator Check 65 hard-fails when a CTS rename is used but the bare RTL name exists in the stage.
+   - **Count = 0 → bare RTL name ABSENT in stage** → fall through to Priority 1 (fenets rename map). Only then use the CTS rename.
+
+   **Why:** CTS renames (`FxPrePlace_HFSNET_*` / `FxPlace_HFSNET_*`) that are module-level primary inputs cannot be traced by FM to their source DFF across the module boundary → NOT EQUIVALENT compare points. When the bare RTL name (e.g. `IReset`) still exists as an internally-driven wire in PP/Route, using it directly keeps FM's cone intact. Use CTS renames only as a fallback when the original name is gone.
+
+1. **`<BASE_DIR>/data/<TAG>_eco_fenets_rename_map.json`** — use ONLY when Priority 0 determined the bare RTL name is absent from the stage. The rename map provides the CTS-renamed equivalent. USE ITS VALUES VERBATIM (polarity-correct by construction).
+2. **Neighbor-DFF inference** (only when signal absent from rename map): find a pre-existing DFF in same module scope whose Synth value of the same pin matches the ECO logical signal; copy its per-stage net verbatim, including CTS-renamed names.
 3. **Module-body grep for internal wire**: when a chain leaf is a local internal wire driven by a sync-flop inside the host module, grep each stage's PostEco for `.Q(<net>)` on the source DFF instance:
 
 ```python
@@ -247,7 +297,7 @@ def find_driver_in_module(host_mod_text, original_signal, source_dff_inst):
     return m.group(1) if m else original_signal
 ```
 
-NEVER force the Synth name across all stages — each path produces FM-correct per-stage values. **SE/SI on new ECO DFFs: hardwire `1'b0` in ALL stages (Synth/PP/Route).** Scan stitching is out of scope; DFT team handles it.
+**SE/SI on new ECO DFFs: hardwire `1'b0` in ALL stages (Synth/PP/Route).** Scan stitching is out of scope; DFT team handles it.
 
 **Path 1 vs Path 3:** rename_map is FM-anchored to a combinational path through CTS inverters; module-body grep may resolve a topologically-equivalent net (e.g., a `.Qn` of a registered replica). Both can be FM-equivalent — choose based on consuming gate; FM equivalence is the arbiter.
 
@@ -700,6 +750,8 @@ Get FM fenets result for `old_enable_net`. From the `(+)` impl line, extract the
 **`module_name` is MANDATORY on every `rewire` entry.**
 
 **`module_name` is MANDATORY on every `rewire` entry** — including enable_swap rewires. Tool-generated cell names (`ctmi_*`, `phs_*`, `copt_*`) repeat across many modules in the hierarchical netlist. Without `module_name`, eco_applier matches the first cell of that name in the entire file — which may be in a completely unrelated module, silently corrupting unrelated logic while leaving the intended target unchanged. Extract `module_name` from the FM impl path: `i:/FMWORK_IMPL_<TILE>/<TILE>/<INST_A>/<INST_B>/<cell>/<pin>` — the declaring module is derived from `<INST_A>/<INST_B>` hierarchy using `resolve_module_name()` against the PostEco netlist.
+
+**When `d_input_has_reset_context: true` on a wire_swap entry**: emit (1) a shared `INVD1(reset_signal) → n_eco_<jira>_ireset_inv` new_logic_gate if not already present, and (2) per-bit `AN2D1(n_eco_<jira>_ireset_inv, mux_out_N) → n_eco_<jira>_nxtd_N_` gates as the final element of the chain. Update D-pin rewires to point to the AN2D1 outputs, not the AO22 mux outputs.
 
 **MANDATORY cell-type scope check for tool-generated cell names** — before emitting any rewire entry for a `ctmi_*`, `phs_*`, or `copt_*` cell: `grep -cw "<cell_name>" /tmp/eco_verify_<TAG>_Synthesize.v` within the declared `module_name` body. If the cell appears in multiple modules, verify the **cell type** matches the expected type (e.g. AN2D1 vs AO2222D1) — same name in a different module is a different cell. If the cell type does not match the expected function, skip this rewire; the correct target is the direct MB DFF D-pin rewire, not the upstream gate.
 

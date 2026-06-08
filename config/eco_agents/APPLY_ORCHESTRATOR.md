@@ -152,9 +152,49 @@ else:
     #
     # Each iteration:
     #   1. Read failures from pre_fm_check JSON
-    #   2. Fix each failure directly: update study JSON + re-apply + re-check
+    #   2. For each failure, determine the correct fix direction (see guard below)
     #   3. Re-run eco_pre_fm_checker
     #   Repeat up to MAX_HEAL times until PASS.
+    #
+    # ── CRITICAL GUARD — THE STUDY JSON IS THE GOLDEN REFERENCE ───────────
+    # **NEVER modify the study JSON during self-healing.**
+    #
+    # The study JSON is validated and locked by the Step 3 validator (Checks
+    # 60-63, etc.). It is the authoritative specification of what the PostEco
+    # netlist MUST contain. All Step 5 failures indicate that the PostEco
+    # netlist does not match the study JSON — the fix is ALWAYS to make the
+    # netlist conform to the study JSON, not the other way around.
+    #
+    # FIX DIRECTION for ALL failure types → PATCH THE POSTECO NETLIST:
+    #
+    # [SEMANTIC_NEW_LOGIC_GATE] / [SEMANTIC_NEW_LOGIC_DFF]:
+    #   PostEco has wrong wire (e.g. stale CTS name from old Step 4 run).
+    #   → Read study JSON's expected net for that gate+pin+stage.
+    #   → Directly patch PostEco .v.gz: replace the wrong wire with expected wire.
+    #   → Re-apply only the affected gate via eco_applier --force-reapply or
+    #     direct sed/python patch on the .v.gz.
+    #
+    # [INPUT_UNDRIVEN] / [INPUT_NET_STRICT_UNDRIVEN]:
+    #   ECO gate references a net that has no driver in the PostEco module.
+    #   → The study JSON's net name is authoritative. Re-apply from study JSON
+    #     (the applier will create the wire and connect it correctly).
+    #   → Do NOT change the study JSON net name.
+    #
+    # [PORT_CONN_MISSING] / [SEMANTIC_PORT_CONNECTION]:
+    #   Port connection was not applied or applied incorrectly.
+    #   → Force-reapply the affected port_connection from the study JSON.
+    #   → Do NOT change the study JSON.
+    #
+    # [DUPLICATE_WIRE] / [DUPLICATE_PORT] / [WRONG_CELL_TYPE] / [MISSING_PORT_DECL]:
+    #   Structural netlist issue — applier made a mistake during insertion.
+    #   → Fix the PostEco netlist directly (remove duplicate, correct cell type).
+    #   → Do NOT change the study JSON — these are caught by Step 3 validator
+    #     before Step 4 runs; if Step 3 passed, the study JSON is correct.
+    #
+    # WRONG approach (causes study JSON corruption):
+    #   Changing study JSON value to match wrong netlist state (e.g. setting
+    #   `wdbptr_org0_d1_0_` → `dftopt1372_gOb1300` because Step 4 used an old
+    #   study JSON) silently downgrades the specification and causes FM failures.
     # -----------------------------------------------------------------------
 
     MAX_HEAL = 5
@@ -165,16 +205,15 @@ else:
         failures = check.get("failures", [])
         print(f"Step 5 self-heal attempt {heal_attempt}/{MAX_HEAL} — {len(failures)} failures")
 
-        # Read every failure message. For each one:
-        #   1. Identify the affected entry in data/<TAG>_eco_preeco_study.json
-        #      (by instance_name, cell_name, port_name, or module_name).
-        #   2. Fix the study JSON directly — update the field that caused the failure
-        #      (e.g. wrong cell_type, missing port_declaration, wrong per_stage_cell,
-        #      incorrect net name, missing wire declaration, etc.).
-        #   3. If the fix requires a PostEco netlist change (not just study JSON),
-        #      use eco_applier or eco_netlist_port_rewire.py with force_reapply to re-apply
-        #      only the affected entries.
-        # Do NOT call ROUND_ORCHESTRATOR. Fix it here.
+        # For each failure: patch the PostEco netlist to match the study JSON.
+        # NEVER modify the study JSON. The study JSON is the golden reference.
+        #
+        # 1. Read the study JSON entry for the failing gate/port (by instance_name,
+        #    port_name, stage). This gives the CORRECT expected value.
+        # 2. Read the PostEco netlist to find the ACTUAL (wrong) value.
+        # 3. Patch PostEco .v.gz directly: replace actual value with expected value,
+        #    OR use eco_applier --force-reapply to re-insert the ECO cell/wire.
+        # 4. Do NOT call ROUND_ORCHESTRATOR. Fix it here.
 
         # After fixing, re-apply and re-validate:
         bash eco_applier --force-reapply (re-applies updated study JSON entries)

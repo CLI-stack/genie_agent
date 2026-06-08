@@ -243,12 +243,30 @@ For each input pin in `port_connections`:
 
 | Priority | Method |
 |----------|--------|
-| 0 | RTL-named primary input — check `net_in_scope("input", module_scope)` → **HIGHEST** |
+| **-1** | **Bare RTL name existence check (MANDATORY FIRST — Rule 65).** Before all other priorities, check whether the Synthesize bare RTL name (e.g. `IReset`) EXISTS in the PP/Route PreEco netlist: `zgrep -cw "<bare_name>" PreEco/<Stage>.v.gz`. If count ≥ 1 → USE the bare RTL name directly. Skip all lower priorities. Step 3 validator Check 65 hard-fails when a CTS rename is used but the bare name exists. |
+| 0 | RTL-named primary input — check `net_in_scope("input", module_scope)` |
 | 1 | Direct name match within module scope — `net_in_scope(net, module_scope)` |
 | 2 | Trace driver cell in Synthesize → find same cell output in this stage, `net_in_scope` check (HFS alias) |
 | 3 | P&R alias search via 0b-ALIAS driver trace, `net_in_scope` check |
 | 4 | Backward cone trace (max 10 hops), `net_in_scope` check |
 | — | All priorities exhausted → see net status taxonomy below |
+
+**Priority -1 implementation (MANDATORY for every PP/Route pin resolution):**
+```python
+# Before all other resolution priorities — check bare RTL name in stage PreEco
+synth_net = entry["port_connections"].get(pin, "")  # bare RTL name from Synthesize
+if synth_net and not any(synth_net.startswith(p) for p in
+        ("1'b", "n_eco_", "ECO_", "PENDING", "FxPrePlace_", "FxPlace_")):
+    bare_count = subprocess.run(
+        f"zgrep -cw {shlex.quote(synth_net)} {ref_dir}/data/PreEco/{stage}.v.gz",
+        shell=True, capture_output=True, text=True).stdout.strip()
+    if int(bare_count or 0) >= 1:
+        resolved_net = synth_net
+        log(f"BARE_RTL_PREFERRED: [{stage}] {pin}={synth_net!r} exists in stage → using bare name")
+        # skip priorities 0-4
+```
+
+**Why:** CTS renames (`FxPrePlace_HFSNET_*` / `FxPlace_HFSNET_*`) are sometimes promoted to module-level primary inputs. FM cannot trace primary inputs to their source DFF across the module boundary → NOT EQUIVALENT compare points. When the bare RTL name (e.g. `IReset`) still exists in the stage as an internally-driven wire, use it directly — FM can trace it. Use CTS renames only when the bare name is absent from the stage.
 
 **Net status taxonomy — use exactly one:**
 | Status | When to use |

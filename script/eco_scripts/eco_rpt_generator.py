@@ -39,7 +39,12 @@ def s3_detail(e, stage):
     if ct == "rewire":
         return f"pin={e.get('pin','?')}  {e.get('old_net','?')} → {e.get('new_net','?')}  scope={e.get('instance_scope','?')}"
     if ct in ("new_logic_gate", "new_logic"):
-        return f"fn={e.get('gate_function','?')}  out={e.get('output_net','?')}  scope={e.get('instance_scope','?')}"
+        # Resolve per-stage input pins from port_connections_per_stage (prefer) or port_connections
+        pcs = (e.get("port_connections_per_stage") or {}).get(stage) or e.get("port_connections") or {}
+        _OUT = {'Z','ZN','ZN1','Q','QN','CO','S'}
+        inputs = {p: v for p, v in pcs.items() if p not in _OUT and isinstance(v, str)}
+        inp_str = "  inputs=[" + ", ".join(f".{p}({v})" for p, v in sorted(inputs.items())) + "]" if inputs else ""
+        return f"fn={e.get('gate_function','?')}  out={e.get('output_net','?')}  scope={e.get('instance_scope','?')}{inp_str}"
     if ct == "new_logic_dff":
         return f"reg={e.get('target_register','?')}  out={e.get('output_net','?')}  scope={e.get('instance_scope','?')}"
     if ct in ("port_declaration", "port_promotion"):

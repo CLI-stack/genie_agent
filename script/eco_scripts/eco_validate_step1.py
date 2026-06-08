@@ -695,6 +695,36 @@ def main():
     if d_reset_gate_issues:
         overall_pass = False
 
+    # ── wire_swap D-input reset context: must set d_input_has_reset_context ──
+    # When the ECO'd RTL wraps the D-assignment in a reset condition, the
+    # wire_swap chain must include a final AN2D1 reset gate. The analyzer must
+    # inspect the always block context for `if (!reset)` / `else reg <= 0` and
+    # set d_input_has_reset_context=true. Without this, the chain stops at the
+    # mux and SynRtl's AND gate is missing → FM mismatch on DFF D-cone.
+    reset_context_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') not in ('wire_swap', 'and_term'):
+            continue
+        if not c.get('is_bus_gate'):
+            continue
+        tgt = c.get('target_register') or '?'
+        # Only check when companion enable_swap exists (combined ECO pattern)
+        has_companion = any(
+            c2.get('change_type') == 'enable_swap' and
+            c2.get('target_register') == tgt
+            for c2 in rtl_diff.get('changes', []))
+        if not has_companion:
+            continue
+        if c.get('d_input_has_reset_context') is None:
+            reset_context_issues.append(
+                f"changes[{idx}] target={tgt!r}: bus_gate wire_swap with enable_swap companion "
+                f"but `d_input_has_reset_context` missing. Inspect the ECO'd RTL always block "
+                f"for reset wrapper (`if (!reset) reg<=expr; else reg<=0`). "
+                f"If present: set true and add AN2D1(reset_inv, mux_out) as final chain gate. "
+                f"If absent: set false. This determines whether FM sees a reset on DFF D-cone.")
+    if reset_context_issues:
+        overall_pass = False
+
     # ── has_sync_reset vs context_line reset detection ────────────────────────
     # The rtl_diff_analyzer detects reset from context_line, but context_line
     # may span multiple lines when the always block is captured in full.  When
@@ -2103,6 +2133,8 @@ def main():
         'cg_other_inputs_issues':         cg_other_inputs_issues,
         'd_reset_gate_issue_count':        len(d_reset_gate_issues),
         'd_reset_gate_issues':            d_reset_gate_issues,
+        'reset_context_issue_count':       len(reset_context_issues),
+        'reset_context_issues':           reset_context_issues,
         'companion_issue_count':           len(companion_issues),
         'companion_issues':               companion_issues,
         'bus_gate_chain_issue_count':      len(bus_gate_chain_issues),

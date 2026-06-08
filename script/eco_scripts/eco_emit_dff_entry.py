@@ -123,27 +123,36 @@ def _discover_dff_cell_type(host_module, dff_clock, preeco_synth_v, ref_dir, til
         except Exception:
             return ''
 
+    # Filter: only accept single-bit DFF cell types. Multi-bit (MB*) and
+    # grouped cells (MBN*, SDFQTX*) are not valid for new ECO single-bit DFFs.
+    _SINGLE_BIT_RE = re.compile(r'^(SDFQ|SDFF|SDFR|DFQ|DFF|SDF)[A-Z0-9_]+$')
+
+    def _is_single_bit(ct):
+        return bool(_SINGLE_BIT_RE.match(ct))
+
     for cand in candidates:
         if not cand: continue
-        # Strategy 1: direct .CP(<dff_clock>) match
+        # Strategy 1: direct .CP(<dff_clock>) match — must be single-bit DFF
         ct = _first_celltype_for_pattern(cand, rf'\.CP\s*\(\s*{re.escape(dff_clock)}[^A-Za-z0-9_]')
-        if ct: return ct
-        # Strategy 2: .CP(<dff_clock>G) gated form
+        if ct and _is_single_bit(ct): return ct
+        # Strategy 2: .CP(<dff_clock>G) gated form — must be single-bit DFF
         ct = _first_celltype_for_pattern(cand, rf'\.CP\s*\(\s*{re.escape(dff_clock)}G[^A-Za-z0-9_]')
-        if ct: return ct
+        if ct and _is_single_bit(ct): return ct
         # Strategy 3: any DFF cell (SDFQ/SDFF/DFQ/DFF/SDFR/SDF) followed by
         # instance name + line pattern containing `.CP(`. Engineer-style:
         # "find any neighbor DFF in scope".
+        # Sort by cell name and prefer the smallest drive-strength (lowest number
+        # suffix, e.g. SDFQD1 over SDFQD4) to avoid picking an oversized DFF
+        # that happens to appear first in the module text.
         try:
             cmd = (
                 f"{cat_cmd} | awk '/^module {re.escape(cand)}[ \\t(]/,/^endmodule/' "
                 f"| grep -E '^(SDFQ|SDFF|SDFR|DFQ|DFF|SDF)[A-Z0-9_]+[ \\t]+[a-zA-Z_][A-Za-z0-9_]*[ \\t]*\\(' "
-                f"| head -1"
+                f"| awk '{{print $1}}' | sort -u | sort -V | head -1"
             )
             r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
-            line = (r.stdout or '').strip()
-            m = re.match(r'^([A-Z][A-Z0-9_]+)\s+', line)
-            if m: return m.group(1)
+            ct = (r.stdout or '').strip()
+            if ct: return ct
         except Exception:
             continue
     return ''
