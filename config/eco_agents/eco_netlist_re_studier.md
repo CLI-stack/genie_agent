@@ -360,18 +360,28 @@ synth_count=$(zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -cw "<source_net
 
 **H2 — Find P&R alias:** For H-RENAME: find driver of `source_net` in Synthesize → search same driver instance in P&R → read its output net. For H-BUS: keep `source_net` as-is.
 
-**BARE RTL NAME CHECK — ALL THREE STAGES (MANDATORY FIRST — Rule 65):**
-Before looking up neighbor DFF per-stage aliases, check whether the bare Synthesize RTL name
-(e.g. `IReset`) EXISTS in **all three** PreEco stage netlists:
+**TWO-STEP CHECK (MANDATORY FIRST — Rule 65):**
+
+**Step A — Fenets actual_wire (highest priority):**
+Look up `<module_scope>/<synth_net>` in the fenets rename map. If `actual_wire_<stage>` is
+present → **use it directly**, skip Step B. The fenets `(+)` polarity-correct entry IS the
+authoritative per-stage value. The bare RTL name in PP/Route scope may refer to a different
+DFF source (Check 65 exempts fenets-tracked signals from bare-name preference).
+```python
+fenets_actual = rename_map.get(f"{scope}/{synth_net}", {}).get(f'actual_wire_{stage}')
+if fenets_actual: use fenets_actual  # authoritative
+```
+
+**Step B — Bare name preferred when no fenets actual_wire:**
+If the fenets map has NO `actual_wire_<stage>` for this signal, check bare name in all 3 stages:
 ```bash
 zgrep -cw "<synth_net>" <REF_DIR>/data/PreEco/Synthesize.v.gz
 zgrep -cw "<synth_net>" <REF_DIR>/data/PreEco/PrePlace.v.gz
 zgrep -cw "<synth_net>" <REF_DIR>/data/PreEco/Route.v.gz
 ```
-- **All ≥ 1 → bare RTL name exists in all stages** → use it in ALL stages, skip neighbor DFF lookup. FM can trace this wire in all stage comparisons. Step 3 Check 65 hard-fails if CTS rename used when bare name exists in that stage.
-- **Absent in PP or Route** → do NOT use bare name there. Instead:
-  1. **Structural driver trace**: find driver of `<synth_net>` in Synth PreEco (`.Q(<synth_net>)` grep → `driver_inst`), then search `driver_inst` in PP/Route PreEco and read its output net. Use that as the PP/Route value.
-  2. **Last resort**: use neighbor DFF P&R alias (CTS rename) from the P&R alias search below.
+- **All ≥ 1 AND no fenets actual_wire** → use bare RTL name in ALL stages. FM can trace it.
+  Step 3 Check 65 hard-fails when CTS rename used here.
+- **Absent in PP or Route** → structural driver trace, then CTS rename as last resort.
 
 **P&R PER-STAGE ALIAS RULE (MANDATORY in H2 — all input pins, only when bare RTL name absent):** Copy per-stage values from a pre-existing DFF in the same module scope (find one whose Synth pin matches the ECO entry's logical signal; use its per-stage net names verbatim, including scan/DFT/CTS renames). For SE/SI on new ECO DFFs: Synth=`1'b0`, PP/Route=neighbor DFF's per-stage SE/SI (NOT `1'b0` — see eco_netlist_studier.md `0b-STAGE-NETS`).
 

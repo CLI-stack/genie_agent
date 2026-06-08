@@ -243,41 +243,45 @@ For each input pin in `port_connections`:
 
 | Priority | Method |
 |----------|--------|
-| **-1** | **Bare RTL name exists in ALL 3 stages (MANDATORY FIRST — Rule 65).** Check whether the bare Synthesize RTL name EXISTS in **all three** PreEco netlists (`zgrep -cw "<bare>" PreEco/{Synthesize,PrePlace,Route}.v.gz`). If all ≥ 1 → USE bare name in ALL stages. Step 3 validator Check 65 hard-fails when CTS rename is used but bare name exists in a stage. |
-| 0 | Bare RTL name absent in PP/Route → **structural driver trace from Synth**: find driver of bare name in Synth PreEco (`.Q/.Z/.ZN(bare_name)`), search same driver instance in PP/Route, read its output net. Use that net for the missing stage. |
-| 1 | RTL-named primary input — check `net_in_scope("input", module_scope)` |
-| 2 | Direct name match within module scope — `net_in_scope(net, module_scope)` |
-| 3 | Trace driver cell in Synthesize → find same cell output in this stage, `net_in_scope` check (HFS alias) |
-| 4 | P&R alias search via 0b-ALIAS driver trace, `net_in_scope` check |
-| 5 | **Last resort — CTS rename from fenets map**: use `actual_wire_<stage>` from rename_map verbatim. Only when all above priorities failed. |
+| **-1** | **Fenets actual_wire check (MANDATORY FIRST — overrides everything).** Look up `<scope>/<synth_net>` in the fenets rename map. If `actual_wire_<stage>` is set → USE IT. The fenets tool tracked this signal explicitly with `(+)` polarity; the bare RTL name in PP/Route scope may refer to a **different DFF source**. Check 65 exempts this case. |
+| 0 | **Bare RTL name in all 3 stages (Rule 65 — only when no fenets actual_wire).** `zgrep -cw "<bare>" PreEco/{Syn,PP,Route}.v.gz` all ≥ 1 AND fenets has no actual_wire → USE bare name in all stages. Check 65 hard-fails when CTS rename used but bare name exists and has no fenets entry. |
+| 1 | Bare RTL name absent in PP/Route → **structural driver trace**: find driver in Synth, locate same driver in PP/Route, read output net. |
+| 2 | RTL-named primary input — check `net_in_scope("input", module_scope)` |
+| 3 | Direct name match within module scope — `net_in_scope(net, module_scope)` |
+| 4 | Trace driver cell in Synthesize → find same cell output in this stage (HFS alias) |
+| 5 | **Last resort — fenets actual_wire** when priorities 1-4 also failed. |
 | — | All priorities exhausted → see net status taxonomy below |
 
 **Priority -1 and 0 implementation (MANDATORY for every PP/Route pin resolution):**
 ```python
-synth_net = entry["port_connections"].get(pin, "")  # bare RTL name from Synthesize
+synth_net = entry["port_connections"].get(pin, "")
 skip_prefixes = ("1'b", "n_eco_", "ECO_", "PENDING", "FxPrePlace_", "FxPlace_")
 if synth_net and not any(synth_net.startswith(p) for p in skip_prefixes):
-    # Priority -1: check bare RTL name in ALL 3 stages
-    counts = {s: int(subprocess.run(
-        f"zgrep -cw {shlex.quote(synth_net)} {ref_dir}/data/PreEco/{s}.v.gz",
-        shell=True, capture_output=True, text=True).stdout.strip() or 0)
-        for s in ('Synthesize', 'PrePlace', 'Route')}
-    if all(c >= 1 for c in counts.values()):
-        resolved_net = synth_net  # bare name exists everywhere → use it
-        log(f"BARE_RTL_ALL_STAGES: {pin}={synth_net!r} → use in all stages")
-    elif counts.get(stage, 0) == 0:
-        # Priority 0: bare name absent in this stage → structural driver trace
-        driver_inst = find_driver_instance(synth_net, synth_preeco_lines)
-        if driver_inst:
-            resolved_net = find_driver_output_in_stage(driver_inst, stage_lines)
-            log(f"STRUCTURAL_TRACE: [{stage}] {pin} driver={driver_inst} → {resolved_net!r}")
-        # else fall through to priorities 1-5
+    # Priority -1: fenets actual_wire is authoritative — use it if present
+    fenets_scope = f"{module_scope}/{synth_net}"  # e.g. "umcdat/WDB/IReset"
+    fenets_entry = rename_map.get(fenets_scope, {})
+    fenets_actual = fenets_entry.get(f'actual_wire_{stage}')
+    if fenets_actual:
+        resolved_net = fenets_actual
+        log(f"FENETS_AUTHORITATIVE: [{stage}] {pin}={fenets_actual!r} (bare={synth_net!r} may be different DFF)")
     else:
-        resolved_net = synth_net  # bare name exists in this stage
-        log(f"BARE_RTL_PREFERRED: [{stage}] {pin}={synth_net!r} exists → using bare name")
+        # Priority 0: no fenets override → bare name preferred if exists in all stages
+        counts = {s: int(subprocess.run(
+            f"zgrep -cw {shlex.quote(synth_net)} {ref_dir}/data/PreEco/{s}.v.gz",
+            shell=True, capture_output=True, text=True).stdout.strip() or 0)
+            for s in ('Synthesize', 'PrePlace', 'Route')}
+        if all(c >= 1 for c in counts.values()):
+            resolved_net = synth_net
+            log(f"BARE_RTL_ALL_STAGES: {pin}={synth_net!r} → use in all stages")
+        elif counts.get(stage, 0) == 0:
+            # Priority 1: bare name absent → structural driver trace
+            driver_inst = find_driver_instance(synth_net, synth_preeco_lines)
+            if driver_inst:
+                resolved_net = find_driver_output_in_stage(driver_inst, stage_lines)
+                log(f"STRUCTURAL_TRACE: [{stage}] {pin} driver={driver_inst} → {resolved_net!r}")
 ```
 
-**Why:** CTS renames (`FxPrePlace_HFSNET_*` / `FxPlace_HFSNET_*`) are sometimes promoted to module-level primary inputs that FM cannot trace to their source DFF → NOT EQUIVALENT compare points. When the bare RTL name exists as a driven wire, use it. Use CTS rename only as last resort when the bare name is absent and structural trace also fails.
+**Key distinction:** `FxPrePlace_HFSNET_933` has fenets `actual_wire_PrePlace` entry → Priority -1 uses it (correct). Plain `IReset` for `RegPageRetEn_d001` (umcdat scope) has NO fenets actual_wire override → Priority 0 uses bare `IReset` (correct). Same wire name, different outcomes based on fenets tracking.
 
 **Net status taxonomy — use exactly one:**
 | Status | When to use |

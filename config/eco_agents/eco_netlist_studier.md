@@ -279,39 +279,50 @@ P&R renames DFF outputs (CTS/optimization in Route). A wire may exist in scope b
 **Per-stage resolution priority** (all ECO input pins, anything except `{Z, ZN, ZN1, Q, QN, CO}`):
 
 0. **Bare RTL name existence check — ALL THREE STAGES (MANDATORY FIRST STEP — Rule 65).**
-   Before consulting the fenets rename map, check whether the Synthesize bare RTL name
-   (e.g. `IReset`) EXISTS in **all three** PreEco stage netlists:
+   Before consulting the fenets rename map, run TWO checks:
+
+   **Check A — Fenets exemption (MANDATORY before Check B):**
+   Look up `<scope>/<bare_rtl_name>` in the fenets rename map. If the map has a specific
+   `actual_wire_<stage>` entry for PP or Route, the fenets tool tracked this signal explicitly
+   and its `(+)` polarity-correct CTS rename IS the authoritative per-stage value — the bare
+   RTL name in PP/Route scope may refer to a **different logical signal / DFF source**.
+   → **USE the fenets `actual_wire_<stage>` directly. Do NOT use the bare RTL name.**
+   Step 3 validator Check 65 exempts this case (fenets-authoritative CTS rename).
+
+   Example: `umcdat/WDB/IReset` → fenets has `actual_wire_PrePlace = FxPrePlace_HFSNET_933`
+   → use `FxPrePlace_HFSNET_933` for PP WDB gates. The bare name `IReset` exists in PP WDB
+   scope but refers to the parent umcdat's `IReset` (different DFF source from Synth's
+   `IReset_d1_reg.Q`) → using it would cause FM mismatch.
+
+   **Check B — Bare name preferred when no fenets actual_wire:**
+   If the fenets map has NO `actual_wire_<stage>` for this signal, then check:
    ```bash
    zgrep -cw "<bare_rtl_name>" <REF_DIR>/data/PreEco/Synthesize.v.gz
    zgrep -cw "<bare_rtl_name>" <REF_DIR>/data/PreEco/PrePlace.v.gz
    zgrep -cw "<bare_rtl_name>" <REF_DIR>/data/PreEco/Route.v.gz
    ```
-   - **All three ≥ 1 → bare RTL name exists everywhere** → **USE the bare RTL name in ALL stages.**
-     Do NOT use CTS renames. The bare name is FM-traceable across all stage comparisons.
-     Step 3 validator Check 65 hard-fails when a CTS rename is used but the bare name exists.
-   - **Absent in PP or Route** → do NOT force bare name there. Fall through to Priority 1
-     (structural driver trace) for that specific stage.
+   - **All three ≥ 1 → bare RTL name exists everywhere AND no fenets override** →
+     **USE the bare RTL name in ALL stages.** FM-traceable across all stage comparisons.
+     Step 3 validator Check 65 hard-fails when a CTS rename is used but bare name exists
+     and has no fenets actual_wire entry.
+   - **Absent in PP or Route** → fall through to Priority 1 (structural driver trace).
 
-   **Why:** CTS renames (`FxPrePlace_HFSNET_*` / `FxPlace_HFSNET_*`) that are module-level
-   primary inputs cannot be traced by FM to their source DFF → NOT EQUIVALENT compare points.
-   When the bare RTL name still exists as a driven wire in PP/Route, use it. Use CTS renames
-   only as a last resort when the original name is gone.
+   **Why the fenets exemption matters:** The same wire name (e.g. `IReset`) can exist in
+   PP/Route scope but refer to a different DFF source than in Synth. The fenets tool
+   specifically tracks the logical equivalence across stages using FM — its `actual_wire`
+   is the `(+)` polarity-correct answer. Trust it over bare name matching.
 
-1. **Structural driver trace from Synthesize** (when bare RTL name absent in PP or Route).
-   How the signal is driven in Synth reveals what its renamed equivalent is in PP/Route:
-   - Find the driver of `<bare_rtl_name>` in Synth PreEco:
-     `grep "\.Q\|\.Z\|\.ZN" Synthesize.v | grep "<bare_rtl_name>"` → get `driver_inst`
-   - Search `driver_inst` in the PP/Route PreEco → read its output net → that is the
-     stage-specific equivalent of the bare RTL name.
+1. **Structural driver trace from Synthesize** (when bare RTL name absent in PP or Route
+   AND no fenets actual_wire). Find how the signal is driven in Synth, locate same driver
+   in PP/Route:
    ```bash
+   grep "\.Q\|\.Z\|\.ZN" PreEco/Synthesize.v | grep "<bare_rtl_name>" → driver_inst
    grep "<driver_inst>" PreEco/<Stage>.v.gz | grep "\.Q\b\|\.ZN\b\|\.Z\b" | head -1
    ```
-   Use the output net found. This is more reliable than the fenets rename map when the bare
-   name is absent because it traces the actual driver cell across P&R stages.
 
-2. **`<BASE_DIR>/data/<TAG>_eco_fenets_rename_map.json`** — last resort, use ONLY when
-   Priorities 0 and 1 failed to find the signal in the stage. The rename map provides the
-   CTS-renamed equivalent. USE ITS VALUES VERBATIM (polarity-correct by construction).
+2. **`<BASE_DIR>/data/<TAG>_eco_fenets_rename_map.json`** — use when Priorities 0 and 1
+   both failed. The rename map `actual_wire_<stage>` is `(+)` polarity-correct by
+   construction (fenets only accepts `(+)` impl lines). USE ITS VALUES VERBATIM.
 
 3. **Neighbor-DFF inference** (only when signal absent from rename map): find a pre-existing
    DFF in same module scope whose Synth value matches; copy its per-stage net verbatim.

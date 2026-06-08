@@ -2496,7 +2496,16 @@ def main():
         return _MODULE_INDEX_CACHE[key]
 
     def _net_parity_in_stage(net, host_module, ref_dir, stage, max_hops=8):
-        """Parity 0/1 + terminal kind via indexed driver_map (fast)."""
+        """Parity 0/1 + terminal kind via indexed driver_map (fast).
+
+        Note: CTS primary inputs (FxPrePlace_*/FxPlace_*) stop the trace at
+        the module boundary with parity=0. The fenets rename map records
+        polarity as (+)/(−) — the studier ONLY accepts (+) results, so any
+        CTS-renamed primary input in the study JSON is guaranteed to have the
+        SAME polarity as the Synth reference signal. Do NOT add extra parity
+        for CTS inputs based on cell name patterns (e.g. HFSINV/I does NOT
+        mean inverted — fenets (+) is the authoritative polarity indicator).
+        """
         driver_map, primary_inputs = _index_module_body(host_module, ref_dir, stage)
         if driver_map is None:
             return None
@@ -4829,14 +4838,29 @@ def main():
                         _stg_net = str((_stg_e65.get('port_connections') or {}).get(_pin65, ''))
                 if not _stg_net or not any(_stg_net.startswith(p) for p in _CTS_RENAME_PREFIXES_65):
                     continue  # stage net is not a CTS rename — no issue
+                # Exemption: if the fenets rename map has a specific actual_wire for this
+                # signal in this stage AND the study JSON uses exactly that actual_wire,
+                # the studier correctly chose the CTS rename because the bare name in
+                # PP/Route scope refers to a DIFFERENT logical signal (different DFF source).
+                # Example: WDB/IReset in Synth = IReset_d1_reg.Q, but "IReset" in PP WDB
+                # scope = parent umcdat's IReset (different DFF) → CTS rename is correct.
+                _fenets_actual = ''
+                for _fkey, _fval in (_rmap or {}).items():
+                    if not isinstance(_fval, dict): continue
+                    if _fval.get(f'actual_wire_{_stg65}') == _stg_net:
+                        _fenets_actual = _stg_net
+                        break
+                if _fenets_actual:
+                    continue  # studier used the fenets-authoritative actual_wire — OK
                 issues.append(
                     f"Check 65 FAIL: [{_stg65}] gate {_inst65!r} pin .{_pin65}="
                     f"{_stg_net!r} uses CTS rename but bare RTL name {_syn_net!r} "
-                    f"EXISTS in ALL 3 PreEco stages (Synthesize/PrePlace/Route). "
+                    f"EXISTS in ALL 3 PreEco stages (Synthesize/PrePlace/Route) AND "
+                    f"has no fenets actual_wire entry for this CTS rename. "
                     f"Fix: use {_syn_net!r} in ALL stages — bare RTL name is preferred "
                     f"when it exists across all stages (step 1 of 3-step priority). "
-                    f"Use structural driver trace (step 2) or CTS rename (step 3) only "
-                    f"when bare name is absent in a specific stage.")
+                    f"Use CTS rename only when the bare name refers to a different "
+                    f"logical signal in that stage (verify via fenets map).")
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
