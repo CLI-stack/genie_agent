@@ -360,6 +360,36 @@ synth_count=$(zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -cw "<source_net
 
 **H2 — Find P&R alias:** For H-RENAME: find driver of `source_net` in Synthesize → search same driver instance in P&R → read its output net. For H-BUS: keep `source_net` as-is.
 
+**ANTI-REGRESSION GUARD (MANDATORY BEFORE Mode H fix — Rule 66):**
+Before replacing a CTS signal (e.g. `FxPrePlace_HFSNET_933`) with the bare RTL name
+(e.g. `IReset`), verify the replacement will not introduce a wrong-DFF-source bug:
+
+```python
+# Guard: is the current CTS value the fenets-authoritative actual_wire?
+current_stg_val = entry["port_connections_per_stage"][stage][pin]  # e.g. FxPrePlace_HFSNET_933
+synth_net = entry["port_connections"].get(pin, "")                 # e.g. IReset
+
+for scope_key, fentry in rename_map.items():
+    if fentry.get(f'actual_wire_{stage}') == current_stg_val:
+        # CTS signal IS the fenets actual_wire → it is CORRECT
+        # The bare RTL name (IReset) in PP/Route scope refers to a DIFFERENT DFF source
+        # Do NOT replace — keep the fenets-authoritative CTS signal
+        log(f"ANTI_REGRESSION: [{stage}] {pin}={current_stg_val!r} is fenets actual_wire "
+            f"for {scope_key} — bare name {synth_net!r} may be wrong DFF source. "
+            f"Keeping CTS signal. Step 3 Check 66 enforces this.")
+        skip_this_fix = True
+        break
+```
+
+**Why:** The bare RTL name (e.g. `IReset`) can exist in PP/Route scope as a port input from the
+parent module — a DIFFERENT logical signal than what Synth's `IReset` refers to inside the child
+module. Example: `umcdat/WDB/IReset` in Synth = `IReset_d1_reg.Q` (WDB-internal DFF), but
+`IReset` in PP WDB scope = parent umcdat's `IReset` (different DFF). The re_studier's Mode H fix
+saw `IReset` existing as `input IReset;` in PP/Route and applied it — breaking PPVsSynth
+(7 new `wdbptr_org0_d1p5_reg` failures in R2 that were NOT failing in R1).
+`FxPrePlace_HFSNET_933` IS the correct `(+)` polarity actual_wire for WDB/IReset in PP
+per the fenets map — it must NOT be replaced.
+
 **TWO-STEP CHECK (MANDATORY FIRST — Rule 65):**
 
 **Step A — Fenets actual_wire (highest priority):**

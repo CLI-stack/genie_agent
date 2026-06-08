@@ -4883,6 +4883,70 @@ def main():
                     f"Use CTS rename only when the bare name refers to a different "
                     f"logical signal in that stage (verify via fenets map).")
 
+    # ── Check 66: bare RTL name used but fenets has a DIFFERENT actual_wire ──
+    # Rule 66 (anti-regression guard): when a PP/Route gate pin uses the SAME bare RTL
+    # name as Synthesize (e.g. both use 'IReset'), but the fenets rename map has a
+    # specific actual_wire_<stage> for that signal scope that is DIFFERENT from the bare
+    # name → the bare name in PP/Route scope refers to a DIFFERENT DFF source than Synth.
+    # The fenets actual_wire is the correct per-stage value — do NOT replace it with the
+    # bare RTL name.
+    #
+    # Root cause (Round 2 regression): re_studier Mode H fix saw 'IReset' as input port
+    # in PP/Route WDB module and replaced FxPrePlace_HFSNET_933 with 'IReset'.
+    # But FxPrePlace_HFSNET_933 IS the fenets actual_wire_PrePlace for umcdat/WDB/IReset
+    # (= correct (+) polarity equivalent of IReset_d1_reg.Q). The bare 'IReset' in PP
+    # WDB scope = parent umcdat's IReset (different DFF) → FM NOT EQUIVALENT.
+    #
+    # Check 66 fires when: Synth uses bare name X, PP/Route also uses bare name X,
+    # but fenets map has actual_wire_<stage> ≠ X for scope/X → wrong DFF source.
+    _FUNC_PINS_66 = ('A1', 'A2', 'B1', 'B2', 'I', 'IN', 'D')
+    _SKIP_66 = ("1'b", "n_eco_", "ECO_", "PENDING", "UNRESOLVABLE",
+                "FxPrePlace_", "FxPlace_", "FxOptCts_", "FxCts_")
+
+    for _e66 in study.get('Synthesize', []):
+        if _e66.get('change_type') not in ('new_logic_gate', 'new_logic_dff'):
+            continue
+        _inst66 = _e66.get('instance_name', '?')
+        _mod66  = _e66.get('module_name', '')
+        _pcs_syn66 = _e66.get('port_connections') or {}
+        _pcs_ps66  = _e66.get('port_connections_per_stage') or {}
+        for _pin66 in _FUNC_PINS_66:
+            _syn_net66 = str(_pcs_syn66.get(_pin66, ''))
+            if not _syn_net66 or any(_syn_net66.startswith(p) for p in _SKIP_66):
+                continue  # ECO-internal or CTS name in Synth — skip
+            for _stg66 in ('PrePlace', 'Route'):
+                _stg_net66 = str((_pcs_ps66.get(_stg66) or {}).get(_pin66, ''))
+                if not _stg_net66:
+                    _stg_e66 = next(
+                        (ee for ee in study.get(_stg66, [])
+                         if ee.get('instance_name') == _inst66), None)
+                    if _stg_e66:
+                        _stg_net66 = str((_stg_e66.get('port_connections') or {}).get(_pin66, ''))
+                if _stg_net66 != _syn_net66:
+                    continue  # different value — Check 65 handles this case, not 66
+                # PP/Route uses same bare name as Synth — check fenets map
+                # If fenets has actual_wire_<stage> ≠ bare name → wrong DFF source
+                for _fk66, _fv66 in (_rmap or {}).items():
+                    if not isinstance(_fv66, dict): continue
+                    _fa66 = _fv66.get(f'actual_wire_{_stg66}', '')
+                    if not _fa66 or _fa66 == _syn_net66:
+                        continue  # no fenets entry or fenets agrees with bare name
+                    # fenets has a different actual_wire — check if this entry is for
+                    # our signal by matching the Synth value in the rename map
+                    _syn_map66 = _fv66.get('actual_wire_Synthesize', '') or _fv66.get('Synthesize', '')
+                    if _syn_net66 not in _syn_map66:
+                        continue  # different signal scope
+                    issues.append(
+                        f"Check 66 FAIL: [{_stg66}] gate {_inst66!r} pin .{_pin66}="
+                        f"{_stg_net66!r} uses same bare RTL name as Synthesize, BUT "
+                        f"fenets map has actual_wire_{_stg66}={_fa66!r} for this signal — "
+                        f"the bare name {_stg_net66!r} in {_stg66} scope refers to a "
+                        f"DIFFERENT DFF source than Synth. "
+                        f"Fix: use fenets actual_wire {_fa66!r} for {_stg66} stage. "
+                        f"Anti-regression guard (Rule 66): re_studier Mode H must not "
+                        f"replace fenets actual_wire with bare RTL name.")
+                    break
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}

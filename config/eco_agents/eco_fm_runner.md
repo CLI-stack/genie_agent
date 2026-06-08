@@ -63,11 +63,54 @@ EOF
 ```
 
 - `RUN_SVF_GEN` is always `0`. Never write `ECO_SVF_ENTRIES` — Step 4b (eco_svf_updater) is permanently disabled; a missing SVF file causes post_eco_formality.csh to abort.
-- **`ECO_TARGETS` policy depends on the caller's invocation context:**
-  - **Initial Round 1 FM (APPLY_ORCHESTRATOR Step 6 first submit) and every ROUND_ORCHESTRATOR re-FM** — `ECO_TARGETS` MUST include ALL 3 targets. Reason: `eco_applier` modifies all 3 PostEco stages in every round; a previously-passing stage could silently regress if the applier touched it.
-  - **APPLY_ORCHESTRATOR Step 6 ABORT inline loop iterations** — caller MAY pass a subset (only the targets the previous `abort_recovery_agent` iteration actually patched). Reason: between inline loop iterations, no `eco_applier` re-run happens — only mechanical/reasoning patches scoped to specific stage netlists. Prior-PASS targets' rpt.gz files remain on disk; `eco_fm_status_collector.py` reads them and reports their PASS verdict unchanged. Saves 30-60 min per untouched target.
-  - When the caller passes fewer than 3 targets, do NOT auto-add the missing ones — trust the caller's scope (it has the per-target ABORT context). If the caller is silent about target list, default to all 3 (safe).
-- Verify the file contains `ECO_TARGETS=` and `RUN_SVF_GEN=0`; abort if not.
+- **`ECO_TARGETS` policy — smart selection based on which stages changed (Round 2+):**
+
+  **The FM runner MUST decide which targets to run based on:**
+  1. Which PostEco stages had changes in this round (read `eco_applied_round<N>.json`)
+  2. Which FM targets PASSED in the previous round (`eco_fm_verify.json`)
+
+  **Stage → target dependency matrix:**
+  | Stage changed | Targets to include |
+  |---|---|
+  | Synthesize | `FmEqvEcoSynthesizeVsSynRtl` + `FmEqvEcoPrePlaceVsEcoSynthesize` (Synth is reference for PP) |
+  | PrePlace | `FmEqvEcoPrePlaceVsEcoSynthesize` + `FmEqvEcoRouteVsEcoPrePlace` (PP is reference for Route) |
+  | Route | `FmEqvEcoRouteVsEcoPrePlace` |
+
+  **Skip a target if:** its reference stage is unchanged AND it PASSED in the previous round.
+  Example: Synth unchanged + SynthVsSynRtl was PASS → skip `FmEqvEcoSynthesizeVsSynRtl`.
+  **SynthVsSynRtl takes 8+ hours on large tiles** — skipping it when safe saves significant time.
+
+  **Implementation:**
+  ```python
+  import json
+  applied = json.load(open(f'data/{TAG}_eco_applied_round{ROUND}.json'))
+  prev    = json.load(open(f'data/{TAG}_eco_fm_verify.json')) if round > 1 else {}
+
+  def changed(stage):
+      return sum(1 for e in applied.get(stage, [])
+                 if e.get('status') in ('APPLIED','INSERTED')) > 0
+
+  def prev_pass(target):
+      return prev.get(target, {}).get('verdict') == 'PASS'
+
+  targets = set()
+  if changed('Synthesize') or not prev_pass('FmEqvEcoSynthesizeVsSynRtl'):
+      targets.add('FmEqvEcoSynthesizeVsSynRtl')
+  if changed('PrePlace') or changed('Synthesize') or not prev_pass('FmEqvEcoPrePlaceVsEcoSynthesize'):
+      targets.add('FmEqvEcoPrePlaceVsEcoSynthesize')
+  if changed('Route') or changed('PrePlace'):
+      targets.add('FmEqvEcoRouteVsEcoPrePlace')
+  if not targets:
+      targets = {'FmEqvEcoSynthesizeVsSynRtl','FmEqvEcoPrePlaceVsEcoSynthesize','FmEqvEcoRouteVsEcoPrePlace'}
+  ```
+  Write the selected targets to `eco_fm_config`:
+  ```
+  ECO_TARGETS=<space-separated selected targets>
+  RUN_SVF_GEN=0
+  ```
+
+  **Round 1 (no previous verify):** always run all 3 targets.
+  **ABORT inline loop:** write only targets whose PostEco stages were patched (saves 30-60 min).
 
 ---
 
