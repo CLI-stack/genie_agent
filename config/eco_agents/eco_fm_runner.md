@@ -109,11 +109,29 @@ EOF
   RUN_SVF_GEN=0
   ```
 
-  **Round 1 (no previous verify):** always run all 3 targets. No `PREV_VERIFY_JSON` needed.
-  **Round 2+ subset:** add `PREV_VERIFY_JSON=<BASE_DIR>/data/<TAG>_eco_fm_verify.json` to
-  `eco_fm_config`. `post_eco_formality.csh` passes this to `eco_fm_status_collector.py`
-  via `--prev-verify`, which carries forward PASS results for skipped targets automatically.
-  **ABORT inline loop:** write only targets whose PostEco stages were patched (saves 30-60 min).
+  **Round 1 — write all 3 explicitly (no previous verify available):**
+  ```
+  ECO_TARGETS=FmEqvEcoSynthesizeVsSynRtl FmEqvEcoPrePlaceVsEcoSynthesize FmEqvEcoRouteVsEcoPrePlace
+  RUN_SVF_GEN=0
+  ```
+
+  **Round 2+ — use SMART_TARGETS (recommended, agent does NOT decide targets):**
+  ```
+  SMART_TARGETS=1
+  APPLIED_JSON=<BASE_DIR>/data/<TAG>_eco_applied_round<N>.json
+  PREV_VERIFY_JSON=<BASE_DIR>/data/<TAG>_eco_fm_verify.json
+  RUN_SVF_GEN=0
+  ```
+  `post_eco_formality.csh` reads the applied JSON (which stages changed) and the previous
+  FM verify JSON (which targets passed) and automatically computes the correct ECO_TARGETS:
+  - Skip `FmEqvEcoSynthesizeVsSynRtl` when Synth unchanged AND was PASS previously
+  - Skip `FmEqvEcoPrePlaceVsEcoSynthesize` when PP+Synth unchanged AND was PASS previously
+  - Always run `FmEqvEcoRouteVsEcoPrePlace` when Route or PP changed
+  The script also passes `--prev-verify` to `eco_fm_status_collector.py` so skipped PASS
+  targets are carried forward into the new `eco_fm_verify.json` automatically.
+  **Do NOT manually compute ECO_TARGETS for Round 2+ — use SMART_TARGETS and let the script decide.**
+
+  **ABORT inline loop:** write explicit `ECO_TARGETS` with only the patched stages (saves 30-60 min).
 
 ---
 

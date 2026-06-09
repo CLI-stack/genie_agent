@@ -79,11 +79,42 @@ set eco_svf_entries = ""
 if (-f "$config_file") then
     echo "Reading ECO FM config: $config_file"
 
-    # ECO_TARGETS
+    # ECO_TARGETS — explicit list (takes priority)
     set cfg_targets = `grep "^ECO_TARGETS=" "$config_file" | sed 's/ECO_TARGETS=//'`
     if ("$cfg_targets" != "") then
         set eco_targets = ($cfg_targets)
         echo "  ECO_TARGETS: $eco_targets"
+
+    # SMART_TARGETS=1 — auto-select based on changed stages + prior FM verdicts
+    # Agent writes: SMART_TARGETS=1, APPLIED_JSON=<path>, PREV_VERIFY_JSON=<path>
+    # Script reads eco_applied JSON (which stages changed) and prev eco_fm_verify
+    # (which targets passed) and picks only the necessary targets.
+    # Rule: only run a target if its reference stage changed OR it never passed before.
+    else if (`grep -c "^SMART_TARGETS=1" "$config_file"` > 0) then
+        set smart_applied = `grep "^APPLIED_JSON=" "$config_file" | sed 's/APPLIED_JSON=//'`
+        set smart_prev    = `grep "^PREV_VERIFY_JSON=" "$config_file" | sed 's/PREV_VERIFY_JSON=//'`
+        echo "  SMART_TARGETS=1 — computing optimal targets..."
+        set eco_targets = (`python3 -c "
+import json, sys
+T = ['FmEqvEcoSynthesizeVsSynRtl','FmEqvEcoPrePlaceVsEcoSynthesize','FmEqvEcoRouteVsEcoPrePlace']
+changed = {'Synthesize':0,'PrePlace':0,'Route':0}
+try:
+    d=json.load(open('$smart_applied'))
+    for s in changed:
+        changed[s]=sum(1 for e in d.get(s,[]) if e.get('status') in ('APPLIED','INSERTED'))
+except: pass
+prev={}
+try:
+    pt=json.load(open('$smart_prev')).get('per_target',{})
+    prev={t:(v.get('verdict')=='PASS') for t,v in pt.items() if isinstance(v,dict)}
+except: pass
+targets=[]
+if changed['Synthesize']>0 or not prev.get(T[0],False): targets.append(T[0])
+if changed['PrePlace']>0 or changed['Synthesize']>0 or not prev.get(T[1],False): targets.append(T[1])
+if changed['Route']>0 or changed['PrePlace']>0: targets.append(T[2])
+print(' '.join(targets) if targets else ' '.join(T))
+"`)
+        echo "  SMART_TARGETS selected: $eco_targets"
     endif
 
     # RUN_SVF_GEN
