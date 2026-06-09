@@ -4872,7 +4872,35 @@ def main():
                         _fenets_actual = _stg_net
                         break
                 if _fenets_actual:
-                    continue  # studier used the fenets-authoritative actual_wire — OK
+                    # Fenets exemption found — but override it if the CTS rename is a
+                    # module-level PRIMARY INPUT while the bare name IS internally driven.
+                    # A primary input cannot be traced by FM to its source DFF → NOT EQUIV.
+                    # If the bare name is internally driven (has a .Q/.Z/.ZN driver inside
+                    # the module), prefer it over the primary-input CTS rename.
+                    # Use the existing _index_module_body driver_map for this check.
+                    try:
+                        _dm65x, _pi65x = _index_module_body(
+                            _e65.get('module_name', ''), args.ref_dir, _stg65)
+                        _cts_is_primary65 = _stg_net in (_pi65x or set())
+                        _bare_is_driven65 = (
+                            _dm65x is not None and _syn_net in _dm65x
+                        )
+                        if _cts_is_primary65 and _bare_is_driven65:
+                            # CTS rename = primary input AND bare name = internally driven
+                            # → bare name is FM-traceable, CTS rename is not → override exemption
+                            issues.append(
+                                f"Check 65 FAIL: [{_stg65}] gate {_inst65!r} pin .{_pin65}="
+                                f"{_stg_net!r} — fenets exemption OVERRIDDEN: CTS rename is a "
+                                f"module primary input (FM cannot trace) but bare RTL name "
+                                f"{_syn_net!r} IS internally driven in {_stg65} (FM-traceable). "
+                                f"Fix: use bare name {_syn_net!r} — it is preferred over the "
+                                f"fenets actual_wire when it is internally driven in the stage. "
+                                f"Rule 65 override: primary-input CTS renames are not FM-traceable "
+                                f"even when they match the fenets actual_wire.")
+                        else:
+                            continue  # CTS rename is internally driven OR bare name is also primary — exemption holds
+                    except Exception:
+                        continue  # can't verify → keep exemption
                 issues.append(
                     f"Check 65 FAIL: [{_stg65}] gate {_inst65!r} pin .{_pin65}="
                     f"{_stg_net!r} uses CTS rename but bare RTL name {_syn_net!r} "

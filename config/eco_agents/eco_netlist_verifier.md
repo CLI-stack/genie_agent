@@ -243,7 +243,7 @@ For each input pin in `port_connections`:
 
 | Priority | Method |
 |----------|--------|
-| **-1** | **Fenets actual_wire check (MANDATORY FIRST — overrides everything).** Look up `<scope>/<synth_net>` in the fenets rename map. If `actual_wire_<stage>` is set → USE IT. The fenets tool tracked this signal explicitly with `(+)` polarity; the bare RTL name in PP/Route scope may refer to a **different DFF source**. Check 65 exempts this case. |
+| **-1** | **Fenets actual_wire check (MANDATORY FIRST — overrides everything).** Look up `<scope>/<synth_net>` in the fenets rename map. If `actual_wire_<stage>` is set → USE IT. The fenets tool tracked this signal explicitly with `(+)` polarity; the bare RTL name in PP/Route scope may refer to a **different DFF source**. Check 65 exempts this case. **EXCEPTION: if `actual_wire_PrePlace` ≠ `actual_wire_Route` (different CTS renames per stage), FM comparing PP vs Route sees non-equivalent signals → RouteVsPP fail. Override: if bare RTL name exists in ALL 3 stages → use bare name for all stages instead.** |
 | 0 | **Bare RTL name in all 3 stages (Rule 65 — only when no fenets actual_wire).** `zgrep -cw "<bare>" PreEco/{Syn,PP,Route}.v.gz` all ≥ 1 AND fenets has no actual_wire → USE bare name in all stages. Check 65 hard-fails when CTS rename used but bare name exists and has no fenets entry. |
 | 1 | Bare RTL name absent in PP/Route → **structural driver trace**: find driver in Synth, locate same driver in PP/Route, read output net. |
 | 2 | RTL-named primary input — check `net_in_scope("input", module_scope)` |
