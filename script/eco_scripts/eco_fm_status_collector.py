@@ -346,6 +346,10 @@ def main():
     p.add_argument('--targets',   default=','.join(DEFAULT_ECO_TARGETS),
                    help='Comma-separated list of FM targets to inspect '
                         f'(default: {",".join(DEFAULT_ECO_TARGETS)})')
+    p.add_argument('--prev-verify', default=None,
+                   help='Path to previous round eco_fm_verify.json — carry forward '
+                        'PASS results for targets not in --targets (avoids missing '
+                        'results in HTML when skipping already-passing targets)')
     args = p.parse_args()
 
     ref_dir = Path(args.ref_dir).resolve()
@@ -358,6 +362,19 @@ def main():
     per_target = {}
     for t in targets:
         per_target[t] = classify_target(str(ref_dir), str(logs_dir), t)
+
+    # Carry forward PASS results from previous round for skipped targets
+    if args.prev_verify and Path(args.prev_verify).is_file():
+        try:
+            prev = json.loads(Path(args.prev_verify).read_text())
+            prev_per = prev.get('per_target', {})
+            for t in DEFAULT_ECO_TARGETS:
+                if t not in per_target and prev_per.get(t, {}).get('verdict') == 'PASS':
+                    per_target[t] = dict(prev_per[t])
+                    per_target[t]['carried_forward_from_round'] = prev.get('round')
+                    print(f'  CARRY_FORWARD: {t} PASS from round {prev.get("round")}')
+        except Exception as ex:
+            print(f'WARNING: could not read --prev-verify: {ex}', file=sys.stderr)
 
     top_verdict = aggregate_top_verdict(per_target)
 

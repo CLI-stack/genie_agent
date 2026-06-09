@@ -407,6 +407,13 @@ echo "#table end#" >> $out
 #     the canonical verdict end-to-end.
 set fm_verify_path = "$source_dir/data/${tag}_eco_fm_verify.json"
 set logs_dir       = "$refdir_name/logs"
+# Read PREV_VERIFY_JSON from config for carry-forward of skipped targets
+set prev_verify_arg = ""
+set cfg_prev_verify = `grep "^PREV_VERIFY_JSON=" "$config_file" | sed 's/PREV_VERIFY_JSON=//'`
+if ("$cfg_prev_verify" != "" && -f "$cfg_prev_verify") then
+    set prev_verify_arg = "--prev-verify $cfg_prev_verify"
+    echo "  PREV_VERIFY_JSON: $cfg_prev_verify (carry forward PASS results)" >> $out
+endif
 if (-d "$refdir_name/rpts" && -d "$logs_dir") then
     echo "" >> $out
     echo "=== Auto-invoking eco_fm_status_collector.py ===" >> $out
@@ -414,6 +421,8 @@ if (-d "$refdir_name/rpts" && -d "$logs_dir") then
         --ref-dir $refdir_name \
         --tag     $tag \
         --round   1 \
+        --targets `echo "$eco_targets" | tr ' ' ','` \
+        $prev_verify_arg \
         --output  $fm_verify_path >> $out 2>&1
     echo "Canonical verdict: $fm_verify_path" >> $out
 endif

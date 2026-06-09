@@ -109,7 +109,10 @@ EOF
   RUN_SVF_GEN=0
   ```
 
-  **Round 1 (no previous verify):** always run all 3 targets.
+  **Round 1 (no previous verify):** always run all 3 targets. No `PREV_VERIFY_JSON` needed.
+  **Round 2+ subset:** add `PREV_VERIFY_JSON=<BASE_DIR>/data/<TAG>_eco_fm_verify.json` to
+  `eco_fm_config`. `post_eco_formality.csh` passes this to `eco_fm_status_collector.py`
+  via `--prev-verify`, which carries forward PASS results for skipped targets automatically.
   **ABORT inline loop:** write only targets whose PostEco stages were patched (saves 30-60 min).
 
 ---
