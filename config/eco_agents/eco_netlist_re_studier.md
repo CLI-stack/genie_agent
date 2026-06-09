@@ -8,17 +8,17 @@
 
 **HARD RULE — NO CASCADING FIXES:**
 Only modify entries explicitly listed by `instance_name` in `revised_changes[]`. Do NOT propagate
-fixes to other gates that happen to use the same signal. Example: if `revised_changes` has
-`fix_named_wire` for `eco_9855_ireset_inv.I`, do NOT also fix `eco_9855_wdbptr_*` or
-`eco_9855_RegPageRetEn_d001` — even if they reference the same bare signal name. Each gate
-must have its own `revised_changes` entry to be touched. Cascading is the #1 source of
-regressions: it fixes gates that were NOT in the failing noneqv list and may corrupt gates
-that are intentionally correct in passing FM stages.
+fixes to other gates that happen to use the same signal. For example: if `revised_changes` lists
+one gate's pin, do NOT also fix other gates in the same module that reference the same signal name
+— even if they appear related. Each gate must have its own explicit `revised_changes` entry.
+Cascading is the #1 source of regressions: it silently reverts gates that PASSED FM in previous
+rounds (because they were intentionally correct in a different module scope) and are not in the
+current failing noneqv list.
 
 **HARD RULE — PROTECTED_ENTRIES (do not modify):**
 The ROUND_ORCHESTRATOR passes `PROTECTED_ENTRIES` — a list of `instance_name` values whose
-fixes were intentional in previous rounds (e.g. RegPageRetEn_d001 when it passed PPVsSynth).
-If a gate appears in `PROTECTED_ENTRIES`, **skip it even if it appears in `revised_changes`**.
+fixes were intentional in previous rounds (verified by passing FM). If a gate appears in
+`PROTECTED_ENTRIES`, **skip it even if it appears in `revised_changes`**.
 Log: `PROTECTED_SKIP: {instance_name} — intentionally fixed in prior round, preserving.`
 Step 3 validator Check 66 will catch if an unprotected gate has the wrong value.
 
@@ -377,18 +377,19 @@ synth_count=$(zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -cw "<source_net
 **H2 — Find P&R alias:** For H-RENAME: find driver of `source_net` in Synthesize → search same driver instance in P&R → read its output net. For H-BUS: keep `source_net` as-is.
 
 **ANTI-REGRESSION GUARD (MANDATORY BEFORE Mode H fix — Rule 66):**
-Before replacing a CTS signal (e.g. `FxPrePlace_HFSNET_933`) with the bare RTL name
-(e.g. `IReset`), verify the replacement will not introduce a wrong-DFF-source bug:
+Before replacing a CTS signal with the bare RTL name, verify the replacement will not
+introduce a wrong-DFF-source bug:
 
 ```python
 # Guard: is the current CTS value the fenets-authoritative actual_wire?
-current_stg_val = entry["port_connections_per_stage"][stage][pin]  # e.g. FxPrePlace_HFSNET_933
-synth_net = entry["port_connections"].get(pin, "")                 # e.g. IReset
+current_stg_val = entry["port_connections_per_stage"][stage][pin]
+synth_net = entry["port_connections"].get(pin, "")
 
 for scope_key, fentry in rename_map.items():
     if fentry.get(f'actual_wire_{stage}') == current_stg_val:
         # CTS signal IS the fenets actual_wire → it is CORRECT
-        # The bare RTL name (IReset) in PP/Route scope refers to a DIFFERENT DFF source
+        # The bare RTL name in PP/Route scope may refer to a DIFFERENT DFF source
+        # (same name, different module scope → different logical signal)
         # Do NOT replace — keep the fenets-authoritative CTS signal
         log(f"ANTI_REGRESSION: [{stage}] {pin}={current_stg_val!r} is fenets actual_wire "
             f"for {scope_key} — bare name {synth_net!r} may be wrong DFF source. "
@@ -397,14 +398,11 @@ for scope_key, fentry in rename_map.items():
         break
 ```
 
-**Why:** The bare RTL name (e.g. `IReset`) can exist in PP/Route scope as a port input from the
-parent module — a DIFFERENT logical signal than what Synth's `IReset` refers to inside the child
-module. Example: `umcdat/WDB/IReset` in Synth = `IReset_d1_reg.Q` (WDB-internal DFF), but
-`IReset` in PP WDB scope = parent umcdat's `IReset` (different DFF). The re_studier's Mode H fix
-saw `IReset` existing as `input IReset;` in PP/Route and applied it — breaking PPVsSynth
-(7 new `wdbptr_org0_d1p5_reg` failures in R2 that were NOT failing in R1).
-`FxPrePlace_HFSNET_933` IS the correct `(+)` polarity actual_wire for WDB/IReset in PP
-per the fenets map — it must NOT be replaced.
+**Why:** The same bare wire name can exist in PP/Route scope referring to a DIFFERENT DFF
+source than what Synth uses (same name, different module scope or parent connection).
+Replacing the fenets-tracked CTS signal with the bare name causes FM to compare wrong DFFs
+→ NOT EQUIVALENT → PPVsSynth regression. The fenets `actual_wire_<stage>` IS the `(+)`
+polarity-correct value for that gate's specific module scope — preserve it.
 
 **TWO-STEP CHECK (MANDATORY FIRST — Rule 65):**
 
@@ -443,12 +441,6 @@ if aw_pp and aw_rt and aw_pp != aw_rt:
             f"using bare name {synth_net!r} in both stages")
 ```
 
-Real example: `umcdat/IReset` — `actual_wire_PP=FxPrePlace_HFSNET_31`, `actual_wire_Route=FxPrePlace_HFSNET_454`.
-AI trial tile SVF lacks the 31↔454 cross-stage mapping → RouteVsPP fails for `RegPageRetEn_reg`.
-Bare `IReset` exists in all stages AND is NOT a different DFF source at umcdat scope → use `IReset`.
-Contrast: `umcdat/WDB/IReset` — `actual_wire_PP=FxPrePlace_HFSNET_933`, `actual_wire_Route=FxPlace_HFSNET_1160`.
-WDB CTS domain SVF maps 933↔1160 → RouteVsPP passes → keep CTS renames (Rule 66 also blocks bare name here).
-
 **Step B — Bare name preferred when no fenets actual_wire:**
 If the fenets map has NO `actual_wire_<stage>` for this signal, check bare name in all 3 stages:
 ```bash
@@ -460,18 +452,17 @@ zgrep -cw "<synth_net>" <REF_DIR>/data/PreEco/Route.v.gz
   Step 3 Check 65 hard-fails when CTS rename used here.
 - **Absent in PP or Route** → structural driver trace, then CTS rename as last resort.
 
-**P&R PER-STAGE ALIAS RULE (MANDATORY in H2 — all input pins, only when bare RTL name absent):** Copy per-stage values from a pre-existing DFF in the same module scope (find one whose Synth pin matches the ECO entry's logical signal; use its per-stage net names verbatim, including scan/DFT/CTS renames). For SE/SI on new ECO DFFs: Synth=`1'b0`, PP/Route=neighbor DFF's per-stage SE/SI (NOT `1'b0` — see eco_netlist_studier.md `0b-STAGE-NETS`).
+**P&R PER-STAGE ALIAS RULE (MANDATORY in H2 — all input pins, only when bare RTL name absent):** Copy per-stage values from a pre-existing DFF in the same module scope (find one whose Synth pin matches the ECO entry's logical signal; use its per-stage net names verbatim, including scan/DFT/CTS renames). **SE/SI on new ECO DFFs: `1'b0` in ALL 3 stages — scan stitching is out of scope.**
 
 **H3 — Update study JSON:**
 ```python
 entry.setdefault("port_connections_per_stage", {
     s: dict(entry.get("port_connections", {})) for s in ["Synthesize", "PrePlace", "Route"]
 })
-# SE/SI on new ECO DFFs: Synth='1'b0', PP/Route=neighbor DFF's per-stage SE/SI
-# (real scan-bridge wires — NOT '1'b0' in P&R, which would isolate from scan chain).
+# SE/SI on new ECO DFFs: 1'b0 in ALL 3 stages (scan stitching is out of scope).
 # All other input pins: copy per-stage value from a neighbor DFF whose Synth value
 # matches the entry's logical signal — including scan/DFT/CTS-renamed names.
-if input_pin in ('SE', 'SI') and stage == 'Synthesize':
+if input_pin in ('SE', 'SI'):
     entry["port_connections_per_stage"][stage][input_pin] = "1'b0"
 elif par_alias_found:
     entry["port_connections_per_stage"][stage][input_pin] = par_alias
@@ -504,8 +495,8 @@ for change in rtl_diff.get("changes", []):
                         alias = gate["inputs"][0]  # bare RTL name preferred
                     # P&R PER-STAGE ALIAS RULE: copy from neighbor's per-stage value
                     # (scan/DFT/CTS-renamed names) only when bare RTL name is absent.
-                    # Only Synth-stage SE/SI uses the constant '1'b0'.
-                    if gate["pin"] in ('SE', 'SI') and stage == 'Synthesize':
+                    # SE/SI on new ECO DFFs = 1'b0 in ALL 3 stages — scan stitching out of scope.
+                    if gate["pin"] in ('SE', 'SI'):
                         entry["port_connections_per_stage"][stage][gate["pin"]] = "1'b0"
                     else:
                         # Mode H Route fallback — if alias still not found in Route,

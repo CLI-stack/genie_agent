@@ -45,9 +45,9 @@ Checks MUST run in this sequence — each row reads the column-1 outputs of all 
 | Run order | Check | Reads | Writes | Why this order |
 |---:|---|---|---|---|
 | 1 | **Check 1** (GAP-15) | `and_term_strategy` field, GAP15_CHECK | corrected `and_term_strategy` + `output_net` | Fixes `module_port_direct_gating` strategy before downstream checks consume it |
-| 2 | **Check 5** (mode_H_risk) | `eco_rtl_diff.json` gates | `port_connections_per_stage` for missing stages | Propagates Mode H aliases before Check 2 walks pins |
+| 2 | **Check 5** (mode_H_risk) | `eco_rtl_diff.json` gates | `port_connections_per_stage` for P&R-missing stages only | Seeds stage-specific aliases for Mode H inputs before Check 2 resolves all pins |
 | 3 | **Check 6** (expected_cascade_dffs) | Check 1's corrected `and_term` entries | `expected_cascade_dffs[]` | Needs Check 1's `module_port_direct_gating` decision |
-| 4 | **Check 2** (per-stage net resolution) | gate entries, rename_map | `port_connections_per_stage` (all 3 stages) | Must run before cone verify (Check 10) |
+| 4 | **Check 2** (per-stage net resolution) | gate entries, rename_map | `port_connections_per_stage` all 3 stages — merges with Check 5, does NOT overwrite | Must run before cone verify (Check 10) |
 | 5 | **Check 3** (per-stage DFF pin resolution) | DFF entries, rename_map | `port_connections_per_stage` CP/SE/SI | Must run before cone verify (Check 10) |
 | 6 | **Check 4** (GAP-14 wire decl) | new_logic_gate entries | `needs_explicit_wire_decl` flag | Independent — depends only on Synth check |
 | 7 | **Check 7** (port boundary) | new_logic entries | auto-added `port_declaration` entries | Must precede Check 8 (cascade may reference new ports) |
@@ -281,7 +281,10 @@ if synth_net and not any(synth_net.startswith(p) for p in skip_prefixes):
                 log(f"STRUCTURAL_TRACE: [{stage}] {pin} driver={driver_inst} → {resolved_net!r}")
 ```
 
-**Key distinction:** `FxPrePlace_HFSNET_933` has fenets `actual_wire_PrePlace` entry → Priority -1 uses it (correct). Plain `IReset` for `RegPageRetEn_d001` (umcdat scope) has NO fenets actual_wire override → Priority 0 uses bare `IReset` (correct). Same wire name, different outcomes based on fenets tracking.
+**Key distinction:** The SAME bare signal name (e.g. a reset signal) can appear in multiple module scopes but have different per-stage resolution:
+- Gate in scope A: fenets has `actual_wire_<stage>` for `<scope_A>/<signal>` → Priority -1 uses CTS rename (correct — bare name in that scope may be a different DFF source)
+- Gate in scope B: fenets has NO `actual_wire_<stage>` for `<scope_B>/<signal>` → Priority 0 uses bare name (correct — same DFF source in all stages)
+Same wire name, different resolution based on which fenets scope entry applies. Always look up the gate's OWN scope when consulting the rename map.
 
 **Net status taxonomy — use exactly one:**
 | Status | When to use |
@@ -355,9 +358,19 @@ if name_matches:
         rf'\.(Q|Z|ZN|ZN1)\s*\(\s*{re.escape(resolved_net)}\s*\)',
         module_name, synthesize_preeco)
     if synth_driver_count == 0:
-        log(f"SCAN_ALIAS_REJECTED: {resolved_net} — DFT name pattern + no Synth driver")
-        resolved_net = None  # force next priority
-    # else: name matches pattern but has a functional driver — keep it
+        # No Synth driver — but may still be a valid DFF Q output in P&R stages
+        # (scan stitching renames functional DFF Q outputs to test_so* in PP/Route)
+        # Check if this net is a DFF Q output in the TARGET stage's PreEco netlist:
+        stage_dff_q_count = grep_stage(
+            rf'\.Q[0-9]*\s*\(\s*{re.escape(resolved_net)}\s*\)',
+            ref_dir, stage)
+        if stage_dff_q_count > 0:
+            log(f"SCAN_ALIAS_KEPT: {resolved_net} — DFT pattern but IS a DFF Q output in {stage}")
+            # Keep it — this is a functional signal (fenets actual_wire should confirm this)
+        else:
+            log(f"SCAN_ALIAS_REJECTED: {resolved_net} — DFT name pattern + no Synth/stage DFF Q driver")
+            resolved_net = None  # force next priority
+    # else: name matches pattern but has a functional driver in Synth — keep it
 ```
 
 **GAP-CTS-2 — CTS merged cell input check (Route stage only):**
@@ -389,7 +402,7 @@ Update `port_connections_per_stage` for all 3 stages. Set `confirmed: false` for
 
 ## Check 3 — Per-Stage Pin Verification (Every new_logic_dff Entry)
 > **SKIP IF** no `new_logic_dff` entries exist.
-> **DONE WHEN** every DFF entry has `port_connections_per_stage` populated for CP/SE/SI/D/Q in all 3 stages; SE/SI follow the bridge-port-default rule (Synth=`1'b0`, PP/Route=bridge port); CTS clock rename flagged via `cts_clock_renamed: true` when CP differs across stages.
+> **DONE WHEN** every DFF entry has `port_connections_per_stage` populated for CP/SE/SI/D/Q in all 3 stages; SE/SI = `1'b0` in all 3 stages; CTS clock rename flagged via `cts_clock_renamed: true` when CP differs across stages.
 
 For every `new_logic_dff` entry, resolve ALL pins per stage. Studier-1 records Synthesize only.
 
@@ -400,17 +413,14 @@ For every `new_logic_dff` entry, resolve ALL pins per stage. Studier-1 records S
 - Priority 2: P&R alias (only if Priority 1 absent)
 - Priority 3: Structural driver trace
 
-**Step C — SE/SI pins: Synth = `1'b0`; PP/Route = bridge port wires (default).**
+**Step C — SE/SI pins: `1'b0` in ALL 3 stages.**
 
-Forcing `1'b0` in P&R isolates the new ECO DFF from the scan chain — FM sees a cone divergence (DFF appears as DFF0X). Wire PP and Route to the bridge ports emitted by `eco_emit_bridge_plumbing.py` so cone reach is identical across stages.
+Scan stitching is out of scope — DFT team handles it. Set `SE=SI=1'b0` in Synthesize, PrePlace, and Route for every new ECO DFF.
 
 ```python
 for scan_pin in ('SE', 'SI'):
-    port_connections_per_stage['Synthesize'][scan_pin] = "1'b0"   # RTL-clean
-    for stage in ('PrePlace', 'Route'):
-        # bridge_port is the default for both PP and Route. neighbor_dff is
-        # permitted only when Route also resolved to neighbor_dff (rare).
-        port_connections_per_stage[stage][scan_pin] = bridge_port_wire(scan_pin)
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        port_connections_per_stage[stage][scan_pin] = "1'b0"
 ```
 
 **HARD RULE — Do NOT auto-add new CKOR*/ICG* shadow clock gate cells.** Shadow gates are added by eco_netlist_studier Phase 0.16 and eco_emit_shadow_gate.py. If a new DFF CP resolves to a bare clock net (e.g. `uclkg`) and the study JSON already contains an enable_swap shadow gate in the same module, set the DFF CP to the **existing** shadow gate's Q output net — do NOT insert a new CKOR*/ICG* cell. Creating a second shadow gate for the same module produces an unneeded clock gate, wrong enable logic, and FM structural mismatch.
@@ -603,7 +613,10 @@ add_entry({
 
 # 4. Use eco_wire_name as the gate/DFF input
 entry["port_connections"][input_pin] = eco_wire_name
-entry["needs_explicit_wire_decl"] = True  # eco_wire_name is genuinely new
+# eco_wire_name is implicitly declared via the port_connection entry above (bus concat rename).
+# Do NOT set needs_explicit_wire_decl here — that flag is for the gate's own OUTPUT net
+# (ZN/Z/Q) and is handled by Check 4. Setting it on a DFF entry for an input rename
+# would declare the DFF's pre-existing output net, causing SVR-9.
 
 # 5. Verify eco_wire_name does NOT already exist
 assert grep_count(eco_wire_name, synth_lines) == 0, f"{eco_wire_name} already exists"
