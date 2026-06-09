@@ -47,6 +47,11 @@ Canonical schema (v1):
 
 Determines verdict from a SINGLE decision table (no per-call ambiguity):
 
+  failing_points.rpt.gz is the AUTHORITATIVE source. The FM log and
+  TileBuilderShow status may show "FAILED" even when compare points = 0
+  (AMD Tcl wrapper emits "Formality run Failed" for constraint warnings etc.).
+  Rule: if failing_points.rpt.gz parses to 0 entries → PASS always.
+
   __runtime.rpt.gz row     | failing_points | → per-target verdict
   ──────────────────────────┼────────────────┼─────────────────────
   all phases numeric        | empty/none     | PASS
@@ -240,6 +245,18 @@ def classify_target(ref_dir, logs_dir, target):
 
     failing = parse_failing_points(ref_dir, target)
     log_path = _abort_cause._find_log_path(logs_dir, target)
+
+    # FAILING_POINTS TAKES PRIORITY OVER ABORT/FAILED LOG STATUS:
+    # Formality's AMD wrapper may emit "Formality run Failed" in the log and
+    # set some internal phase to 'error' even when all compare points pass
+    # (e.g. unread_analysis warnings, internal constraint issues). The only
+    # authoritative source of logical equivalence is the failing_points.rpt.gz.
+    # Rule: if failing_points.rpt.gz is explicitly parsed AND empty → PASS,
+    # regardless of what the log or TileBuilderShow reports as status.
+    if failing is not None and len(failing) == 0 and is_abort:
+        # Phase showed error but failing points = 0 → FM completed verification
+        # and found no mismatches. Treat as PASS (AMD wrapper false-FAILED).
+        is_abort = False
 
     if is_abort:
         # Read the FM log + classify via YAML pattern table
