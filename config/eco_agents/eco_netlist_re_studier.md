@@ -418,6 +418,37 @@ fenets_actual = rename_map.get(f"{scope}/{synth_net}", {}).get(f'actual_wire_{st
 if fenets_actual: use fenets_actual  # authoritative
 ```
 
+**EXCEPTION — SVF cross-stage gap (RouteVsPP fails with actual_wire_PP ≠ actual_wire_Route):**
+When the failing DFF is in the noneqv list for RouteVsPP AND the gate's PP value ≠ Route value
+(both from fenets actual_wire), FM may be failing because the AI trial tile SVF does NOT map
+those two CTS signals as equivalent between PP and Route. In this case:
+1. Check if bare RTL name (`synth_net`) exists in ALL 3 PreEco stages
+2. Check Rule 66 anti-regression guard (bare name = different DFF source? → if so, cannot use)
+3. If bare name EXISTS and is NOT flagged by Rule 66 → use bare RTL name for BOTH PP and Route
+   (same wire name bypasses the need for SVF cross-stage correlation)
+
+```python
+aw_pp = rename_map.get(f"{scope}/{synth_net}", {}).get('actual_wire_PrePlace', '')
+aw_rt = rename_map.get(f"{scope}/{synth_net}", {}).get('actual_wire_Route', '')
+if aw_pp and aw_rt and aw_pp != aw_rt:
+    # Different CTS names PP vs Route → RouteVsPP may fail (SVF gap in AI trial tile)
+    bare_in_all = all(zgrep_count(synth_net, f'PreEco/{s}.v.gz') > 0
+                      for s in ('Synthesize','PrePlace','Route'))
+    rule66_ok = not is_different_dff_source(scope, synth_net, aw_pp)  # see Rule 66
+    if bare_in_all and rule66_ok:
+        # Use bare name in both PP and Route for cross-stage consistency
+        use_bare_name_pp = synth_net
+        use_bare_name_route = synth_net
+        log(f"SVF_GAP_OVERRIDE: {scope}/{synth_net} PP={aw_pp}≠Route={aw_rt} → "
+            f"using bare name {synth_net!r} in both stages")
+```
+
+Real example: `umcdat/IReset` — `actual_wire_PP=FxPrePlace_HFSNET_31`, `actual_wire_Route=FxPrePlace_HFSNET_454`.
+AI trial tile SVF lacks the 31↔454 cross-stage mapping → RouteVsPP fails for `RegPageRetEn_reg`.
+Bare `IReset` exists in all stages AND is NOT a different DFF source at umcdat scope → use `IReset`.
+Contrast: `umcdat/WDB/IReset` — `actual_wire_PP=FxPrePlace_HFSNET_933`, `actual_wire_Route=FxPlace_HFSNET_1160`.
+WDB CTS domain SVF maps 933↔1160 → RouteVsPP passes → keep CTS renames (Rule 66 also blocks bare name here).
+
 **Step B — Bare name preferred when no fenets actual_wire:**
 If the fenets map has NO `actual_wire_<stage>` for this signal, check bare name in all 3 stages:
 ```bash
