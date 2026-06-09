@@ -903,21 +903,34 @@ Read `data/<TAG>_eco_fm_tag_round<NEXT_ROUND>.tmp` to get `eco_fm_tag` — save 
 
 **CHECKPOINT:** Verify `data/<TAG>_eco_fm_verify.json` and `data/<TAG>_eco_step6_fm_verify_round<NEXT_ROUND>.rpt` both exist. Verify `eco_fm_tag` is recorded.
 
-**MANDATORY — verify eco_fm_verify.json has non-null per_target verdicts BEFORE spawning Step 6.2 (eco_fm_analyzer):**
-```python
-import json
-fm = json.load(open(f'data/{TAG}_eco_fm_verify.json'))
-per_target = fm.get('per_target', {})
-null_targets = [t for t,v in per_target.items()
+**HARD RULE — EVERY ROUND: verify eco_fm_verify.json is fully written BEFORE spawning Step 6.2 (eco_fm_analyzer):**
+
+eco_fm_runner writes two outputs in order:
+1. `data/<TAG>_eco_fm_verify.json` — per_target verdicts (PASS/FAIL/ABORT)
+2. `data/<TAG>_eco_step6_fm_verify_round<ROUND>.rpt` — human-readable summary (written LAST)
+
+Use the RPT file as the sentinel — it exists only after eco_fm_verify.json is fully populated:
+```bash
+# MANDATORY: poll until step6 rpt exists (written last by eco_fm_runner)
+# Only then spawn eco_fm_analyzer — eco_fm_verify.json is guaranteed complete
+while [ ! -f "data/${TAG}_eco_step6_fm_verify_round${ROUND}.rpt" ]; do
+    sleep 30
+done
+
+# Double-check: verify per_target verdicts are non-null
+python3 -c "
+import json, sys
+fm = json.load(open('data/${TAG}_eco_fm_verify.json'))
+null_targets = [t for t,v in fm.get('per_target',{}).items()
                 if isinstance(v, dict) and v.get('verdict') is None]
 if null_targets:
-    # eco_fm_runner has not finished writing verdicts yet — WAIT and re-read
-    # (poll data/<TAG>_eco_step6_fm_verify_round<ROUND>.rpt existence as the signal)
-    print(f"WARNING: eco_fm_verify.json has null verdicts for {null_targets}")
-    print("Wait for eco_step6_fm_verify_roundN.rpt before spawning eco_fm_analyzer")
+    print(f'ERROR: null verdicts for {null_targets} — eco_fm_runner incomplete', file=sys.stderr)
+    sys.exit(1)
+print('eco_fm_verify.json OK — per_target verdicts populated')
+"
 ```
-**Root cause (Round 3 regression):** ROUND_ORCHESTRATOR spawned eco_fm_analyzer BEFORE eco_fm_runner finished writing per_target verdicts. eco_fm_evidence_walk.py read null verdicts → classified all targets as status='UNKNOWN' → skipped `diagnose_failing()` → 0 failing DFFs in evidence → empty HTML sections (failing points, evidence walk, cross-stage deltas).
-**Fix:** Use `eco_step6_fm_verify_roundN.rpt` existence as the sentinel that eco_fm_runner has fully written eco_fm_verify.json. Only spawn eco_fm_analyzer after the rpt file exists.
+
+**Why this matters every round:** If eco_fm_analyzer (and eco_fm_evidence_walk.py) run before eco_fm_runner finishes, the evidence walk reads null verdicts → classifies all targets as UNKNOWN → skips `diagnose_failing()` → 0 failing DFFs → empty HTML sections (failing points, evidence walk, cross-stage deltas) in every round's email.
 
 ---
 
