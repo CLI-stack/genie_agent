@@ -231,6 +231,29 @@ echo "#text#" >> $out
 echo "PHASE B: Resetting and launching ECO FM targets: $eco_targets" >> $out
 echo "#text end#" >> $out
 
+#------------------------------------------------------------------------------
+# CLEANUP STALE RPTS FOR TARGETS BEING RUN (avoid confusion with prior rounds)
+# Only cleans rpts for targets in $eco_targets — skipped targets are untouched
+# so their PASS results remain readable for carry-forward and HTML reports.
+#------------------------------------------------------------------------------
+echo "Cleaning stale rpts for targets being re-run..." >> $out
+foreach tgt ($eco_targets)
+    set rpt_dir = "$tile_dir/rpts/$tgt"
+    if (-d "$rpt_dir") then
+        echo "  Removing stale rpts: $rpt_dir" >> $out
+        # Remove key rpt files that eco_fm_status_collector reads
+        # (runtime, failing_points, noneqv, main rpt) — leave logs intact
+        rm -f "${rpt_dir}/${tgt}__runtime.rpt.gz"
+        rm -f "${rpt_dir}/${tgt}__failing_points.rpt.gz"
+        rm -f "${rpt_dir}/${tgt}.noneqv.list.gz"
+        rm -f "${rpt_dir}/${tgt}.rpt.gz"
+        rm -f "${rpt_dir}/${tgt}.dat"
+        rm -f "${rpt_dir}/${tgt}__analyze_points.rpt.gz"
+        rm -f "${rpt_dir}/${tgt}__before_verify_undriven_nets.rpt.gz"
+    endif
+end
+echo "Stale rpt cleanup done." >> $out
+
 cd $tile_dir
 
 foreach tgt ($eco_targets)
