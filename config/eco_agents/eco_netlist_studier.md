@@ -289,31 +289,21 @@ P&R renames DFF outputs (CTS/optimization in Route). A wire may exist in scope b
    → **USE the fenets `actual_wire_<stage>` directly. Do NOT use the bare RTL name.**
    Step 3 validator Check 65 exempts this case (fenets-authoritative CTS rename).
 
-   **CROSS-STAGE CONSISTENCY EXCEPTION (MANDATORY — check before applying Check A):**
-   If `actual_wire_PrePlace` ≠ `actual_wire_Route` (fenets gives DIFFERENT CTS renames for
-   PP and Route), using them creates a RouteVsPP FM mismatch — FM compares PP (using one
-   CTS signal) vs Route (using another CTS signal) and declares NOT EQUIVALENT.
-   ```python
-   aw_pp = fenets_entry.get('actual_wire_PrePlace', '')
-   aw_rt = fenets_entry.get('actual_wire_Route', '')
-   if aw_pp and aw_rt and aw_pp != aw_rt:
-       # Different CTS renames per stage → RouteVsPP will fail
-       # Check if bare name exists in all 3 stages for cross-stage consistency
-       bare_in_all = all(zgrep_count(bare_name, f'PreEco/{s}.v.gz') > 0
-                         for s in ('Synthesize','PrePlace','Route'))
-       if bare_in_all:
-           use_bare_name_for_all_stages()  # ensures PP and Route see same signal
-           # Do NOT use different CTS renames per stage
-   ```
-   Example: `umcdat/IReset` has `actual_wire_PrePlace=FxPrePlace_HFSNET_31` and
-   `actual_wire_Route=FxPrePlace_HFSNET_454` → different per stage → RouteVsPP FM failure
-   for `RegPageRetEn_reg`. Bare `IReset` exists in all stages → use it for ALL stages.
-
-   **When Check A applies normally (same or only one stage has actual_wire):**
+   **When Check A applies — use fenets actual_wire:**
    Example: `umcdat/WDB/IReset` → fenets has `actual_wire_PrePlace = FxPrePlace_HFSNET_933`
    → use `FxPrePlace_HFSNET_933` for PP WDB gates. The bare name `IReset` exists in PP WDB
    scope but refers to the parent umcdat's `IReset` (different DFF source from Synth's
    `IReset_d1_reg.Q`) → using it would cause FM mismatch.
+
+   **IMPORTANT — when Check A gives different actual_wire per stage (PP ≠ Route):**
+   If `actual_wire_PrePlace` ≠ `actual_wire_Route`, FM comparing PP vs Route sees two
+   different CTS-named signals. Whether FM can correlate them depends on the SVF entries
+   in the AI trial tile for that specific CTS domain. Two cases:
+   - **SVF covers the mapping** (e.g. WDB IReset 933↔1160): FM passes RouteVsPP → Check A result is correct.
+   - **SVF does NOT cover the mapping** (e.g. umcdat IReset 31↔454): FM fails RouteVsPP → bare RTL name preferred if it exists in all stages (same name in both PP and Route bypasses needing SVF correlation).
+   This is only discoverable from FM results. The re_studier handles this in Round 2:
+   when RouteVsPP fails on a DFF whose D-cone uses `actual_wire_PP ≠ actual_wire_Route`,
+   try bare RTL name (if it exists in all stages) as the fix for both PP and Route.
 
    **Check B — Bare name preferred when no fenets actual_wire:**
    If the fenets map has NO `actual_wire_<stage>` for this signal, then check:
