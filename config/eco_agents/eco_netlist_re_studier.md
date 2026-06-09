@@ -452,6 +452,33 @@ zgrep -cw "<synth_net>" <REF_DIR>/data/PreEco/Route.v.gz
   Step 3 Check 65 hard-fails when CTS rename used here.
 - **Absent in PP or Route** → structural driver trace, then CTS rename as last resort.
 
+**CRITICAL — SAME-NAME SIGNAL IN DIFFERENT MODULE SCOPES:**
+The same bare signal name (e.g. a reset, enable, or clock) can appear in multiple module scopes
+but trace to COMPLETELY DIFFERENT DFF sources per scope. The bare name is NOT interchangeable.
+
+**Decision rule for bare name vs CTS rename — ALWAYS check BOTH:**
+1. Look up `<gate_scope>/<signal>` in fenets rename map (NOT a generic scope-agnostic lookup)
+2. If fenets has `actual_wire_<stage>` for THIS gate's scope → use it (Rule 66 guards this)
+3. If no fenets entry for this scope AND bare name exists in all stages → use bare name
+
+**Why using bare name in child module scope can be WRONG:**
+- In Synth, a gate in child module X uses signal Y — Y in Synth is driven by a LOCAL DFF inside X
+- In PP/Route, the bare name Y in module X scope may be a PORT INPUT from parent (different DFF source)
+- Using bare Y → FM traces to parent's DFF, not X's local DFF → NOT EQUIVALENT → FAIL
+- Fenets tracks this: `<scope_X>/Y` has `actual_wire_PP` = CTS rename of X's LOCAL DFF → use it
+
+**Cross-stage unification when actual_wire_PP ≠ actual_wire_Route (Route fix pattern):**
+When RouteVsPP fails because PP and Route use DIFFERENT CTS renames for the same pin:
+- PP uses `actual_wire_PrePlace` (fenets), Route uses `actual_wire_Route` (fenets)
+- Both are correct per-stage values but the tile's SVF doesn't map them cross-stage
+- FM cannot correlate PP's CTS signal with Route's different CTS signal → NOT EQUIVALENT
+- Fix: check if PP's `actual_wire_PrePlace` exists as a port/wire in Route PostEco:
+  ```bash
+  zgrep -cw "<actual_wire_PrePlace>" PostEco/Route.v.gz
+  ```
+  If ≥ 1 → use `actual_wire_PrePlace` for BOTH PP and Route stages (same signal name → FM correlates)
+  If 0 → use structural trace or Route's `actual_wire_Route` with SVF tuning
+
 **P&R PER-STAGE ALIAS RULE (MANDATORY in H2 — all input pins, only when bare RTL name absent):** Copy per-stage values from a pre-existing DFF in the same module scope (find one whose Synth pin matches the ECO entry's logical signal; use its per-stage net names verbatim, including scan/DFT/CTS renames). **SE/SI on new ECO DFFs: `1'b0` in ALL 3 stages — scan stitching is out of scope.**
 
 **H3 — Update study JSON:**
