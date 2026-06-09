@@ -469,27 +469,33 @@ but trace to COMPLETELY DIFFERENT DFF sources per scope. The bare name is NOT in
 
 **Cross-stage correlation when actual_wire_PP ≠ actual_wire_Route (RouteVsPP failure pattern):**
 
-NOTE: PP and Route using DIFFERENT CTS signal names is NOT always wrong.
-In a production tile with a complete SVF, the SVF maps `FxPrePlace_X(PP) ↔ FxPlace_Y(Route)`
-and FM passes. This is the NORMAL case for production tiles.
+The fenets rename map gives per-stage actual_wire values. When PP ≠ Route:
+- In **production tiles**: the tile's SVF maps `actual_wire_PP ↔ actual_wire_Route` → FM PASSES
+- In **AI trial tiles**: SVF may be incomplete → no cross-stage mapping → FM FAILS
 
-The unification fix is ONLY needed when:
-1. RouteVsPP ACTUALLY FAILS for gates using these signals (confirmed from FM noneqv list)
-2. AND the two CTS signals are different primary inputs without SVF cross-stage mapping
-3. AND a single consistent signal name exists in BOTH PostEco stages
-
-Diagnosis steps (AFTER RouteVsPP failure confirmed):
-```bash
-# 1. Find the gate in the noneqv list
-# 2. Check if PP's actual_wire exists in Route PostEco
-zgrep -cw "<actual_wire_PrePlace>" PostEco/Route.v.gz
-# If ≥ 1: the PP signal IS available in Route → same name in both → FM correlates
-# If 0: PP's signal not in Route → cannot unify → investigate SVF or alternative
+**Diagnostic**: when RouteVsPP fails for a gate AND rename map shows `actual_wire_PP ≠ actual_wire_Route`:
+```python
+aw_pp = rename_map.get(f'{scope}/{signal}', {}).get('actual_wire_PrePlace')
+aw_rt = rename_map.get(f'{scope}/{signal}', {}).get('actual_wire_Route')
+if aw_pp and aw_rt and aw_pp != aw_rt:
+    # The fenets Route value is CORRECT per-stage but may be wrong for FM
+    # cross-stage comparison if the tile SVF doesn't map aw_pp ↔ aw_rt.
+    # The fenets Route value itself didn't cause the failure — the missing
+    # SVF entry caused it. actual_wire_Route is NOT "wrong", just unsupported.
 ```
 
-Only if the PP actual_wire exists in Route → use it for BOTH stages (unification).
-If NOT available in Route → do NOT force unification; instead look for a neutral signal
-(bare RTL name if it exists in all stages and Rule 66 permits, or investigate SVF).
+**Fix** (ONLY if RouteVsPP actually fails for this gate):
+```bash
+# 1. Check if PP's actual_wire exists in Route PostEco
+zgrep -cw "<aw_pp>" PostEco/Route.v.gz
+```
+- **≥ 1** → `aw_pp` exists in Route as a port/wire → use it for **both** PP and Route.
+  Same signal name in both stages → FM cross-stage correlation works without SVF entry.
+- **0** → `aw_pp` not available in Route → do NOT use it; look for bare RTL name (if Rule 66
+  permits) or report as requiring SVF investigation.
+
+**Important**: do not apply this fix preemptively. Only after FM confirms failure.
+In production tiles, `aw_pp ≠ aw_rt` is NORMAL and correct — SVF handles it.
 
 **P&R PER-STAGE ALIAS RULE (MANDATORY in H2 — all input pins, only when bare RTL name absent):** Copy per-stage values from a pre-existing DFF in the same module scope (find one whose Synth pin matches the ECO entry's logical signal; use its per-stage net names verbatim, including scan/DFT/CTS renames). **SE/SI on new ECO DFFs: `1'b0` in ALL 3 stages — scan stitching is out of scope.**
 
