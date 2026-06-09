@@ -467,17 +467,29 @@ but trace to COMPLETELY DIFFERENT DFF sources per scope. The bare name is NOT in
 - Using bare Y → FM traces to parent's DFF, not X's local DFF → NOT EQUIVALENT → FAIL
 - Fenets tracks this: `<scope_X>/Y` has `actual_wire_PP` = CTS rename of X's LOCAL DFF → use it
 
-**Cross-stage unification when actual_wire_PP ≠ actual_wire_Route (Route fix pattern):**
-When RouteVsPP fails because PP and Route use DIFFERENT CTS renames for the same pin:
-- PP uses `actual_wire_PrePlace` (fenets), Route uses `actual_wire_Route` (fenets)
-- Both are correct per-stage values but the tile's SVF doesn't map them cross-stage
-- FM cannot correlate PP's CTS signal with Route's different CTS signal → NOT EQUIVALENT
-- Fix: check if PP's `actual_wire_PrePlace` exists as a port/wire in Route PostEco:
-  ```bash
-  zgrep -cw "<actual_wire_PrePlace>" PostEco/Route.v.gz
-  ```
-  If ≥ 1 → use `actual_wire_PrePlace` for BOTH PP and Route stages (same signal name → FM correlates)
-  If 0 → use structural trace or Route's `actual_wire_Route` with SVF tuning
+**Cross-stage correlation when actual_wire_PP ≠ actual_wire_Route (RouteVsPP failure pattern):**
+
+NOTE: PP and Route using DIFFERENT CTS signal names is NOT always wrong.
+In a production tile with a complete SVF, the SVF maps `FxPrePlace_X(PP) ↔ FxPlace_Y(Route)`
+and FM passes. This is the NORMAL case for production tiles.
+
+The unification fix is ONLY needed when:
+1. RouteVsPP ACTUALLY FAILS for gates using these signals (confirmed from FM noneqv list)
+2. AND the two CTS signals are different primary inputs without SVF cross-stage mapping
+3. AND a single consistent signal name exists in BOTH PostEco stages
+
+Diagnosis steps (AFTER RouteVsPP failure confirmed):
+```bash
+# 1. Find the gate in the noneqv list
+# 2. Check if PP's actual_wire exists in Route PostEco
+zgrep -cw "<actual_wire_PrePlace>" PostEco/Route.v.gz
+# If ≥ 1: the PP signal IS available in Route → same name in both → FM correlates
+# If 0: PP's signal not in Route → cannot unify → investigate SVF or alternative
+```
+
+Only if the PP actual_wire exists in Route → use it for BOTH stages (unification).
+If NOT available in Route → do NOT force unification; instead look for a neutral signal
+(bare RTL name if it exists in all stages and Rule 66 permits, or investigate SVF).
 
 **P&R PER-STAGE ALIAS RULE (MANDATORY in H2 — all input pins, only when bare RTL name absent):** Copy per-stage values from a pre-existing DFF in the same module scope (find one whose Synth pin matches the ECO entry's logical signal; use its per-stage net names verbatim, including scan/DFT/CTS renames). **SE/SI on new ECO DFFs: `1'b0` in ALL 3 stages — scan stitching is out of scope.**
 
