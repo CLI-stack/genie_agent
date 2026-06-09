@@ -20,11 +20,11 @@ This directory provides Claude Code with skills, agents, and templates for UVM-b
 
 ```bash
 # CORRECT ✓
-cd /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent/users/$USER
+cd $PWD/users/$USER
 python3 script/genie_cli.py -i "..." --execute
 
 # WRONG ✗ — never run from project root
-cd /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent
+cd $PWD
 python3 script/genie_cli.py -i "..." --execute
 ```
 
