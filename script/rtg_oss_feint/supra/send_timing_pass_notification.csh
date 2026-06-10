@@ -65,13 +65,13 @@ if (-f "$qor_file") then
 
         echo "Extracted UCLK - WNS: $uclk_wns, TNS: $uclk_tns, NVP: $uclk_nvp, Period: $clk_period"
     else
-        echo "UCLK not found - extracting all R2R timing path groups"
+        echo "UCLK not found - extracting all R2R/SYN timing path groups"
 
-        # Extract all R2R timing groups (case insensitive: r2r, R2R)
+        # Extract all R2R and SYN_ timing groups (r2r, R2R, SYN_nonIP, SYN_I2R, SYN_R2O, etc.)
         rm -f $r2r_timing_file
 
-        # Get all R2R group names (use awk with single quote delimiter)
-        set r2r_groups = `zcat "$qor_file" |& grep -i "Timing Path Group.*r2r" | awk -F"'" '{print $2}'`
+        # Get all matching group names (use awk with single quote delimiter)
+        set r2r_groups = `zcat "$qor_file" |& grep -iE "Timing Path Group.*(r2r|SYN_)" | awk -F"'" '{print $2}'`
 
         # Pattern prefix for grep (built separately to avoid quote issues)
         set search_pattern = "Timing Path Group  '"
@@ -123,7 +123,7 @@ else
     echo "#table end#" >> $notify_spec
     echo "" >> $notify_spec
     echo "#text#" >> $notify_spec
-    echo "Note: UCLK timing path group not found. Showing all R2R timing groups." >> $notify_spec
+    echo "Note: UCLK timing path group not found. Showing all R2R/SYN timing groups." >> $notify_spec
 endif
 
 echo "" >> $notify_spec
