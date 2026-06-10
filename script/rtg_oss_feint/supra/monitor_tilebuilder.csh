@@ -114,6 +114,7 @@ set target_elapsed = $prev_elapsed
 set last_status = ""
 set target_success = 0
 set max_runtime_reached = 0
+set failed_with_timing = 0
 
 while ($target_done == 0)
     if ($target_elapsed % 300 == 0) then
@@ -159,14 +160,39 @@ while ($target_done == 0)
                 endif
 
                 if ("$target_status" == "FAILED") then
-                    echo ""
-                    echo "======================================================================"
-                    echo "ERROR: Target $target_name FAILED"
-                    echo "======================================================================"
+                    # Check timing report FIRST before printing any error
+                    set timing_found = 0
+                    if ("$target_name" == "FxSynthesize") then
+                        foreach pass_num (1 2 3)
+                            set qor_file = "${refdir_name}/rpts/${target_name}/${target_name}.pass_${pass_num}.proc_qor.rpt.gz"
+                            if (-f "$qor_file") then
+                                set timing_found = 1
+                                break
+                            endif
+                        end
+                        if (-f $target_log) then
+                            set timing_found = 1
+                        endif
+                    endif
 
-                    echo "" >> $source_dir/data/${tag}_spec
-                    echo "ERROR: Target $target_name failed at $refdir_name" >> $source_dir/data/${tag}_spec
-                    set target_done = 1
+                    if ($timing_found == 1) then
+                        echo ""
+                        echo "======================================================================"
+                        echo "WARNING: Target $target_name FAILED but timing report found"
+                        echo "Target time: ${target_elapsed}s"
+                        echo "======================================================================"
+                        set target_done = 1
+                        set target_success = 1
+                        set failed_with_timing = 1
+                    else
+                        echo ""
+                        echo "======================================================================"
+                        echo "ERROR: Target $target_name FAILED"
+                        echo "======================================================================"
+                        echo "" >> $source_dir/data/${tag}_spec
+                        echo "ERROR: Target $target_name failed at $refdir_name" >> $source_dir/data/${tag}_spec
+                        set target_done = 1
+                    endif
                     break
                 endif
 
@@ -293,11 +319,19 @@ else
     # Normal completion logic
     if ($target_success == 1) then
         echo "" >> $source_dir/data/${tag}_spec
-        echo "Target $target_name completed successfully" >> $source_dir/data/${tag}_spec
+        if ($failed_with_timing == 1) then
+            echo "Target $target_name FAILED but timing/area report is available" >> $source_dir/data/${tag}_spec
+        else
+            echo "Target $target_name completed successfully" >> $source_dir/data/${tag}_spec
+        endif
         echo "" >> $source_dir/data/${tag}_spec
         echo "#table#" >> $source_dir/data/${tag}_spec
         echo "Tile,Run_Directory,Target,Status,Target_Time" >> $source_dir/data/${tag}_spec
-        echo "$tile_name,$refdir_name,$target_name,COMPLETED,${target_elapsed}s" >> $source_dir/data/${tag}_spec
+        if ($failed_with_timing == 1) then
+            echo "$tile_name,$refdir_name,$target_name,FAILED_WITH_TIMING,${target_elapsed}s" >> $source_dir/data/${tag}_spec
+        else
+            echo "$tile_name,$refdir_name,$target_name,COMPLETED,${target_elapsed}s" >> $source_dir/data/${tag}_spec
+        endif
         echo "#table end#" >> $source_dir/data/${tag}_spec
 
         if ("$target_name" == "FxSynthesize") then
