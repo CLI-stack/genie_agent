@@ -62,15 +62,13 @@ The new `loop_verdict` field from the prior round's analyzer drives this round's
 
 **Tracking `rerun_count_in_round`:**
 ```python
-# In fixer_state, track per-round rerun count:
 if loop_verdict == "RERUN_SAME_ROUND":
     fixer_state["rerun_count_in_round"] = fixer_state.get("rerun_count_in_round", 0) + 1
     if fixer_state["rerun_count_in_round"] >= 4:
-        # Hard rule trip — force advance with synthetic failure
         loop_verdict = "ADVANCE_NEXT_ROUND"
         synthetic_failure_mode = "abort_unrecoverable"
 elif loop_verdict == "ADVANCE_NEXT_ROUND":
-    fixer_state["rerun_count_in_round"] = 0  # reset for next round
+    fixer_state["rerun_count_in_round"] = 0
 ```
 
 ---
@@ -124,12 +122,6 @@ python3 script/eco_scripts/eco_build_round_html.py \
 # → embeds the email subject as an HTML comment on line 1
 ```
 
-The script automatically handles:
-- **`pre_fm_check_failed: true` from handoff** → emits a simplified HTML noting pre-FM check failure (no FM section)
-- **CONVERGED verdict** → green banner + minimal sections
-- **RERUN_SAME_ROUND verdict** → orange banner with rerun count (N/3)
-- **ADVANCE_NEXT_ROUND verdict** → blue banner with full diagnostic sections
-
 **CHECKPOINT 6a-1:** Verify `data/<TAG>_eco_report_round<ROUND>.html` exists and is non-zero.
 
 **Step 6a-1b — Sync HTML to AI_ECO_FLOW_DIR (MANDATORY):**
@@ -152,20 +144,6 @@ The genie_cli reads the HTML file written above + extracts the `<!-- subject: ..
 **MANDATORY CHECKPOINT 6a-2 — Do NOT proceed to Step 6b until this command succeeds.**
 Verify output contains: `Email sent successfully`
 If it fails, retry once. If still fails, log the error — but never skip the attempt.
-
-> **Sections produced by the helper (current order):**
-> 1. FM Results table (per-target Status + Failing Points)
-> 2. Failing Points Detail (full DFF hierarchy paths)
-> 3. Evidence Walk Summary (signals grouped by level: critical/high/info + tune directives applied)
-> 4. Cross-Stage Netlist Deltas (per failing DFF: pin_changes, wire_present_per_stage, cell_blackboxed)
-> 5. ECO Changes Applied This Round (Applied/Inserted/Skipped/Already/VerifyFailed counts)
-> 6. Pre-FM Check (first 30 lines of step5 rpt)
-> 7. Failure Diagnosis (failure_mode + diagnosis + root_cause_reasoning + alternatives_considered)
-> 8. Revised Changes + Evidence For Studier (per change: rationale + fallback + top recipe + scope/avoid chips + first divergent point)
-> 9. Analyzer Evidence Contract (compliance pass/fail + violations table)
-> 10. Companion Artifacts (full path + existence checkmark for all step6 JSONs + RPTs)
->
-> Plus a **verdict banner** at the top (color-coded: green/blue/orange/red/gray).
 
 ---
 
@@ -200,36 +178,19 @@ for stage in Synthesize PrePlace Route:
 - Previous strategies from `eco_fixer_state.strategies_tried`
 - Output: `<BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json`
 
-**CHECKPOINT — Schema validation (Fix #6):** Verify `data/<TAG>_eco_fm_analysis_round<ROUND>.json` exists and contains ALL required fields:
-```bash
-python3 -c "
-import json, sys
-a = json.load(open('data/<TAG>_eco_fm_analysis_round<ROUND>.json'))
-required = [
-    'loop_verdict',          # RERUN_SAME_ROUND | ADVANCE_NEXT_ROUND | CONVERGED
-    'next_round',            # integer: next round number
-    'failure_mode',          # A-H or ABORT_* or UNKNOWN
-    'revised_changes',       # list (may be empty for CONVERGED)
-    'diagnosis',             # one-sentence root cause
-    'root_cause_reasoning',  # narrative tying hypothesis to evidence
-    'alternatives_considered', # list of ruled-out hypotheses
-    'evidence_summary',      # dict with evidence_walk_json + xstage_compare_json paths
-    'failing_points_count',  # dict per target
-]
+**CHECKPOINT — Schema validation:** Verify `data/<TAG>_eco_fm_analysis_round<ROUND>.json` exists and contains ALL required fields:
+```python
+required = ['loop_verdict','next_round','failure_mode','revised_changes','diagnosis',
+            'root_cause_reasoning','alternatives_considered','evidence_summary','failing_points_count']
 missing = [f for f in required if f not in a]
-if missing:
-    print(f'FAIL: eco_fm_analyzer JSON missing required fields: {missing}')
-    sys.exit(1)
-# Validate evidence_for_studier present on every non-exempt revised_change
-exempt_actions = {'cascade_verified_skip', 'manual_only'}
+if missing: print(f'FAIL: missing fields: {missing}'); sys.exit(1)
+exempt = {'cascade_verified_skip', 'manual_only'}
 for i, rc in enumerate(a.get('revised_changes', [])):
-    if rc.get('action') not in exempt_actions and 'evidence_for_studier' not in rc:
-        print(f'FAIL: revised_changes[{i}] action={rc.get(\"action\")} missing evidence_for_studier block')
-        sys.exit(1)
-print('eco_fm_analyzer output schema OK')
-"
+    if rc.get('action') not in exempt and 'evidence_for_studier' not in rc:
+        print(f'FAIL: revised_changes[{i}] missing evidence_for_studier'); sys.exit(1)
+print('schema OK')
 ```
-If any field is missing → re-spawn eco_fm_analyzer with the missing fields listed explicitly. Do NOT proceed with incomplete analysis.
+If any field is missing → re-spawn eco_fm_analyzer with the missing fields listed explicitly.
 
 ---
 
@@ -278,16 +239,7 @@ cp <BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.contract_check.json <AI_EC
 
 ### Step 6d-VALIDATE-3 — Re-spawn-on-violation policy
 
-If the contract validator returns RC=1:
-
-1. Read the violations list from `data/<TAG>_eco_fm_analysis_round<ROUND>.contract_check.json`
-2. Re-spawn `eco_fm_analyzer` sub-agent ONCE with extra prompt fields:
-   - `RETRY_REASON: contract_violation`
-   - `PRIOR_VIOLATIONS: <violations array as JSON>`
-3. After retry, re-run Step 6d-VALIDATE-2
-4. If retry STILL fails (RC≠0): set `synthetic_failure_mode: analyzer_contract_violation` in the analysis JSON, force `loop_verdict: ADVANCE_NEXT_ROUND`, and proceed — do NOT loop indefinitely on contract retries
-
-This bounds the retry budget to 1 per round so the loop can never get stuck on analyzer-side bugs.
+RC=1: re-spawn eco_fm_analyzer ONCE with `RETRY_REASON=contract_violation` + `PRIOR_VIOLATIONS=<violations JSON>`, then re-run Step 6d-VALIDATE-2. If still RC≠0: set `synthetic_failure_mode: analyzer_contract_violation`, force `loop_verdict: ADVANCE_NEXT_ROUND`, and proceed — do NOT loop further.
 
 **CHECKPOINT 6d-VALIDATE:** Both `eco_fm_evidence_round<ROUND>.json` and `eco_fm_xstage_round<ROUND>.json` exist; contract check JSON shows `compliant: true` (or contract retry exhausted with synthetic failure). Only then proceed to Step 6a (email) and then the early-exit / verdict-routing logic below.
 
@@ -299,35 +251,24 @@ This bounds the retry budget to 1 per round so the loop can never get stuck on a
 
 ---
 
-**CRITICAL — When to exit the loop early based on eco_fm_analyzer output:**
+**Early-exit rules based on eco_fm_analyzer output — NONE of the modes below are a reason to stop before MAX_ROUNDS:**
 
-- `failure_mode: UNKNOWN` → NOT a reason to stop — eco_fm_analyzer MUST have run Step 3b deep investigation before returning UNKNOWN. If `revised_changes` is non-empty, apply them and continue. If empty, treat same as MAX_ROUNDS.
-- `failure_mode: ABORT_LINK` → NOT a reason to stop — `revised_changes` contains `force_port_decl` entries; apply them in Step 6e (`force_reapply: true` in study JSON), continue to next round
-- `failure_mode: ABORT_CELL_TYPE` → NOT a reason to stop — `revised_changes` contains `fix_cell_type` entries; eco_netlist_studier_round_N re-searches PreEco for correct cell type and updates study JSON, continue to next round
-- `failure_mode: T` (compound-cell truth-table mismatch) → NOT a reason to stop — `revised_changes` contains `swap_compound_cell` entries; eco_netlist_studier_round_N overrides `cell_type` (and re-permutes `port_connections` per `port_remap` if present) for all 3 stages in study JSON, continue to next round. If Check T could not find a same-family match, eco_fm_analyzer escalates to Mode F with action `try_structural_decomposition` (rebuild chain with simpler 2/3-input primitives) — never `manual_only`.
-- `failure_mode: I` (child output port internally undriven) → NOT a reason to stop — `revised_changes` contains a second `port_connection` entry with `module_name=<child>`, `bus_bit_index`, `net_name=<port>[<bit>]`. eco_netlist_studier_round_N appends it to study JSON; existing `_apply_bus_rename` in eco_netlist_port_rewire wires the child's internal slot to its own output pin. Continue to next round.
-- `failure_mode: H` (hierarchical port bus input) → NOT a reason to stop — `revised_changes` contains `fix_named_wire` entries; eco_netlist_studier_round_N sets `needs_named_wire: true` in study JSON, eco_apply_fix_round_N declares named wire and rewires port bus, continue to next round
-- `needs_rerun_fenets: true` → NOT a reason to stop — Step 6f-FENETS re-queries the missing signals; eco_netlist_studier_round_N resolves PENDING_FM_RESOLUTION inputs from the rerun results; continue to next round
-- `failure_mode: ABORT_NETLIST` → NOT a reason to stop — eco_applier corrupted the netlist; revert is already done in 6b; revised_changes will re-apply the affected entries correctly
-- `failure_mode: E` (pre-existing) → revised_changes contains `manual_only` entries. These failures existed before this ECO — the AI flow cannot fix them. Report in FINAL_ORCHESTRATOR summary for engineer review. Engineer decides whether SVF `set_dont_verify` is appropriate. Do NOT apply SVF in the AI flow.
-- `failure_mode: G` (structural stage mismatch) → for any ECO gate whose input pin is absent or placeholder in the failing P&R stage, run `eco_resolve_synth_internal.py` first:
-  ```bash
-  python3 script/eco_scripts/eco_resolve_synth_internal.py \
-      --ref-dir <REF_DIR> --synth-net <synth_net_for_pin> \
-      --stage <PrePlace|Route> --output /tmp/resolve.json
-  # If resolved_net != UNRESOLVABLE: update study JSON pin, set force_reapply:true
-  ```
-  If UNRESOLVABLE → apply manual F1-F3 forward consumer search (eco_netlist_verifier.md Check 12 F1→F2→F3): find Synth consumers of the net, locate in P&R, read same input pin.
-  If still unresolved → `fix_named_wire` (Mode H path). If no fixable net found → `manual_only`. Do NOT apply SVF.
-- `failure_mode: F` (manual_only — `d_input_decompose_failed`) → check `revised_changes`:
-  - If ALL entries have `action: manual_only` **AND NEXT_ROUND ≥ max_rounds** → exit with `status: MAX_ROUNDS`, spawn FINAL_ORCHESTRATOR (this is a MAX_ROUNDS exit, NOT a manual_only early exit)
-  - If ALL entries have `action: manual_only` **AND NEXT_ROUND < max_rounds** → **DO NOT exit early**. eco_fm_analyzer has queued progressive strategies (invert_cmux_constants, try_strategy_A_andterm, try_alternative_pivot). Continue to Steps 6e/6f/4/5 — the studier will attempt the next strategy. `manual_only` means "no fix found YET", not "no fix possible ever".
-  - If mixed (some manual_only, some fixable) → always continue; apply fixable changes, leave manual_only points for later rounds or final report
-- If `revised_changes` is empty → exit early — treat same as MAX_ROUNDS; spawn FINAL_ORCHESTRATOR with `status: MAX_ROUNDS`
+| `failure_mode` / condition | Action — always continue unless at MAX_ROUNDS |
+|---|---|
+| `UNKNOWN` | Apply `revised_changes` if non-empty; treat empty as MAX_ROUNDS |
+| `ABORT_LINK` | Apply `force_port_decl` entries (`force_reapply: true`), continue |
+| `ABORT_CELL_TYPE` | Apply `fix_cell_type`; re_studier re-searches PreEco for correct cell, continue |
+| `T` (compound-cell mismatch) | Apply `swap_compound_cell` + optional `port_remap`; if no same-family match → Mode F `try_structural_decomposition` |
+| `I` (child port undriven) | Apply second `port_connection` for `module_name=<child>`, `bus_bit_index`, `net_name=<port>[<bit>]` |
+| `H` (port bus inaccessible) | Apply `fix_named_wire`; re_studier sets `needs_named_wire: true` |
+| `needs_rerun_fenets: true` | Step 6.5-FENETS re-queries; re_studier resolves `PENDING_FM_RESOLUTION` |
+| `ABORT_NETLIST` | Revert already done in 6.1; revised_changes re-applies correctly |
+| `E` (pre-existing) | `revised_changes` = `manual_only`; report in FINAL for engineer SVF review. Do NOT apply SVF. |
+| `G` (structural stage mismatch) | Run `eco_resolve_synth_internal.py`; if UNRESOLVABLE → F1→F2→F3 forward consumer search → `fix_named_wire`. No SVF. |
+| `F` (`d_input_decompose_failed`) | If ALL `manual_only` AND `NEXT_ROUND ≥ max_rounds` → MAX_ROUNDS exit. If `NEXT_ROUND < max_rounds` → continue (progressive strategies). Mixed → apply fixable, continue. |
+| `revised_changes` empty | Treat as MAX_ROUNDS; spawn FINAL_ORCHESTRATOR |
 
-**CORE RULE: `manual_only` is ONLY a final outcome at max rounds. Within the fix loop, it means "try a different strategy next round". NEVER exit early purely because revised_changes are all manual_only unless NEXT_ROUND ≥ max_rounds.**
-
-**RULE: Early-exit decisions happen HERE immediately after Step 6d — but ONLY when ALL strategies exhausted (all manual_only AND at max rounds), OR revised_changes is empty.**
+**`manual_only` = "no fix found YET, try next strategy". NEVER exit early for `manual_only` alone — only MAX_ROUNDS triggers FINAL.**
 
 ---
 
@@ -504,34 +445,8 @@ Pass `GAP15_CHECK_PATH=data/<TAG>_eco_and_term_port_check.json` to the studier s
 - `ROUND=<ROUND>` (the round that just failed)
 - `FM_ANALYSIS_PATH=<BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json`
 - `FENETS_RERUN_PATH=<BASE_DIR>/data/<TAG>_eco_fenets_rerun_round<ROUND>.json` if Step 6.5-FENETS ran, otherwise `null`
-- `SPEC_SOURCES` **(Fix #3):** If Step 6.5-FENETS ran AND `data/<TAG>_eco_spec_sources_round<ROUND>.json` exists → use that file (contains updated per-stage spec paths from the rerun). Otherwise fall back to extracting from `<BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt` footer. Never use the original Step 2 sources when a rerun has newer data.
-- `PROTECTED_ENTRIES` **(MANDATORY — prevents cascading regression):** Build from previous FM results before passing to re_studier:
-  ```python
-  # Read previous eco_fm_verify.json to find which gates PASSED in prior rounds
-  # and build a protected list so re_studier cannot revert them
-  prev_verify = json.load(open(f'data/{TAG}_eco_fm_verify.json'))
-  study = json.load(open(f'data/{TAG}_eco_preeco_study.json'))
-
-  # Gates whose output DFFs PASSED in all prior FM targets are "intentionally correct"
-  # Read the noneqv lists — any instance NOT in noneqv that uses an intentional fix is protected
-  protected = []
-  for target, result in prev_verify.items():
-      if result.get('verdict') == 'PASS':
-          # All ECO gates in the passing target's stages are protected
-          for e in study.get('Synthesize', []):
-              iname = e.get('instance_name','')
-              if iname and iname not in protected:
-                  protected.append(iname)
-
-  # Also: explicitly protect any gate not in revised_changes noneqv
-  revised_insts = {rc.get('cell_name') or rc.get('instance_name','') 
-                   for rc in fm_analysis.get('revised_changes',[])}
-  # Any gate with intentional non-default per-stage value NOT in revised_changes → protect
-  ```
-  Pass `PROTECTED_ENTRIES=<comma-separated instance_names>` to re_studier.
-  **Why:** Without this, re_studier cascades fixes to ALL gates using the same signal,
-  reverting intentional fixes (e.g. `RegPageRetEn_d001.B1=IReset` was correctly fixed,
-  but re_studier reverted it back to `FxPrePlace_HFSNET_31` in Round 3).
+- `SPEC_SOURCES`: If Step 6.5-FENETS ran AND `data/<TAG>_eco_spec_sources_round<ROUND>.json` exists → use that file. Otherwise fall back to extracting from `<BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt` footer.
+- `PROTECTED_ENTRIES` **(MANDATORY):** Collect all `instance_name` values from `eco_preeco_study.json` Synthesize stage that belong to FM targets with `verdict: PASS` in `eco_fm_verify.json`. Pass as `PROTECTED_ENTRIES=<comma-separated>`. Prevents re_studier from reverting gates that already pass FM in prior rounds.
 - Task: fix failing entries only in `eco_preeco_study.json`; write `eco_step3_netlist_study_round<NEXT_ROUND>.rpt`
 
 Wait for eco_netlist_re_studier to complete and verify `eco_step3_netlist_study_round<NEXT_ROUND>.rpt` exists.
@@ -553,27 +468,7 @@ ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_verify.rpt
 ```
 If re_studier RPT missing → re_studier failed. Re-spawn Pass 6f-A.
 
-**Fix #2 — Study JSON additive check after verifier:**
-```python
-import json
-study = json.load(open(f"data/{TAG}_eco_preeco_study.json"))
-for stage in ("Synthesize", "PrePlace", "Route"):
-    entries = study.get(stage, [])
-    # All entries must have confirmed=true or confirmed=false — never deleted
-    # Verify force_reapply entries from revised_changes are still present
-    fm_analysis = json.load(open(f"data/{TAG}_eco_fm_analysis_round{ROUND}.json"))
-    for rc in fm_analysis.get("revised_changes", []):
-        cell = rc.get("cell_name") or rc.get("instance_name")
-        stage_rc = rc.get("stage", "all")
-        if stage_rc not in (stage, "all"):
-            continue
-        found = any(
-            e.get("cell_name") == cell or e.get("instance_name") == cell
-            for e in entries
-        )
-        assert found, f"FAIL: revised_change entry for {cell} ({stage}) missing from study JSON after re-study — re-studier deleted it"
-```
-If any assertion fails → re_studier removed a required entry. Re-spawn Pass 6f-A with explicit `PRESERVE_ENTRIES` list from revised_changes.
+**Study JSON additive check after verifier:** For every `revised_change` entry in the analysis JSON, verify its `cell_name`/`instance_name` still exists in `eco_preeco_study.json` for the matching stage. If any is missing → re_studier deleted a required entry → re-spawn Pass 6f-A with explicit `PRESERVE_ENTRIES` list.
 If verifier RPT missing → verifier failed. Re-spawn Pass 6f-B.
 Verify `eco_preeco_study.json` modified time is after Step 6d completed. Do NOT proceed to eco_expand_chains without all four.
 
@@ -608,57 +503,20 @@ if not result.get('passed', False):
     issues = result.get('issues', [])
     retry_count = fixer_state.get(f'validate_step3_round{NEXT_ROUND}_retries', 0)
 
-    # Classify issues to pick re-spawn hint
-    mode_j_issues = [i for i in issues if 'HIGH/38-CHAIN-LEAF-POLARITY-MISMATCH' in i]
-    pattern_issues = [i for i in issues if 'HIGH/40-AND-TERM-DRIVER-RENAME' in i
-                                          or 'HIGH/41-REWIRE-DESTROYS-OLD-NET' in i]
-    named_net_issues = [i for i in issues if 'HIGH/39-NAMED-NET-UNDRIVEN' in i]
-    other_issues = [i for i in issues if i not in mode_j_issues + pattern_issues + named_net_issues]
-
-    # Hard retry cap — 3 re-spawns max per round to prevent infinite loops
     if retry_count >= 3:
-        update_handoff(status="STUDY_VALIDATOR_UNFIXABLE",
-                       next_phase="STOP",
-                       next_phase_reason=f"validate_step3 failed {retry_count+1}x in round {NEXT_ROUND} — re_studier cannot satisfy validator")
-        write exit sentinel; STOP  # escalate to engineer
+        update_handoff(status="STUDY_VALIDATOR_UNFIXABLE", next_phase="STOP",
+                       next_phase_reason=f"validate_step3 failed {retry_count+1}x in round {NEXT_ROUND}")
+        write exit sentinel; STOP
 
     fixer_state[f'validate_step3_round{NEXT_ROUND}_retries'] = retry_count + 1
     save(fixer_state)
-
-    # Build hint for re_studier based on issue class
-    hint = {}
-    if mode_j_issues:
-        hint['mode_J_hints'] = [{ ... parse from issue ... } for i in mode_j_issues]
-    if pattern_issues:
-        hint['and_term_pattern_hints'] = [{
-            'rule': 'Use DFF-pin-rewire pattern (engineer-style).',
-            'forbidden': 'Driver-rename — do NOT rename old driver output AND do NOT reuse old_token as new gate output.',
-            'recipe': 'Chain output to fresh n_eco_*. Rewire DFF.D from old_token to new net. Leave existing driver untouched. If validator already detected old vestigial rewire (Check 41), DROP that rewire entry entirely.',
-        } for i in pattern_issues]
-    if named_net_issues:
-        hint['named_net_consistency'] = [{ ... } for i in named_net_issues]
-    if other_issues:
-        hint['other_issues'] = other_issues
-
-    # Re-spawn Pass 6f-A with hint. STOP HERE — do NOT proceed to applier.
-    re_spawn eco_netlist_re_studier with hint
-    GOTO Step 6f validator re-run after re_studier completes
-    # Loop until passed=true OR retry_count == 3 (escalate)
+    # Build hint from issue class (HIGH/38 → Mode J rewire; HIGH/39 → named_net;
+    # HIGH/40 → DFF-pin-rewire pattern; HIGH/41 → drop vestigial rewire; other → raw text)
+    re_spawn eco_netlist_re_studier with hint; re-run validator
+    # Loop until passed=true OR retry_count==3 (escalate)
 
 # Only reach here if passed=true → proceed to applier
 ```
-
-**Anti-pattern this rule blocks:** the orchestrator reading `passed: false`, logging it, then proceeding to applier anyway because "the analyzer's prescription was already executed." That's WRONG — the analyzer can prescribe fixes the validator still rejects (e.g. analyzer added an OR2 gate but didn't drop a vestigial rewire that Check 41 flags). Applier must not run with KNOWN-BAD study.
-
-**Issue-class hints for re_studier:**
-
-| Issue prefix | Class | Hint to re_studier |
-|---|---|---|
-| `HIGH/38-CHAIN-LEAF-POLARITY-MISMATCH` | Mode J | rewire to MB DFF Q-pin direct or `actual_wire_<stage>` |
-| `HIGH/39-NAMED-NET-UNDRIVEN` | named_net consistency | align named_net to form produced by port_connection bus rename |
-| `HIGH/40-AND-TERM-DRIVER-RENAME` | and_term pattern | use DFF-pin-rewire: chain output to fresh n_eco_*, rewire DFF.D |
-| `HIGH/41-REWIRE-DESTROYS-OLD-NET` | rewire cleanup | DROP the vestigial rewire; restore gate input from `ECO_*_orig` back to `old_token` |
-| Other | schema / generic | re-spawn re_studier with the raw issue text |
 
 **MANDATORY: Re-load study JSON before exit check** — the file was just updated by verifier + eco_expand_chains. Do NOT use any in-memory study JSON from earlier in this instance. Always load fresh from disk:
 
@@ -680,8 +538,6 @@ if NEXT_ROUND > max_rounds:
 # eco_applier handles already_applied entries gracefully.
 # eco_fm_analyzer will try progressive strategies each round until max_rounds.
 ```
-
-**CRITICAL — MANUAL_ONLY is abolished:** Do NOT exit early because eco_fm_analyzer classified something as manual_only. The analyzer must always prescribe a progressive strategy (try_structural_insertion, try_alternative_pivot, conservative_constant, move_gate_to_submodule, etc.) rather than giving up. Use all 6 rounds.
 
 ---
 
@@ -885,14 +741,7 @@ If this file does NOT exist → Step 5 was never run → ABORT. Re-spawn eco_pre
 
 Wait for the sub-agent to complete. **Do NOT spawn another eco_fm_runner if results are not what you expected — read them as-is and hand off.**
 
-> **CRITICAL: When eco_fm_runner returns — ABORT is NOT the same as FAIL. eco_fm_runner does NOT patch on ABORT (STEP F was deleted in the consolidation that put all recovery in `abort_recovery_agent`). On ABORT, APPLY_ORCHESTRATOR's Step 6 inline-loop runs the recovery agent (whitelisted patterns dispatched via YAML `recovery.action`) up to 10×. If ABORT reaches ROUND_ORCHESTRATOR, that loop was exhausted (10 attempts) OR the pattern wasn't whitelisted — eco_fm_analyzer now diagnoses and re_studier fixes the root cause in this round.**
-
-> **ABORT classification is already done.** `post_eco_formality.csh` invoked `eco_fm_status_collector.py` after FM completed; the classifier (`eco_extract_fm_abort_cause.py`) was called as a library and its results are embedded in `data/<TAG>_eco_fm_verify.json`:
-> - Top-level `verdict` field — `PASS / FAIL / ABORT_NETLIST / ABORT_LINK / ABORT_SVF / ABORT_OTHER / NOT_RUN / PARTIAL`
-> - Per-target `per_target[<t>].abort_pattern` — pattern_kind from `eco_fm_abort_patterns.yaml` (e.g. `invalid_wire_decl_bracket`)
-> - Per-target `per_target[<t>].abort_evidence` — log excerpts with file + pattern_kind for each hit
->
-> **Read `eco_fm_verify.json` directly. Do NOT re-invoke the classifier CLI** — the data is already there, and re-running it would just re-parse the same logs. To extend pattern coverage for an unseen abort, add a new entry to `eco_fm_abort_patterns.yaml` (single source of truth) — it'll take effect on the next FM submission automatically.
+> **ABORT ≠ FAIL.** When ABORT reaches ROUND_ORCHESTRATOR, the APPLY_ORCHESTRATOR inline recovery loop (10×) was already exhausted. eco_fm_analyzer diagnoses the root cause this round; re_studier fixes it. **ABORT classification is already embedded in `eco_fm_verify.json`** by `eco_fm_status_collector.py` — read `verdict`, `per_target[*].abort_pattern`, and `per_target[*].abort_evidence` directly. Do NOT re-invoke the classifier. To add a new ABORT pattern, add it to `eco_fm_abort_patterns.yaml`.
 
 **CHECKPOINT:** Verify ALL of the following:
 ```bash
@@ -930,33 +779,17 @@ print('eco_fm_verify.json OK — per_target verdicts populated')
 "
 ```
 
-**Why this matters every round:** If eco_fm_analyzer (and eco_fm_evidence_walk.py) run before eco_fm_runner finishes, the evidence walk reads null verdicts → classifies all targets as UNKNOWN → skips `diagnose_failing()` → 0 failing DFFs → empty HTML sections (failing points, evidence walk, cross-stage deltas) in every round's email.
-
 ---
 
 ## After Step 6 — Hand off to next phase
 
-> **HARD RULE: Read eco_fm_verify.json ONCE, decide `next_phase`, signal/spawn per phase, write exit sentinel, EXIT. Do not loop within this orchestrator.**
-> - `status: "PASS"` on ALL targets → `next_phase: FINAL` (spawn FINAL_ORCHESTRATOR inline)
-> - `status: "FAIL"` on ANY target AND next round ≤ 10 → `next_phase: ROUND` (emit `ROUND_PHASE_READY` signal, main session spawns next ROUND in fresh context)
-> - `status: "ABORT"` on ANY target AND rerun_count < 3 AND next round ≤ 10 → `next_phase: ROUND` (analyzer's RERUN_SAME_ROUND verdict reuses the SAME round number)
-> - max rounds (10) hit → `next_phase: FINAL` with `status: MAX_ROUNDS`
-> - NEVER re-submit FM here. NEVER apply patches here. NEVER re-run eco_applier here.
-> - NEVER spawn ROUND_ORCHESTRATOR yourself — main session does that after seeing the signal.
+Read `eco_fm_verify.json` ONCE, decide `next_phase`, signal/spawn, write exit sentinel, EXIT. Never loop, re-submit FM, apply patches, or spawn the next ROUND yourself.
 
-**Round-number rules:**
-- `loop_verdict: RERUN_SAME_ROUND` → next round uses the SAME round number (retry, ROUND value unchanged)
-- `loop_verdict: ADVANCE_NEXT_ROUND` → next round uses `NEXT_ROUND = ROUND + 1`
-- `loop_verdict: CONVERGED` → no next ROUND; FINAL fires instead
+**Round-number rules:** `RERUN_SAME_ROUND` → same round number; `ADVANCE_NEXT_ROUND` → `ROUND + 1`; `CONVERGED` → FINAL fires.
 
 ### Mandatory Step A — Update round_handoff.json with `next_phase`
 
-**Fix #1 — Read NEW FM tag BEFORE writing handoff (not the stale tag from INPUTS):**
-```bash
-# Read the NEW eco_fm_tag from this round's FM submission
-NEW_ECO_FM_TAG=$(cat <BASE_DIR>/data/<TAG>_eco_fm_tag_round<NEXT_ROUND>.tmp | grep -o 'eco_fm_tag=.*' | cut -d= -f2)
-# This MUST be used in the handoff, not the old eco_fm_tag from INPUTS
-```
+Read the NEW `eco_fm_tag` from `data/<TAG>_eco_fm_tag_round<NEXT_ROUND>.tmp` — NOT the stale tag from INPUTS.
 
 Update `<BASE_DIR>/data/<TAG>_round_handoff.json`:
 ```json
@@ -968,8 +801,8 @@ Update `<BASE_DIR>/data/<TAG>_round_handoff.json`:
   "base_dir": "<BASE_DIR>",
   "ai_eco_flow_dir": "<AI_ECO_FLOW_DIR>",
   "round": "<NEXT_ROUND or SAME_ROUND per verdict>",
-  "fenets_tag": "<fenets_tag from INPUTS, OR new rerun tag if Step 6.5-FENETS ran — Fix #8>",
-  "eco_fm_tag": "<NEW eco_fm_tag from eco_fm_tag_round<NEXT_ROUND>.tmp — Fix #1>",
+  "fenets_tag": "<fenets_tag from INPUTS, OR new rerun tag if Step 6.5-FENETS ran>",
+  "eco_fm_tag": "<NEW eco_fm_tag from eco_fm_tag_round<NEXT_ROUND>.tmp>",
   "status": "<FM_PASSED|FM_FAILED|MAX_ROUNDS>",
   "loop_verdict": "<RERUN_SAME_ROUND|ADVANCE_NEXT_ROUND|CONVERGED>",
   "rerun_count_in_round": <N>,
@@ -978,7 +811,7 @@ Update `<BASE_DIR>/data/<TAG>_round_handoff.json`:
 }
 ```
 
-**`next_phase` decision matrix (Fix #4 — explicit NEXT_ROUND boundary):**
+**`next_phase` decision matrix:**
 
 Compute NEXT_ROUND first:
 - `ADVANCE_NEXT_ROUND` → `NEXT_ROUND = CURRENT_ROUND + 1`
@@ -1044,17 +877,9 @@ ls -la <BASE_DIR>/data/<TAG>_round<CURRENT_ROUND>_phase_exited.marker
 
 Where `<CURRENT_ROUND>` is the round number this orchestrator just executed (NOT the next round). The main session polls for this exact marker name.
 
-**Fix #7 — Sentinel naming convention:** Always use `round<N>_phase_exited.marker` regardless of verdict (CONVERGED, ADVANCE, RERUN). Do NOT use `apply_phase_exited.marker` — that is ONLY written by APPLY_ORCHESTRATOR. The main session detects ROUND exit via `round<N>_phase_exited.marker` and APPLY exit via `apply_phase_exited.marker`. These are distinct and must not be mixed.
+Always use `round<N>_phase_exited.marker` — NEVER `apply_phase_exited.marker` (that is APPLY_ORCHESTRATOR's sentinel only).
 
-This is the LAST file you write. After this:
-
-**Your task ends here. Make no further tool calls. Return your status to the caller.**
-
-You MUST stop after writing the sentinel. Do not:
-- Run any bash commands after the sentinel write
-- Write any more files
-- Spawn the next ROUND_ORCHESTRATOR yourself (main session does it)
-- "Help" the next ROUND or FINAL agent by doing their work early
+This is the LAST file you write. **Make no further tool calls. Return your status to the caller.**
 
 ---
 

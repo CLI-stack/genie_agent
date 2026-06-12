@@ -120,8 +120,6 @@ if not v.get("overall_pass"):
 **Retry-on-fail policy (MAX 2 retries):**
 - Exit 1 with `chain_compactness_issues` containing `FAIL/9d-OVERSIZED` or `FAIL/9c-MULTI-INV-NO-REUSE`:
   → re-spawn rtl_diff_analyzer with explicit instruction "apply §E2.5 boolean simplification (De Morgan + bus equality fold + existing-INV reuse) and emit `simplification_applied: true`"
-- Exit 1 with `new_logic_field_issues` containing `mode_s_anchor MISSING`:
-  → re-spawn rtl_diff_analyzer with explicit instruction "emit `mode_s_anchor: { sibling_module, anchor_dff, anchor_scope }` for every new_logic_dff with requires_scan_stitching=true"
 - Other failures: re-spawn rtl_diff_analyzer with the full failing-issue list as context and instruction to fix each issue
 - After 2 failed retries on the same root issue → write `STUDY_VALIDATOR_UNFIXABLE` to SPEC_FILE, block flow, EXIT.
 
@@ -357,11 +355,8 @@ Remaining manual fixes for non-deterministic issues:
 - Missing fields (module_name, port_connections_per_stage, etc.) → re-spawn `eco_netlist_studier`
 - **Mode I gap** (`parent rename ... but no paired child-scope port_connection`) → the validator message includes the exact JSON entry to add: `module_name=<child>`, `bus_bit_index=<N>`, `net_name=<port>[<bit>]`. Append it to the study JSON OR re-spawn studier with `MODE_I_HINT="add paired child-scope port_connection per validator output"`.
 - **Per-stage CP/SE/SI not from neighbor** (Check 16, `not used by any existing DFF`) → the validator message lists 3 sample neighbor values. Pick one of those for the failing pin/stage and patch `port_connections_per_stage[<stage>][<pin>]` in the study JSON OR re-spawn studier with `NEIGHBOR_LOOKUP_HINT="<inst>:<pin>:<stage> use one of <samples>"`.
-- **Scan-bridge SE/SI = constant in P&R** (Check 15, `should hook to a neighboring DFF's per-stage SE/SI net`) → same fix as above: copy a neighbor DFF's per-stage SE/SI value into `port_connections_per_stage`. Synth stays `1'b0`; PP/Route get the real scan-chain bridge wire.
 - **Signal-in-scope failure** (Step 1 `signal_in_scope_issues`, `input X NOT in scope of module Y`) → look for a local DFF whose Q drives the same logical signal in the target module; use its per-stage Q net name as the chain input. If no local source exists, propose a `new_port` change to promote the signal in.
 - **ECO input pin undriven** (Step 5 Check 13, `[INPUT_UNDRIVEN]`) → the per-stage net the studier picked doesn't have a driver in that stage's netlist. Re-look up the neighbor DFF's per-stage value (most likely a stale name), patch `port_connections_per_stage`, re-run Step 4.
-- **Mode S stitching missing** (Step 5 Check 17, `[MODE_S_PORT_MISSING]` / `[MODE_S_ASSIGN_MISSING]` / `[MODE_S_SE_NOT_BRIDGED]` / `[MODE_S_SI_NOT_BRIDGED]`) → a `new_logic_dff` flagged with `requires_scan_stitching: true` (or `mode_S_applied: true`) is missing one or more of: the 3 stitching ports (`<inst>_SI_in` / `_SE_in` / `_Q_out`) on the host module, the `assign Q_out = <dff>_Q ;` bridge, or per-stage SE/SI bridged through the new ports in PrePlace/Route. Re-spawn `eco_netlist_studier` with `MODE_S_HINT="emit full Mode S stitching for <inst>: 3 port_declaration entries + 1 assign change + per-stage port_connection entries through the bridge wires up to the parent scope where the existing scan chain net lives"`. See `eco_netlist_studier.md` section `0b-MODE-S` for the canonical pattern.
-
 **Generate Step 3 RPT from JSON (ORCHESTRATOR responsibility):**
 
 ```bash
