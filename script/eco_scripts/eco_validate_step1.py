@@ -2080,6 +2080,188 @@ def main():
                             f"Only raw RTL signal names that fail V3 grep should be PENDING.")
                         overall_pass = False
 
+    # ── Fix A: spare CSR bus bit referenced outside a Mode-I bridge path ──────
+    # A spare/UNCONNECTED CSR register bit (REG_*[N] / REG_*_N_) is undriven in the
+    # gate-level netlist until a Mode-I bridge wires it across module boundaries.
+    # The DFF wrapper (eco_emit_dff_entry -> eco_modei_chain_input_check) auto-bridges
+    # such bits when they are chain leaves of a new_logic DFF, so new_logic /
+    # new_logic_dff are exempt. A non-DFF change (e.g. a new_logic_gate wire alias)
+    # that sources a spare CSR bit WITHOUT original_unconnected_net and WITHOUT a
+    # companion port_connection bridging it never triggers Mode-I -> net stays
+    # undriven -> FM fail.
+    csr_bit_re = re.compile(r'\bREG_\w+(?:\[\d+\]|_\d+_)')
+    def _csr_bits(c):
+        hits = set()
+        for k in ('d_input_resolved_net', 'flat_net_name'):
+            v = c.get(k)
+            if isinstance(v, str):
+                hits |= {m.group(0) for m in csr_bit_re.finditer(v)}
+        for g in (c.get('d_input_gate_chain') or []):
+            for inp in (g.get('inputs') or []):
+                if isinstance(inp, str):
+                    hits |= {m.group(0) for m in csr_bit_re.finditer(inp)}
+        return hits
+    _bridged_nets = set()
+    for c in rtl_diff.get('changes', []):
+        if c.get('change_type') == 'port_connection':
+            for k in ('net_name', 'flat_net_name', 'new_token'):
+                v = c.get(k)
+                if isinstance(v, str):
+                    _bridged_nets.add(v)
+    csr_bridge_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') in ('new_logic', 'new_logic_dff'):
+            continue
+        bits = _csr_bits(c)
+        if not bits or c.get('original_unconnected_net') or (bits & _bridged_nets):
+            continue
+        csr_bridge_issues.append(
+            f"changes[{idx}] type={c.get('change_type')}: references spare CSR bus bit(s) "
+            f"{sorted(bits)} as a source but is not a DFF chain leaf and has no Mode-I bridge "
+            f"(original_unconnected_net unset, no companion port_connection). Spare CSR bits are "
+            f"UNCONNECTED in gate-level until bridged. Route it through Mode-I: emit as a new_logic "
+            f"DFF chain leaf, or set original_unconnected_net + a companion port_connection. "
+            f"See rtl_diff_analyzer.md spare-CSR-bit guidance.")
+    if csr_bridge_issues:
+        overall_pass = False
+
+    # ── Fix B: clock-gate enable_swap only valid on a single-update register ───
+    # enable_swap gates WHEN the whole register updates. Correct only when the register
+    # has ONE functional update branch. A multi-branch priority register (>=2 else-if
+    # branches loading different values) whose single branch guard was narrowed is a
+    # per-branch next-state gate, not enable_swap: clock-gating the shared enable would
+    # freeze the non-gated branches -> regression.
+    def _extract_always_block(text, start):
+        i = text.find('begin', start)
+        semi = text.find(';', start)
+        if i == -1 or (semi != -1 and semi < i):
+            end = semi if semi != -1 else len(text)
+            return text[start:end]
+        depth = 0
+        for tm in re.finditer(r'\bbegin\b|\bend\b', text[i:]):
+            depth += 1 if tm.group(0) == 'begin' else -1
+            if depth == 0:
+                return text[i:i + tm.end()]
+        return text[start:]
+    def _count_functional_branches(text, target):
+        assign_re = re.compile(r'\b' + re.escape(target) + r'\b[^\n;]*<=')
+        for m in re.finditer(r'always\s*@', text):
+            body = _extract_always_block(text, m.start())
+            if assign_re.search(body):
+                return len(re.findall(r'\belse\s+if\b', body))
+        return None
+    enable_branch_issues = []
+    if args.ref_dir:
+        import os as _os2
+        for idx, c in enumerate(rtl_diff.get('changes', [])):
+            if c.get('change_type') != 'enable_swap':
+                continue
+            tgt, fn = c.get('target_register'), c.get('file')
+            if not (tgt and fn):
+                continue
+            rtl_text = None
+            for sub in ('data/PreEco/SynRtl', 'data/SynRtl'):
+                p = _os2.path.join(args.ref_dir, sub, fn)
+                if _os2.path.exists(p):
+                    try:
+                        rtl_text = open(p).read()
+                    except Exception:
+                        rtl_text = None
+                    break
+            if rtl_text is None:
+                continue
+            nbr = _count_functional_branches(rtl_text, tgt)
+            if nbr is not None and nbr >= 2:
+                enable_branch_issues.append(
+                    f"changes[{idx}] target={tgt}: enable_swap on a multi-branch priority "
+                    f"register ({nbr} functional else-if branches in {fn}). Clock-gating the shared "
+                    f"enable freezes the non-gated branches -> regression. This is a per-branch "
+                    f"next-state gate (gate the narrowed branch's value, hold otherwise), not "
+                    f"enable_swap. See rtl_diff_analyzer.md enable_swap branch-count guidance.")
+    if enable_branch_issues:
+        overall_pass = False
+
+    # ── Fix C: and_term driver_rename must cover ALL consumers of old_token ────
+    # When an and_term renames the old driver's output (driver_rename) instead of the
+    # DFF-pin-rewire pattern, the original net ceases to exist. Every cell that read
+    # old_token MUST be in rewire_consumers, else it reads an undriven net after the
+    # rename -> FM fail.
+    andterm_fanout_issues = []
+    if args.ref_dir:
+        import os as _os3, gzip as _gz3
+        _gz = _os3.path.join(args.ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
+        _syn_text = None
+        if _os3.path.exists(_gz):
+            try:
+                with _gz3.open(_gz, 'rt') as _f:
+                    _syn_text = _f.read()
+            except Exception:
+                _syn_text = None
+        _OUT_PINS = {'Z', 'ZN', 'ZN1', 'ZN2', 'Q', 'QN', 'CO', 'S', 'SO', 'CON'}
+        def _consumers_of(text, mod, net):
+            mm = re.search(r'(?m)^module\s+\w*' + re.escape(mod) + r'\b.*?^endmodule',
+                           text, re.DOTALL) if mod else None
+            body = mm.group(0) if mm else text
+            cons = set()
+            net_pin = re.compile(r'\.(\w+)\s*\(\s*' + re.escape(net) + r'\s*\)')
+            for im in re.finditer(r'([A-Z][A-Za-z0-9_]+)\s+([A-Za-z_]\w*)\s*\(([^;]*?)\)\s*;',
+                                  body, re.DOTALL):
+                inst, ports = im.group(2), im.group(3)
+                for pm in net_pin.finditer(ports):
+                    if pm.group(1) not in _OUT_PINS:
+                        cons.add(inst)
+                        break
+            return cons
+        if _syn_text:
+            for idx, c in enumerate(rtl_diff.get('changes', [])):
+                if c.get('change_type') != 'and_term':
+                    continue
+                dr = c.get('driver_rename')
+                if not dr:
+                    continue
+                old = dr.get('old_output_net') or c.get('old_token')
+                if not old:
+                    continue
+                actual  = _consumers_of(_syn_text, c.get('module_name') or '', old)
+                rewired = {r.get('cell_instance') for r in (c.get('rewire_consumers') or [])}
+                missing = sorted(actual - rewired)
+                if missing:
+                    andterm_fanout_issues.append(
+                        f"changes[{idx}] and_term old_token={old!r}: driver_rename renames its "
+                        f"driver, but {len(missing)} consumer(s) {missing} are NOT in "
+                        f"rewire_consumers -> they read an undriven net after the rename. Either "
+                        f"rewire ALL consumers, or drop driver_rename and use the keep-driver + "
+                        f"parallel-gate form (rewire only the intended consumers, leave old_token "
+                        f"driven). See rtl_diff_analyzer.md and_term DFF-pin-rewire rule.")
+    if andterm_fanout_issues:
+        overall_pass = False
+
+    # ── Fix D: Mode-I bridge must be anchored in its declaring module ─────────
+    # An entry with original_unconnected_net renames a spare bus bit. That UNCONNECTED
+    # net MUST exist in module_name's gate-level body — otherwise it names a net from a
+    # DIFFERENT hierarchy level (e.g. the child's internal number instead of the
+    # parent's child-instance-bus number), the applier finds nothing to rename, and the
+    # bridge never lands -> signal undriven.
+    mode_i_anchor_issues = []
+    if args.ref_dir and _syn_text:
+        for idx, c in enumerate(rtl_diff.get('changes', [])):
+            unc = c.get('original_unconnected_net')
+            if not unc:
+                continue
+            mod = c.get('module_name') or ''
+            mm = re.search(r'(?m)^module\s+\w*' + re.escape(mod) + r'\b.*?^endmodule',
+                           _syn_text, re.DOTALL) if mod else None
+            body = mm.group(0) if mm else ''
+            if body and not re.search(r'\b' + re.escape(unc) + r'\b', body):
+                mode_i_anchor_issues.append(
+                    f"changes[{idx}] Mode-I bridge: original_unconnected_net={unc!r} does NOT "
+                    f"appear in module {mod!r} — it belongs to a different hierarchy level. The "
+                    f"applier will find nothing to rename -> bridge never lands -> signal undriven. "
+                    f"Use the UNCONNECTED net that actually sits on this module's child-instance "
+                    f"bus bit, or emit the bridge at the module that owns this net.")
+    if mode_i_anchor_issues:
+        overall_pass = False
+
     out = {
         'rtl_diff': args.rtl_diff,
         'mux_select_issue_count': len(mux_select_issues),
@@ -2167,6 +2349,14 @@ def main():
         'and_term_pattern_issue_count':   len(and_term_pattern_issues),
         'and_term_pattern_issues':        and_term_pattern_issues,
         'bus_dff_issues':                 bus_dff_issues,
+        'csr_bridge_issue_count':         len(csr_bridge_issues),
+        'csr_bridge_issues':              csr_bridge_issues,
+        'enable_branch_issue_count':      len(enable_branch_issues),
+        'enable_branch_issues':           enable_branch_issues,
+        'andterm_fanout_issue_count':     len(andterm_fanout_issues),
+        'andterm_fanout_issues':          andterm_fanout_issues,
+        'mode_i_anchor_issue_count':      len(mode_i_anchor_issues),
+        'mode_i_anchor_issues':           mode_i_anchor_issues,
         'overall_pass':          overall_pass,
         'entries':               results,
     }
@@ -2204,6 +2394,14 @@ def main():
     for p in chain_compact_issues:
         print(f'    - {p}')
     for p in reset_inclusion_issues:
+        print(f'    - {p}')
+    for p in csr_bridge_issues:
+        print(f'    - {p}')
+    for p in enable_branch_issues:
+        print(f'    - {p}')
+    for p in andterm_fanout_issues:
+        print(f'    - {p}')
+    for p in mode_i_anchor_issues:
         print(f'    - {p}')
     for r in results:
         if r['issues']:

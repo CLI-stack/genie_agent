@@ -117,6 +117,8 @@ When a `wire_swap` diff adds an extra `& ~<NewSignal>` term to an existing expre
 
 Classify as `and_term` (NOT `wire_swap`). `old_token` = the **gate-level net** that drives the DFF's D pin (the existing chain's final output net at hop 0 — e.g. `SEQMAP_NET_70624`). NEVER use the target register's Q net name (e.g. `BlockScrubReq`) — that's the DFF output, not the D-input cone driver. `new_token` = `<NewSignal>` (the new term being added).
 
+**`enable_swap` applies only to a single-update register.** Apply the same distinct-branch test before classifying a changed `else if` guard as `enable_swap`: if the target register has ≥2 functional update branches (a multi-branch priority that loads different values, e.g. `if(rst) r<=0; else if(a) r<=X; else if(b) r<=Y;`), a narrowed branch guard is a **per-branch next-state gate, NOT `enable_swap`** — clock-gating the shared enable would freeze the non-gated branches. Validator `enable_branch_issues` enforces this.
+
 **MANDATORY insertion pattern — DFF-pin-rewire, NOT driver-rename:**
 
 Insert the new gate chain BETWEEN the OLD net and the consuming DFF's D pin. The OLD net (`old_token`) and its driver are left UNTOUCHED. The new chain's final `output_net` MUST be a fresh `n_eco_<jira>_<seq>` net. Then emit a separate `rewire` entry that points the DFF's D pin from `old_token` to the new net.
@@ -683,6 +685,8 @@ zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | awk "/^module <declaring_module>/,/
 **MANDATORY MUX context on every `wire_swap`** (REJECT if missing): `mux_select_gate_function`, `mux_select_branch_true_on`, `mux_select_i0_net`, `mux_select_i1_net` — even when polarity is decided.
 
 **FORBIDDEN: `UNCONNECTED_<N>` as a variable in chain inputs or `d_input_expected_function`.** It's an undriven-net marker, not a signal. Trace it back to the real RTL source (e.g. `REG_UmcCfgEco[1]`) and emit the chain against THAT.
+
+**Spare CSR bits must route through Mode-I.** A spare/unconnected CSR register bit (`REG_*[N]`) used as a source net is UNCONNECTED in gate-level until bridged across module boundaries. Only a `new_logic` DFF chain leaf is auto-bridged (the DFF wrapper runs `eco_modei_chain_input_check`). For ANY non-DFF use (e.g. a wire alias / `new_logic_gate`), set `original_unconnected_net` plus a companion `port_connection` so the Mode-I bridge drives it — otherwise the net stays undriven. Validator `csr_bridge_issues` enforces this.
 
 **MANDATORY `d_input_expected_function` (Gap E) for every change with a non-empty `d_input_gate_chain`** — Step 1 REJECTS as HIGH if missing. It's the Python Boolean the DFF.D should compute, in the chain's primary input variables.
 
