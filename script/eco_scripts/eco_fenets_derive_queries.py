@@ -71,6 +71,15 @@ def _abs_path(tile, scope, signal):
 
 def derive(rtl_diff, tile=''):
     out = []
+    # Signals introduced by this ECO (new ports/wires) do not exist in PreEco and
+    # are not queryable via find_equivalent_nets — used to skip them below.
+    eco_new_signals = set()
+    for c in rtl_diff.get('changes', []):
+        if c.get('change_type') in ('new_port', 'port_connection', 'port_promotion'):
+            for f in ('new_token', 'signal_name'):
+                v = c.get(f)
+                if isinstance(v, str) and v:
+                    eco_new_signals.add(v)
     for idx, c in enumerate(rtl_diff.get('changes', [])):
         ct = c.get('change_type', '')
         scope = _scope_of(c)
@@ -102,6 +111,38 @@ def derive(rtl_diff, tile=''):
                         'signal':   t,
                         'category': 1,
                         'source':   f'changes[{idx}].{tok_field}',
+                    })
+
+            # Cat 1b: and_term gate-chain condition inputs (e.g. the OR's other input).
+            # Previously only old_token/new_token were queried, dropping additional
+            # condition inputs (e.g. UclkMult2PhaseEn) -> their per-stage rename was
+            # never resolved (latent Mode-H miss when CTS-renamed in P&R).
+            if ct == 'and_term':
+                cond_inputs = []
+                for g in (c.get('and_term_gate_chain_design') or []):
+                    for inp in (g.get('inputs') or []):
+                        if isinstance(inp, str):
+                            cond_inputs.append(inp)
+                add_in = c.get('and_term_additional_input')
+                if isinstance(add_in, str) and add_in:
+                    cond_inputs.append(add_in)
+                seen_ci = set()
+                for inp in cond_inputs:
+                    base = inp.split('[')[0].strip()
+                    # only plain net identifiers are queryable — skip placeholders
+                    # (PENDING_FM_RESOLUTION:*), negations (~X), constants, etc.
+                    if (not base or base in seen_ci
+                            or not re.match(r'^[A-Za-z_]\w*$', base)
+                            or base.startswith(_SKIP_INPUT_PREFIXES)
+                            or base == c.get('old_token') or base == c.get('new_token')
+                            or base in eco_new_signals):
+                        continue
+                    seen_ci.add(base)
+                    out.append({
+                        'net_path': _abs_path(tile, scope, base),
+                        'signal':   base,
+                        'category': 1,
+                        'source':   f'changes[{idx}].and_term_cond_input',
                     })
 
         # Cat 2 + 3 + 4: new_logic_dff context
