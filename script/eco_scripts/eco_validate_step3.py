@@ -4989,6 +4989,83 @@ def main():
                         f"replace fenets actual_wire with bare RTL name.")
                     break
 
+    # ── Mode-I bridge driver-chain completeness ───────────────────────────────
+    # A port_connection that feeds a NEW input from a spare UNCONNECTED_* bus bit
+    # only works if that bit is actually driven. If the bit sits on a child
+    # instance's output bus and the child drives that bit internally with another
+    # UNCONNECTED placeholder (undriven), a DEEPER bridge study entry is required —
+    # otherwise the new net is undriven (FM Mode-I fail). The studier must recurse
+    # the Mode-I walk to the driven source; "higher-level propagation" is not a driver.
+    if args.ref_dir:
+        import subprocess as _sp_br
+        _gzb = Path(args.ref_dir) / 'data' / 'PreEco' / 'Synthesize.v.gz'
+        _btext = ''
+        if _gzb.is_file():
+            try:
+                _btext = _sp_br.run(f'zcat {_gzb}', shell=True, capture_output=True,
+                                    text=True, timeout=120).stdout
+            except Exception:
+                _btext = ''
+        def _mod_body_br(text, mod):
+            m = re.search(r'(?m)^module\s+' + re.escape(mod) + r'\b.*?^endmodule',
+                          text, re.DOTALL)
+            return m.group(0) if m else ''
+        def _owner_bus_br(body, net):
+            # instance whose port concat contains net -> (inst, child_mod, port, bit_lsb)
+            for m in re.finditer(r'\.(\w+)\s*\(\s*\{([^{}]*)\}\s*\)', body):
+                elems = [x.strip() for x in m.group(2).split(',')]
+                if net in elems:
+                    bit = len(elems) - 1 - elems.index(net)   # MSB-first: last = bit0
+                    last = None
+                    for im in re.finditer(r'(?m)^\s*([A-Za-z_]\w*)\s+([A-Za-z_]\w*)\s*\(',
+                                          body[:m.start()]):
+                        last = im
+                    return (last.group(2) if last else '',
+                            last.group(1) if last else '', m.group(1), bit)
+            return None
+        _bridge_mods = set()
+        for st in ('Synthesize', 'PrePlace', 'Route'):
+            for e in study.get(st, []):
+                if e.get('change_type') == 'port_connection' or e.get('unconnected_rewires'):
+                    for mk in ('module_name', 'child_module_name'):
+                        mv = e.get(mk)
+                        if mv:
+                            _bridge_mods.add(mv)
+        if _btext:
+            for e in study.get('Synthesize', []):
+                if e.get('change_type') != 'port_connection':
+                    continue
+                nb = e.get('net_name_before')
+                spare = nb.get('Synthesize') if isinstance(nb, dict) else nb
+                if not isinstance(spare, str) or not re.match(r'(SYNOPSYS_)?UNCONNECTED_\d+$', spare):
+                    continue
+                parent_mod = e.get('module_name') or ''
+                pbody = _mod_body_br(_btext, parent_mod) if parent_mod else _btext
+                ob = _owner_bus_br(pbody, spare)
+                if not ob:
+                    continue
+                inst, child_mod, port, bit = ob
+                if not child_mod:
+                    continue
+                # Is the source bit driven anywhere? The child's output net for this
+                # bit is <port>[bit] / <port>_bit_ (port names change across levels, so
+                # test the net's drivers directly, not a per-level port concat).
+                flat = f'{port}_{bit}_'
+                brk  = f'{port}[{bit}]'
+                drv = re.compile(r'\.(?:Z|ZN|ZN1|ZN2|Q|QN|CO|S|SO)\s*\(\s*(?:'
+                                 + re.escape(flat) + r'|' + re.escape(brk) + r')\s*\)')
+                asn = re.compile(r'assign\s+(?:' + re.escape(flat) + r'|'
+                                 + re.escape(brk) + r')\s*=')
+                undriven = not (drv.search(_btext) or asn.search(_btext))
+                if undriven and child_mod not in _bridge_mods:
+                    issues.append(
+                        f"HIGH: Mode-I bridge via spare {spare!r} feeding a new port is INCOMPLETE "
+                        f"— bit {bit} of {inst} ({child_mod}).{port} is driven internally by an "
+                        f"UNCONNECTED placeholder (undriven) and no study entry bridges "
+                        f"{child_mod}. The new net stays undriven (FM Mode-I fail). Recurse the "
+                        f"Mode-I walk into {child_mod} to drive the source bit; 'higher-level "
+                        f"propagation' is not a driver.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}

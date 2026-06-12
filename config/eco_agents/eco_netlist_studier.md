@@ -369,6 +369,8 @@ Algorithm: walk the child module body, find any sub-instance whose output bus ha
 
 This is wire-up (real driver), not invention. Engineers do this manually when a register output bit is spare.
 
+**RECURSE until the source bit is driven (MANDATORY).** This walk is per-level: after wiring the child's output bit, check whether THAT bit is itself driven inside the child (e.g. the child's own sub-instance also has `UNCONNECTED_*` at that bit, as with a register-file read-back `oQ_*` bus). If still undriven, repeat the exception one level deeper until the bit reaches a real driver (the CSR flop). Never stop at one level and assume the value arrives by "higher-level propagation" — nothing propagates an UNCONNECTED bit. Step 3 validator flags a Mode-I bridge whose source bit is undriven and has no deeper bridge entry.
+
 Log: `UNCONNECTED_RENAME: <N_syn>/<N_pp>/<N_rt> → n_eco_<jira>_<hint> | bus=<inst>.<port>[<bit>]`
 
 **MANDATORY port_connection schema for bus-position renames** — eco_netlist_port_rewire dispatches to `_apply_bus_rename` on these exact fields:
