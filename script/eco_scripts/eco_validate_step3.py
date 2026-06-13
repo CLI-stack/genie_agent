@@ -5066,6 +5066,40 @@ def main():
                         f"Mode-I walk into {child_mod} to drive the source bit; 'higher-level "
                         f"propagation' is not a driver.")
 
+        # ── Bus-width consistency on whole-bus port_connection bridges ─────────
+        # When net_name_before is a MULTI-BIT bus connected wholesale (e.g. a
+        # register read-back loopback `wire [31:0] X_0` -> `output [31:0] X`), the
+        # rename target (net_name) must be a FULL bus, not a single bit. A bit form
+        # connects a 32-bit port to 1 bit -> width mismatch / 31 bits undriven.
+        # Concat-element renames (net_name_before is a scalar UNCONNECTED_* inside a
+        # {} concat) are exempt — bit form is correct there.
+        if _btext:
+            _bus_cache = {}
+            def _is_multibit_bus(name):
+                if name not in _bus_cache:
+                    _bus_cache[name] = bool(re.search(
+                        r'(?m)^\s*(?:wire|output|input|reg)\s*\[\d+:\d+\]\s*'
+                        + re.escape(name) + r'\s*;', _btext))
+                return _bus_cache[name]
+            _single_bit = re.compile(r'(?:\[\d+\]|_\d+_)$')
+            for e in study.get('Synthesize', []):
+                if e.get('change_type') != 'port_connection':
+                    continue
+                nb = e.get('net_name_before')
+                before = nb.get('Synthesize') if isinstance(nb, dict) else nb
+                nn = e.get('net_name')
+                if not isinstance(before, str) or not isinstance(nn, str):
+                    continue
+                if _is_multibit_bus(before) and _single_bit.search(nn):
+                    issues.append(
+                        f"HIGH: port_connection on {e.get('instance_name','?')}."
+                        f"{e.get('port_name','?')} renames whole-bus net {before!r} "
+                        f"(declared multi-bit) to single-bit {nn!r} — width mismatch "
+                        f"(N-bit port driven by 1 bit; upper bits undriven). Whole-bus "
+                        f"connections must rename to the FULL bus (drop the bit suffix), "
+                        f"not a single bit; only concat-element (scalar UNCONNECTED_*) "
+                        f"renames use bit form.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}

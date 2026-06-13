@@ -371,6 +371,8 @@ This is wire-up (real driver), not invention. Engineers do this manually when a 
 
 **RECURSE until the source bit is driven (MANDATORY).** This walk is per-level: after wiring the child's output bit, check whether THAT bit is itself driven inside the child (e.g. the child's own sub-instance also has `UNCONNECTED_*` at that bit, as with a register-file read-back `oQ_*` bus). If still undriven, repeat the exception one level deeper until the bit reaches a real driver (the CSR flop). Never stop at one level and assume the value arrives by "higher-level propagation" — nothing propagates an UNCONNECTED bit. Step 3 validator flags a Mode-I bridge whose source bit is undriven and has no deeper bridge entry.
 
+**Concat-element rename vs whole-bus rename — pick the right `net_name` form.** Check how `net_name_before` is connected: (a) a scalar `UNCONNECTED_*` placeholder sitting INSIDE a `{ ... }` concat → use the bit form (`<port>[N]` / `<port>_N_`) — you are replacing one element. (b) a MULTI-BIT bus connected WHOLESALE (e.g. `wire [31:0] X_0` wired directly to `output [31:0] X`, as with a register read-back loopback) → rename to the FULL bus (drop the bit suffix), NEVER a single bit. A single-bit target on a whole-bus connection drives an N-bit port from 1 bit → width mismatch, upper bits undriven. Step 3 validator flags this.
+
 Log: `UNCONNECTED_RENAME: <N_syn>/<N_pp>/<N_rt> → n_eco_<jira>_<hint> | bus=<inst>.<port>[<bit>]`
 
 **MANDATORY port_connection schema for bus-position renames** — eco_netlist_port_rewire dispatches to `_apply_bus_rename` on these exact fields:
