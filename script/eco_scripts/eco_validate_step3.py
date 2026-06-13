@@ -5100,6 +5100,37 @@ def main():
                         f"not a single bit; only concat-element (scalar UNCONNECTED_*) "
                         f"renames use bit form.")
 
+    # ── Multi-bit counter gate must feed back the register (hold-mux) ──────────
+    # Mirror of Step-1 Fix E on the BUILT study: if the ECO gates the next-state of
+    # >=2 DFF bits of the SAME register (a counter with implicit-hold default), the
+    # new gate cone MUST feed back the register's current bits (load-enable hold
+    # mux). No feedback = condition-gating that may not hold -> FM logic mismatch.
+    _casc = {}
+    for e in study.get('Synthesize', []):
+        c6 = e.get('check6_cascade_dffs') or {}
+        for dff in (c6.get('cascade_dffs') or []):
+            m = re.match(r'(.+)_reg_(\d+)_$', str(dff))
+            if m:
+                _casc.setdefault(m.group(1), set()).add(m.group(2))
+    _gate_inputs = []
+    for e in study.get('Synthesize', []):
+        if e.get('change_type') == 'new_logic_gate':
+            for k, v in (e.get('port_connections') or {}).items():
+                if k not in ('Z', 'ZN', 'ZN1', 'ZN2', 'Q', 'QN', 'CO', 'S') and isinstance(v, str):
+                    _gate_inputs.append(v)
+    for reg, bits in _casc.items():
+        if len(bits) < 2:
+            continue
+        fb = any(re.search(re.escape(reg) + r'(?:\[\d+\]|_\d+_)', g) for g in _gate_inputs)
+        if not fb:
+            issues.append(
+                f"HIGH: ECO gates {len(bits)} next-state DFF bits of register {reg!r} "
+                f"(bits {sorted(bits)}) but no new gate input feeds back {reg}'s current "
+                f"value — condition-gating without a hold path. A multi-bit counter gate "
+                f"must be a per-bit load-enable HOLD MUX feeding back {reg}[bit]; otherwise "
+                f"it may not hold (FM logic mismatch). See rtl_diff_analyzer.md and_term "
+                f"multi-bit hold-mux rule.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}
