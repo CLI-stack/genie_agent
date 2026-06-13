@@ -154,11 +154,21 @@ def truth_table_of(cell_type_or_function, ref_dir=None):
     if cell_type_or_function in ABSTRACT_GATE_FUNCTIONS:
         return ABSTRACT_GATE_FUNCTIONS[cell_type_or_function]
     # Try as full cell name → extract family → look up library data
-    fam = family_of(cell_type_or_function)
-    if fam is None:
-        return None
     libs = _load_libraries(ref_dir)
-    return libs.get(fam)
+    fam = family_of(cell_type_or_function)
+    if fam is not None and fam in libs:
+        return libs.get(fam)
+    # Fallback for characterization variants the strict regex can't parse
+    # (e.g. AO22EQ2AD1... where "EQ2A" sits between family and drive). Match the
+    # LONGEST known library family name that the cell_type starts with. Families
+    # carry digits (AO22, AN2, NR3...) so prefix collisions are unlikely, and this
+    # only runs when family_of() fails — normal cells are unaffected.
+    cand = [k for k in libs
+            if not k.startswith('_') and re.match(r'^[A-Z]+\d', k)
+            and cell_type_or_function.startswith(k)]
+    if cand:
+        return libs.get(max(cand, key=len))
+    return None
 
 def cell_function_matches(cell_type, gate_function, ref_dir=None):
     """Compare a chosen cell's truth table to the claimed abstract function.
