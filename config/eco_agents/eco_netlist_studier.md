@@ -373,6 +373,8 @@ This is wire-up (real driver), not invention. Engineers do this manually when a 
 
 **Concat-element rename vs whole-bus rename — pick the right `net_name` form.** Check how `net_name_before` is connected: (a) a scalar `UNCONNECTED_*` placeholder sitting INSIDE a `{ ... }` concat → use the bit form (`<port>[N]` / `<port>_N_`) — you are replacing one element. (b) a MULTI-BIT bus connected WHOLESALE (e.g. `wire [31:0] X_0` wired directly to `output [31:0] X`, as with a register read-back loopback) → rename to the FULL bus (drop the bit suffix), NEVER a single bit. A single-bit target on a whole-bus connection drives an N-bit port from 1 bit → width mismatch, upper bits undriven. Step 3 validator flags this.
 
+**Preserve Step 1's bit index, and never rename a net to itself.** The bridge `net_name` bit MUST match Step 1's `flat_net_name` bit (e.g. `REG_X[0]` → use `REG_X_0_`/`REG_X[0]`, NEVER `_31_` — the spare net is the LSB/last element of an MSB-first concat, so `bus_bit_index` is the position from the END, not the start). And a `port_connection` whose `net_name` equals its `net_name_before` is a **no-op** that drives nothing — every bridge level must actually rename the source net through (e.g. the register-output `oQ` loopback `oQ_*_0 → oQ_*`). Step 3 validator flags both.
+
 Log: `UNCONNECTED_RENAME: <N_syn>/<N_pp>/<N_rt> → n_eco_<jira>_<hint> | bus=<inst>.<port>[<bit>]`
 
 **MANDATORY port_connection schema for bus-position renames** — eco_netlist_port_rewire dispatches to `_apply_bus_rename` on these exact fields:

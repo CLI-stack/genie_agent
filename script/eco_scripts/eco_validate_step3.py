@@ -5131,6 +5131,54 @@ def main():
                 f"it may not hold (FM logic mismatch). See rtl_diff_analyzer.md and_term "
                 f"multi-bit hold-mux rule.")
 
+    # ── Bridge bit-index consistency ───────────────────────────────────────────
+    # A Mode-I bridge must carry the bit indicated by Step 1's flat_net_name. If
+    # Step 1 sources REG_X[0] but the study renames to REG_X[31] / REG_X_31_, the bit
+    # is wrong (MSB/LSB inversion in bus_bit_index) -> wrong CSR bit / bit crossover.
+    _bit_re = re.compile(r'^(REG_\w+?)(?:\[(\d+)\]|_(\d+)_)$')
+    _expected_bit = {}
+    for c in rtl_diff.get('changes', []):
+        for f in ('flat_net_name', 'd_input_resolved_net'):
+            v = c.get(f)
+            if isinstance(v, str):
+                m = _bit_re.match(v)
+                if m:
+                    _expected_bit[m.group(1)] = m.group(2) or m.group(3)
+    for e in study.get('Synthesize', []):
+        if e.get('change_type') != 'port_connection':
+            continue
+        nn = e.get('net_name')
+        if not isinstance(nn, str):
+            continue
+        m = _bit_re.match(nn)
+        if not m:
+            continue
+        base, bit = m.group(1), (m.group(2) or m.group(3))
+        if base in _expected_bit and bit != _expected_bit[base]:
+            issues.append(
+                f"HIGH: bridge port_connection on {e.get('instance_name','?')} renames to "
+                f"{nn!r} (bit {bit}) but Step 1 sources {base}[{_expected_bit[base]}] (bit "
+                f"{_expected_bit[base]}). Wrong bus bit — likely an MSB/LSB inversion in "
+                f"bus_bit_index. Use bit {_expected_bit[base]} to match the RTL source.")
+
+    # ── No-op bridge rename ─────────────────────────────────────────────────────
+    # A port_connection whose net_name equals its net_name_before renames a net to
+    # itself — it drives nothing. For a Mode-I bridge level (e.g. the register-output
+    # oQ loopback) this leaves the source bit undriven -> FM Mode-I fail.
+    for e in study.get('Synthesize', []):
+        if e.get('change_type') != 'port_connection':
+            continue
+        nb = e.get('net_name_before')
+        before = nb.get('Synthesize') if isinstance(nb, dict) else nb
+        nn = e.get('net_name')
+        if isinstance(before, str) and before and before == nn:
+            issues.append(
+                f"HIGH: port_connection on {e.get('instance_name','?')}."
+                f"{e.get('port_name','?')} has net_name == net_name_before ({nn!r}) — a "
+                f"no-op rename that drives nothing. A Mode-I bridge level must actually "
+                f"rename the net to wire the source through (e.g. the register-output oQ "
+                f"loopback). Emit the real rename.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}
