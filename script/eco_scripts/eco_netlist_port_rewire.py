@@ -622,9 +622,14 @@ def apply_port_connection(lines, entry, gz_path=None, stage='Synthesize'):
     nb = entry.get('net_name_before')
     na = entry.get('net_name_after')
     bus_bit = entry.get('bus_bit_index')
-    if (nb is not None and na) or bus_bit is not None:
+    # Resolve the PER-STAGE old_net first. net_name_before may be a dict whose
+    # per-stage value is None for a NEW port-connection addition (no net to rename)
+    # — in that case the dict is non-None but there is nothing to rename, so this
+    # must NOT route to _apply_bus_rename (which would SKIP "neither old_net nor
+    # bus_bit_index"); it must fall through to the insert-new-port path below.
+    old_net = (nb.get(stage) if isinstance(nb, dict) else nb) if nb is not None else None
+    if (old_net is not None and na) or bus_bit is not None:
         new_net = na or entry.get('net_name', '') or entry.get('flat_net_name', '')
-        old_net = (nb.get(stage) if isinstance(nb, dict) else nb) if nb is not None else None
         if not all([inst_name, port_name, new_net]):
             return lines, 'SKIPPED', f'bus_rename missing inst/port/new (stage={stage})'
         return _apply_bus_rename(lines, gz_path, inst_name, port_name, old_net, new_net, bus_bit)
