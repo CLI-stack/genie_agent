@@ -4097,7 +4097,13 @@ def main():
         # Evidence: engineer uses REG_UmcCfgEco[5] (bracket) not REG_UmcCfgEco_5_.
         _net_base = _re49.sub(r'\[\d+\]$', '', _net)   # strip [N] bracket suffix
         _is_bracket = bool(_re49.search(r'\[\d+\]$', _net))
-        if not (_net_base in out_ports and _is_bracket):
+        # Whole-bus loopback bridge exemption: if net_name equals the wrapper output
+        # port name exactly (no [N] suffix), this is a whole-bus rename — correct when
+        # net_name_before is a multi-bit bus (e.g. wire [31:0] X_0). Using bracket form
+        # [N] on a 32-bit net_name_before would trigger the bus-width mismatch check
+        # (line ~5078), so whole-bus form is the only valid option for this pattern.
+        _is_whole_bus_rename = (not _is_bracket and _net_base in out_ports)
+        if not (_net_base in out_ports and _is_bracket) and not _is_whole_bus_rename:
             _expected_base = None
             for op in out_ports:
                 if any(part in op for part in _port.split('_') if len(part) > 3):
