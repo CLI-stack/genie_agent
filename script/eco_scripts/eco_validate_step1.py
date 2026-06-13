@@ -2316,6 +2316,51 @@ def main():
     if mb_holdmux_issues:
         overall_pass = False
 
+    # ── Fix F: multi-bit hold-mux enable must derive from the ORIGINAL next-state
+    # The correct load-enable for a counter hold-mux is `(N28==N29) | new_cond` — an
+    # equality/XNOR of the ORIGINAL next-state bits OR'd with the new condition. That
+    # loads N for every non-decrement transition (preserving ACT/reset) and gates only
+    # the decrement by the new condition. An enable built from an unrelated nearby net
+    # (e.g. a reset-related ctmn_*) over-gates: when new_cond=0 it holds ALL branches,
+    # freezing ACT/reset -> FM logic mismatch. Require the enable cone to reference the
+    # d_orig_net of every hold-mux bit.
+    holdmux_enable_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') != 'and_term':
+            continue
+        chain = c.get('and_term_gate_chain_design') or []
+        hm = [g for g in chain if g.get('is_holdmux')]
+        if len(hm) < 2:
+            continue
+        d_orig = {g.get('d_orig_net') for g in hm if g.get('d_orig_net')}
+        if not d_orig:
+            continue
+        en_nets = {(g.get('inputs') or [None])[0] for g in hm if g.get('inputs')}
+        by_out = {g.get('output_net'): g for g in chain}
+        cone, stack, seen = set(), list(en_nets), set()
+        while stack:
+            net = stack.pop()
+            if net in seen:
+                continue
+            seen.add(net)
+            g = by_out.get(net)
+            if g:
+                for i in (g.get('inputs') or []):
+                    cone.add(i); stack.append(i)
+            elif net:
+                cone.add(net)
+        if not (d_orig <= cone):
+            holdmux_enable_issues.append(
+                f"changes[{idx}] multi-bit hold-mux enable does NOT derive from the original "
+                f"next-state bits {sorted(d_orig)} (enable cone leaves: "
+                f"{sorted(x for x in cone if x)[:6]}). An enable from an unrelated net over-gates "
+                f"the non-decrement branches (ACT/reset frozen when the new condition is low). "
+                f"Build the load-enable as (<d_orig_bit_a>==<d_orig_bit_b>) | <new_condition> "
+                f"(XNOR of the original next-state bits OR'd with the new term), matching the "
+                f"engineer hold-mux. See rtl_diff_analyzer.md and_term multi-bit hold-mux rule.")
+    if holdmux_enable_issues:
+        overall_pass = False
+
     out = {
         'rtl_diff': args.rtl_diff,
         'mux_select_issue_count': len(mux_select_issues),
@@ -2413,6 +2458,8 @@ def main():
         'mode_i_anchor_issues':           mode_i_anchor_issues,
         'mb_holdmux_issue_count':         len(mb_holdmux_issues),
         'mb_holdmux_issues':              mb_holdmux_issues,
+        'holdmux_enable_issue_count':     len(holdmux_enable_issues),
+        'holdmux_enable_issues':          holdmux_enable_issues,
         'overall_pass':          overall_pass,
         'entries':               results,
     }
@@ -2460,6 +2507,8 @@ def main():
     for p in mode_i_anchor_issues:
         print(f'    - {p}')
     for p in mb_holdmux_issues:
+        print(f'    - {p}')
+    for p in holdmux_enable_issues:
         print(f'    - {p}')
     for r in results:
         if r['issues']:
