@@ -2262,6 +2262,60 @@ def main():
     if mode_i_anchor_issues:
         overall_pass = False
 
+    # ── Fix E: multi-bit register branch-gate needs a feedback hold-mux ────────
+    # An and_term whose gated net fans out to >=2 next-state DFF bits of the SAME
+    # register (a multi-bit counter with implicit-hold default) must build a per-bit
+    # load-enable HOLD MUX that feeds back the current register value — NOT condition-
+    # gating of the shared select net. Condition-gating without feedback drives the
+    # next-state cone into don't-care input combinations and may not hold correctly
+    # (FM logic mismatch). The engineer reference uses an explicit feedback mux.
+    mb_holdmux_issues = []
+    if args.ref_dir and _syn_text:
+        for idx, c in enumerate(rtl_diff.get('changes', [])):
+            if c.get('change_type') != 'and_term':
+                continue
+            old = c.get('old_token'); treg = c.get('target_register') or ''
+            if not old or not treg:
+                continue
+            mm = re.search(r'(?m)^module\s+\w*' + re.escape(c.get('module_name') or '')
+                           + r'\b.*?^endmodule', _syn_text, re.DOTALL) if c.get('module_name') else None
+            body = mm.group(0) if mm else _syn_text
+            cons = set()
+            for m in re.finditer(r'([A-Z][A-Za-z0-9_]+)\s+([A-Za-z_]\w*)\s*\(([^;]*?)\)\s*;',
+                                 body, re.DOTALL):
+                ports = m.group(3)
+                for pm in re.finditer(r'\.(\w+)\s*\(\s*' + re.escape(old) + r'\s*\)', ports):
+                    if pm.group(1) not in ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'S'):
+                        om = re.search(r'\.(?:Z|ZN|ZN1)\s*\(\s*(\w+)\s*\)', ports)
+                        if om:
+                            cons.add(om.group(1))
+                        break
+            bits = set()
+            for net in cons:
+                for dm in re.finditer(re.escape(treg) + r'_reg_(\d+)_\s*\([^;]*?\.D\s*\(\s*'
+                                      + re.escape(net) + r'\s*\)', body, re.DOTALL):
+                    bits.add(dm.group(1))
+            if len(bits) < 2:
+                continue
+            ins = []
+            for g in (c.get('and_term_gate_chain_design') or []):
+                ins += (g.get('inputs') or [])
+            if c.get('and_term_additional_input'):
+                ins.append(c.get('and_term_additional_input'))
+            fb = any(re.search(re.escape(treg) + r'(\[\d+\]|_\d+_)', str(i)) for i in ins)
+            if not fb:
+                mb_holdmux_issues.append(
+                    f"changes[{idx}] and_term on multi-bit register {treg!r}: gated net {old!r} "
+                    f"feeds {len(bits)} next-state DFF bits {sorted(bits)} but the gate has NO "
+                    f"feedback of the register's current value. Condition-gating a shared select "
+                    f"without feedback drives the next-state cone into don't-care combinations and "
+                    f"may not hold correctly (FM logic mismatch). Build a per-bit load-enable HOLD "
+                    f"MUX: D_new[b] = AO22(gate, D_orig[b], ~gate, {treg}[b]) feeding back the "
+                    f"current register bit (engineer reference). See rtl_diff_analyzer.md and_term "
+                    f"multi-bit hold-mux rule.")
+    if mb_holdmux_issues:
+        overall_pass = False
+
     out = {
         'rtl_diff': args.rtl_diff,
         'mux_select_issue_count': len(mux_select_issues),
@@ -2357,6 +2411,8 @@ def main():
         'andterm_fanout_issues':          andterm_fanout_issues,
         'mode_i_anchor_issue_count':      len(mode_i_anchor_issues),
         'mode_i_anchor_issues':           mode_i_anchor_issues,
+        'mb_holdmux_issue_count':         len(mb_holdmux_issues),
+        'mb_holdmux_issues':              mb_holdmux_issues,
         'overall_pass':          overall_pass,
         'entries':               results,
     }
@@ -2402,6 +2458,8 @@ def main():
     for p in andterm_fanout_issues:
         print(f'    - {p}')
     for p in mode_i_anchor_issues:
+        print(f'    - {p}')
+    for p in mb_holdmux_issues:
         print(f'    - {p}')
     for r in results:
         if r['issues']:

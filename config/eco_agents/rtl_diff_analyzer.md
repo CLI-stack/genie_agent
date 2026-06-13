@@ -119,6 +119,8 @@ Classify as `and_term` (NOT `wire_swap`). `old_token` = the **gate-level net** t
 
 **`enable_swap` applies only to a single-update register.** Apply the same distinct-branch test before classifying a changed `else if` guard as `enable_swap`: if the target register has ≥2 functional update branches (a multi-branch priority that loads different values, e.g. `if(rst) r<=0; else if(a) r<=X; else if(b) r<=Y;`), a narrowed branch guard is a **per-branch next-state gate, NOT `enable_swap`** — clock-gating the shared enable would freeze the non-gated branches. Validator `enable_branch_issues` enforces this.
 
+**Multi-bit register branch-gate → feedback HOLD MUX, not condition-gating.** If the gated net feeds the next-state of **≥2 DFF bits of the SAME register** whose default (no-`else`) behavior is HOLD (a counter), do NOT just gate the shared select net — that exploits the original cone's don't-cares (the cone was synthesized assuming the condition implied a specific state) and is not guaranteed to hold. Build a per-bit load-enable mux that **feeds back the current register value**: `D_new[b] = AO22(gate, D_orig[b], ~gate, <reg>[b])`, matching the engineer reference. Validator `mb_holdmux_issues` enforces this (it traces the gated net to its DFF-bit fanout and requires register-bit feedback).
+
 **MANDATORY insertion pattern — DFF-pin-rewire, NOT driver-rename:**
 
 Insert the new gate chain BETWEEN the OLD net and the consuming DFF's D pin. The OLD net (`old_token`) and its driver are left UNTOUCHED. The new chain's final `output_net` MUST be a fresh `n_eco_<jira>_<seq>` net. Then emit a separate `rewire` entry that points the DFF's D pin from `old_token` to the new net.
