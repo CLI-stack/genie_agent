@@ -375,6 +375,8 @@ This is wire-up (real driver), not invention. Engineers do this manually when a 
 
 **Preserve Step 1's bit index, and never rename a net to itself.** The bridge `net_name` bit MUST match Step 1's `flat_net_name` bit (e.g. `REG_X[0]` → use `REG_X_0_`/`REG_X[0]`, NEVER `_31_` — the spare net is the LSB/last element of an MSB-first concat, so `bus_bit_index` is the position from the END, not the start). And a `port_connection` whose `net_name` equals its `net_name_before` is a **no-op** that drives nothing — every bridge level must actually rename the source net through (e.g. the register-output `oQ` loopback `oQ_*_0 → oQ_*`). Step 3 validator flags both.
 
+**The loopback must rename the oQ_/iQ_ ports of the SAME register being bridged.** When bridging CSR bit `REG_<F>[b]`, the register-block/read-mux loopback renames `oQ_<F>_*` and `iQ_<F>_*` (same family `<F>`, e.g. `UmcCfgEco`) — NEVER a different register's port (`oQ_UMC_CONFIG_DDR_TYPE`, `iQ_DimmCfgCS01_*`). Grep the instance for the `<F>`-family port; do not pick a neighboring port. Use `eco_emit_loopback_bridge.py` to emit these deterministically. Step 3 validator flags off-family bridge ports.
+
 Log: `UNCONNECTED_RENAME: <N_syn>/<N_pp>/<N_rt> → n_eco_<jira>_<hint> | bus=<inst>.<port>[<bit>]`
 
 **MANDATORY port_connection schema for bus-position renames** — eco_netlist_port_rewire dispatches to `_apply_bus_rename` on these exact fields:

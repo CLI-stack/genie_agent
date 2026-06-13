@@ -5179,6 +5179,33 @@ def main():
                 f"rename the net to wire the source through (e.g. the register-output oQ "
                 f"loopback). Emit the real rename.")
 
+    # ── Bridge family consistency ──────────────────────────────────────────────
+    # Every CSR register-file bridge port (oQ_*/iQ_*) must belong to the bridge's CSR
+    # family, derived from Step 1's flat_net_name (REG_UmcCfgEco -> "UmcCfgEco"). A
+    # hallucinated off-family port (e.g. oQ_UMC_CONFIG_DDR_TYPE while bridging
+    # UmcCfgEco) bridges the WRONG register / corrupts unrelated logic.
+    _fam = set()
+    for c in rtl_diff.get('changes', []):
+        for f in ('flat_net_name', 'd_input_resolved_net'):
+            v = c.get(f)
+            if isinstance(v, str):
+                m = re.match(r'REG_(\w+?)(?:\[\d+\]|_\d+_)$', v)
+                if m:
+                    _fam.add(m.group(1))
+    if _fam:
+        for e in study.get('Synthesize', []):
+            if e.get('change_type') != 'port_connection':
+                continue
+            port = e.get('port_name') or ''
+            if not re.match(r'^(?:oQ|iQ)_', port):
+                continue
+            if not any(fb in port for fb in _fam):
+                issues.append(
+                    f"HIGH: bridge port_connection on {e.get('instance_name','?')}.{port} is "
+                    f"OFF-FAMILY — it does not reference the bridged CSR register {sorted(_fam)} "
+                    f"(net={e.get('net_name')!r}). Likely a hallucinated wrong register port; the "
+                    f"loopback must rename the oQ_/iQ_ ports of the SAME register being bridged.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}
