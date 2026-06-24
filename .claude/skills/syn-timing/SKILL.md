@@ -329,73 +329,72 @@ Also read `status_xls.rpt` for Setup/Hold detail and VT mix.
 
 --- Tuning Recommendations ---
 
-  After completing root cause analysis, read the existing tune TCL files from
-  <tile_dir>/tune/FxSynthesize/*.tcl to understand what is already in place,
-  then generate specific, actionable recommendations.
+  After completing root cause analysis, derive Fusion Compiler tuning commands
+  based on the specific violations found. Use your synthesis and FC expertise —
+  do not apply rigid rules. Reason from the actual data.
 
-  Apply these decision rules based on the analysis findings:
+  Step A: Read existing tune TCL files
+  ──────────────────────────────────────
+  Read ALL files under <tile_dir>/tune/FxSynthesize/*.tcl to understand what is
+  already in place. Do not recommend commands already present.
 
-  RULE 1 — High-fanout startpoint driving multiple violating paths
-    Trigger : same register appears as startpoint for ≥3 paths in top-15 table
-    File    : tune/FxSynthesize/FxSynthesize.pre_opt.tcl
-    Action  : add or increase set_register_replication for that register hierarchy
-    TCL     : set_register_replication -num_copies <N> [get_cells -hier <hier_pattern>]
-    Note    : start with N = fanout × 2, round up to nearest 5
+  Key files and their purpose:
+    pre_setup.tcl          — app_options, host settings, compile switches
+    pre_opt.tcl            — register replication, hierarchy flattening
+    post_initial_map.tcl   — post-map replication, placement bounds
+    post_opt.tcl           — incremental compile control, post-opt fixes
+    post_opt_path_margin.tcl — clock gating check margins
+    group_paths.tcl        — path group weights and priorities
 
-  RULE 2 — Logic depth > 30 levels on critical path
-    Trigger : Levels > 30 in proc_qor for a failing group
-    File    : tune/FxSynthesize/FxSynthesize.pre_setup.tcl
-    Action  : verify advanced_logic_restructuring is set to high; if not, add it
-    TCL     : set_app_options -list {opt.common.advanced_logic_restructuring_wirelength_costing high}
-    Also    : check if relevant sub-hierarchy can be ungrouped in pre_opt.tcl
+  Step B: Derive FC commands from findings
+  ─────────────────────────────────────────
+  Use the root cause analysis results (logic depth, fanout nets, cap nets,
+  violating path endpoints/startpoints, per-group WNS/TNS/NVP, pass progression)
+  and your knowledge of Fusion Compiler synthesis optimization to determine which
+  FC commands would address each issue. Consider commands from areas including:
 
-  RULE 3 — Pass-over-pass degradation (WNS worse in P3 vs P2)
-    Trigger : WNS(P3) < WNS(P2) for any failing group
-    File    : tune/FxSynthesize/FxSynthesize.post_opt.tcl  (DDRSS_FEINT_NUM_COMPILES param)
-    Action  : increase number of incremental compiles; check if compile threshold
-              (-0.025 × CLOCK_PERIOD) should be relaxed
-    TCL     : set MaxCompiles [expr $MaxCompiles + 2]
+  - compile_fusion options and incremental compile strategies
+  - set_app_options for timing, placement, and logic optimization knobs
+  - set_register_replication for high-fanout startpoints
+  - group_path weight and critical_range adjustments
+  - set_max_fanout / set_max_transition constraints
+  - set_clock_gating_check margins
+  - size_cell / insert_buffer for critical path cells
+  - Hierarchy flattening (ungroup) for deep logic structures
+  - Cell library controls (set_dont_use / remove_dont_use for VT swaps)
+  - Additional compile passes and compile thresholds
 
-  RULE 4 — clock_gating_default violations with high TNS
-    Trigger : clock_gating_default NVP > 50 or WNS < -50 ps
-    File    : tune/FxSynthesize/FxSynthesize.post_opt_path_margin.tcl
-    Action  : tighten clock gating check setup margin; also check weight in group_paths
-    TCL     : set_clock_gating_check -setup 30 [get_cells -hier * -filter "ref_name=~CKOR*"]
+  For each recommendation, state clearly:
+  - What the finding is (from the analysis data)
+  - Why this FC command addresses it
+  - Which tune file it belongs in
+  - The exact TCL/FC command to add or modify
 
-  RULE 5 — Worst path group has disproportionate violations vs others
-    Trigger : one group has >60% of total NVP
-    File    : tune/FxSynthesize/FxSynthesize.group_paths.tcl
-    Action  : increase weight for that group to 2 or 3 to steer optimizer attention
-    TCL     : group_path -name <GROUP> -critical_range 200 -weight 2 -priority $nPriority ...
-
-  RULE 6 — High-cap net with fanout > 10 not already replicated
-    Trigger : net cap > 15 fF and fanout > 10 from FuncTT0p9v analysis
-    File    : tune/FxSynthesize/FxSynthesize.pre_opt.tcl
-    Action  : add set_register_replication for the driving register
-
-  Present recommendations as a table, then show the TCL diff for each file:
+  Step C: Output format
+  ──────────────────────
 
   Recommendations Summary
-  ──────────────────────────────────────────────────────────────────────────────────────────
-  #   Rule   Group / Signal               Issue                  File                Action
-  ──────────────────────────────────────────────────────────────────────────────────────────
-  1   R1     ARB/DCQARB/LPDDR5En_pre_buf  fanout=8, 6× startpt   pre_opt.tcl         replicate ×10
-  2   R2     SYN_R2R                       33 levels              pre_setup.tcl       verify restructuring
-  3   R5     SYN_nonIP                     80% of total NVP       group_paths.tcl     weight → 2
-  ...
+  ─────────────────────────────────────────────────────────────────────────────────
+  #   Finding                              FC Command / Knob          Tune File
+  ─────────────────────────────────────────────────────────────────────────────────
+  1   <specific finding from analysis>     <FC command or app_option>  <file.tcl>
+  2   ...
+  ─────────────────────────────────────────────────────────────────────────────────
 
-  Proposed TCL Changes
-  ────────────────────────────────────────────────────────────────────────────────────────
-  File: tune/FxSynthesize/FxSynthesize.pre_opt.tcl
-  ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
-  + set_register_replication -num_copies 10 [get_cells -hier *LPDDR5En_pre_buf_reg*]
+  Proposed TCL Changes  (add to the tune files listed above)
+  ──────────────────────────────────────────────────────────────────────────────
+  File: tune/FxSynthesize/<filename>.tcl
+  ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+  # <reason — what finding this addresses>
+  + <exact TCL line to add>
 
-  File: tune/FxSynthesize/FxSynthesize.group_paths.tcl
-  ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
-  - group_path -name SYN_nonIP -critical_range 200 -weight 1 ...
-  + group_path -name SYN_nonIP -critical_range 200 -weight 2 ...
-  ────────────────────────────────────────────────────────────────────────────────────────
-  Note: review existing tune files before applying — avoid duplicating entries already present.
+  File: tune/FxSynthesize/<filename>.tcl
+  ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+  - <existing line to change>
+  + <replacement line>
+  ──────────────────────────────────────────────────────────────────────────────
+  Note: changes shown are additions (+) or replacements (- old / + new).
+        Verify against existing file content before applying.
 ```
 
 ---
