@@ -337,19 +337,46 @@ Also read `status_xls.rpt` for Setup/Hold detail and VT mix.
   File purposes and typical content:
     pre_opt.tcl              — path groups (sources group_paths.tcl), app_options,
                                max_fanout/max_transition, congestion settings,
-                               multibit options, set_size_only, r2r_optimization.tcl
+                               multibit options, set_size_only; also sources
+                               r2r_optimization.tcl if it exists
     group_paths.tcl          — path group weights and priorities (base definitions)
     r2r_optimization.tcl     — targeted R2R path groups, effort, boundary opt,
                                physical bounds (create_bound), high-fanout cells
+                               *** MAY NOT EXIST — see creation instructions below ***
     post_initial_map.tcl     — set_register_replication for specific reset/critical regs
     post_logic_opto.tcl      — second compile pass (re-sources group_paths, then runs
                                compile_fusion initial_place → initial_drc → initial_opto)
+                               *** MAY NOT EXIST — see creation instructions below ***
     post_opt.tcl             — incremental compile loop control
     post_opt_path_margin.tcl — clock gating check margins
 
   IMPORTANT — sourcing order matters: r2r_optimization.tcl is sourced AFTER
   group_paths.tcl. Same-named group_path definitions in r2r_optimization.tcl
   OVERRIDE the group_paths.tcl definitions. Always check effective final weight.
+
+  FILE CREATION — if r2r_optimization.tcl does not exist:
+  ──────────────────────────────────────────────────────────
+  1. CREATE the file: tune/FxSynthesize/FxSynthesize.r2r_optimization.tcl
+  2. ADD a tunesource line in pre_opt.tcl, immediately after the existing
+     group_paths.tcl tunesource line:
+
+     Before (existing in pre_opt.tcl):
+       tunesource tune/$TARGET_NAME/$TARGET_NAME.group_paths.tcl
+
+     After (add the new line directly below):
+       tunesource tune/$TARGET_NAME/$TARGET_NAME.group_paths.tcl
+       tunesource tune/$TARGET_NAME/$TARGET_NAME.r2r_optimization.tcl
+
+  FILE CREATION — if post_logic_opto.tcl does not exist:
+  ──────────────────────────────────────────────────────────
+  1. CREATE the file: tune/FxSynthesize/FxSynthesize.post_logic_opto.tcl
+     with content:
+       tunesource "tune/FxSynthesize/FxSynthesize.group_paths.tcl"
+       compile_fusion -from initial_place -to initial_place
+       compile_fusion -from initial_drc -to initial_drc
+       compile_fusion -from initial_opto -to initial_opto
+  2. The flow picks this up automatically by filename convention — no
+     additional hook needed in other files.
 
   Step B — Derive FC commands from the actual timing data
   ─────────────────────────────────────────────────────────
