@@ -122,14 +122,24 @@ From the filtered output, for each pass and each path group extract:
   DESIGN    <val>         <val>          <val>
 
 --- Per-Pass Timing Progression by Path Group  (proc_qor, ps) ---
-  One row per path group. Pass columns are side-by-side for easy comparison.
-  Levels column shows the final pass value.
 
-  Path Group                |      Pass 1              |      Pass 2              |      Pass 3              | Lvls
-                            |  WNS (ps)   TNS (ps) Viol|  WNS (ps)   TNS (ps) Viol|  WNS (ps)   TNS (ps) Viol|
-  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  <name padded to 24>       |  <val>      <val>    <N> |  <val>      <val>    <N> |  <val>      <val>    <N> | <L>
-  ...  (one row per group, all passes in the same row)
+  Path Group            Lvls   Pass    WNS (ps)      TNS (ps)    Viol
+  ─────────────────────────────────────────────────────────────────────
+  <name padded to 22>   <L>     P1     <val>         <val>       <N>
+                                P2     <val>         <val>       <N>
+                                P3     <val>         <val>       <N>
+  ─────────────────────────────────────────────────────────────────────
+  <next group>          <L>     P1     <val>         <val>       <N>
+                                P2     <val>         <val>       <N>
+                                P3     <val>         <val>       <N>
+  ─────────────────────────────────────────────────────────────────────
+  ...
+
+  Rules:
+  - Path group name and Lvls appear only on the P1 row; P2/P3 rows leave those columns blank
+  - A separator line ─── is drawn between every path group
+  - Lvls shows the final pass value
+  - WNS always shows sign (+ or -)
 ```
 
 ---
@@ -210,12 +220,20 @@ Also read `status_xls.rpt` for Setup/Hold detail and VT mix.
   (WNS/TNS/NVP from FxSynthesize.dat; Levels+CritLen from proc_qor)
 
 --- Per-Pass Timing Progression by Path Group  (proc_qor, ps) ---
-  Path Group                Pass    WNS (ps)    TNS (ps)   Violations   Levels
-  ─────────────────────────────────────────────────────────────────────────────
-  <name padded to 24>       1       <val>       <val>      <val>        <val>
-  <name padded to 24>       2       <val>       <val>      <val>        <val>
-  <name padded to 24>       3       <val>       <val>      <val>        <val>
+
+  Path Group            Lvls   Pass    WNS (ps)      TNS (ps)    Viol
+  ─────────────────────────────────────────────────────────────────────
+  <name padded to 22>   <L>     P1     <val>         <val>       <N>
+                                P2     <val>         <val>       <N>
+                                P3     <val>         <val>       <N>
+  ─────────────────────────────────────────────────────────────────────
+  <next group>          <L>     P1     <val>         <val>       <N>
+                                P2     <val>         <val>       <N>
+                                P3     <val>         <val>       <N>
+  ─────────────────────────────────────────────────────────────────────
   ...
+
+  (Path group name + Lvls on P1 row only; separator line between every group)
 
 --- Design Timing Totals  (ps) ---
   Scope     WNS (ps)      TNS (ps)       NVP
