@@ -334,86 +334,186 @@ Also read `status_xls.rpt` for Setup/Hold detail and VT mix.
   Read ALL files under <tile_dir>/tune/FxSynthesize/*.tcl before making any
   recommendation. Do not suggest commands or values already in place.
 
-  File purposes:
-    pre_setup.tcl            — app_options, host settings, compile switches
-    pre_opt.tcl              — register replication, hierarchy flattening
-    post_initial_map.tcl     — post-map replication, placement bounds
-    post_opt.tcl             — post-opt fixes
+  File purposes and typical content:
+    pre_opt.tcl              — path groups (sources group_paths.tcl), app_options,
+                               max_fanout/max_transition, congestion settings,
+                               multibit options, set_size_only, r2r_optimization.tcl
+    group_paths.tcl          — path group weights and priorities (base definitions)
+    r2r_optimization.tcl     — targeted R2R path groups, effort, boundary opt,
+                               physical bounds (create_bound), high-fanout cells
+    post_initial_map.tcl     — set_register_replication for specific reset/critical regs
+    post_logic_opto.tcl      — second compile pass (re-sources group_paths, then runs
+                               compile_fusion initial_place → initial_drc → initial_opto)
+    post_opt.tcl             — incremental compile loop control
     post_opt_path_margin.tcl — clock gating check margins
-    group_paths.tcl          — path group weights and priorities
+
+  IMPORTANT — sourcing order matters: r2r_optimization.tcl is sourced AFTER
+  group_paths.tcl. Same-named group_path definitions in r2r_optimization.tcl
+  OVERRIDE the group_paths.tcl definitions. Always check effective final weight.
 
   Step B — Derive FC commands from the actual timing data
   ─────────────────────────────────────────────────────────
   Use ONLY the findings from the analysis above (WNS, TNS, NVP per group,
-  logic depth, fanout values, cap values, which endpoints/startpoints are
-  repeating, pass progression). Do NOT use fixed ranges or hardcoded values.
-  Scale every parameter to what the data shows.
+  logic depth, fanout values, cap values, which endpoints/startpoints repeat,
+  pass progression, hierarchy names from violating paths). Do NOT use fixed
+  ranges. Scale every parameter to what the data shows.
 
-  Derive commands from this FC toolkit (not exhaustive — use judgement):
+  ── 1. PATH GROUP PRIORITIZATION ──────────────────────────────────────────
+  Belongs in: r2r_optimization.tcl (overrides group_paths.tcl if same name)
 
-  PATH GROUP PRIORITIZATION
-    group_path -name <group> -weight <W> -critical_range <CR> ...
-      W  : scale with severity — mild violation → 2, moderate → 5, severe → 10+
-      CR : scale with |WNS| — set to ~3–5× |WNS| so paths near slack boundary
-           are also captured; wider for TNS-heavy groups
-    remove_path_group <name>    — clean up before redefining
-    set_boundary_optimization <hier_cells> all  — expose cross-boundary paths
+    group_path -name <group> -weight <W> -critical_range <CR> \
+        -from <cells> -to <cells>
+      W  : scale with severity — mild → 2–5, moderate → 6–9, severe → 10–15
+      CR : set to ~3–5× |WNS| to capture near-boundary paths too; wider for
+           TNS-heavy groups with many NVP
+    group_path -name <group> ... -to <cells>    — endpoint-only group for fanout targets
+    group_path -name <group> ... -from <cells>  — startpoint-only group
+    remove_path_group <name>   — clean up stale groups before redefining
 
-  FANOUT & NET LOADING
-    set_max_fanout <N> <cells>  — derive N from actual fanout found; set to
-                                  50–70% of current fanout to force buffering
-    set_max_transition <T> <nets>  — derive T from trans values in path trace
-    set_max_capacitance <C> <nets> — derive C from cap values in path trace
-    set_dont_touch <cells> false   — unlock protected cells blocking opt
+  CAUTION: set_boundary_optimization on a broad hierarchy can explode TNS.
+  Apply only to the specific sub-hierarchy that contains violating paths
+  (e.g. DCQARB/dcq only, not all DCQARB). Always check before/after TNS.
+    set_boundary_optimization <targeted_hier_cells> true
+    set_dont_touch <same_cells> false   — must pair with boundary opt
 
-  LOGIC RESTRUCTURING & EFFORT
+  ── 2. PHYSICAL PLACEMENT BOUNDS ──────────────────────────────────────────
+  Belongs in: r2r_optimization.tcl
+  Use when wire delay dominates (large cap/fanout in path trace) and related
+  cell hierarchies are physically spread apart.
+
+    create_bound -name <bound_name> \
+        -boundary [list [list <x1> <y1>] [list <x2> <y2>]] \
+        -type soft \
+        <cell_collection>
+
+  Sizing rules (from actual failures):
+  - Always use -type soft (hard bounds cause non-convergence at high density)
+  - Target ~200 cells/um2 inside bound; >400 cells/um2 causes 89-hr stalls
+  - Size from actual report_area cell area: bound_area = cell_area / 0.60
+  - Anchor bounds near communicating SRAMs/macros to minimise port wire delay
+  - Derive coordinates from DEF file macro positions, not guesses
+
+  ── 3. MULTIBIT BANKING CONTROL ───────────────────────────────────────────
+  Belongs in: pre_opt.tcl
+  MB8FF Q delay = 48–51ps vs single FF = 30ps → exclude timing-critical
+  pipeline registers from banking to save 15–20ps per launch.
+
+    set_multibit_options -slack_threshold 0
+    set_multibit_options -exclude [get_cells -quiet -hier * \
+        -filter "full_name=~*<critical_pipeline_hier>*<reg_pattern>*"]
+    set_app_option -name compile.flow.enable_rtl_multibit_debanking  -value true
+    set_app_option -name compile.flow.enable_physical_multibit_banking -value true
+    set_app_option -name compile.flow.enable_rtl_multibit_banking     -value true
+    set_app_option -name compile.flow.enable_multibit_debanking       -value true
+    set_app_options -name compile.flow.max_multibit_size -value <N>
+      N : 4 for data tiles (prevents debanking regression), 6 for cmd tiles
+    set_app_options -name multibit.banking.enable_tns_degradation_estimation \
+        -value true
+
+  Identify which pipeline registers to exclude: look at FuncTT0p9v path
+  trace for the worst group — exclude the launch FF cell type/hierarchy if
+  it is a multibit cell (MB4/MB8 in cell name).
+
+  ── 4. FANOUT & NET LOADING ───────────────────────────────────────────────
+  Belongs in: r2r_optimization.tcl
+
+    set_max_fanout <N> <specific_cells>
+      N : 50–70% of observed fanout on that specific net/cell
+      CAUTION: do NOT apply set_max_fanout to broad hierarchies (e.g. all
+      DCQARB) — it causes massive buffering overhead and wastes optimizer
+      budget. Apply only to the specific high-fanout registers identified
+      in the FuncTT0p9v path trace.
+    set_max_transition <T> <nets>   — from trans column in path trace
+    set_max_capacitance <C> <nets>  — from cap column in path trace
+
+  ── 5. EFFORT & LOGIC RESTRUCTURING ──────────────────────────────────────
+  Belongs in: r2r_optimization.tcl or pre_opt.tcl
+
+    set_app_options -name opt.timing.effort -value high
+    set_app_options -name opt.area.effort -value high
+    set_app_options -name opt.common.buffer_area_effort -value ultra
+    set_app_options -name compile.flow.high_effort_timing -value 1
     set_app_options -name opt.common.advanced_logic_restructuring_mode \
-        -value timing              — when logic depth is dominant cause
+        -value area_timing     — TNS spread across many paths (general case)
     set_app_options -name opt.common.advanced_logic_restructuring_mode \
-        -value area_timing         — when TNS is spread across many paths
-    set_app_options -name compile.flow.enable_restructure -value true
-    set_app_options -name compile.flow.allow_duplication -value true
-    set_app_options -name opt.timing.effort -value ultra
-    set_app_options -name compile.timing.area_recovery -value false
-                                   — disable when timing must not be traded
+        -value timing          — logic depth is the dominant bottleneck
+    set_app_options -name opt.common.advanced_logic_restructuring_wirelength_costing \
+        -value high
     set_app_options -name compile.timing.prioritize_tns -value true
-                                   — when NVP is high across many paths
     set_app_options -name opt.timing.slack_based_tns_optimization -value true
     set_app_options -name opt.timing.tns_optimization_paths_per_endpoint \
-        -value <N>                 — derive N from NVP (e.g. NVP/10, min 5)
+        -value <N>             — derive from NVP: NVP/10, minimum 5
+    set_app_options -name compile.flow.enable_auto_feasibility_recovery -value true
+                               — safety net when bounds risk congestion overflow
 
-  RETIMING (when logic depth is the bottleneck)
+  ── 6. PLACEMENT & ROUTING EFFORT ─────────────────────────────────────────
+  Belongs in: r2r_optimization.tcl
+
+    set_app_options -name compile.final_place.effort -value high
+    set_app_options -name compile.initial_place.buffering_aware_placement_effort \
+        -value high
+    set_app_options -name place_opt.final_place.effort -value high
+    set_app_options -name place_opt.place.congestion_effort -value high
+    set_app_options -name clock_opt.place.congestion_effort -value high
+    set_app_options -name route.common.rc_driven_setup_effort_level -value high
+    set_app_options -name route.global.effort_level -value high
+    set_app_options -name route.detail.optimize_wire_via_effort_level -value high
+    set_app_options -name ccd.hold_control_effort -value high
+    set_app_options -name place.coarse.max_density -value <D>
+      D : reduce from current by 0.05–0.10 when wire delay dominates
+    set_congestion_optimization [get_designs] TRUE
+    set_congestion_optimization [get_cells -hier * \
+        -filter "is_hierarchical == true"] true
+
+  ── 7. RETIMING (when logic depth is the bottleneck) ──────────────────────
+  Belongs in: r2r_optimization.tcl
+
     set_app_options -name compile.register_retiming.mode -value full
-    set_app_options -name compile.retiming.optimization_priority \
-        -value setup_timing
+    set_app_options -name compile.retiming.optimization_priority -value setup_timing
     set_app_options -name compile.retiming.enable_forward_retiming -value true
     set_app_options -name compile.retiming.enable_backward_retiming -value true
+      NOTE: backward retiming can cause instability — validate pass-over-pass
     set_app_options -name compile.seqmap.register_replication_placement_effort \
         -value high
 
-  REGISTER REPLICATION (when same startpoint drives many endpoints)
-    set_register_replication -num_copies <N> [get_cells -hier <pattern>]
-      N : scale from actual fanout — replicate so each copy drives ≤ fanout/N
+  ── 8. REGISTER REPLICATION ───────────────────────────────────────────────
+  Belongs in: post_initial_map.tcl (for reset/specific regs) or r2r_optimization.tcl
+
+    set_register_replication -num_copies <N> \
+        [get_cells -hier * -filter "full_name=~*<hier_pattern>*"]
+      N : replicate so each copy drives ≤ actual_fanout / N
     set_app_options -name compile.timing.buffer_replication -value true
 
-  BUFFERING & SIZING
-    set_max_fanout <N> [current_design]
-    set_app_options -name opt.common.max_fanout -value <N>
-    size_cell -all_instances <cell_collection>
-    set_size_only <cells>   — when logic change is not desired, only upsizing
+  ── 9. SECOND OPTIMISATION PASS ───────────────────────────────────────────
+  Belongs in: post_logic_opto.tcl (create if not present)
+  Use when a single compile pass leaves significant TNS remaining.
 
-  PLACEMENT DENSITY (when congestion is contributing to wire delay)
-    set_app_options -name place.coarse.max_density -value <D>
-      D : reduce from current value by 0.05–0.10 based on how much wire delay
-          dominates (large cap values in path trace = congested placement)
-    set_app_options -name compile.initial_place.buffering_aware_placement_effort \
-        -value ultra
+    tunesource "tune/FxSynthesize/FxSynthesize.group_paths.tcl"
+    compile_fusion -from initial_place -to initial_place
+    compile_fusion -from initial_drc -to initial_drc
+    compile_fusion -from initial_opto -to initial_opto
 
-  CONDITIONAL ARCS (when timing appears pessimistic)
+  ── 10. CLOCK TRANSITION ──────────────────────────────────────────────────
+  Belongs in: pre_opt.tcl
+
+    set_clock_transition <T> [get_clocks -quiet *UCLK*]
+      T : derive from clock transition values seen in FuncTT0p9v path trace
+
+  ── 11. CONDITIONAL ARCS ──────────────────────────────────────────────────
     set_app_options -name time.enable_cond_default_arcs -value true
+      — use when timing appears pessimistic vs expected path length
 
-  Always pair targeted set_app_options with reset_app_options after the
-  relevant compile phase to avoid polluting subsequent optimization stages.
+  ── KNOWN PITFALLS ────────────────────────────────────────────────────────
+  Always check these before making recommendations:
+
+  | Pitfall                                    | Effect                        | Safe Practice                          |
+  |────────────────────────────────────────────|───────────────────────────────|────────────────────────────────────────|
+  | set_boundary_optimization on broad hier    | TNS explosion (+57K ps)       | Target /submodule only, not whole block|
+  | set_max_fanout on large hierarchy          | Buffering overhead, wasted opt| Apply to specific named registers only |
+  | create_bound too tight (>400 cells/um2)    | 89-hr non-convergence         | size to ~200 cells/um2, always soft    |
+  | Same group name in r2r_optimization.tcl    | Silently overrides weight     | Always verify final effective weight   |
+  | set_boundary_optimization on cross-domain  | CDC path regression           | Never apply across clock domain        |
+  | Backward retiming enabled                  | Pass instability              | Validate carefully before keeping      |
 
   Step C — Output format
   ───────────────────────
