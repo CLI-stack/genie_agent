@@ -113,12 +113,14 @@ whichever exist) — for each pass and each path group extract:
   DESIGN    <val>         <val>          <val>
 
 --- Per-Pass Timing Progression by Path Group  (proc_qor, ps) ---
-  Path Group                Pass    WNS (ps)    TNS (ps)   Violations   Levels
-  ─────────────────────────────────────────────────────────────────────────────
-  <name padded to 24>       1       <val>       <val>      <val>        <val>
-  <name padded to 24>       2       <val>       <val>      <val>        <val>
-  <name padded to 24>       3       <val>       <val>      <val>        <val>
-  ...  (one row per pass per group; repeat for every group found)
+  One row per path group. Pass columns are side-by-side for easy comparison.
+  Levels column shows the final pass value.
+
+  Path Group                |      Pass 1              |      Pass 2              |      Pass 3              | Lvls
+                            |  WNS (ps)   TNS (ps) Viol|  WNS (ps)   TNS (ps) Viol|  WNS (ps)   TNS (ps) Viol|
+  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  <name padded to 24>       |  <val>      <val>    <N> |  <val>      <val>    <N> |  <val>      <val>    <N> | <L>
+  ...  (one row per group, all passes in the same row)
 ```
 
 ---
