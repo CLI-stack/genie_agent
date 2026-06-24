@@ -1,26 +1,28 @@
-# Godavari Synthesis Timing Report Skill
+# Synthesis Timing Report Skill
 
-Report FxSynthesize timing and QoR for Godavari tiles (umccmd / umcdat).
+Report FxSynthesize timing and QoR for UMC project tiles.
 Two modes: **simple** (quick timing snapshot) and **analysis** (full root-cause).
 
 ## Trigger
-`/godavari-syn-timing`
+`/syn-timing`
 
 ## Usage
 ```
-/godavari-syn-timing                                   # simple mode, latest umccmd + umcdat
-/godavari-syn-timing --simple                          # explicit simple mode
-/godavari-syn-timing --analysis                        # full analysis mode
-/godavari-syn-timing umccmd                            # simple, latest umccmd only
-/godavari-syn-timing umcdat --analysis                 # analysis, latest umcdat only
-/godavari-syn-timing /path/to/umccmd_Jun01_new         # simple, specific run dir
-/godavari-syn-timing /path/to/umccmd_Jun01_new --analysis
+/syn-timing                                            # simple mode, latest umccmd + umcdat
+/syn-timing --simple                                   # explicit simple mode
+/syn-timing --analysis                                 # full analysis mode
+/syn-timing umccmd                                     # simple, latest umccmd only
+/syn-timing umcdat --analysis                          # analysis, latest umcdat only
+/syn-timing /path/to/umccmd_Jun01_new                  # simple, specific run dir
+/syn-timing /path/to/umccmd_Jun01_new --analysis
 ```
 
 Default mode when no flag given: **simple**.
 
 ## Tiles Base Directory
-`/proj/rtg_oss_er_feint2/abinbaba/GODAVARI_SYN/main/pd/tiles`
+The user must supply the tiles directory path, or it can be inferred from the
+tile run path they provide. There is no hardcoded default — accept whatever
+path the user gives (e.g. `/proj/<project>/main/pd/tiles`).
 
 ---
 
@@ -35,10 +37,10 @@ Default mode when no flag given: **simple**.
 
 ```python
 Agent(
-  description="Godavari FxSynthesize timing — <MODE> — <tile> <run_dir_name>",
+  description="FxSynthesize timing report — <MODE> — <tile> <run_dir_name>",
   subagent_type="general-purpose",
   prompt="""
-You are a timing analysis agent for Godavari synthesis.
+You are a timing analysis agent for UMC synthesis.
 
 TILE_DIR = <resolved absolute path>
 MODE     = <simple | analysis>
