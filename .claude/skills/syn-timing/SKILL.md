@@ -329,72 +329,116 @@ Also read `status_xls.rpt` for Setup/Hold detail and VT mix.
 
 --- Tuning Recommendations ---
 
-  After completing root cause analysis, derive Fusion Compiler tuning commands
-  based on the specific violations found. Use your synthesis and FC expertise —
-  do not apply rigid rules. Reason from the actual data.
+  Step A — Read existing tune files
+  ───────────────────────────────────
+  Read ALL files under <tile_dir>/tune/FxSynthesize/*.tcl before making any
+  recommendation. Do not suggest commands or values already in place.
 
-  Step A: Read existing tune TCL files
-  ──────────────────────────────────────
-  Read ALL files under <tile_dir>/tune/FxSynthesize/*.tcl to understand what is
-  already in place. Do not recommend commands already present.
-
-  Key files and their purpose:
-    pre_setup.tcl          — app_options, host settings, compile switches
-    pre_opt.tcl            — register replication, hierarchy flattening
-    post_initial_map.tcl   — post-map replication, placement bounds
-    post_opt.tcl           — incremental compile control, post-opt fixes
+  File purposes:
+    pre_setup.tcl            — app_options, host settings, compile switches
+    pre_opt.tcl              — register replication, hierarchy flattening
+    post_initial_map.tcl     — post-map replication, placement bounds
+    post_opt.tcl             — post-opt fixes
     post_opt_path_margin.tcl — clock gating check margins
-    group_paths.tcl        — path group weights and priorities
+    group_paths.tcl          — path group weights and priorities
 
-  Step B: Derive FC commands from findings
-  ─────────────────────────────────────────
-  Use the root cause analysis results (logic depth, fanout nets, cap nets,
-  violating path endpoints/startpoints, per-group WNS/TNS/NVP, pass progression)
-  and your knowledge of Fusion Compiler synthesis optimization to determine which
-  FC commands would address each issue. Consider commands from areas including:
+  Step B — Derive FC commands from the actual timing data
+  ─────────────────────────────────────────────────────────
+  Use ONLY the findings from the analysis above (WNS, TNS, NVP per group,
+  logic depth, fanout values, cap values, which endpoints/startpoints are
+  repeating, pass progression). Do NOT use fixed ranges or hardcoded values.
+  Scale every parameter to what the data shows.
 
-  - compile_fusion options and incremental compile strategies
-  - set_app_options for timing, placement, and logic optimization knobs
-  - set_register_replication for high-fanout startpoints
-  - group_path weight and critical_range adjustments
-  - set_max_fanout / set_max_transition constraints
-  - set_clock_gating_check margins
-  - size_cell / insert_buffer for critical path cells
-  - Hierarchy flattening (ungroup) for deep logic structures
-  - Cell library controls (set_dont_use / remove_dont_use for VT swaps)
-  - Additional compile passes and compile thresholds
+  Derive commands from this FC toolkit (not exhaustive — use judgement):
 
-  For each recommendation, state clearly:
-  - What the finding is (from the analysis data)
-  - Why this FC command addresses it
-  - Which tune file it belongs in
-  - The exact TCL/FC command to add or modify
+  PATH GROUP PRIORITIZATION
+    group_path -name <group> -weight <W> -critical_range <CR> ...
+      W  : scale with severity — mild violation → 2, moderate → 5, severe → 10+
+      CR : scale with |WNS| — set to ~3–5× |WNS| so paths near slack boundary
+           are also captured; wider for TNS-heavy groups
+    remove_path_group <name>    — clean up before redefining
+    set_boundary_optimization <hier_cells> all  — expose cross-boundary paths
 
-  Step C: Output format
-  ──────────────────────
+  FANOUT & NET LOADING
+    set_max_fanout <N> <cells>  — derive N from actual fanout found; set to
+                                  50–70% of current fanout to force buffering
+    set_max_transition <T> <nets>  — derive T from trans values in path trace
+    set_max_capacitance <C> <nets> — derive C from cap values in path trace
+    set_dont_touch <cells> false   — unlock protected cells blocking opt
+
+  LOGIC RESTRUCTURING & EFFORT
+    set_app_options -name opt.common.advanced_logic_restructuring_mode \
+        -value timing              — when logic depth is dominant cause
+    set_app_options -name opt.common.advanced_logic_restructuring_mode \
+        -value area_timing         — when TNS is spread across many paths
+    set_app_options -name compile.flow.enable_restructure -value true
+    set_app_options -name compile.flow.allow_duplication -value true
+    set_app_options -name opt.timing.effort -value ultra
+    set_app_options -name compile.timing.area_recovery -value false
+                                   — disable when timing must not be traded
+    set_app_options -name compile.timing.prioritize_tns -value true
+                                   — when NVP is high across many paths
+    set_app_options -name opt.timing.slack_based_tns_optimization -value true
+    set_app_options -name opt.timing.tns_optimization_paths_per_endpoint \
+        -value <N>                 — derive N from NVP (e.g. NVP/10, min 5)
+
+  RETIMING (when logic depth is the bottleneck)
+    set_app_options -name compile.register_retiming.mode -value full
+    set_app_options -name compile.retiming.optimization_priority \
+        -value setup_timing
+    set_app_options -name compile.retiming.enable_forward_retiming -value true
+    set_app_options -name compile.retiming.enable_backward_retiming -value true
+    set_app_options -name compile.seqmap.register_replication_placement_effort \
+        -value high
+
+  REGISTER REPLICATION (when same startpoint drives many endpoints)
+    set_register_replication -num_copies <N> [get_cells -hier <pattern>]
+      N : scale from actual fanout — replicate so each copy drives ≤ fanout/N
+    set_app_options -name compile.timing.buffer_replication -value true
+
+  BUFFERING & SIZING
+    set_max_fanout <N> [current_design]
+    set_app_options -name opt.common.max_fanout -value <N>
+    size_cell -all_instances <cell_collection>
+    set_size_only <cells>   — when logic change is not desired, only upsizing
+
+  PLACEMENT DENSITY (when congestion is contributing to wire delay)
+    set_app_options -name place.coarse.max_density -value <D>
+      D : reduce from current value by 0.05–0.10 based on how much wire delay
+          dominates (large cap values in path trace = congested placement)
+    set_app_options -name compile.initial_place.buffering_aware_placement_effort \
+        -value ultra
+
+  CONDITIONAL ARCS (when timing appears pessimistic)
+    set_app_options -name time.enable_cond_default_arcs -value true
+
+  Always pair targeted set_app_options with reset_app_options after the
+  relevant compile phase to avoid polluting subsequent optimization stages.
+
+  Step C — Output format
+  ───────────────────────
 
   Recommendations Summary
-  ─────────────────────────────────────────────────────────────────────────────────
-  #   Finding                              FC Command / Knob          Tune File
-  ─────────────────────────────────────────────────────────────────────────────────
-  1   <specific finding from analysis>     <FC command or app_option>  <file.tcl>
+  ──────────────────────────────────────────────────────────────────────────────────────
+  #   Finding (from analysis data)                FC Command / Knob        Tune File
+  ──────────────────────────────────────────────────────────────────────────────────────
+  1   <specific finding with actual numbers>      <command + derived value>  <file.tcl>
   2   ...
-  ─────────────────────────────────────────────────────────────────────────────────
+  ──────────────────────────────────────────────────────────────────────────────────────
 
-  Proposed TCL Changes  (add to the tune files listed above)
-  ──────────────────────────────────────────────────────────────────────────────
+  Proposed TCL Changes
+  ──────────────────────────────────────────────────────────────────────────
   File: tune/FxSynthesize/<filename>.tcl
   ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
-  # <reason — what finding this addresses>
-  + <exact TCL line to add>
+  # <why: what finding this addresses, with the actual number>
+  + <exact TCL line with derived value>
 
   File: tune/FxSynthesize/<filename>.tcl
   ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
-  - <existing line to change>
-  + <replacement line>
-  ──────────────────────────────────────────────────────────────────────────────
-  Note: changes shown are additions (+) or replacements (- old / + new).
-        Verify against existing file content before applying.
+  - <existing line>
+  + <replacement line with updated value>
+  ──────────────────────────────────────────────────────────────────────────
+  Note: + = add, - old / + new = replace. Verify against existing file before applying.
 ```
 
 ---
