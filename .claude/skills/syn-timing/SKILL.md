@@ -344,9 +344,6 @@ Also read `status_xls.rpt` for Setup/Hold detail and VT mix.
                                physical bounds (create_bound), high-fanout cells
                                *** MAY NOT EXIST — see creation instructions below ***
     post_initial_map.tcl     — set_register_replication for specific reset/critical regs
-    post_logic_opto.tcl      — second compile pass (re-sources group_paths, then runs
-                               compile_fusion initial_place → initial_drc → initial_opto)
-                               *** MAY NOT EXIST — see creation instructions below ***
     post_opt.tcl             — incremental compile loop control
     post_opt_path_margin.tcl — clock gating check margins
 
@@ -367,16 +364,6 @@ Also read `status_xls.rpt` for Setup/Hold detail and VT mix.
        tunesource tune/$TARGET_NAME/$TARGET_NAME.group_paths.tcl
        tunesource tune/$TARGET_NAME/$TARGET_NAME.r2r_optimization.tcl
 
-  FILE CREATION — if post_logic_opto.tcl does not exist:
-  ──────────────────────────────────────────────────────────
-  1. CREATE the file: tune/FxSynthesize/FxSynthesize.post_logic_opto.tcl
-     with content:
-       tunesource "tune/FxSynthesize/FxSynthesize.group_paths.tcl"
-       compile_fusion -from initial_place -to initial_place
-       compile_fusion -from initial_drc -to initial_drc
-       compile_fusion -from initial_opto -to initial_opto
-  2. The flow picks this up automatically by filename convention — no
-     additional hook needed in other files.
 
   Step B — Derive FC commands from the actual timing data
   ─────────────────────────────────────────────────────────
@@ -511,16 +498,7 @@ Also read `status_xls.rpt` for Setup/Hold detail and VT mix.
       N : replicate so each copy drives ≤ actual_fanout / N
     set_app_options -name compile.timing.buffer_replication -value true
 
-  ── 9. SECOND OPTIMISATION PASS ───────────────────────────────────────────
-  Belongs in: post_logic_opto.tcl (create if not present)
-  Use when a single compile pass leaves significant TNS remaining.
-
-    tunesource "tune/FxSynthesize/FxSynthesize.group_paths.tcl"
-    compile_fusion -from initial_place -to initial_place
-    compile_fusion -from initial_drc -to initial_drc
-    compile_fusion -from initial_opto -to initial_opto
-
-  ── 10. CLOCK TRANSITION ──────────────────────────────────────────────────
+  ── 9. CLOCK TRANSITION ───────────────────────────────────────────────────
   Belongs in: pre_opt.tcl
 
     set_clock_transition <T> [get_clocks -quiet *UCLK*]
