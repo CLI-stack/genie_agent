@@ -84,7 +84,16 @@ Read only two sources for each tile:
 - `DesignWNS`, `DesignTNS`, `DesignNVP`
 
 **B. All available `FxSynthesize.pass_*.proc_qor.rpt.gz`** (pass_1, pass_2, pass_3 or
-whichever exist) — for each pass and each path group extract:
+whichever exist) — these files are very large (~1M lines) and almost entirely
+warning noise. **Do NOT read the full file.** Use grep to extract only the
+relevant lines before parsing:
+
+```bash
+zcat FxSynthesize.pass_N.proc_qor.rpt.gz \
+  | grep -E "Timing Path Group|Levels of Logic|Critical Path Slack|Critical Path Clk Period|Total Negative Slack|No\. of Violating"
+```
+
+From the filtered output, for each pass and each path group extract:
 - `Timing Path Group` name
 - `Critical Path Slack` (ps)
 - `Total Negative Slack` (ps)
@@ -139,10 +148,18 @@ Read all four sources:
 - `totalCellArea`, `FlopCount`, `totalCellCount`, `TotalWireLength`
 - `TotalFgcgGatedSeqRatio`, `MBBCellBankingRatio`
 
-**B. `FxSynthesize.pass_3.proc_qor.rpt.gz`** (or highest available pass) — for each group:
-- `Timing Path Group`, `Levels of Logic`, `Critical Path Length` (ps),
-  `Critical Path Slack` (ps), `Critical Path Clk Period` (ps),
-  `Total Negative Slack` (ps), `No. of Violating Paths`
+**B. `FxSynthesize.pass_*.proc_qor.rpt.gz`** (all available passes) — these files
+are very large (~1M lines) and almost entirely warning noise. **Do NOT read the
+full file.** Use grep to extract only the relevant lines:
+
+```bash
+zcat FxSynthesize.pass_N.proc_qor.rpt.gz \
+  | grep -E "Timing Path Group|Levels of Logic|Critical Path Slack|Critical Path Length|Critical Path Clk Period|Total Negative Slack|No\. of Violating"
+```
+
+From the filtered output extract per group: `Timing Path Group`, `Levels of Logic`,
+`Critical Path Length` (ps), `Critical Path Slack` (ps), `Critical Path Clk Period` (ps),
+`Total Negative Slack` (ps), `No. of Violating Paths`.
 
 **C. `report_timing.pass_3.rpt.sum.sort_slack.endpts.gz`** (or highest available pass)
 — for each `#N` row: Rank, Path Group, Uniquified Endpoint, Worst Startpoint,
