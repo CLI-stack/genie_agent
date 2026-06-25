@@ -1,28 +1,33 @@
 # Synthesis Timing Report Skill
 
 Report FxSynthesize timing and QoR for UMC project tiles.
-Two modes: **simple** (quick timing snapshot) and **analysis** (full root-cause).
+Three modes: **simple**, **analysis**, **comparison**.
 
 ## Trigger
 `/syn-timing`
 
 ## Usage
 ```
-/syn-timing                                            # simple mode, latest umccmd + umcdat
-/syn-timing --simple                                   # explicit simple mode
-/syn-timing --analysis                                 # full analysis mode
-/syn-timing umccmd                                     # simple, latest umccmd only
-/syn-timing umcdat --analysis                          # analysis, latest umcdat only
-/syn-timing /path/to/umccmd_Jun01_new                  # simple, specific run dir
-/syn-timing /path/to/umccmd_Jun01_new --analysis
+/syn-timing                                             # simple, latest umccmd + umcdat
+/syn-timing --simple                                    # explicit simple mode
+/syn-timing --analysis                                  # full analysis mode
+/syn-timing umccmd                                      # simple, latest umccmd only
+/syn-timing umcdat --analysis                           # analysis, latest umcdat only
+/syn-timing /path/to/run                                # simple, specific run dir
+/syn-timing /path/to/run --analysis                     # analysis, specific run dir
+
+# Comparison — two run directories, same tile
+/syn-timing --comparison /path/to/run_A /path/to/run_B
+/syn-timing --comparison /path/to/run_A /path/to/run_B --analysis
 ```
 
-Default mode when no flag given: **simple**.
+- Default mode when no flag given: **simple**
+- `--comparison` requires exactly two absolute run directory paths
+- `--comparison` without `--analysis`: compare timing summary only (simple data)
+- `--comparison --analysis`: compare full analysis + root cause of changes
 
 ## Tiles Base Directory
-The user must supply the tiles directory path, or it can be inferred from the
-tile run path they provide. There is no hardcoded default — accept whatever
-path the user gives (e.g. `/proj/<project>/main/pd/tiles`).
+The user must supply the tile run path(s) directly. No hardcoded default.
 
 ---
 
@@ -30,26 +35,27 @@ path the user gives (e.g. `/proj/<project>/main/pd/tiles`).
 
 **Do NOT perform the analysis in the main session context.**
 
-1. Resolve `TILE_DIR` inline in the main session (a quick `ls` + mtime check — not analysis).
-2. Determine `MODE` from user args (`simple` or `analysis`).
-3. Spawn a `general-purpose` subagent with `TILE_DIR` and `MODE` in the prompt.
+1. Resolve all tile dirs inline in the main session (quick `ls` + existence check).
+2. Determine `MODE` from user args (`simple`, `analysis`, `comparison`, or `comparison+analysis`).
+3. Spawn a `general-purpose` subagent with resolved paths and MODE in the prompt.
 4. Wait for the agent to complete. Print its output verbatim — no post-processing.
 
 ```python
 Agent(
-  description="FxSynthesize timing report — <MODE> — <tile> <run_dir_name>",
+  description="FxSynthesize timing — <MODE> — <run_dir_name(s)>",
   subagent_type="general-purpose",
   prompt="""
 You are a timing analysis agent for UMC synthesis.
 
-TILE_DIR = <resolved absolute path>
-MODE     = <simple | analysis>
+TILE_DIR_A = <resolved absolute path>        # always present
+TILE_DIR_B = <resolved absolute path>        # only for comparison mode
+MODE       = <simple | analysis | comparison | comparison+analysis>
 
 Follow the instructions for MODE exactly. Return only the formatted report —
 no preamble, no explanation.
 
 === INSTRUCTIONS ===
-<paste the full MODE-SIMPLE and MODE-ANALYSIS sections below>
+<paste the full MODE sections below>
 """
 )
 ```
@@ -634,7 +640,135 @@ Also read `status_xls.rpt` for Setup/Hold detail and VT mix.
 
 ---
 
-## Formatting Rules (both modes)
+## MODE: COMPARISON
+
+Compare two FxSynthesize runs side-by-side. Run A is the **baseline**,
+Run B is the **new run**. Delta = B − A. Positive delta on WNS/TNS is improvement.
+
+### Files to read (for EACH run — A and B)
+
+Same as MODE: SIMPLE:
+- `FxSynthesize.dat` — CostGroups, design totals, design stats
+- All `FxSynthesize.pass_*.proc_qor.rpt.gz` (grepped) — per-pass WNS/TNS/NVP/Levels
+
+If `--analysis` is also specified, additionally read for each run:
+- `report_timing.pass_3.rpt.sum.sort_slack.endpts.gz` — top violating endpoints
+- `FuncTT0p9v_<GROUP>_max.rpt.gz` — worst path detail for top 3 groups
+
+### Comparison Output Layout
+
+```
+========================================================================
+  FxSynthesize Timing Comparison
+  Run A (baseline) : <run_dir_A_name>
+  Run B (new)      : <run_dir_B_name>
+========================================================================
+
+--- Design Statistics Delta ---
+  Metric            Run A          Run B          Delta
+  ─────────────────────────────────────────────────────
+  Flops             <val>          <val>          <+/- N>
+  Total Cells       <val>          <val>          <+/- N>
+  Cell Area         <val>          <val>          <+/- val>
+  Wire Length       <val>          <val>          <+/- val>
+  FGCG Ratio        <val>          <val>          <+/- pct>
+  MBB Banking       <val>          <val>          <+/- pct>
+
+--- Setup Timing Comparison by Path Group  (ps) ---
+  Path Group           Run A WNS   Run B WNS   ΔWNS    Run A TNS    Run B TNS    ΔTNS   Run A NVP  Run B NVP  ΔNVP  Trend
+  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  <group padded 22>    <val>       <val>       <+/->   <val>        <val>        <+/->  <N>        <N>        <+/-> ↑/↓/─
+  ...
+  (Trend: ↑ = improved WNS, ↓ = degraded WNS, ─ = unchanged within 5ps)
+
+--- Design Timing Totals Comparison  (ps) ---
+  Scope     Run A WNS   Run B WNS   ΔWNS    Run A TNS    Run B TNS    ΔTNS    ΔNVP
+  ──────────────────────────────────────────────────────────────────────────────────
+  Core      <val>       <val>       <+/->   <val>        <val>        <+/->   <+/->
+  IO        <val>       <val>       <+/->   <val>        <val>        <+/->   <+/->
+  DESIGN    <val>       <val>       <+/->   <val>        <val>        <+/->   <+/->
+
+--- Per-Pass Progression Comparison  (ps) ---
+
+  Path Group            Lvls   Pass   Run A WNS    Run B WNS    ΔWNS    Run A NVP  Run B NVP
+  ────────────────────────────────────────────────────────────────────────────────────────────
+  <group padded 22>     <L>     P1    <val>        <val>        <+/->   <N>        <N>
+                                P2    <val>        <val>        <+/->   <N>        <N>
+                                P3    <val>        <val>        <+/->   <N>        <N>
+  ────────────────────────────────────────────────────────────────────────────────────────────
+  <next group>          <L>     P1    ...
+  ...
+
+--- VT Mix Comparison ---
+  VT Type    Run A Count   Run A %    Run B Count   Run B %    Δ%
+  ──────────────────────────────────────────────────────────────────
+  LVTLL      <val>         <pct>%     <val>         <pct>%     <+/->
+  LVT        <val>         <pct>%     <val>         <pct>%     <+/->
+  ULVTLL     <val>         <pct>%     <val>         <pct>%     <+/->
+  ULVT       <val>         <pct>%     <val>         <pct>%     <+/->
+
+--- Overall Verdict ---
+  Metric        Result     Detail
+  ──────────────────────────────────────────────────────────────────
+  Design WNS    ↑ / ↓ / ─  <Run A val> → <Run B val>  (Δ <val> ps)
+  Design TNS    ↑ / ↓ / ─  <Run A val> → <Run B val>  (Δ <val> ps)
+  Design NVP    ↑ / ↓ / ─  <Run A val> → <Run B val>  (Δ <val>)
+  Best group    <group>     improved by <val> ps WNS
+  Worst group   <group>     degraded by <val> ps WNS
+```
+
+If `--analysis` is also specified, append these additional sections:
+
+```
+--- Top Violating Paths — New in Run B (regressions) ---
+  Paths present in Run B sort_slack.endpts but NOT in Run A (by endpoint name)
+  Rank  Group              Endpoint                        Slack B (ps)  Lvls
+  ────────────────────────────────────────────────────────────────────────────
+  #N    <group>            <endpoint>                      <slack>       <L>
+  ...  (up to 10 new regressions)
+
+--- Top Violating Paths — Fixed in Run B (improvements) ---
+  Paths present in Run A sort_slack.endpts but NOT in Run B
+  Rank  Group              Endpoint                        Slack A (ps)  Lvls
+  ────────────────────────────────────────────────────────────────────────────
+  #N    <group>            <endpoint>                      <slack>       <L>
+  ...  (up to 10 fixed paths)
+
+--- Root Cause of Changes ---
+
+  For each group where |ΔWNS| > 10 ps (degraded OR improved), analyse why:
+  - Compare logic levels A vs B (deeper logic = more restructuring happened)
+  - Compare top violating endpoint/startpoint between runs
+  - Note any path groups that gained/lost weight (check tune files in both runs)
+  - For degradations: identify the new worst path and what drove the change
+
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │  <GROUP>  │  <↑ improved / ↓ degraded>  │  ΔWNS: <val> ps               │
+  └──────────────────────────────────────────────────────────────────────────┘
+
+  Change Summary
+  ────────────────────────────────────────────────────────────────
+  Field           Run A                    Run B
+  ────────────────────────────────────────────────────────────────
+  WNS             <val> ps                 <val> ps
+  TNS             <val> ps                 <val> ps
+  NVP             <N>                      <N>
+  Logic Levels    <N>                      <N>
+  Worst Endpoint  <endpoint A>             <endpoint B>
+  Worst Start     <startpoint A>           <startpoint B>
+
+  Why:
+  <2–3 sentence explanation citing specific numbers — e.g. "SYN_R2R degraded
+   -8ps because logic levels increased from 30 to 33 between runs. The worst
+   endpoint shifted from ARB/DCQARB/ArbSafeRegPh to ARB/DCQARB/dep0/dep_vld,
+   suggesting a new critical path opened after restructuring.">
+  ────────────────────────────────────────────────────────────────────────────
+  ... (one block per group where |ΔWNS| > 10 ps)
+```
+
+---
+
+## Formatting Rules (all modes)
 
 - **Every data section is a fixed-width table** — headers + separator line + data rows. No bullet lists, no indented prose.
 - WNS: always show sign (`+` or `-`), 3 decimal places
