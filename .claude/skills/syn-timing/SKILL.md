@@ -520,8 +520,83 @@ Also read `status_xls.rpt` for Setup/Hold detail and VT mix.
   | set_boundary_optimization on cross-domain  | CDC path regression           | Never apply across clock domain        |
   | Backward retiming enabled                  | Pass instability              | Validate carefully before keeping      |
 
-  Step C — Output format
-  ───────────────────────
+  Step C — RTL Fix Analysis
+  ──────────────────────────
+  RTL source files are in <tile_dir>/data/GetRTL/*.v
+
+  RTL file naming convention — map from synthesis hierarchy to RTL file:
+    Hierarchy level (lowercased, strip leading umc)  →  rtl_umc<name>.v
+    e.g.  ARB/DCQARB  →  rtl_umcdcqarb.v
+          ARB/PGT     →  rtl_umcpgt.v
+          FEI         →  rtl_umcfei.v
+          ARB/TIM     →  search for rtl_umc*tim*.v
+
+  For each of the top 3 worst violating path groups:
+  1. Take the endpoint hierarchy from the sort_slack.endpts table
+  2. Map to the RTL file using the naming convention above
+  3. Read the RTL file — search for the signal name of the violating endpoint
+  4. Analyse the driving logic: count levels, check fanout, identify the
+     combinational cone feeding that register
+  5. Apply this fix decision logic:
+
+  LOGIC DEPTH > 25 levels  →  Pipeline Insertion
+    The combinational path is too long for one clock cycle. Suggest inserting
+    a pipeline register stage in RTL to break it into two shorter paths.
+    Show the exact always block and signal name where the register should be added.
+    Note: pipeline insertion changes latency — flag this to the designer.
+
+  SAME REGISTER IS STARTPOINT FOR ≥3 PATHS  →  Register Duplication
+    The register fans out to too many endpoints. Suggest explicitly duplicating
+    it in RTL so each copy drives a subset of the fanout.
+    Show the exact reg declaration and assignment to duplicate.
+
+  CLOCK GATE ENABLE HAS DEEP LOGIC (>15 levels)  →  Register the Enable
+    The enable signal arrives too late at the clock gate. Suggest registering
+    the enable one cycle earlier in RTL to give it a full clock budget.
+    Show the enable signal name and the always block to add the pipeline flop.
+
+  MULTIBIT CELL ON CRITICAL LAUNCH  →  Exclude from Banking
+    If the launch FF in the path trace is an MB4/MB8 cell, suggest adding
+    set_multibit_options -exclude in pre_opt.tcl for that register hierarchy
+    (this is a synthesis fix, not an RTL change, but flag it here).
+
+  Output format for RTL fixes:
+
+  --- RTL Fix Suggestions ---
+
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │  [1]  <GROUP>  →  RTL File: data/GetRTL/<filename>.v                     │
+  └──────────────────────────────────────────────────────────────────────────┘
+
+  Finding
+  ──────────────────────────────────────────────────────
+  Signal      : <endpoint signal name>
+  Module      : <module name in RTL>
+  Logic Depth : <N> levels  →  <fix type>
+  Fanout      : <N> (if relevant)
+
+  Suggested RTL Fix
+  ──────────────────────────────────────────────────────
+  Type    : <Pipeline Insertion | Register Duplication | Enable Pipelining>
+  Risk    : <Latency change: +1 cycle | No functional change>
+  Change  :
+    // Before:
+    <existing RTL snippet — exact lines from the file>
+
+    // After (suggested):
+    <modified RTL snippet with the fix applied>
+
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │  [2]  ...                                                                 │
+  └──────────────────────────────────────────────────────────────────────────┘
+  ... (same structure for groups 2 and 3)
+
+  If no RTL file found for a group: single row — `| <group> | RTL file not found |`
+  If the fix is not clear from the RTL (e.g. glue logic, external IP): note it
+  and skip rather than guess.
+
+  Step D — Output format (FC tuning)
+  ────────────────────────────────────
 
   Recommendations Summary
   ──────────────────────────────────────────────────────────────────────────────────────
