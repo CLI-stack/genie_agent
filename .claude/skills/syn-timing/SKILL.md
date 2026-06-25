@@ -572,7 +572,7 @@ Also read `status_xls.rpt` for Setup/Hold detail and VT mix.
   --- RTL Fix Suggestions ---
 
   ┌──────────────────────────────────────────────────────────────────────────┐
-  │  [1]  <GROUP>  →  RTL File: data/GetRTL/<filename>.v                     │
+  │  [1]  <GROUP>                                                             │
   └──────────────────────────────────────────────────────────────────────────┘
 
   Finding
@@ -583,15 +583,19 @@ Also read `status_xls.rpt` for Setup/Hold detail and VT mix.
   Fanout      : <N> (if relevant)
 
   Suggested RTL Fix
-  ──────────────────────────────────────────────────────
-  Type    : <Pipeline Insertion | Register Duplication | Enable Pipelining>
-  Risk    : <Latency change: +1 cycle | No functional change>
-  Change  :
-    // Before:
-    <existing RTL snippet — exact lines from the file>
+  ──────────────────────────────────────────────────────────────────────────────
+  File : <full absolute path from GetRTL.source.vf>
+         e.g. /proj/rtg_oss_er_feint1/abinbaba/umc_godavari_Jun1175758/out/
+              linux_4.18.0_64.VCS/umc17_x/config/umc_top_drop2cad/pub/sim/
+              publish/tiles/tile/umc_top/publish_rtl/rtl_umcdcqarb.v
+  Type : <Pipeline Insertion | Register Duplication | Enable Pipelining>
+  Risk : <Latency change: +1 cycle | No functional change>
 
-    // After (suggested):
-    <modified RTL snippet with the fix applied>
+  // Before  (line ~<N> in the file above):
+  <existing RTL snippet — exact lines from the original source file>
+
+  // After (suggested change):
+  <modified RTL snippet with the fix applied>
 
   ┌──────────────────────────────────────────────────────────────────────────┐
   │  [2]  ...                                                                 │
