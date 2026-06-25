@@ -764,6 +764,12 @@ If `--analysis` is also specified, append these additional sections:
    suggesting a new critical path opened after restructuring.">
   ────────────────────────────────────────────────────────────────────────────
   ... (one block per group where |ΔWNS| > 10 ps)
+
+  Then apply the full Tuning Recommendations and RTL Fix Analysis sections
+  from MODE: ANALYSIS (Steps B, C, D) using Run B as the subject run.
+  The context from the comparison (which groups degraded, which improved,
+  which paths are new) should inform the recommendations — prioritise fixes
+  for groups that degraded in Run B or still have the worst violations.
 ```
 
 ---
