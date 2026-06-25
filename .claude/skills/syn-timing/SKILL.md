@@ -522,19 +522,26 @@ Also read `status_xls.rpt` for Setup/Hold detail and VT mix.
 
   Step C — RTL Fix Analysis
   ──────────────────────────
-  RTL source files are in <tile_dir>/data/GetRTL/*.v
+  RTL source paths are listed in <tile_dir>/data/GetRTL.source.vf
+  Each line that ends in .v or .sv is a full absolute path to the original
+  published RTL file. Do NOT use data/GetRTL/ copies — use the source paths
+  directly from GetRTL.source.vf.
 
-  RTL file naming convention — map from synthesis hierarchy to RTL file:
-    Hierarchy level (lowercased, strip leading umc)  →  rtl_umc<name>.v
-    e.g.  ARB/DCQARB  →  rtl_umcdcqarb.v
-          ARB/PGT     →  rtl_umcpgt.v
-          FEI         →  rtl_umcfei.v
-          ARB/TIM     →  search for rtl_umc*tim*.v
+  How to find the right RTL file:
+  1. Read <tile_dir>/data/GetRTL.source.vf
+  2. Extract all lines ending in .v or .sv (these are full absolute paths)
+  3. Match the endpoint hierarchy module name to a file — the naming convention
+     is rtl_umc<modulename>.v:
+       ARB/DCQARB  →  grep for "rtl_umcdcqarb.v" in the vf → use that full path
+       ARB/PGT     →  grep for "rtl_umcpgt.v"
+       FEI         →  grep for "rtl_umcfei.v"
+       ARB/TIM     →  grep for "rtl_umc*tim*.v" (use partial match if needed)
+  4. Read the file at its original source path
 
   For each of the top 3 worst violating path groups:
   1. Take the endpoint hierarchy from the sort_slack.endpts table
-  2. Map to the RTL file using the naming convention above
-  3. Read the RTL file — search for the signal name of the violating endpoint
+  2. Find the RTL file path from GetRTL.source.vf using the naming convention
+  3. Read the original RTL file — search for the signal name of the violating endpoint
   4. Analyse the driving logic: count levels, check fanout, identify the
      combinational cone feeding that register
   5. Apply this fix decision logic:
