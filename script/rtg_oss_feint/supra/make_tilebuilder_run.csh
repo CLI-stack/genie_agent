@@ -344,21 +344,44 @@ set gui_dir = `find $tiles_dir -maxdepth 1 -type d -name "*_GUI" | head -1`
 
 if ("$gui_dir" != "") then
     echo "Found GUI directory: $gui_dir"
-    
+
     # Check if revrc.main exists
     if (-f "${gui_dir}/revrc.main") then
         echo "  revrc.main exists in GUI directory"
         set has_revrc = 1
         set revrc_dir = "$gui_dir"
     else
-        echo "  WARNING: revrc.main not found in GUI directory"
+        echo "  WARNING: revrc.main not found in GUI directory — searching fallback..."
         set has_revrc = 0
         set revrc_dir = ""
     endif
 else
-    echo "No GUI directory found in $tiles_dir"
+    echo "No GUI directory found in $tiles_dir — searching for any directory with revrc.main..."
     set has_revrc = 0
     set revrc_dir = ""
+endif
+
+# Fallback: if no valid GUI dir found, search all subdirs for revrc.main
+if ($has_revrc == 0) then
+    set fallback_dir = `find $tiles_dir -maxdepth 1 -type d -name "*.main" -prune -o -type d -print | xargs -I{} sh -c 'test -f "{}/revrc.main" && echo "{}"' 2>/dev/null | head -1`
+    if ("$fallback_dir" == "") then
+        # Try simpler approach
+        foreach candidate (`find $tiles_dir -maxdepth 1 -mindepth 1 -type d`)
+            if (-f "${candidate}/revrc.main") then
+                set fallback_dir = "$candidate"
+                break
+            endif
+        end
+    endif
+    if ("$fallback_dir" != "") then
+        echo "Fallback: found directory with revrc.main: $fallback_dir"
+        set has_revrc = 1
+        set revrc_dir = "$fallback_dir"
+    else
+        echo "No directory with revrc.main found in $tiles_dir"
+        set has_revrc = 0
+        set revrc_dir = ""
+    endif
 endif
 
 # Finalize - set final_tile_dir for use in subsequent operations
