@@ -16,15 +16,20 @@ Three modes: **simple**, **analysis**, **comparison**.
 /syn-timing /path/to/run                                # simple, specific run dir
 /syn-timing /path/to/run --analysis                     # analysis, specific run dir
 
-# Comparison — two run directories, same tile
+# Multiple directories — reported independently, one block each
+/syn-timing /path/run_A /path/run_B /path/run_C
+/syn-timing /path/run_A /path/run_B --analysis
+
+# Comparison — exactly two directories with explicit flag
 /syn-timing --comparison /path/to/run_A /path/to/run_B
 /syn-timing --comparison /path/to/run_A /path/to/run_B --analysis
 ```
 
 - Default mode when no flag given: **simple**
-- `--comparison` requires exactly two absolute run directory paths
-- `--comparison` without `--analysis`: compare timing summary only (simple data)
-- `--comparison --analysis`: compare full analysis + root cause of changes
+- Multiple directories **without** `--comparison` → report each independently, one block per directory, separated by a blank line
+- `--comparison` requires exactly two absolute run directory paths and produces a delta/comparison report
+- `--comparison` without `--analysis`: timing summary comparison only
+- `--comparison --analysis`: full comparison + root cause + tune/RTL fix recommendations
 
 ## Tiles Base Directory
 The user must supply the tile run path(s) directly. No hardcoded default.
@@ -36,9 +41,14 @@ The user must supply the tile run path(s) directly. No hardcoded default.
 **Do NOT perform the analysis in the main session context.**
 
 1. Resolve all tile dirs inline in the main session (quick `ls` + existence check).
-2. Determine `MODE` from user args (`simple`, `analysis`, `comparison`, or `comparison+analysis`).
-3. Spawn a `general-purpose` subagent with resolved paths and MODE in the prompt.
-4. Wait for the agent to complete. Print its output verbatim — no post-processing.
+2. Determine `MODE` from user args:
+   - `--comparison` present → `comparison` or `comparison+analysis`
+   - Otherwise → `simple` or `analysis`
+3. Determine `TILE_DIRS` — the list of resolved absolute paths:
+   - No explicit paths given → auto-detect latest umccmd + umcdat from tiles base dir
+   - One or more explicit paths given → use exactly those paths
+4. Spawn a `general-purpose` subagent with all resolved paths and MODE.
+5. Wait for the agent to complete. Print its output verbatim — no post-processing.
 
 ```python
 Agent(
@@ -47,9 +57,15 @@ Agent(
   prompt="""
 You are a timing analysis agent for UMC synthesis.
 
-TILE_DIR_A = <resolved absolute path>        # always present
-TILE_DIR_B = <resolved absolute path>        # only for comparison mode
-MODE       = <simple | analysis | comparison | comparison+analysis>
+TILE_DIRS = [<resolved path 1>, <resolved path 2>, ...]   # one or more
+MODE      = <simple | analysis | comparison | comparison+analysis>
+
+Behaviour by MODE:
+  simple / analysis       : produce one report block per TILE_DIR, separated
+                            by a blank line. Each block is independent.
+  comparison / comparison+analysis : TILE_DIRS contains exactly two paths;
+                            produce the comparison report (Run A = first,
+                            Run B = second).
 
 Follow the instructions for MODE exactly. Return only the formatted report —
 no preamble, no explanation.
