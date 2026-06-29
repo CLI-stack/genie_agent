@@ -70,11 +70,11 @@ For each tile directory, extract the RTL CL before reading any timing data:
 2. Extract the base path — first 3 segments after `/proj/`:
    e.g. `/proj/rtg_oss_er_feint1/abinbaba/umc_godavari_Jun1175758`
 3. Read `<base_path>/configuration_id`
-4. Extract the number after `@` — that is the CL:
-   e.g. `umc_ip/umc_ip_main@1027817` → CL = `1027817`
-5. If any step fails, show `CL: N/A`
+4. Show the **full line** as-is — do not truncate:
+   e.g. `umc_ip/umc_ip_main@1027817`
+5. If any step fails, show `RTL CL: N/A`
 
-Include CL in the run header of every report and comparison block.
+Include the full CL string in the run header of every report and comparison block.
 
 ---
 
@@ -128,7 +128,7 @@ From the filtered output, for each pass and each path group extract:
 ========================================================================
   FxSynthesize Timing Report  —  <MODULE UPPERCASE>  [SIMPLE]
   Run: <run_dir_name>
-  RTL CL: <CL number>
+  RTL CL: <full configuration_id line e.g. umc_ip/umc_ip_main@1027817>
 ========================================================================
 
 --- Final Timing by Path Group  (FxSynthesize.dat, ps) ---
@@ -223,7 +223,7 @@ Also read `status_xls.rpt` for Setup/Hold detail and VT mix.
 ========================================================================
   FxSynthesize Timing Report  —  <MODULE UPPERCASE>  [ANALYSIS]
   Run: <run_dir_name>
-  RTL CL: <CL number>
+  RTL CL: <full configuration_id line e.g. umc_ip/umc_ip_main@1027817>
 ========================================================================
 
 --- Design Statistics ---
@@ -678,8 +678,8 @@ If `--analysis` is also specified, additionally read for each run:
 ```
 ========================================================================
   FxSynthesize Timing Comparison
-  Run A (baseline) : <run_dir_A_name>   RTL CL: <CL_A>
-  Run B (new)      : <run_dir_B_name>   RTL CL: <CL_B>
+  Run A (baseline) : <run_dir_A_name>   RTL CL: <full configuration_id A>
+  Run B (new)      : <run_dir_B_name>   RTL CL: <full configuration_id B>
 ========================================================================
 
 --- Design Statistics Delta ---
