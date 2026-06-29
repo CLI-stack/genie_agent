@@ -71,7 +71,7 @@ For each tile directory, extract the RTL CL before reading any timing data:
    e.g. `/proj/rtg_oss_er_feint1/abinbaba/umc_godavari_Jun1175758`
 3. Read `<base_path>/configuration_id`
 4. Show the **full line** as-is — do not truncate:
-   e.g. `umc_ip/umc_ip_main@1027817`
+   e.g. `umc_ip/umc_ip_main@<CL>`
 5. If any step fails, show `RTL CL: N/A`
 
 Include the full CL string in the run header of every report and comparison block.
@@ -128,7 +128,7 @@ From the filtered output, for each pass and each path group extract:
 ========================================================================
   FxSynthesize Timing Report  —  <MODULE UPPERCASE>  [SIMPLE]
   Run: <run_dir_name>
-  RTL CL: <full configuration_id line e.g. umc_ip/umc_ip_main@1027817>
+  RTL CL: <full configuration_id line>
 ========================================================================
 
 --- Final Timing by Path Group  (FxSynthesize.dat, ps) ---
@@ -223,7 +223,7 @@ Also read `status_xls.rpt` for Setup/Hold detail and VT mix.
 ========================================================================
   FxSynthesize Timing Report  —  <MODULE UPPERCASE>  [ANALYSIS]
   Run: <run_dir_name>
-  RTL CL: <full configuration_id line e.g. umc_ip/umc_ip_main@1027817>
+  RTL CL: <full configuration_id line>
 ========================================================================
 
 --- Design Statistics ---
