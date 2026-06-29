@@ -187,16 +187,15 @@ if ("$params_centre" != "" && "$tile_dir" != "") then
             
             # Update or add NICKNAME only if tag.params doesn't have it
             if ($tag_has_nickname == 0) then
-                set new_nickname = `basename $tile_dir`
-                
-                # Check if NICKNAME exists in override.params
+                # Check if NICKNAME already exists in override.params (from params_centre)
                 grep -q "^NICKNAME\s*=" "${tile_dir}/override.params"
                 if ($status == 0) then
-                    # NICKNAME exists - replace it
-                    sed -i "s/^NICKNAME\s*=.*/NICKNAME = $new_nickname/" "${tile_dir}/override.params"
-                    echo "  Updated NICKNAME to: $new_nickname"
+                    # NICKNAME already defined - keep it, skip auto-update
+                    set existing_nickname = `grep "^NICKNAME\s*=" "${tile_dir}/override.params" | head -1 | sed 's/.*=\s*//' | tr -d '\r'`
+                    echo "  NICKNAME already defined in override.params: $existing_nickname — skipping auto-update"
                 else
-                    # NICKNAME doesn't exist - add it at the top
+                    # NICKNAME not defined - auto-generate from tile directory name
+                    set new_nickname = `basename $tile_dir`
                     set temp_file = "${tile_dir}/override.params.tmp"
                     echo "NICKNAME = $new_nickname" > "$temp_file"
                     cat "${tile_dir}/override.params" >> "$temp_file"
