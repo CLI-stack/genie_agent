@@ -114,6 +114,28 @@ modification time.
 
 If no tile is specified, report both umccmd and umcdat (one block each).
 
+### Incomplete / In-Progress Runs
+
+A run is **in progress** if `FxSynthesize.dat` exists but has no `CostGroup:`
+lines yet (synthesis still running). Do NOT skip it — instead:
+
+1. Print the header with `[IN PROGRESS]` status:
+   ```
+   ========================================================================
+     FxSynthesize Timing Report  —  <MODULE>  [IN PROGRESS]
+     Run: <run_dir_name>
+     RTL CL: <full configuration_id line>
+   ========================================================================
+   ```
+2. Check which `pass_*.proc_qor.rpt.gz` files exist and read them (grepped).
+   Show only the per-pass progression table for whatever passes have completed.
+   If no pass files exist yet, print: `  No pass data available yet.`
+3. Skip all other sections (final timing, design stats, VT mix, root cause,
+   tune recommendations, RTL fixes) — data not available yet.
+
+A run is **failed early** if `rpts/FxSynthesize/FxSynthesize.dat` does not
+exist at all. Print: `[NOT FOUND] <run_dir> — FxSynthesize has not started or directory is invalid.`
+
 ---
 
 ## MODE: SIMPLE
