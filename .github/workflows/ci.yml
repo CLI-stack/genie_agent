@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  checks:
+    name: Code Quality Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # ── Python syntax ──────────────────────────────────────────────────────
+      - name: Python syntax check
+        run: |
+          echo "=== Checking Python files ==="
+          failed=0
+          for f in $(find script -name "*.py" | sort); do
+            python3 -m py_compile "$f" && echo "  OK  $f" || { echo "FAIL  $f"; failed=1; }
+          done
+          exit $failed
+
+      # ── Secret scan ────────────────────────────────────────────────────────
+      - name: Check no secrets in committed files
+        run: |
+          echo "=== Scanning for Atlassian tokens ==="
+          # ATATT3x is the prefix for all Atlassian API tokens
+          if grep -rn "ATATT3x" --include="*.csh" --include="*.py" --include="*.sh" --include="*.yml" --include="*.md" .; then
+            echo ""
+            echo "ERROR: Atlassian API token detected in a committed file."
+            echo "Remove the token and use atlassian_env.csh (gitignored) instead."
+            exit 1
+          fi
+          echo "No secrets found."
+
+      # ── Skills validation ──────────────────────────────────────────────────
+      - name: Validate skill directories have SKILL.md
+        run: |
+          echo "=== Checking skills ==="
+          failed=0
+          for skill_dir in .claude/skills/*/; do
+            if [ ! -f "${skill_dir}SKILL.md" ]; then
+              echo "FAIL  Missing SKILL.md in ${skill_dir}"
+              failed=1
+            else
+              echo "  OK  ${skill_dir}SKILL.md"
+            fi
+          done
+          exit $failed
+
+      # ── Shell syntax ───────────────────────────────────────────────────────
+      - name: Shell script syntax check (bash-compatible)
+        run: |
+          echo "=== Checking shell scripts ==="
+          failed=0
+          for f in $(find script -name "*.sh" | sort); do
+            bash -n "$f" && echo "  OK  $f" || { echo "FAIL  $f"; failed=1; }
+          done
+          # Note: .csh files use tcsh syntax, not checkable with bash -n
+          echo "CSH files skipped (tcsh syntax, not bash-checkable)"
+          exit $failed
+
+      # ── CSV structure ──────────────────────────────────────────────────────
+      - name: Check key CSV files exist
+        run: |
+          echo "=== Checking required CSV files ==="
+          failed=0
+          for f in keyword.csv instruction.csv arguement.csv patterns.csv; do
+            if [ -f "$f" ]; then
+              echo "  OK  $f ($(wc -l < $f) lines)"
+            else
+              echo "FAIL  $f missing"
+              failed=1
+            fi
+          done
+          exit $failed
