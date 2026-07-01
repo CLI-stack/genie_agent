@@ -167,6 +167,20 @@ From the filtered output, for each pass and each path group extract:
 - `No. of Violating Paths`
 - `Levels of Logic`
 
+**C. All available `LOL_chart_*.rpt`** files in `rpts/FxSynthesize/` — these contain
+Actual Levels of Logic (ALOL) distribution summaries per path group. Read only the
+summary block at the end using grep (files can be large):
+
+```bash
+grep "Path Number of Actual LOL" rpts/FxSynthesize/LOL_chart_<GROUP>.rpt
+```
+
+Known files (may not all exist): `LOL_chart_SYN_R2R.rpt`, `LOL_chart_clock_gating_default.rpt`,
+`LOL_chart_I2C.rpt`, `LOL_chart_C2O.rpt`
+
+From each file extract all `Path Number of Actual LOL <N> = <count>` lines.
+Show only ALOL ≥ 27 in the output table.
+
 ### Simple Output Layout
 
 ```
@@ -208,6 +222,32 @@ From the filtered output, for each pass and each path group extract:
   - A separator line ─── is drawn between every path group
   - Lvls shows the final pass value
   - WNS always shows sign (+ or -)
+
+--- Levels of Logic (ALOL ≥ 27) Distribution  (LOL_chart_*.rpt) ---
+
+  For each `LOL_chart_<GROUP>.rpt` that exists in `rpts/FxSynthesize/`:
+  1. Read only the summary block at the end of the file:
+     ```bash
+     grep "Path Number of Actual LOL" LOL_chart_<GROUP>.rpt
+     ```
+  2. Collect all non-zero ALOL counts from the summary.
+  3. Show only ALOL ≥ 27. Columns span from 27 to the actual max ALOL with a non-zero count.
+  4. If no LOL chart files exist, skip this section silently.
+
+  Output one table per path group that has a LOL chart file:
+
+  Path Group: <GROUP>
+  ──────────────────────────────────────────────────────────────────────
+  ALOL        27    28    29    30    31    32   ...  <max>   27+ Total
+  ──────────────────────────────────────────────────────────────────────
+  Count      <N>   <N>   <N>   <N>   <N>   <N>  ...   <N>      <total>
+  ──────────────────────────────────────────────────────────────────────
+
+  Rules:
+  - Only show columns where ALOL ≥ 27
+  - Column range: 27 to max ALOL with non-zero count in this run
+  - If all counts from 27+ are zero, skip this group
+  - Show one table per group (SYN_R2R, clock_gating_default, etc.)
 ```
 
 ---
@@ -243,7 +283,17 @@ From the filtered output extract per group: `Timing Path Group`, `Levels of Logi
 — for each `#N` row: Rank, Path Group, Uniquified Endpoint, Worst Startpoint,
 Slack (ps), Lvls, Real Lvls, bfx count.
 
-**D. `FuncTT0p9v_<GROUP>_max.rpt.gz`** — for the **top 3 worst violating groups**
+**D. All available `LOL_chart_*.rpt`** files in `rpts/FxSynthesize/` — same as simple
+mode. Read ALOL ≥ 27 distribution per path group from the summary block at end of file:
+
+```bash
+grep "Path Number of Actual LOL" rpts/FxSynthesize/LOL_chart_<GROUP>.rpt
+```
+
+Include the ALOL distribution table in the analysis output after the Design Timing Totals
+section (same format as simple mode).
+
+**E. `FuncTT0p9v_<GROUP>_max.rpt.gz`** — for the **top 3 worst violating groups**
 (by WNS). From the first timing path in each file extract:
 - `Startpoint:`, `Endpoint:`, clock name, `Scenario:`
 - The **3 nets with highest fanout** (Fanout column; net rows only)
@@ -310,6 +360,16 @@ Also read `status_xls.rpt` for Setup/Hold detail and VT mix.
   Core      <val>         <val>          <val>
   IO        <val>         <val>          <val>
   DESIGN    <val>         <val>          <val>
+
+--- Levels of Logic (ALOL ≥ 27) Distribution  (LOL_chart_*.rpt) ---
+
+  Path Group: <GROUP>
+  ──────────────────────────────────────────────────────────────────────
+  ALOL        27    28    29    30    31    32   ...  <max>   27+ Total
+  ──────────────────────────────────────────────────────────────────────
+  Count      <N>   <N>   <N>   <N>   <N>   <N>  ...   <N>      <total>
+  ──────────────────────────────────────────────────────────────────────
+  (one table per group that has a LOL chart file; skip section if no files exist)
 
 --- Setup Timing Detail  (ns, status_xls.rpt) ---
   Path Type    WNS (ns)    TNS (ns)    NVE
