@@ -38,17 +38,24 @@ The user must supply the tile run path(s) directly. No hardcoded default.
 
 ## Execution Model
 
-**Do NOT perform the analysis in the main session context.**
+**Simple mode runs directly in the main session — no subagent.**
+**Analysis and comparison modes spawn a subagent.**
 
-1. Resolve all tile dirs inline in the main session (quick `ls` + existence check).
-2. Determine `MODE` from user args:
-   - `--comparison` present → `comparison` or `comparison+analysis`
-   - Otherwise → `simple` or `analysis`
-3. Determine `TILE_DIRS` — the list of resolved absolute paths:
-   - No explicit paths given → auto-detect latest umccmd + umcdat from tiles base dir
-   - One or more explicit paths given → use exactly those paths
-4. Spawn a `general-purpose` subagent with all resolved paths and MODE.
-5. Wait for the agent to complete. Print its output verbatim — no post-processing.
+### MODE: SIMPLE — run inline (target: <20 seconds)
+
+Do everything directly in the main session context:
+1. Resolve tile dirs (quick `ls` + mtime check).
+2. For each tile dir, read the two source files directly using Bash:
+   - `cat <tile_dir>/rpts/FxSynthesize/FxSynthesize.dat`
+   - `zcat <tile_dir>/rpts/FxSynthesize/FxSynthesize.pass_*.proc_qor.rpt.gz | grep -E "Timing Path Group|Levels of Logic|Critical Path Slack|Critical Path Clk Period|Total Negative Slack|No\. of Violating"`
+3. Parse the output and format the report directly. Print immediately.
+
+Do NOT spawn a subagent for simple mode.
+
+### MODE: ANALYSIS or COMPARISON — spawn a subagent
+
+For analysis and comparison, the file set is large (FuncTT0p9v path traces,
+sort_slack.endpts, RTL files). Spawn one `general-purpose` subagent:
 
 ```python
 Agent(
@@ -57,24 +64,24 @@ Agent(
   prompt="""
 You are a timing analysis agent for UMC synthesis.
 
-TILE_DIRS = [<resolved path 1>, <resolved path 2>, ...]   # one or more
-MODE      = <simple | analysis | comparison | comparison+analysis>
+TILE_DIRS = [<resolved path 1>, <resolved path 2>, ...]
+MODE      = <analysis | comparison | comparison+analysis>
 
 Behaviour by MODE:
-  simple / analysis       : produce one report block per TILE_DIR, separated
-                            by a blank line. Each block is independent.
-  comparison / comparison+analysis : TILE_DIRS contains exactly two paths;
-                            produce the comparison report (Run A = first,
-                            Run B = second).
+  analysis              : one full analysis block per TILE_DIR, separated by blank line
+  comparison            : timing delta between two dirs (Run A = first, Run B = second)
+  comparison+analysis   : delta + root cause + tune/RTL fix recommendations
 
 Follow the instructions for MODE exactly. Return only the formatted report —
 no preamble, no explanation.
 
 === INSTRUCTIONS ===
-<paste the full MODE sections below>
+<paste the full MODE-ANALYSIS and MODE-COMPARISON sections below>
 """
 )
 ```
+
+Wait for the agent to complete. Print its output verbatim.
 
 ---
 
