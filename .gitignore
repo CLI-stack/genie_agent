@@ -17,6 +17,10 @@ command.csv
 available_instructions.csv
 script/rtg_oss_feint/supra/2
 
+# Atlassian credentials — never commit real tokens
+script/atlassian_env.csh
+users/*/script/atlassian_env.csh
+
 # ECO gap-tracking notes — local only, not for repo
 config/eco_agents/9899_fix_plan.md
 config/eco_agents/9899_gaps.md

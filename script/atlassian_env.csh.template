@@ -1,0 +1,6 @@
+setenv CONFLUENCE_URL "https://amd.atlassian.net/wiki"
+setenv CONFLUENCE_USERNAME "your.name@amd.com"
+setenv CONFLUENCE_API_TOKEN "YOUR_ATLASSIAN_API_TOKEN_HERE"
+setenv JIRA_URL "https://amd.atlassian.net"
+setenv JIRA_USERNAME "your.name@amd.com"
+setenv JIRA_API_TOKEN "YOUR_ATLASSIAN_API_TOKEN_HERE"

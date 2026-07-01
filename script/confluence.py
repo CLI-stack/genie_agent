@@ -35,11 +35,13 @@ def load_credentials():
 
     if not all([url, user, token]):
         # Try sourcing atlassian_env.csh
-        env_file = os.path.join(
+        # Look in same directory as this script first, then fallback to rosenhorn path
+        local_env = os.path.join(os.path.dirname(__file__), "atlassian_env.csh")
+        fallback_env = os.path.normpath(os.path.join(
             os.path.dirname(__file__),
             "../../../../../../abinbaba/rosenhorn_agent_flow/main_agent/script/atlassian_env.csh"
-        )
-        env_file = os.path.normpath(env_file)
+        ))
+        env_file = local_env if os.path.exists(local_env) else fallback_env
         if os.path.exists(env_file):
             result = subprocess.run(
                 ["bash", "-c", f"source {env_file} 2>/dev/null && "
