@@ -155,19 +155,24 @@ ECO STATISTICS
   Verify Failed    : <N>           <N>         <N>
 
 --------------------------------------------------------------------------------
-TIMING & LOL ESTIMATION  (structural analysis — Synthesize PreEco netlist)
-  LOL = Lines Of Logic: combinational gate levels from new cell output to first register input.
-  Compute by tracing forward cone from ECO gate output; count gate levels until reaching a DFF .D pin.
+LEVELS OF LOGIC (LOL) IMPACT  (deterministic — from eco_lol_impact.py, Synthesize PreEco)
+  LOL = Levels of Logic: combinational gate levels in series feeding a register D-pin.
+  Inverters/buffers are EXCLUDED. Measured BEFORE vs AFTER the ECO. Advisory only.
+  SOURCE (canonical): data/<TAG>_eco_lol_impact.json  — DO NOT hand-estimate.
+  If the JSON is missing, print "LOL Impact — not available" (STUDY/ROUND should have written it).
 --------------------------------------------------------------------------------
 
-  Signal Change  : <old_net>  →  <new_net>
-  Old Net Driver : <driver_cell_name>  (<cell_type>)  pin=<Z/ZN/Q>
-  New Net Driver : <driver_cell_name>  (<cell_type>)  pin=<Z/ZN/Q>
-  Old Net Fanout : <N>
-  New Net Fanout : <N>
-  LOL Impact     : <description>
-  Timing Estimate: <BETTER / LIKELY_BETTER / NEUTRAL / RISK / LOAD_RISK / UNCERTAIN>
-  Reasoning      : <plain English>
+  Read data/<TAG>_eco_lol_impact.json and render its `summary` then a row per `endpoints[]`:
+
+  Summary:
+    Stage            : <summary.stage>   ns/level: <summary.ns_per_level>   inv/buf excluded: yes
+    Affected endpoints: <summary.endpoints>
+    Max +LOL         : <summary.max_delta_lol>  at <summary.worst_endpoint>
+    Est added delay  : <summary.total_est_added_delay_ns> ns (sum of positive deltas)
+
+  Per affected register D-pin (one line each from endpoints[]):
+    <register>/<pin>  : <before_lol> -> <after_lol>  (+<delta_lol>, ~<est_added_delay_ns> ns)<NEW-DFF if new_register>
+                        net <net_before> -> <net_after>   worst path from <worst_startpoint_after>
 
 --------------------------------------------------------------------------------
 2nd Iteration Summary
@@ -258,7 +263,7 @@ and eco_fm_analysis_round<N>.json automatically.
 | Step 5 — Pre-FM Check | eco_step5_pre_fm_check_roundN.rpt (all rounds) |
 | Step 6 — FM Results | eco_step6_fm_verify_roundN.rpt + eco_fm_analysis_roundN.json (all rounds) |
 | Statistics | eco_applied_roundN.json aggregated |
-| Timing/LOL | timing_lol_analysis in eco_preeco_study.json |
+| Levels of Logic (LOL) | data/<TAG>_eco_lol_impact.json (deterministic — eco_lol_impact.py; summary + endpoints[]) |
 | Step Reports | file paths to AI_ECO_FLOW_DIR |
 
 **HTML structure — produce all sections below with full detail:**
@@ -470,18 +475,24 @@ pre{padding:10px;overflow-x:auto} code{padding:2px 5px}
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
-<!-- TIMING & LOL -->
+<!-- LEVELS OF LOGIC (LOL) IMPACT -->
 <!-- ═══════════════════════════════════════════════════════════ -->
-<h2>Timing & LOL Impact</h2>
-<p class="section-meta">LOL = Lines Of Logic: gate levels from ECO cell output to first register input</p>
-<!-- One row per ECO change with timing_lol_analysis -->
+<h2>Levels of Logic (LOL) Impact</h2>
+<p class="section-meta">Source: data/&lt;TAG&gt;_eco_lol_impact.json (deterministic — eco_lol_impact.py) |
+LOL = combinational gate levels feeding a register D-pin | inverters/buffers excluded | Synthesize PreEco | advisory</p>
+<!-- Summary line from eco_lol_impact.json .summary -->
+<p><b>Endpoints affected:</b> [summary.endpoints] &nbsp; <b>Max +LOL:</b> [summary.max_delta_lol]
+   at [summary.worst_endpoint] &nbsp; <b>Est. added delay (sum):</b> [summary.total_est_added_delay_ns] ns
+   &nbsp; <b>ns/level:</b> [summary.ns_per_level]</p>
+<!-- One row per endpoints[] entry from eco_lol_impact.json -->
 <table>
-<tr><th>Signal</th><th>Old Driver</th><th>New Driver</th><th>LOL Added</th><th>Estimate</th><th>Reasoning</th></tr>
-<tr><td>[signal]</td><td>[cell (type)]</td><td>[eco_cell (type)]</td>
-    <td>[N levels]</td>
-    <td class="[pass|warn|fail]">[BETTER|NEUTRAL|RISK]</td>
-    <td>[1-sentence reasoning]</td></tr>
+<tr><th>Register / Pin</th><th>Net Before → After</th><th>LOL Before</th><th>LOL After</th><th>Δ LOL</th><th>Est. Added Delay</th><th>Worst Startpoint</th></tr>
+<tr><td>[register]/[pin][ NEW-DFF if new_register]</td><td>[net_before] → [net_after]</td>
+    <td>[before_lol]</td><td>[after_lol]</td>
+    <td class="[pass if Δ&le;0 | warn if 1-2 | fail if &ge;3]">+[delta_lol]</td>
+    <td>[est_added_delay_ns] ns</td><td>[worst_startpoint_after]</td></tr>
 </table>
+<p class="section-meta">If eco_lol_impact.json is absent: render "Levels of Logic (LOL) Impact — not available".</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- PER-STEP REPORT INDEX -->

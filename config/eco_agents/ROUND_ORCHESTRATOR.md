@@ -518,6 +518,19 @@ if not result.get('passed', False):
 # Only reach here if passed=true → proceed to applier
 ```
 
+**MANDATORY advisory — Refresh eco_lol_impact.py every round:** once the round's study JSON passes re-validation (above), ALWAYS re-run the LOL impact analyzer so the report carries the LATEST levels-of-logic for this round. Advisory only — never gates the round.
+
+```bash
+python3 script/eco_scripts/eco_lol_impact.py \
+    --study   data/<TAG>_eco_preeco_study.json \
+    --ref-dir <REF_DIR> \
+    --tag     <TAG> \
+    --output  data/<TAG>_eco_lol_impact.json
+cp data/<TAG>_eco_lol_impact.json <AI_ECO_FLOW_DIR>/
+```
+
+It overwrites `data/<TAG>_eco_lol_impact.json` so the file always reflects the current round's study. Verify stdout shows `ECO_SCRIPT_LAUNCHED: eco_lol_impact.py`. Do NOT block the round on its output.
+
 **MANDATORY: Re-load study JSON before exit check** — the file was just updated by verifier + eco_expand_chains. Do NOT use any in-memory study JSON from earlier in this instance. Always load fresh from disk:
 
 **EXIT RULE — MAX_ROUNDS ONLY (no MANUAL_LIMIT early exit):**

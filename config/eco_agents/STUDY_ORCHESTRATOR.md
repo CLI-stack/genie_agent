@@ -357,6 +357,26 @@ Remaining manual fixes for non-deterministic issues:
 - **Per-stage CP/SE/SI not from neighbor** (Check 16, `not used by any existing DFF`) → the validator message lists 3 sample neighbor values. Pick one of those for the failing pin/stage and patch `port_connections_per_stage[<stage>][<pin>]` in the study JSON OR re-spawn studier with `NEIGHBOR_LOOKUP_HINT="<inst>:<pin>:<stage> use one of <samples>"`.
 - **Signal-in-scope failure** (Step 1 `signal_in_scope_issues`, `input X NOT in scope of module Y`) → look for a local DFF whose Q drives the same logical signal in the target module; use its per-stage Q net name as the chain input. If no local source exists, propose a `new_port` change to promote the signal in.
 - **ECO input pin undriven** (Step 5 Check 13, `[INPUT_UNDRIVEN]`) → the per-stage net the studier picked doesn't have a driver in that stage's netlist. Re-look up the neighbor DFF's per-stage value (most likely a stale name), patch `port_connections_per_stage`, re-run Step 4.
+**MANDATORY advisory — Run eco_lol_impact.py (Levels-of-Logic impact):**
+
+After the Step 3 validator passes, ALWAYS run the LOL impact analyzer. It is **advisory** (never
+gates the flow) but MUST run on every study so the report reflects the latest logic depth.
+
+```bash
+cd <BASE_DIR>
+python3 script/eco_scripts/eco_lol_impact.py \
+    --study   data/<TAG>_eco_preeco_study.json \
+    --ref-dir <REF_DIR> \
+    --tag     <TAG> \
+    --output  data/<TAG>_eco_lol_impact.json
+cp data/<TAG>_eco_lol_impact.json <AI_ECO_FLOW_DIR>/
+```
+
+Verify stdout contains `ECO_SCRIPT_LAUNCHED: eco_lol_impact.py`. This measures the combinational
+**Levels of Logic** (inverters/buffers excluded) added to each affected register D-pin — before vs
+after the ECO — with an estimated added delay. FINAL_ORCHESTRATOR renders it in the report's
+"Levels of Logic (LOL) Impact" slot. Do not fail the flow on its result; it is visibility only.
+
 **Generate Step 3 RPT from JSON (ORCHESTRATOR responsibility):**
 
 ```bash
