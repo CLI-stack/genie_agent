@@ -20,17 +20,90 @@ Required schema on each priority_force change (Step 1 / rtl_diff_analyzer.md #1)
       dff_cell, dff_pin}]}].  (bits[].dff_cell/dff_pin identify the flop to rewire;
   old_net is that bit's pre-ECO D-input net.)
 
+Fail-closed grounding: pass --ref-dir to verify every bit's (module, dff_cell).dff_pin
+actually carries old_net in the PreEco Synthesize netlist. Any mismatch ABORTS the build
+(exit 2, study untouched) instead of rewiring the wrong pin on a hallucinated net.
+
 Usage:
     python3 script/eco_scripts/eco_emit_priority_force.py \
         --rtl-diff data/<TAG>_eco_rtl_diff.json --study data/<TAG>_eco_preeco_study.json \
-        --jira <JIRA> --output data/<TAG>_eco_preeco_study.json
+        --jira <JIRA> --ref-dir <REF_DIR> --output data/<TAG>_eco_preeco_study.json
 """
-import argparse, json, re, sys
+import argparse, gzip, json, os, re, sys
 
 STAGES = ('Synthesize', 'PrePlace', 'Route')
 _INV_CELL = 'INVD1BWP136P5M156H3P48CPDLVT'
 _OR2_CELL = 'OR2D1BWP136P5M156H3P48CPDLVT'
 _INR2_CELL = 'INR2D1BWP136P5M156H3P48CPDLVT'
+
+_MOD = re.compile(r'^\s*module\s+(\S+)')
+_INST = re.compile(r'^\s*[\w:]+\s+(\w+)\s*\(')
+_PIN = re.compile(r'\.(\w+)\s*\(\s*([^)]*?)\s*\)')
+
+
+def _scan_pins(gz):
+    """One linear pass over a netlist -> inst_pins[(module, inst)] = {pin: net}."""
+    inst_pins = {}
+    if not os.path.isfile(gz):
+        return inst_pins
+    mod, cur, depth = None, None, 0
+    with gzip.open(gz, 'rt', errors='replace') as f:
+        for ln in f:
+            mm = _MOD.match(ln)
+            if mm:
+                mod, cur, depth = mm.group(1), None, 0
+                continue
+            im = _INST.match(ln)
+            if im and depth == 0:
+                cur = im.group(1)
+            depth += ln.count('(') - ln.count(')')
+            if depth <= 0:
+                depth = 0
+            if cur and mod:
+                for pm in _PIN.finditer(ln):
+                    inst_pins.setdefault((mod, cur), {})[pm.group(1)] = pm.group(2).strip()
+    return inst_pins
+
+
+def _find_pins(inst_pins, mod, inst):
+    """Route re-uniquifies the study module with a trailing _0."""
+    for m in (mod, mod + '_0'):
+        if (m, inst) in inst_pins:
+            return inst_pins[(m, inst)]
+    return None
+
+
+def ground_bits(rtl_diff, ref_dir):
+    """Fail-closed: verify EVERY priority_force bit's (module, dff_cell).dff_pin actually
+    carries old_net in the PreEco Synthesize netlist. Returns a list of error strings;
+    empty means all bits are netlist-grounded and it is safe to build."""
+    gz = os.path.join(ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
+    inst_pins = _scan_pins(gz)
+    errs = []
+    if not inst_pins:
+        return [f"cannot ground priority_force: PreEco netlist not readable at {gz}"]
+    for ci, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') != 'priority_force':
+            continue
+        mod = c.get('module_name') or ''
+        for f in c.get('forced_signals') or []:
+            sig = f.get('signal')
+            for bspec in f.get('bits') or []:
+                b = bspec.get('bit')
+                old = bspec.get('old_net')
+                cell = bspec.get('dff_cell')
+                pin = bspec.get('dff_pin', 'D')
+                pins = _find_pins(inst_pins, mod, cell) if cell else None
+                if pins is None:
+                    errs.append(f"changes[{ci}] {sig}[{b}]: dff_cell {cell!r} not found in "
+                                f"module {mod!r} of PreEco Synthesize netlist.")
+                    continue
+                actual = pins.get(pin)
+                if actual != old:
+                    errs.append(f"changes[{ci}] {sig}[{b}]: {cell}.{pin} carries {actual!r} in "
+                                f"PreEco netlist but bits[].old_net says {old!r} — net mismatch, "
+                                f"force would rewire the WRONG pin.")
+    return errs
 
 
 def _const_bits(const):
@@ -144,13 +217,30 @@ def main():
     ap.add_argument('--study', required=True)
     ap.add_argument('--jira', required=True)
     ap.add_argument('--output', required=True)
+    ap.add_argument('--ref-dir', help='REF_DIR: when given, every priority_force bit is '
+                    'grounded against PreEco Synthesize netlist and the build ABORTS '
+                    '(nonzero exit, study untouched) on any dff_cell/old_net mismatch.')
     args = ap.parse_args()
     rtl_diff = json.loads(open(args.rtl_diff).read())
     study = json.loads(open(args.study).read())
+
+    # Fail-closed grounding: refuse to build on hallucinated/wrong nets.
+    if args.ref_dir:
+        errs = ground_bits(rtl_diff, args.ref_dir)
+        if errs:
+            marker = ("ECO_SCRIPT_LAUNCHED: eco_emit_priority_force.py\n"
+                      f"  ABORTED — {len(errs)} priority_force bit(s) not netlist-grounded:\n"
+                      + "".join(f"    - {e}\n" for e in errs)
+                      + "  Study UNTOUCHED. Fix bits[].dff_cell/old_net in the RTL diff and re-run.\n")
+            print(marker)
+            open(args.output.replace('.json', '_priority_force_marker.txt'), 'w').write(marker)
+            return 2
+
     n = emit(rtl_diff, study, args.jira)
     open(args.output, 'w').write(json.dumps(study, indent=2))
     marker = (f"ECO_SCRIPT_LAUNCHED: eco_emit_priority_force.py\n"
-              f"  priority_force entries spliced (gates+rewires, all stages): {n}\n")
+              f"  priority_force entries spliced (gates+rewires, all stages): {n}\n"
+              f"  netlist-grounded: {'yes' if args.ref_dir else 'NO (no --ref-dir)'}\n")
     print(marker)
     open(args.output.replace('.json', '_priority_force_marker.txt'), 'w').write(marker)
     return 0

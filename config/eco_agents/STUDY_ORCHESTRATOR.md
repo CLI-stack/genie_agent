@@ -315,10 +315,11 @@ python3 script/eco_scripts/eco_emit_priority_force.py \
     --rtl-diff data/<TAG>_eco_rtl_diff.json \
     --study    data/<TAG>_eco_preeco_study.json \
     --jira     <JIRA> \
+    --ref-dir  <REF_DIR> \
     --output   data/<TAG>_eco_preeco_study.json
 ```
 
-Verify stdout shows `ECO_SCRIPT_LAUNCHED: eco_emit_priority_force.py`. This runs BEFORE eco_emit_rewire_finalize so its DFF-pin rewires get SI/SE consistency added.
+Verify stdout shows `ECO_SCRIPT_LAUNCHED: eco_emit_priority_force.py` and `netlist-grounded: yes`. `--ref-dir` makes it FAIL-CLOSED: every `bits[].dff_cell`/`old_net` is checked against the PreEco Synthesize netlist and the build ABORTS (exit 2, study untouched, marker lists the mismatches) if any bit would rewire the wrong pin. On abort, the step-1 RTL diff has a wrong flop/net — fix it and re-run; do NOT proceed to Step 4. This runs BEFORE eco_emit_rewire_finalize so its DFF-pin rewires get SI/SE consistency added.
 
 **MANDATORY post-Step 3: Run eco_emit_rewire_finalize.py (correct-by-construction rewires):**
 ```bash

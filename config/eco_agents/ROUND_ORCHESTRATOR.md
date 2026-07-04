@@ -488,8 +488,10 @@ eco_expand_chains runs AFTER verifier (not just after re_studier) because verifi
 python3 script/eco_scripts/eco_emit_priority_force.py \
     --rtl-diff data/<TAG>_eco_rtl_diff.json \
     --study data/<TAG>_eco_preeco_study.json --jira <JIRA> \
+    --ref-dir <REF_DIR> \
     --output data/<TAG>_eco_preeco_study.json
 ```
+`--ref-dir` makes it FAIL-CLOSED: aborts (exit 2, study untouched) if any `bits[].dff_cell`/`old_net` does not match the PreEco Synthesize netlist. On abort, fix the RTL diff's flop/net and re-run — do NOT proceed.
 
 **MANDATORY: Run eco_emit_rewire_finalize.py after expand_chains** (same as STUDY Step 3) — fills per-stage cell/pin for P&R-merged flops and emits per-module SI/SE=1'b0 so REWIRE-CELL-ABSENT / Check 64 pass by construction:
 ```bash
