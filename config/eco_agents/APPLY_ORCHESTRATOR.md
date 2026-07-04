@@ -114,6 +114,11 @@ Wait for sub-agent to complete.
 
 **Read result — gate FM submission:**
 
+**MANDATORY EXISTENCE GATE** — the per-round pre-FM json is written ONLY when Step 5 PASSED (removed on fail), so its ABSENCE means Step 5 did not pass → do NOT submit FM:
+```bash
+ls data/<TAG>_eco_pre_fm_check_round1.json || { echo "FAIL: Step 5 pre-FM did not pass (no round json) — do NOT submit FM. Inspect the newest data/<TAG>_eco_pre_fm_check_round1_iter*.json and re-spawn eco_pre_fm_checker."; exit 1; }
+```
+
 **MANDATORY JSON INTEGRITY GATE** — run BEFORE schema validation. Catches `PASS_OVERRIDE` tampering by the agent (a real failure mode observed in 9868 R2):
 ```bash
 python3 script/eco_scripts/eco_validate_pre_fm_integrity.py \
@@ -219,7 +224,9 @@ else:
         bash eco_applier --force-reapply (re-applies updated study JSON entries)
         bash eco_verilog_validator.sh (syntax check all 3 stages)
         spawn eco_pre_fm_checker sub-agent (ROUND=1, CHECK8_RESULT_PATH=data/{TAG}_eco_verilog_validator_round1.json)
-        check = load(f"data/{TAG}_eco_pre_fm_check_round1.json")
+        # canonical round json exists ONLY on pass (removed on fail) — absence == not passed
+        cj = f"data/{TAG}_eco_pre_fm_check_round1.json"
+        check = load(cj) if os.path.exists(cj) else {"passed": False}
 
     if check["passed"]:
         pass  # self-healing succeeded → proceed to Step 6

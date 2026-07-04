@@ -512,7 +512,16 @@ python3 script/eco_scripts/eco_validate_step3.py \
 **`passed: false` is a HARD GATE — applier MUST NOT spawn.**
 
 ```python
-result = json.load(open(f"data/{TAG}_eco_validate_step3_round{NEXT_ROUND}.json"))
+import glob, os
+def _load_v3():
+    # canonical round json exists ONLY on pass (removed on fail). On fail, read the
+    # newest per-iteration debug file. Never bare-open the canonical.
+    canon = f"data/{TAG}_eco_validate_step3_round{NEXT_ROUND}.json"
+    if os.path.exists(canon):
+        return json.load(open(canon))
+    dbg = glob.glob(f"data/{TAG}_eco_validate_step3_round{NEXT_ROUND}_iter*.json")
+    return json.load(open(max(dbg, key=os.path.getmtime))) if dbg else {"passed": False, "issues": []}
+result = _load_v3()
 prev_issue_count = None
 while not result.get('passed', False):
     # ABSOLUTE RULE: applier cannot run with a failing study validator, AND the round
@@ -538,7 +547,7 @@ while not result.get('passed', False):
         run eco_study_fixer.py (batch) ; re_spawn eco_netlist_re_studier with consolidated hint
     prev_issue_count = n
 
-    re-run eco_validate_step3.py → reload result
+    re-run eco_validate_step3.py → result = _load_v3()   # canonical appears == passed
     # loop continues until result.passed == true — no cap, never STOP on a failing study
 
 # Only reach here if passed=true → proceed to applier
@@ -627,7 +636,14 @@ python3 script/eco_scripts/eco_validate_step4.py \
 ```
 
 ```python
-result = json.load(open(f"data/{TAG}_eco_validate_step4_round{NEXT_ROUND}.json"))
+import glob, os
+# canonical round json exists ONLY on pass (removed on fail) — read newest iter on fail
+_c4 = f"data/{TAG}_eco_validate_step4_round{NEXT_ROUND}.json"
+if os.path.exists(_c4):
+    result = json.load(open(_c4))
+else:
+    _d4 = glob.glob(f"data/{TAG}_eco_validate_step4_round{NEXT_ROUND}_iter*.json")
+    result = json.load(open(max(_d4, key=os.path.getmtime))) if _d4 else {"passed": False, "issues": []}
 if not result.get('passed', False):
     # ABSOLUTE RULE: cannot proceed to Step 5 (pre-FM) or Step 6 (FM)
     # with a failing applier validator. Catches silently-skipped applies,
@@ -675,6 +691,11 @@ Pass `CHECK8_RESULT_PATH=data/<TAG>_eco_verilog_validator_round<NEXT_ROUND>.json
 Wait for sub-agent to complete.
 
 **Read result — gate FM submission:**
+
+**MANDATORY EXISTENCE GATE** — the per-round pre-FM json is written ONLY when Step 5 PASSED (removed on fail), so its ABSENCE means Step 5 did not pass → do NOT submit FM:
+```bash
+ls data/<TAG>_eco_pre_fm_check_round<NEXT_ROUND>.json || { echo "FAIL: Step 5 pre-FM did not pass (no round json) — do NOT submit FM. Inspect the newest data/<TAG>_eco_pre_fm_check_round<NEXT_ROUND>_iter*.json and re-spawn eco_pre_fm_checker."; exit 1; }
+```
 
 **MANDATORY JSON INTEGRITY GATE** — run BEFORE schema validation. Round-N agents have been observed editing the script-written `check_summary` to insert `PASS_OVERRIDE` strings to bypass real failures. The integrity validator hard-fails on any such tamper or on `passed=True`-with-non-empty-failures contradictions. If it fails, **abort this round** and re-spawn `eco_pre_fm_checker` with a fresh, non-edited file (deletion of the tampered JSON first):
 ```bash
@@ -734,7 +755,9 @@ else:
 
     # Step 5d: Re-run pre_fm_checker
     spawn eco_pre_fm_checker (CHECK8_RESULT_PATH=<above>)
-    check2 = load(f"data/{TAG}_eco_pre_fm_check_round{NEXT_ROUND}.json")
+    # canonical round json exists ONLY on pass (removed on fail) — absence == not passed
+    _c2 = f"data/{TAG}_eco_pre_fm_check_round{NEXT_ROUND}.json"
+    check2 = load(_c2) if os.path.exists(_c2) else {"passed": False}
 
     if check2["passed"]:
         pass  # self-healing succeeded → proceed to Step 6

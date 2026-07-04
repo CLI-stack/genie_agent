@@ -105,17 +105,19 @@ cd <BASE_DIR> && python3 script/eco_scripts/eco_validate_step1.py \
 STEP1_EXIT=$?
 ```
 
-**HARD GATE — check exit code before ANY further action:**
+**HARD GATE — the canonical json exists ONLY on pass (it is removed on fail), so its ABSENCE means FAIL. Never bare-`open()` it. Read failing issues from the newest per-iteration debug file:**
 ```python
-import json
-v = json.load(open(f"data/{TAG}_eco_validate_step1.json"))
-if not v.get("overall_pass"):
+import json, glob, os
+canon = f"data/{TAG}_eco_validate_step1.json"
+if not os.path.exists(canon):                      # written ONLY on pass
+    dbg = glob.glob(f"data/{TAG}_eco_validate_step1_iter*.json")
+    v = json.load(open(max(dbg, key=os.path.getmtime))) if dbg else {}
     issues = [i for k,vals in v.items() if "issues" in k and "count" not in k
               for i in (vals if isinstance(vals,list) else [])]
     raise RuntimeError(f"Step 1 validator FAIL ({len(issues)} issues) — "
                        f"DO NOT proceed to Step 2. Re-spawn rtl_diff_analyzer.")
 ```
-**Step 2 MUST NOT run if `overall_pass != true`. No exceptions.**
+**Step 2 MUST NOT run unless the canonical `data/<TAG>_eco_validate_step1.json` exists (== overall_pass). No exceptions.**
 
 **Retry-on-fail policy (MAX 2 retries):**
 - Exit 1 with `chain_compactness_issues` containing `FAIL/9d-OVERSIZED` or `FAIL/9c-MULTI-INV-NO-REUSE`:
@@ -167,19 +169,21 @@ If any file is missing — eco_fenets_runner failed. Do NOT continue.
 eco_fenets_runner is required by `eco_fenets_runner.md` STEP F to run `eco_validate_step2.py` as a BLOCKING handoff. The orchestrator must NOT trust that the runner did its job (silent skip is a known failure mode under context pressure); assert it directly:
 
 ```bash
-# 1. Validator output JSON must exist
-ls <BASE_DIR>/data/<TAG>_eco_validate_step2.json || { echo "FAIL: Step 2 validator did not run"; exit 1; }
-
-# 2. overall_pass must be true
+# The canonical json exists ONLY if Step 2 PASSED (removed on fail). Its ABSENCE
+# means Step 2 did not pass (or did not run) — read failing issues from the newest
+# per-iteration debug file. Never bare-open the canonical.
 python3 -c "
-import json, sys
-d = json.loads(open('<BASE_DIR>/data/<TAG>_eco_validate_step2.json').read())
-if not d.get('overall_pass'):
-    print(f'FAIL: Step 2 validator overall_pass=False, {len(d.get(\"issues\",[]))} issues:')
-    for i in d.get('issues', [])[:5]:
-        print(f'  - {i}')
-    sys.exit(1)
-print('Step 2 validator PASSED — proceeding to Step 3')
+import json, glob, os, sys
+canon = '<BASE_DIR>/data/<TAG>_eco_validate_step2.json'
+if os.path.exists(canon):
+    print('Step 2 validator PASSED — proceeding to Step 3'); sys.exit(0)
+dbg = glob.glob('<BASE_DIR>/data/<TAG>_eco_validate_step2_iter*.json')
+if not dbg:
+    print('FAIL: Step 2 validator did not run (no canonical, no iter files)'); sys.exit(1)
+d = json.load(open(max(dbg, key=os.path.getmtime)))
+print(f'FAIL: Step 2 did not pass — {len(d.get(\"issues\",[]))} issues:')
+for i in d.get('issues', [])[:5]: print(f'  - {i}')
+sys.exit(1)
 "
 
 # 3. Sanitize marker must exist (proves eco_fenets_sanitize_queries.py ran, not agent panic-rewrite)
@@ -392,14 +396,14 @@ done
 
 After the deterministic fixer's 3 iterations, if `passed: false` remains, the leftovers are classes the fixer doesn't auto-handle (missing gates, driver-rename, undriven nets, scope/field gaps). **Re-running the expensive validator after every single edit is prohibited — it re-parses three large netlists each time.** Instead, per batch round:
 
-1. **Read the WHOLE `eco_validate_step3.json` issue list once.** Group the issues by class (the `CRITICAL/…`, `HIGH/…`, `Check NN` prefix) and by the sub-agent that must fix each class.
+1. **Read the WHOLE issue list once — from the NEWEST per-iteration file** (`data/<TAG>_eco_validate_step3_iter*.json`, pick the one with the latest mtime). On a failing run the canonical `eco_validate_step3.json` does NOT exist (it is written only on pass), so always read the `_iter<N>.json` for the failing issues. Group them by class (the `CRITICAL/…`, `HIGH/…`, `Check NN` prefix) and by the sub-agent that must fix each class.
 2. **Apply ALL applicable remedies in a single pass BEFORE re-validating.** Many classes collapse into ONE re-spawn:
    - Incomplete chain entries / missing gates / undriven ECO net → **one** `eco_expand_chains.py` re-run.
    - Missing fields (module_name, port_connections_per_stage), driver-rename (`REWIRE-DESTROYS-OLD-NET`), wrong gate/topology → **one** `eco_netlist_re_studier` (or `eco_netlist_studier`) re-spawn, passing a single consolidated hint that lists EVERY failing class + the exact validator messages.
    - **Mode I gap** → append the paired child-scope `port_connection` entries the validator names (all of them at once).
    - **Per-stage CP/SE/SI not from neighbor** (Check 16) → patch every flagged pin/stage from the sample neighbor values in one edit pass.
    - **Signal-in-scope** / **input undriven** → patch all flagged pins together.
-3. **Re-run `eco_validate_step3.py` exactly ONCE** after the batch.
+3. **Re-run `eco_validate_step3.py` exactly ONCE** after the batch (it auto-writes a fresh `_iter<N>.json`; PASS is signalled by the canonical `data/<TAG>_eco_validate_step3.json` appearing — its presence == `passed: true`). Read the next round's issues from the new newest `_iter<N>.json`.
 4. **LOOP with NO cap until `passed: true`.** Repeat the whole batch (never per-fix). Track the issue count each round:
    - If it **decreases** → keep batching (progress).
    - If it **stalls** (same count / same classes ≥2 rounds) → do NOT stop — **escalate the tactic**: (a) re-spawn `eco_netlist_studier` for a full re-study from scratch with the complete issue list, then (b) if still stalled, narrow to the single dominant class and hand the exact validator messages + evidence to the re-studier for a focused rebuild. Keep escalating strategy, but keep looping — Step 3 does not terminate on a failing study.
