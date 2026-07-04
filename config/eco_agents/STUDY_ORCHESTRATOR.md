@@ -306,6 +306,20 @@ python3 script/eco_scripts/eco_expand_chains.py \
 
 Check output for `ECO_SCRIPT_LAUNCHED: eco_expand_chains.py` and `chains_expanded: N`. If N=0, no chains were missing (OK). If N>0, gates were injected — verify the study JSON now has the correct chain entries before proceeding.
 
+**MANDATORY post-Step 3: Run eco_emit_priority_force.py (deterministic priority_force build):**
+
+For every `priority_force` change in the RTL diff this splices the condition cone + per-bit force-mux gates (const-1 bit → `OR2(cond, old)`; const-0 bit → `INR2(old, cond)`) + the DFF-pin rewires, correct BY CONSTRUCTION — so Intent-B `sig=CONST-under-new-condition` forces are never left as PENDING or hand-built. No-op when the RTL diff has no priority_force change (0 across legacy corpus).
+
+```bash
+python3 script/eco_scripts/eco_emit_priority_force.py \
+    --rtl-diff data/<TAG>_eco_rtl_diff.json \
+    --study    data/<TAG>_eco_preeco_study.json \
+    --jira     <JIRA> \
+    --output   data/<TAG>_eco_preeco_study.json
+```
+
+Verify stdout shows `ECO_SCRIPT_LAUNCHED: eco_emit_priority_force.py`. This runs BEFORE eco_emit_rewire_finalize so its DFF-pin rewires get SI/SE consistency added.
+
 **MANDATORY post-Step 3: Run eco_emit_rewire_finalize.py (correct-by-construction rewires):**
 ```bash
 python3 script/eco_scripts/eco_emit_rewire_finalize.py \

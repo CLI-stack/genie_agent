@@ -5228,26 +5228,58 @@ def main():
                     f"(net={e.get('net_name')!r}). Likely a hallucinated wrong register port; the "
                     f"loopback must rename the oQ_/iQ_ ports of the SAME register being bridged.")
 
-    # ── #1 priority_force enforcement: each forced signal's constant must be
-    #    driven by a force-mux gate in the study (else the c0vld=1 / mop=CAS force
-    #    was never built). Fires only on priority_force changes (none in legacy). ──
+    # ── #1 priority_force BUILD verification: for each forced signal bit the study
+    #    must contain BOTH a force-mux gate (const encoded via gate CHOICE: OR2 for a
+    #    const-1 bit, INR2 for a const-0 bit — see eco_emit_priority_force.py) AND a
+    #    DFF-pin rewire that repoints that bit's flop .D onto the fresh force-mux net.
+    #    Checking gate-existence + rewire (NOT const-as-literal-input, which the
+    #    synthesizer never emits). Fires only on priority_force changes (none legacy). ──
     _syn3 = study.get('Synthesize', [])
-    _gate_const_inputs = set()
+    # fresh force-mux outputs = OR2/INR2 gates emitted by the priority_force builder
+    _pf_mux_outs = set()
     for e in _syn3:
-        if e.get('change_type') == 'new_logic_gate':
-            for v in (e.get('port_connections') or {}).values():
-                if isinstance(v, str) and re.match(r"^\d*'[bhdoBHDO]", v.strip()):
-                    _gate_const_inputs.add(v.strip())
+        if e.get('change_type') != 'new_logic_gate':
+            continue
+        inst = str(e.get('instance_name') or '')
+        fn = (e.get('gate_function') or '').upper()
+        if '_pf_mux_' in inst or (e.get('source') == 'eco_emit_priority_force' and fn in ('OR2', 'INR2')):
+            out = e.get('output_net') or ''
+            if out:
+                _pf_mux_outs.add(out)
+    # DFF-pin rewires whose new_net is one of those force-mux outputs
+    _pf_rewire_nets = set()
+    for e in _syn3:
+        if e.get('change_type') == 'rewire' and (e.get('new_net') in _pf_mux_outs):
+            _pf_rewire_nets.add(e.get('new_net'))
     for c in rtl_diff.get('changes', []):
         if c.get('change_type') != 'priority_force':
             continue
         for f in (c.get('forced_signals') or []):
-            const = str(f.get('const', '')).strip()
-            if const and const not in _gate_const_inputs:
+            sig = f.get('signal')
+            nbits = len(f.get('bits') or [])
+            # per-signal force-mux gates (instance embeds the signal name)
+            sig_muxes = {e.get('output_net') for e in _syn3
+                         if e.get('change_type') == 'new_logic_gate'
+                         and f"_pf_mux_{sig}_" in str(e.get('instance_name') or '')}
+            sig_muxes.discard(None); sig_muxes.discard('')
+            if not sig_muxes:
                 issues.append(
-                    f"CRITICAL/PRIORITY-FORCE: forced signal {f.get('signal')!r} const {const!r} "
-                    f"is not driven by any force-mux gate — Intent-B constant force (e.g. mop=CAS) "
-                    f"not built. Emit AO22(cond, CONST, ~cond, old_next_state) + DFF-pin rewire.")
+                    f"CRITICAL/PRIORITY-FORCE: forced signal {sig!r} has NO force-mux gate in the "
+                    f"study — Intent-B constant force (e.g. c0vld=1 / mop=CAS) not built. Run "
+                    f"eco_emit_priority_force.py (emits OR2 per const-1 bit, INR2 per const-0 bit).")
+                continue
+            wired = sig_muxes & _pf_rewire_nets
+            if len(wired) < len(sig_muxes):
+                issues.append(
+                    f"CRITICAL/PRIORITY-FORCE: forced signal {sig!r} has {len(sig_muxes)} force-mux "
+                    f"gate(s) but only {len(wired)} DFF-pin rewire(s) onto them — the flop .D of "
+                    f"unwired bits still reads the OLD next-state net, so the force is dead. Each "
+                    f"force-mux output must be rewired onto its bit's flop .D pin.")
+            elif nbits and len(sig_muxes) < nbits:
+                issues.append(
+                    f"CRITICAL/PRIORITY-FORCE: forced signal {sig!r} declares {nbits} bit(s) but only "
+                    f"{len(sig_muxes)} force-mux gate(s) were built — {nbits - len(sig_muxes)} forced "
+                    f"bit(s) were dropped.")
 
     # ── #2 term_op operator enforcement (unambiguous cases only, no polarity risk) ──
     _AND_FAM = ('AND2', 'AND3', 'AND4', 'AN2', 'AN3', 'AN4', 'ND2', 'ND3', 'ND4',

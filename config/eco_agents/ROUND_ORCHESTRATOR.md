@@ -483,6 +483,14 @@ python3 script/eco_scripts/eco_expand_chains.py \
 ```
 eco_expand_chains runs AFTER verifier (not just after re_studier) because verifier may have added new entries that reference d_input chains not yet injected.
 
+**MANDATORY: Run eco_emit_priority_force.py after expand_chains** (same as STUDY Step 3) — deterministically splices condition cone + per-bit force-mux (OR2 const-1 / INR2 const-0) + DFF-pin rewires for every `priority_force` change. No-op when none present. Runs BEFORE rewire_finalize so its DFF rewires get SI/SE consistency:
+```bash
+python3 script/eco_scripts/eco_emit_priority_force.py \
+    --rtl-diff data/<TAG>_eco_rtl_diff.json \
+    --study data/<TAG>_eco_preeco_study.json --jira <JIRA> \
+    --output data/<TAG>_eco_preeco_study.json
+```
+
 **MANDATORY: Run eco_emit_rewire_finalize.py after expand_chains** (same as STUDY Step 3) — fills per-stage cell/pin for P&R-merged flops and emits per-module SI/SE=1'b0 so REWIRE-CELL-ABSENT / Check 64 pass by construction:
 ```bash
 python3 script/eco_scripts/eco_emit_rewire_finalize.py \

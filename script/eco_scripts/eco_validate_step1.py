@@ -2393,10 +2393,17 @@ def main():
                     priority_force_issues.append(
                         f"changes[{idx}] priority_force forced_signals[{f.get('signal')!r}].const="
                         f"{f.get('const')!r} is not a valid Verilog constant.")
-                if not f.get('old_next_state_net'):
+                bits = f.get('bits') or []
+                if not bits:
                     priority_force_issues.append(
                         f"changes[{idx}] priority_force forced_signals[{f.get('signal')!r}] missing "
-                        f"old_next_state_net (needed for the force-mux else-leg).")
+                        f"bits[] — each bit needs {{bit, old_net, dff_cell, dff_pin}} for the force-mux "
+                        f"else-leg + DFF-pin rewire.")
+                for bspec in bits:
+                    if bspec.get('old_net') is None or not bspec.get('dff_cell'):
+                        priority_force_issues.append(
+                            f"changes[{idx}] priority_force forced_signals[{f.get('signal')!r}] bit "
+                            f"{bspec.get('bit')} missing old_net/dff_cell.")
         elif ct == 'and_term':
             op = c.get('term_op')
             if op not in ('and', 'or'):
