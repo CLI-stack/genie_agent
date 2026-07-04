@@ -4236,6 +4236,22 @@ def main():
                         f"in {stage} — same instance+port already present.")
                 else:
                     seen_insts[port_key] = ct
+            elif ct == 'rewire':
+                # A rewire targets ONE pin of a cell. A multi-bit (MB) flop
+                # legitimately needs several pin rewires on the SAME instance
+                # (e.g. D1 + D3 + SI + SE), and the SAME instance name recurs
+                # across many uniquified modules (e.g. rcqe_pgst_reg... in
+                # umcrecrcqentry_0.._39). Key on (module, instance, pin) so only a
+                # genuine same-module same-pin duplicate is flagged.
+                _pin = e.get('pin') or (e.get('pin_per_stage') or {}).get(stage, '')
+                _mod = e.get('module_name') or e.get('parent_module') or ''
+                pin_key = (_mod, inst, ct, _pin)
+                if pin_key in seen_insts:
+                    issues.append(
+                        f"Check 52 FAIL: duplicate rewire {inst!r} pin={_pin!r} "
+                        f"in module {_mod!r} ({stage}) — same instance+pin rewired twice.")
+                else:
+                    seen_insts[pin_key] = ct
             else:
                 if inst in seen_insts:
                     issues.append(
