@@ -2363,6 +2363,24 @@ def main():
 
     # ── priority_force (#1) + term_op (#2) + pending-term (catch mismodel) ────
     _const_re = re.compile(r"^\d*'[bhdo][0-9a-fA-FxXzZ_]+$|^\d+$")
+
+    def _rhs_is_constant(s):
+        """Classify an assignment RHS from the RTL branch.
+          True  -> a bare CONSTANT value  (=> priority_force)
+          False -> combines signals with an operator (=> and_term / decompose)
+          None  -> ambiguous (a lone signal name, etc.) — do not judge."""
+        s = str(s or '').strip()
+        if not s:
+            return None
+        # any boolean/ternary/arith combine operator => it's an expression, not a const
+        if re.search(r"[&|^?~]|\b(and|or|xor)\b|[+\-*/]", s):
+            return False
+        if _const_re.match(s):
+            return True
+        if re.match(r"^[A-Z_][A-Z0-9_]*$", s):   # UMC_MOP_CAS-style define constant
+            return True
+        return None
+
     priority_force_issues, term_op_issues, pending_term_issues = [], [], []
     for idx, c in enumerate(rtl_diff.get('changes', [])):
         ct = c.get('change_type')
@@ -2393,6 +2411,22 @@ def main():
                     priority_force_issues.append(
                         f"changes[{idx}] priority_force forced_signals[{f.get('signal')!r}].const="
                         f"{f.get('const')!r} is not a valid Verilog constant.")
+                # classification proof: the RTL branch RHS must be a bare constant. If the
+                # analyzer records assignment_evidence (the verbatim `sig <= <RHS>` text),
+                # it MUST be constant-like — an expression here means this is really an
+                # and_term (term fold), not a priority_force. Missing evidence => must add it.
+                ev = f.get('assignment_evidence')
+                if ev is None:
+                    priority_force_issues.append(
+                        f"changes[{idx}] priority_force forced_signals[{f.get('signal')!r}] missing "
+                        f"assignment_evidence — record the verbatim RTL RHS (e.g. \"1'b1\", "
+                        f"\"UMC_MOP_CAS\") so the priority_force vs and_term classification is provable.")
+                elif _rhs_is_constant(ev) is False:
+                    priority_force_issues.append(
+                        f"changes[{idx}] priority_force forced_signals[{f.get('signal')!r}] "
+                        f"assignment_evidence={ev!r} COMBINES signals (has an operator) — a "
+                        f"priority_force RHS must be a bare CONSTANT. Reclassify as and_term (term "
+                        f"fold into an existing expression) or decompose the RHS into a gate chain.")
                 bits = f.get('bits') or []
                 if not bits:
                     priority_force_issues.append(
@@ -2410,6 +2444,17 @@ def main():
                 term_op_issues.append(
                     f"changes[{idx}] and_term (old_token={c.get('old_token')!r}) missing term_op "
                     f"('and'|'or') — required to pick AND-narrow vs OR-widen gate (Intent-A MRR).")
+            # reverse mis-classification guard (opt-in: only when evidence is recorded, so
+            # legacy and_term entries without the field are unaffected). If the branch RHS is
+            # a BARE constant, the signal is being PINNED to a value, not term-folded → this
+            # is a priority_force, not an and_term.
+            ev = c.get('assignment_evidence')
+            if ev is not None and _rhs_is_constant(ev) is True:
+                pending_term_issues.append(
+                    f"changes[{idx}] and_term (old_token={c.get('old_token')!r}) has "
+                    f"assignment_evidence={ev!r} — a BARE CONSTANT RHS pins the signal to a value, "
+                    f"which is a priority_force (force sig=CONST under <cond>), NOT a term fold. "
+                    f"Reclassify as change_type=priority_force with forced_signals[].bits[].")
     if priority_force_issues:
         overall_pass = False
     if pending_term_issues:
