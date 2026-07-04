@@ -340,23 +340,30 @@ for i in 1 2 3; do
 done
 ```
 
-**eco_study_fixer.py** handles deterministic issues automatically:
+**eco_study_fixer.py** handles deterministic issues automatically **in a single pass** — it walks the ENTIRE validator issue list and applies every fix it can before re-validation:
+- `chain-injection schema ... missing ['gate_function']` — derives `gate_function` from `cell_type` family (via `family_of`)
 - `ANDTERM-WRONG-POLARITY` — flips NOR2↔INR2 based on FM raw rpt polarity
-- `NET-ABSENT-IN-STAGE` — runs `eco_resolve_synth_internal.py` to find correct P&R net
-- `PENDING-UNRESOLVED` — same; runs resolve script
+- `NET-ABSENT-IN-STAGE` — flat→bracket form recovery (`sig_3_`→`sig[3]`, verified against PreEco) first, then `eco_resolve_synth_internal.py`
+- `PENDING-UNRESOLVED` — runs resolve script
 - `CONDITION-POLARITY` — replaces wrong Synth net with condition_input_resolutions value
-
-After 3 iterations: if `passed: false` remains → only non-deterministic issues left (e.g. UNRESOLVABLE requiring manual F1-F3 forward consumer search). Read remaining issues and fix manually, then re-validate once more.
+- `REWIRE-CELL-ABSENT` — picks the stage-correct cell from `cell_name_per_stage` (fixes wrong-stage cell names)
 
 **HARD GATE.** Any `passed: false` after the catch-and-fix loop BLOCKS Phase A handoff. If issues cannot be resolved, write `phase_a_handoff.json` with `phase_a_status: "BLOCKED_STEP3_VALIDATOR"` and EXIT.
 
-Remaining manual fixes for non-deterministic issues:
-- Incomplete chain entries → re-run `eco_expand_chains.py`
-- Missing fields (module_name, port_connections_per_stage, etc.) → re-spawn `eco_netlist_studier`
-- **Mode I gap** (`parent rename ... but no paired child-scope port_connection`) → the validator message includes the exact JSON entry to add: `module_name=<child>`, `bus_bit_index=<N>`, `net_name=<port>[<bit>]`. Append it to the study JSON OR re-spawn studier with `MODE_I_HINT="add paired child-scope port_connection per validator output"`.
-- **Per-stage CP/SE/SI not from neighbor** (Check 16, `not used by any existing DFF`) → the validator message lists 3 sample neighbor values. Pick one of those for the failing pin/stage and patch `port_connections_per_stage[<stage>][<pin>]` in the study JSON OR re-spawn studier with `NEIGHBOR_LOOKUP_HINT="<inst>:<pin>:<stage> use one of <samples>"`.
-- **Signal-in-scope failure** (Step 1 `signal_in_scope_issues`, `input X NOT in scope of module Y`) → look for a local DFF whose Q drives the same logical signal in the target module; use its per-stage Q net name as the chain input. If no local source exists, propose a `new_port` change to promote the signal in.
-- **ECO input pin undriven** (Step 5 Check 13, `[INPUT_UNDRIVEN]`) → the per-stage net the studier picked doesn't have a driver in that stage's netlist. Re-look up the neighbor DFF's per-stage value (most likely a stale name), patch `port_connections_per_stage`, re-run Step 4.
+### MANUAL FIX PROTOCOL — BATCH ALL CLASSES, THEN RE-VALIDATE ONCE (do NOT validate after each single fix)
+
+After the deterministic fixer's 3 iterations, if `passed: false` remains, the leftovers are classes the fixer doesn't auto-handle (missing gates, driver-rename, undriven nets, scope/field gaps). **Re-running the expensive validator after every single edit is prohibited — it re-parses three large netlists each time.** Instead:
+
+1. **Read the WHOLE `eco_validate_step3.json` issue list once.** Group the issues by class (the `CRITICAL/…`, `HIGH/…`, `Check NN` prefix) and by the sub-agent that must fix each class.
+2. **Apply ALL applicable remedies in a single pass BEFORE re-validating.** Many classes collapse into ONE re-spawn:
+   - Incomplete chain entries / missing gates / undriven ECO net → **one** `eco_expand_chains.py` re-run.
+   - Missing fields (module_name, port_connections_per_stage), driver-rename (`REWIRE-DESTROYS-OLD-NET`), wrong gate/topology → **one** `eco_netlist_re_studier` (or `eco_netlist_studier`) re-spawn, passing a single consolidated hint that lists EVERY failing class + the exact validator messages.
+   - **Mode I gap** → append the paired child-scope `port_connection` entries the validator names (all of them at once).
+   - **Per-stage CP/SE/SI not from neighbor** (Check 16) → patch every flagged pin/stage from the sample neighbor values in one edit pass.
+   - **Signal-in-scope** / **input undriven** → patch all flagged pins together.
+3. **Re-run `eco_validate_step3.py` exactly ONCE** after the batch. Repeat the whole batch (not per-fix) only if new classes surface, up to the 3-iteration cap.
+
+The goal: **N validator runs where N = number of batch rounds, NOT number of individual fixes.** A study with 600 issues across 5 classes should take ~1–2 validator runs, not 600.
 **MANDATORY advisory — Run eco_lol_impact.py (Levels-of-Logic impact):**
 
 After the Step 3 validator passes, ALWAYS run the LOL impact analyzer. It is **advisory** (never
