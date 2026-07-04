@@ -352,40 +352,30 @@ python3 script/eco_scripts/eco_emit_rewire_finalize.py \
 ```
 For every D/CP rewire on a pre-existing DFF this (a) fills `cell_name_per_stage`+`pin_per_stage` when the flop was P&R-merged in a later stage (e.g. `postcas_reg`→`<big>_reg_0_`/`D2`) and (b) emits per-module `SI/SE=1'b0` rewires so FM scan cones match. This makes Check 64 / REWIRE-CELL-ABSENT pass without the catch-and-fix loop. Verify stdout shows `ECO_SCRIPT_LAUNCHED: eco_emit_rewire_finalize.py`.
 
-**MANDATORY post-Step 3: Run eco_validate_step3.py to enforce completeness contract:**
-```bash
-cd <BASE_DIR>
-python3 script/eco_scripts/eco_validate_step3.py \
-    --study    data/<TAG>_eco_preeco_study.json \
-    --rtl-diff data/<TAG>_eco_rtl_diff.json \
-    --ref-dir  <REF_DIR> \
-    --tag      <TAG> \
-    --output   data/<TAG>_eco_validate_step3.json
-```
-**CATCH-AND-FIX LOOP (max 3 iterations):** If validator returns `passed: false`, run `eco_study_fixer.py` to auto-apply deterministic fixes, then re-validate:
+**MANDATORY post-Step 3: Run eco_validate_step3.py in a CATCH-AND-FIX LOOP** (validator is expensive — run it ONLY inside the loop, not separately). Each pass ALWAYS writes a per-iteration debug file `data/<TAG>_eco_validate_step3_iter$i.json`; the canonical `data/<TAG>_eco_validate_step3.json` is written ONLY when a pass succeeds and is REMOVED on failure — so it exists **iff the latest run passed** and always contains a PASSING result. The fixer therefore reads the FAILING issues from the per-iteration file, not the canonical:
 
 ```bash
+cd <BASE_DIR>
 for i in 1 2 3; do
-  # Run validator — --iter $i also writes data/<TAG>_eco_validate_step3_iter$i.json
-  # (per-iteration history); the canonical data/<TAG>_eco_validate_step3.json is
-  # always overwritten with the latest and holds the FINAL result at loop exit.
   python3 script/eco_scripts/eco_validate_step3.py \
       --study data/<TAG>_eco_preeco_study.json \
       --rtl-diff data/<TAG>_eco_rtl_diff.json \
       --ref-dir <REF_DIR> --tag <TAG> \
       --output data/<TAG>_eco_validate_step3.json --iter $i
-  [ $? -eq 0 ] && break  # PASS — exit loop
+  [ $? -eq 0 ] && break  # PASS — canonical json written, exit loop
 
-  # Auto-fix deterministic issues
+  # Auto-fix deterministic issues from THIS iteration's debug file
   python3 script/eco_scripts/eco_study_fixer.py \
       --study   data/<TAG>_eco_preeco_study.json \
-      --issues  data/<TAG>_eco_validate_step3.json \
+      --issues  data/<TAG>_eco_validate_step3_iter$i.json \
       --rtl-diff data/<TAG>_eco_rtl_diff.json \
       --ref-dir <REF_DIR> \
       --raw-rpts data/*_find_equivalent_nets_raw*.rpt \
       --step2-rpt data/<TAG>_eco_step2_fenets.rpt \
       --output  data/<TAG>_eco_preeco_study.json
 done
+# After the loop, data/<TAG>_eco_validate_step3.json exists ONLY if Step 3 passed.
+# If it is absent, Step 3 did not converge — do NOT emit APPLY_PHASE_READY.
 ```
 
 **eco_study_fixer.py** handles deterministic issues automatically **in a single pass** — it walks the ENTIRE validator issue list and applies every fix it can before re-validation:

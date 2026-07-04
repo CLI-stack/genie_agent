@@ -27,6 +27,7 @@ Usage:
 """
 import argparse, glob, json, re, subprocess, sys
 from pathlib import Path
+from eco_validate_io import write_result
 
 
 def _load_json(p):
@@ -504,10 +505,7 @@ def main():
         'issues':             issues,
         'overall_pass':       not issues,
     }
-    Path(args.output).write_text(json.dumps(out, indent=2))
-    if args.iter is not None:
-        _ip = (args.output[:-5] if args.output.endswith('.json') else args.output) + f'_iter{args.iter}.json'
-        Path(_ip).write_text(json.dumps(out, indent=2))
+    write_result(args.output, out, not issues, getattr(args, 'iter', None))
 
     print('ECO_SCRIPT_LAUNCHED: eco_validate_step2.py')
     print(f'  queries:    {args.queries}')

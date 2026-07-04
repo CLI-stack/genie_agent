@@ -21,6 +21,7 @@ Usage:
 Exit: 0 = all wire_swap entries pass, 1 = any failure.
 """
 import argparse, json, os, re, sys
+from eco_validate_io import write_result
 
 # Prefixes that mean the cell's output goes LOW when its inputs go HIGH.
 # Keep generic — covers TSMC/AMD/GF library naming conventions.
@@ -2675,12 +2676,7 @@ def main():
         'overall_pass':          overall_pass,
         'entries':               results,
     }
-    with open(args.output, 'w') as f:
-        json.dump(out, f, indent=2)
-    if args.iter is not None:
-        _ip = (args.output[:-5] if args.output.endswith('.json') else args.output) + f'_iter{args.iter}.json'
-        with open(_ip, 'w') as f:
-            json.dump(out, f, indent=2)
+    write_result(args.output, out, overall_pass, getattr(args, 'iter', None))
 
     print('ECO_SCRIPT_LAUNCHED: eco_validate_step1.py')
     print(f'  rtl_diff: {args.rtl_diff}')

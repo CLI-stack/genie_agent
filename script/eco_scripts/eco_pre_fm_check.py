@@ -25,6 +25,7 @@ Writes:
 
 import argparse, json, os, re, subprocess, sys
 from pathlib import Path
+from eco_validate_io import write_result
 
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -1914,12 +1915,7 @@ def main():
         'warnings':      warnings,
         'check_summary': results,
     }
-    with open(out_json_path, 'w') as f:
-        json.dump(out, f, indent=2)
-    if args.iter is not None:
-        _ip = (out_json_path[:-5] if out_json_path.endswith('.json') else out_json_path) + f'_iter{args.iter}.json'
-        with open(_ip, 'w') as f:
-            json.dump(out, f, indent=2)
+    write_result(out_json_path, out, passed, getattr(args, 'iter', None))
 
     # ── Write RPT ─────────────────────────────────────────────────────────────
     status_str = 'PASS' if passed else 'FAIL'

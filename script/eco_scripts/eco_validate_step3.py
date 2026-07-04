@@ -19,6 +19,7 @@ Exit: 0 = PASS (all complete), 1 = FAIL (issues found)
 
 import argparse, gzip, json, os, re, subprocess, sys
 from pathlib import Path
+from eco_validate_io import write_result
 
 def main():
     p = argparse.ArgumentParser()
@@ -5464,10 +5465,7 @@ def main():
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}
-    Path(args.output).write_text(json.dumps(result, indent=2))
-    if args.iter is not None:
-        _ip = (args.output[:-5] if args.output.endswith('.json') else args.output) + f'_iter{args.iter}.json'
-        Path(_ip).write_text(json.dumps(result, indent=2))
+    write_result(args.output, result, passed, getattr(args, 'iter', None))
 
     marker_txt = (
         f"ECO_SCRIPT_LAUNCHED: eco_validate_step3.py\n"
