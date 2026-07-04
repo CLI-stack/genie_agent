@@ -306,6 +306,15 @@ python3 script/eco_scripts/eco_expand_chains.py \
 
 Check output for `ECO_SCRIPT_LAUNCHED: eco_expand_chains.py` and `chains_expanded: N`. If N=0, no chains were missing (OK). If N>0, gates were injected — verify the study JSON now has the correct chain entries before proceeding.
 
+**MANDATORY post-Step 3: Run eco_emit_rewire_finalize.py (correct-by-construction rewires):**
+```bash
+python3 script/eco_scripts/eco_emit_rewire_finalize.py \
+    --study   data/<TAG>_eco_preeco_study.json \
+    --ref-dir <REF_DIR> \
+    --output  data/<TAG>_eco_preeco_study.json
+```
+For every D/CP rewire on a pre-existing DFF this (a) fills `cell_name_per_stage`+`pin_per_stage` when the flop was P&R-merged in a later stage (e.g. `postcas_reg`→`<big>_reg_0_`/`D2`) and (b) emits per-module `SI/SE=1'b0` rewires so FM scan cones match. This makes Check 64 / REWIRE-CELL-ABSENT pass without the catch-and-fix loop. Verify stdout shows `ECO_SCRIPT_LAUNCHED: eco_emit_rewire_finalize.py`.
+
 **MANDATORY post-Step 3: Run eco_validate_step3.py to enforce completeness contract:**
 ```bash
 cd <BASE_DIR>

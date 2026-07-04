@@ -483,6 +483,13 @@ python3 script/eco_scripts/eco_expand_chains.py \
 ```
 eco_expand_chains runs AFTER verifier (not just after re_studier) because verifier may have added new entries that reference d_input chains not yet injected.
 
+**MANDATORY: Run eco_emit_rewire_finalize.py after expand_chains** (same as STUDY Step 3) — fills per-stage cell/pin for P&R-merged flops and emits per-module SI/SE=1'b0 so REWIRE-CELL-ABSENT / Check 64 pass by construction:
+```bash
+python3 script/eco_scripts/eco_emit_rewire_finalize.py \
+    --study data/<TAG>_eco_preeco_study.json --ref-dir <REF_DIR> \
+    --output data/<TAG>_eco_preeco_study.json
+```
+
 **MANDATORY: Re-validate study JSON post-expand_chains** — same contract enforcement as ORCHESTRATOR Step 3. Catches malformed chain output (Check 16 `[CHAIN_INJECTION_SCHEMA]`) AND Mode J chain-leaf polarity flips (Check 38 `[HIGH/38-CHAIN-LEAF-POLARITY-MISMATCH]`) before Step 4 of the next round:
 ```bash
 python3 script/eco_scripts/eco_validate_step3.py \
