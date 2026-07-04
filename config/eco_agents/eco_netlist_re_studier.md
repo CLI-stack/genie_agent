@@ -173,6 +173,17 @@ fanout=$(zcat <REF_DIR>/data/PostEco/<Stage>.v.gz | \
 
 If `fanout > 10` → **DO NOT rename the driver**. High-fanout nets feed many downstream DFFs — renaming severs all connections. Use FM tuning (set_dont_reverse, set_constant) instead. Log: `FANOUT_BLOCK: <old_net> has <N> consumers — driver rename skipped`.
 
+### GAP-24: Fixing HIGH/41 (or `combinational loop detected`) on a register D-cone
+
+When the validator reports `HIGH/41-REWIRE-DESTROYS-OLD-NET` or `combinational loop detected` and `old_token` drives a **register D-cone** (`*_reg.D`, e.g. `rcqe_pgst`), do the FULL DFF-pin-rewire — **dropping the driver-rename alone leaves a self-loop** (gate reads AND drives `old_token`):
+
+1. Keep the original driver of `old_token` untouched (no rename).
+2. The combine gate reads `old_token` as input; its output MUST be a **fresh `n_eco_<jira>_<seq>` net — NEVER `old_token`** (output == input = combinational loop).
+3. Rewire the consuming **DFF `.D` pin** from `old_token` to the fresh net (per stage via rename_map).
+4. Delete any leftover `old_token → *_orig` rewire and any dangling `*_orig` net.
+
+Driver-rename applies ONLY when `old_token` is a module OUTPUT PORT (`is_output_port=true`). Register D-cone ⇒ DFF-pin-rewire, always.
+
 ### GAP-23: Paired undo_instance for force_reapply Gates
 
 When setting `force_reapply: true` on a `new_logic_gate` or `new_logic_dff` entry that is ALREADY in PostEco, **always add a paired `undo_instance` entry** before the re-insert entry. Without undo, eco_perl_spec either creates a duplicate gate (SVR-9) or skips silently (pin change not applied).

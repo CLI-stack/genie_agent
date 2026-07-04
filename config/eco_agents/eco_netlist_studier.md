@@ -174,6 +174,10 @@ Pick the pattern from what `old_token` drives — do NOT rename the driver by de
 
 Rule of thumb: **DFF-pin-rewire for register D-cones; driver-rename ONLY for output ports.** If unsure, use DFF-pin-rewire — it never trips HIGH/41.
 
+**SELF-LOOP GUARD (all gates):** a gate's `output_net` must NEVER equal any of its own input pins' nets. Before writing the study, self-check every `new_logic_gate`: if `output_net ∈ port_connections.values()` (inputs), it is a combinational loop — re-point the input to the real source (e.g. the DFF-pin-rewire's `old_token`), never to the gate's own output. Step 3 validator Check 2f hard-fails this.
+
+**PER-STAGE DFF-pin rewire (MB-merge + polarity):** a DFF `.D` rewire must carry `cell_name_per_stage` AND `pin_per_stage` — P&R often MERGES a flop into a multi-bit bank in Route (e.g. `postcas_reg` → `split_act_inprog_reg_MB_..._reg_0_`, pin `D`→`D2`). Read the per-stage cell+pin from the fenets rename_map's Route address (the `<cell>/<pin>` form), not the Synthesize name — else `REWIRE-CELL-ABSENT` in Route. And when a gate input's inverter-parity differs across stages (Check 38), use the FM-resolved wire (or the DFF Q directly) for the odd-parity stage, not the bare RTL name (which is the inverse value there).
+
 Do NOT interleave Phase 1 (wire_swap/FM) processing with Phase 0. Phase 1 depends on Phase 0 outputs being complete (new_logic output nets must exist before wire_swap FM queries are interpreted).
 
 **CRITICAL: For hierarchical PostEco netlists, `new_port` and `port_connection` changes require explicit port list updates and instance connection additions.**

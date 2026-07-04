@@ -131,9 +131,14 @@ def derive(rtl_diff, tile=''):
                     base = inp.split('[')[0].strip()
                     # only plain net identifiers are queryable — skip placeholders
                     # (PENDING_FM_RESOLUTION:*), negations (~X), constants, etc.
+                    # ALSO skip SYNTHETIC/derived tokens the flow will BUILD as gates
+                    # (equality decodes <sig>_eq_<CONST>, renamed drivers *_orig,
+                    # computed *_inv nets) — these are not existing wires and must NOT
+                    # be sent to find_equivalent_nets (they echo-fall-back → Step 2 C6).
                     if (not base or base in seen_ci
                             or not re.match(r'^[A-Za-z_]\w*$', base)
                             or base.startswith(_SKIP_INPUT_PREFIXES)
+                            or re.search(r'_eq_[A-Z0-9_]+$|_orig$|_inv\d*$', base)
                             or base == c.get('old_token') or base == c.get('new_token')
                             or base in eco_new_signals):
                         continue
