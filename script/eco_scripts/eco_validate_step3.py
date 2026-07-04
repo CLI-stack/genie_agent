@@ -5228,6 +5228,54 @@ def main():
                     f"(net={e.get('net_name')!r}). Likely a hallucinated wrong register port; the "
                     f"loopback must rename the oQ_/iQ_ ports of the SAME register being bridged.")
 
+    # ── #1 priority_force enforcement: each forced signal's constant must be
+    #    driven by a force-mux gate in the study (else the c0vld=1 / mop=CAS force
+    #    was never built). Fires only on priority_force changes (none in legacy). ──
+    _syn3 = study.get('Synthesize', [])
+    _gate_const_inputs = set()
+    for e in _syn3:
+        if e.get('change_type') == 'new_logic_gate':
+            for v in (e.get('port_connections') or {}).values():
+                if isinstance(v, str) and re.match(r"^\d*'[bhdoBHDO]", v.strip()):
+                    _gate_const_inputs.add(v.strip())
+    for c in rtl_diff.get('changes', []):
+        if c.get('change_type') != 'priority_force':
+            continue
+        for f in (c.get('forced_signals') or []):
+            const = str(f.get('const', '')).strip()
+            if const and const not in _gate_const_inputs:
+                issues.append(
+                    f"CRITICAL/PRIORITY-FORCE: forced signal {f.get('signal')!r} const {const!r} "
+                    f"is not driven by any force-mux gate — Intent-B constant force (e.g. mop=CAS) "
+                    f"not built. Emit AO22(cond, CONST, ~cond, old_next_state) + DFF-pin rewire.")
+
+    # ── #2 term_op operator enforcement (unambiguous cases only, no polarity risk) ──
+    _AND_FAM = ('AND2', 'AND3', 'AND4', 'AN2', 'AN3', 'AN4', 'ND2', 'ND3', 'ND4',
+                'NAND2', 'NAND3', 'NAND4')
+    _OR_FAM = ('OR2', 'OR3', 'OR4', 'NR2', 'NR3', 'NR4', 'NOR2', 'NOR3', 'NOR4')
+    for c in rtl_diff.get('changes', []):
+        if c.get('change_type') != 'and_term' or c.get('term_op') not in ('and', 'or'):
+            continue
+        op, old_tok = c.get('term_op'), c.get('old_token')
+        if not old_tok:
+            continue
+        for e in _syn3:
+            if e.get('change_type') != 'new_logic_gate':
+                continue
+            pcs = e.get('port_connections') or {}
+            ins = [v for k, v in pcs.items() if k not in ('Z', 'ZN', 'Q', 'CO', 'S')]
+            if old_tok not in ins:
+                continue
+            fam = (e.get('gate_function') or '').upper()
+            if op == 'or' and fam in _AND_FAM:
+                issues.append(
+                    f"HIGH/TERM-OP: and_term term_op='or' (OR-widen of {old_tok!r}) but combine gate "
+                    f"{e.get('instance_name')!r} is {fam} (pure AND) — an OR-widen cannot be an AND gate.")
+            elif op == 'and' and fam in _OR_FAM:
+                issues.append(
+                    f"HIGH/TERM-OP: and_term term_op='and' (AND-narrow of {old_tok!r}) but combine gate "
+                    f"{e.get('instance_name')!r} is {fam} (pure OR) — an AND-narrow cannot be an OR gate.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}
