@@ -165,9 +165,14 @@ The gate type (NOR2 vs INR2) is determined by the FM `(+)/(-)` polarity of the o
 
 Update `old_driver_inverting` in the study entry to match the FM polarity (true for `-`, false for `+`).
 
-**MANDATORY — `and_term` companion rewire:**
+**MANDATORY — `and_term` insertion pattern (choose by target, NEVER default to driver-rename):**
 
-For every `and_term` NOR2/INR2 gate whose A1 input is a renamed intermediate net (e.g. `eco_<jira>_andterm<N>_orig`), emit a companion `rewire` entry that renames the original driver output: `old_token → eco_<jira>_andterm<N>_orig`, per stage using the rename_map. Without this rewire the intermediate net is undriven → A1 floats → FM sees globally unmatched cone inputs → thousands of failures.
+Pick the pattern from what `old_token` drives — do NOT rename the driver by default:
+
+- **`old_token` drives a register's D-cone (the common case, e.g. `rcqe_pgst`, any `*_reg.D`) → DFF-pin-rewire (REQUIRED):** leave the original driver of `old_token` UNTOUCHED (no rename). The new NOR2/INR2 (and any combine) gate reads `old_token` directly as its A1 input and outputs a FRESH `n_eco_<jira>_<seq>` net. Then emit a `rewire` that repoints the consuming **DFF `.D` pin** from `old_token` to the fresh net. Renaming the old driver's output here breaks FM LATCG matching → `HIGH/41-REWIRE-DESTROYS-OLD-NET` + "Unmatched Cone Input". See `rtl_diff_analyzer.md` "MANDATORY insertion pattern — DFF-pin-rewire".
+- **`old_token` is a module OUTPUT PORT (`is_output_port=true`, `module_port_direct_gating`) → driver-rename:** only here rename the original driver `old_token → eco_<jira>_andterm<N>_orig` (per stage via rename_map), feed `_orig` as A1, and have the new gate re-drive `old_token`. The `_orig` net MUST be consumed by the new gate — never leave it dangling.
+
+Rule of thumb: **DFF-pin-rewire for register D-cones; driver-rename ONLY for output ports.** If unsure, use DFF-pin-rewire — it never trips HIGH/41.
 
 Do NOT interleave Phase 1 (wire_swap/FM) processing with Phase 0. Phase 1 depends on Phase 0 outputs being complete (new_logic output nets must exist before wire_swap FM queries are interpreted).
 
