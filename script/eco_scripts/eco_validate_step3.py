@@ -5348,10 +5348,25 @@ def main():
                 v = entry.get(k)
                 if isinstance(v, str) and v:
                     yield v
+        _OUT_PINS = ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'S', 'CON', 'SN')
+        _ECO_NET = re.compile(r'^n_eco_')
+        def _fmt(ids, n=20):
+            return ', '.join(str(i) for i in ids[:n]) + (' …' if len(ids) > n else '')
         for base, all_idx in sorted(_families.items()):
             if not any(base == cm or base.endswith('_' + cm) or base.endswith(cm)
                        for cm in _changed if cm):
                 continue                # family not tied to any changed module
+            # per-module in-module logic: key strictly on module_name (the entry's own
+            # module), so parent-scope port_connections don't count as in-module logic.
+            mod_types = {i: set() for i in all_idx}
+            for e in study.get('Synthesize', []):
+                mn = e.get('module_name')
+                if not isinstance(mn, str):
+                    continue
+                mm = re.search(re.escape(base) + r'_(\d+)(?:_0)?$', mn)
+                if mm and int(mm.group(1)) in mod_types:
+                    mod_types[int(mm.group(1))].add(e.get('change_type'))
+            # (a) module PRESENCE — any reference (gate / rewire / parent port_connection)
             covered = set()
             for e in study.get('Synthesize', []):
                 for ref in _entry_refs(e):
@@ -5360,14 +5375,88 @@ def main():
                         covered.add(int(mm.group(1)))
             missing = sorted(all_idx - covered)
             if missing:
-                _show = ', '.join(str(i) for i in missing[:20]) + (' …' if len(missing) > 20 else '')
                 issues.append(
                     f"CRITICAL/UNIQUIFIED-INCOMPLETE: generate-array family {base!r} has "
-                    f"{len(all_idx)} uniquified copies in the netlist but the study covers only "
-                    f"{len(covered)} — missing {len(missing)} module index(es): [{_show}]. A "
+                    f"{len(all_idx)} uniquified copies in the netlist but the study references only "
+                    f"{len(covered)} — missing {len(missing)} module index(es): [{_fmt(missing)}]. A "
                     f"per-instance ECO on a generate array must cover EVERY uniquified copy; Step 1 "
                     f"under-enumerated (see rtl_diff_analyzer.md step 7b — enumerate all <base>_<i> "
                     f"from the netlist and populate flat_net_name_per_instance for ALL of them).")
+            # (b) per-module UNIFORMITY of in-module logic — a generate array is uniform,
+            #     so any in-module change_type present on ≥1 copy must be present on ALL.
+            #     Catches "gates replicated 40× but the consuming D-pin rewire only on _0".
+            for ctype in ('new_logic_gate', 'rewire'):
+                have = {i for i in all_idx if ctype in mod_types[i]}
+                if 0 < len(have) < len(all_idx):
+                    miss = sorted(all_idx - have)
+                    issues.append(
+                        f"CRITICAL/UNIQUIFIED-PARTIAL: family {base!r} has '{ctype}' on only "
+                        f"{len(have)}/{len(all_idx)} uniquified copies — missing on {len(miss)}: "
+                        f"[{_fmt(miss)}]. Generate-array logic must be replicated IDENTICALLY to "
+                        f"every copy: each copy needs its own {ctype} (for 'rewire' this is the "
+                        f"D-pin rewire that consumes THAT copy's gate output onto its flop — without "
+                        f"it the copy computes the new value but the flop still reads the old net).")
+            # (c) new-INPUT-port declaration coverage — if the ECO adds an input port to
+            #     this family, every uniquified module needs its own port_declaration
+            #     (module_name = the uniquified <base>_<i>, NOT the RTL base name).
+            adds_input = False
+            for c in rtl_diff.get('changes', []):
+                if c.get('change_type') == 'new_port' and c.get('declaration_type') == 'input':
+                    cb = re.sub(r'_\d+$', '', str(c.get('module_name', '')))
+                    if cb and (base == cb or base.endswith('_' + cb) or base.endswith(cb)):
+                        adds_input = True
+            if adds_input:
+                pd_cov = set()
+                for e in study.get('Synthesize', []):
+                    if e.get('change_type') != 'port_declaration':
+                        continue
+                    mn = e.get('module_name')
+                    if isinstance(mn, str):
+                        mm = re.search(re.escape(base) + r'_(\d+)(?:_0)?$', mn)
+                        if mm:
+                            pd_cov.add(int(mm.group(1)))
+                pd_missing = sorted(all_idx - pd_cov)
+                if pd_missing:
+                    issues.append(
+                        f"CRITICAL/UNIQUIFIED-PORTDECL: family {base!r} gains a new input port but "
+                        f"only {len(pd_cov)}/{len(all_idx)} uniquified modules carry a port_declaration "
+                        f"— missing on {len(pd_missing)}: [{_fmt(pd_missing)}]. Each uniquified module "
+                        f"needs its OWN input port_declaration with module_name=<base>_<i> (not the RTL "
+                        f"base name); otherwise the per-copy gates reference an undeclared port → FM "
+                        f"out-of-scope (SVR-14).")
+            # (d) intra-module UNDRIVEN ECO net — a per-copy ECO gate input n_eco_* must be
+            #     driven inside the SAME copy. Catches per-copy net names not suffixed (driver
+            #     emits <net>_<i> but the load reads the unsuffixed <net>).
+            und_mods, und_sample = [], None
+            for i in sorted(all_idx):
+                produced, consumed = set(), set()
+                for e in study.get('Synthesize', []):
+                    mn = e.get('module_name')
+                    if not isinstance(mn, str):
+                        continue
+                    mm = re.search(re.escape(base) + r'_(\d+)(?:_0)?$', mn)
+                    if not mm or int(mm.group(1)) != i:
+                        continue
+                    if e.get('change_type') == 'new_logic_gate':
+                        for p, net in (e.get('port_connections') or {}).items():
+                            if p in _OUT_PINS:
+                                produced.add(net)
+                            elif isinstance(net, str) and _ECO_NET.match(net):
+                                consumed.add(net)
+                    elif e.get('change_type') == 'rewire' and isinstance(e.get('new_net'), str):
+                        produced.add(e['new_net'])
+                und = [n for n in consumed if n not in produced]
+                if und:
+                    und_mods.append(i)
+                    if und_sample is None:
+                        und_sample = (i, und[:4])
+            if und_mods:
+                issues.append(
+                    f"HIGH/UNIQUIFIED-UNDRIVEN: {len(und_mods)} uniquified copies of family {base!r} "
+                    f"consume an ECO net not driven within the same copy (e.g. {base}_{und_sample[0]}: "
+                    f"{und_sample[1]}) — per-copy intra-module net names are not suffixed consistently "
+                    f"(a driver emits <net>_<i> while the load reads the unsuffixed <net>). Suffix "
+                    f"EVERY per-copy ECO net so each copy is self-contained.")
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0

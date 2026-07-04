@@ -96,6 +96,12 @@ Exit:
 7. **Always use `eco_emit_dff_entry.py` wrapper for DFFs** — never call `eco_synth_chain.py` directly. Wrapper handles per-DFF prefix, chain decomposition, Mode-I detection, and validator-invariants.
 8. **Phase 0 fully complete BEFORE Phase 1 starts.** wire_swap (Phase 1) depends on new_logic outputs (Phase 0) being in the study JSON first.
 9. **`needs_explicit_wire_decl: true` ONLY on output pins (ZN/Z/Q).** Setting it on input pins causes SVR-9 duplicate wire declaration ABORT.
+10. **Uniquified generate-array = replicate the WHOLE unit per copy, not just the gates.** When a change targets a synthesis-uniquified family (child instantiated in a generate/for loop → netlist modules `<base>_0 … <base>_<N-1>`; the rtl_diff carries `flat_net_name_per_instance` / `uniquified_count: N`), every uniquified copy `<base>_<i>` must receive the COMPLETE edit, each entry keyed to that copy's own `module_name=<base>_<i>`:
+    - **the combinational gates** (already replicated per copy), AND
+    - **the consuming rewire** — the D-pin rewire that repoints THAT copy's flop from the old net onto that copy's fresh gate output. Emitting the gates on all N but the rewire on only one copy leaves N−1 copies computing a new value that nothing reads (the flop still reads the old net → the ECO is a silent no-op there). Validator `UNIQUIFIED-PARTIAL` hard-fails this.
+    - **a per-copy `port_declaration`** — a NEW input port must be declared on EVERY uniquified module header (`module_name=<base>_<i>`, NOT the RTL base name, which is not a real netlist module). Validator `UNIQUIFIED-PORTDECL` hard-fails a base-name-only declaration.
+    - **intra-copy net names suffixed per copy** — every fresh ECO net inside copy `<base>_<i>` (e.g. `n_eco_<jira>_<sig>_<i>`) must be consistent between its driver and its loads WITHIN that copy. A driver that emits `<net>_<i>` while a load reads the unsuffixed `<net>` leaves the load undriven. Validator `UNIQUIFIED-UNDRIVEN` hard-fails this.
+    The completeness contract is netlist-driven: N comes from the netlist, so under-replication fails even if Step 1 under-populated `flat_net_name_per_instance`. (Parent-scope `port_connection` is the exception — one entry with `flat_net_name_per_instance` expands to all N instances, per Phase 0.14.)
 
 ## I HAND OFF TO
 
