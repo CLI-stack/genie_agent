@@ -24,7 +24,7 @@
    - `<TAG>_eco_validate_step4_round<N>.json` — gates Step 5 (pre-FM checker)
    - `<TAG>_eco_pre_fm_check_round<N>.json`   — gates Step 6 (FM submission)
 
-   If ANY shows `passed: false`, the gated step MUST NOT run. The orchestrator must re-spawn the producing agent (re_studier / applier / pre_fm_checker) with the validator's issues as hint, up to a per-round retry cap (3 for step3, 2 for step4, see Step 5 self-heal for pre-FM). Cap exceeded → escalate via `STUDY_VALIDATOR_UNFIXABLE` / `APPLIER_VALIDATOR_UNFIXABLE` / pre_fm_check_failed handoff.
+   If ANY shows `passed: false`, the gated step MUST NOT run. The orchestrator must re-spawn the producing agent (re_studier / applier / pre_fm_checker) with the validator's issues as hint. **step3 has NO retry cap — loop until `passed: true` (never STOP on a failing study); on a stall, escalate the tactic (see the step3 batch loop below).** step4 keeps a 2-retry cap (→ `APPLIER_VALIDATOR_UNFIXABLE`); pre-FM uses Step 5 self-heal.
 
    **Anti-pattern this rule blocks:** orchestrator reading `passed: false`, logging it, then proceeding to the next step anyway. That is FORBIDDEN. The validator's role is to PREVENT bad state from reaching FM — bypassing it wastes a 30-90 min FM round on a known-bad design.
 
@@ -496,24 +496,33 @@ python3 script/eco_scripts/eco_validate_step3.py \
 
 ```python
 result = json.load(open(f"data/{TAG}_eco_validate_step3_round{NEXT_ROUND}.json"))
-if not result.get('passed', False):
-    # ABSOLUTE RULE: applier cannot run with a failing study validator.
-    # The validator catches structural bugs that FM will fail on. Skipping
-    # this gate = wasting an FM round (30-90 min) on a known-bad study.
+prev_issue_count = None
+while not result.get('passed', False):
+    # ABSOLUTE RULE: applier cannot run with a failing study validator, AND the round
+    # must NEVER end (STOP) with a failing study. There is NO retry cap here — loop
+    # until passed=true. On a stall, escalate the tactic; do not give up.
     issues = result.get('issues', [])
-    retry_count = fixer_state.get(f'validate_step3_round{NEXT_ROUND}_retries', 0)
-
-    if retry_count >= 3:
-        update_handoff(status="STUDY_VALIDATOR_UNFIXABLE", next_phase="STOP",
-                       next_phase_reason=f"validate_step3 failed {retry_count+1}x in round {NEXT_ROUND}")
-        write exit sentinel; STOP
-
-    fixer_state[f'validate_step3_round{NEXT_ROUND}_retries'] = retry_count + 1
+    n = len(issues)
+    rounds = fixer_state.get(f'validate_step3_round{NEXT_ROUND}_retries', 0)
+    fixer_state[f'validate_step3_round{NEXT_ROUND}_retries'] = rounds + 1
     save(fixer_state)
-    # Build hint from issue class (HIGH/38 → Mode J rewire; HIGH/39 → named_net;
-    # HIGH/40 → DFF-pin-rewire pattern; HIGH/41 → drop vestigial rewire; other → raw text)
-    re_spawn eco_netlist_re_studier with hint; re-run validator
-    # Loop until passed=true OR retry_count==3 (escalate)
+
+    # BATCH FIX (never per-fix): first run the deterministic eco_study_fixer.py on the
+    # whole issue list, then re-spawn eco_netlist_re_studier ONCE with a single
+    # consolidated hint covering EVERY failing class (HIGH/38 Mode J; HIGH/39 named_net;
+    # HIGH/40 DFF-pin-rewire; HIGH/41 drop vestigial rewire; Check 52 multiply-driven;
+    # other → raw text). See STUDY_ORCHESTRATOR "MANUAL FIX PROTOCOL".
+    stalled = (prev_issue_count is not None and n >= prev_issue_count)
+    if stalled:
+        # escalate: full re-study from scratch with the complete issue list,
+        # then narrow to the dominant class for a focused rebuild. Keep looping.
+        re_spawn eco_netlist_studier (full re-study) with complete issue list
+    else:
+        run eco_study_fixer.py (batch) ; re_spawn eco_netlist_re_studier with consolidated hint
+    prev_issue_count = n
+
+    re-run eco_validate_step3.py → reload result
+    # loop continues until result.passed == true — no cap, never STOP on a failing study
 
 # Only reach here if passed=true → proceed to applier
 ```

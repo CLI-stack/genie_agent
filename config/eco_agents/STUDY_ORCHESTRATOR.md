@@ -348,11 +348,11 @@ done
 - `CONDITION-POLARITY` — replaces wrong Synth net with condition_input_resolutions value
 - `REWIRE-CELL-ABSENT` — picks the stage-correct cell from `cell_name_per_stage` (fixes wrong-stage cell names)
 
-**HARD GATE.** Any `passed: false` after the catch-and-fix loop BLOCKS Phase A handoff. If issues cannot be resolved, write `phase_a_handoff.json` with `phase_a_status: "BLOCKED_STEP3_VALIDATOR"` and EXIT.
+**HARD GATE — but never give up.** Step 3 MUST NOT hand off (or exit) with a failing study. A `passed: false` never becomes `BLOCKED_STEP3_VALIDATOR`; instead you keep running the manual batch protocol below until the validator returns `passed: true`. The deterministic fixer keeps its 3-iteration cap (it's a fast pre-pass), but **the manual batch loop has NO iteration cap** — it runs until the study is clean.
 
-### MANUAL FIX PROTOCOL — BATCH ALL CLASSES, THEN RE-VALIDATE ONCE (do NOT validate after each single fix)
+### MANUAL FIX PROTOCOL — BATCH ALL CLASSES, RE-VALIDATE ONCE, LOOP UNTIL PASS (no cap)
 
-After the deterministic fixer's 3 iterations, if `passed: false` remains, the leftovers are classes the fixer doesn't auto-handle (missing gates, driver-rename, undriven nets, scope/field gaps). **Re-running the expensive validator after every single edit is prohibited — it re-parses three large netlists each time.** Instead:
+After the deterministic fixer's 3 iterations, if `passed: false` remains, the leftovers are classes the fixer doesn't auto-handle (missing gates, driver-rename, undriven nets, scope/field gaps). **Re-running the expensive validator after every single edit is prohibited — it re-parses three large netlists each time.** Instead, per batch round:
 
 1. **Read the WHOLE `eco_validate_step3.json` issue list once.** Group the issues by class (the `CRITICAL/…`, `HIGH/…`, `Check NN` prefix) and by the sub-agent that must fix each class.
 2. **Apply ALL applicable remedies in a single pass BEFORE re-validating.** Many classes collapse into ONE re-spawn:
@@ -361,9 +361,12 @@ After the deterministic fixer's 3 iterations, if `passed: false` remains, the le
    - **Mode I gap** → append the paired child-scope `port_connection` entries the validator names (all of them at once).
    - **Per-stage CP/SE/SI not from neighbor** (Check 16) → patch every flagged pin/stage from the sample neighbor values in one edit pass.
    - **Signal-in-scope** / **input undriven** → patch all flagged pins together.
-3. **Re-run `eco_validate_step3.py` exactly ONCE** after the batch. Repeat the whole batch (not per-fix) only if new classes surface, up to the 3-iteration cap.
+3. **Re-run `eco_validate_step3.py` exactly ONCE** after the batch.
+4. **LOOP with NO cap until `passed: true`.** Repeat the whole batch (never per-fix). Track the issue count each round:
+   - If it **decreases** → keep batching (progress).
+   - If it **stalls** (same count / same classes ≥2 rounds) → do NOT stop — **escalate the tactic**: (a) re-spawn `eco_netlist_studier` for a full re-study from scratch with the complete issue list, then (b) if still stalled, narrow to the single dominant class and hand the exact validator messages + evidence to the re-studier for a focused rebuild. Keep escalating strategy, but keep looping — Step 3 does not terminate on a failing study.
 
-The goal: **N validator runs where N = number of batch rounds, NOT number of individual fixes.** A study with 600 issues across 5 classes should take ~1–2 validator runs, not 600.
+The goal: **N validator runs where N = number of batch rounds, NOT number of individual fixes** — and the loop exits ONLY on `passed: true`. A study with 600 issues across 5 classes should take a handful of batch rounds, not 600.
 **MANDATORY advisory — Run eco_lol_impact.py (Levels-of-Logic impact):**
 
 After the Step 3 validator passes, ALWAYS run the LOL impact analyzer. It is **advisory** (never
