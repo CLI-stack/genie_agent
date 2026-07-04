@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""
+eco_emit_uniquify.py — deterministically REPLICATE the canonical ECO unit built
+for the _0 copy of a synthesis-uniquified generate array to ALL N copies, so a
+per-instance edit is correct BY CONSTRUCTION instead of landing on copy _0 only.
+
+For a family `<base>_0 … <base>_<N-1>` (child instantiated in a generate loop),
+the studier builds the unit ONCE on `<base>_0`. Per stage, for every other copy i
+this clones:
+  * the combinational gates (module -> <base>_i),
+  * the consuming D/CP rewire(s) (SI/SE left to eco_emit_rewire_finalize),
+  * a per-copy input port_declaration,
+with two renames:
+  1. every fresh `n_eco_*` net is suffixed `_<i>` so each copy is self-contained
+     (kills the driver-emits-<net>_i / load-reads-<net> UNDRIVEN class);
+  2. each copy's OWN old net (the per-copy target of the D/CP rewire — a different
+     local name per uniquified module) is resolved from THAT copy's flop D-pin in
+     the netlist, per stage. Fail-closed: abort (exit 2) if a copy's net or module
+     is missing rather than drop it.
+
+Reads `uniquified_family` on the rtl_diff changes to know which study modules are
+canonical. N and the copy module names come from the NETLIST (ground truth).
+
+Usage:
+    python3 script/eco_scripts/eco_emit_uniquify.py \
+        --rtl-diff data/<TAG>_eco_rtl_diff.json --study data/<TAG>_eco_preeco_study.json \
+        --jira <JIRA> --ref-dir <REF_DIR> --output data/<TAG>_eco_preeco_study.json
+Idempotent (skips copies already present).
+"""
+import argparse, gzip, json, os, re, sys
+
+STAGES = ('Synthesize', 'PrePlace', 'Route')
+_OUT_PINS = ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'S', 'CON', 'SN')
+_DPIN = re.compile(r'^D\d*$')
+_CLKPIN = ('CP', 'CK')
+_MOD = re.compile(r'^\s*module\s+(\S+)')
+_INST = re.compile(r'^\s*[\w:]+\s+(\w+)\s*\(')
+_PIN = re.compile(r'\.(\w+)\s*\(\s*([^)]*?)\s*\)')
+
+
+def scan_stage(gz):
+    """One linear pass -> (inst_pins, modules).
+       inst_pins[(module, inst)] = {pin: net}; modules = set of module names."""
+    inst_pins, modules = {}, set()
+    if not os.path.isfile(gz):
+        return inst_pins, modules
+    mod, cur, depth = None, None, 0
+    with gzip.open(gz, 'rt', errors='replace') as f:
+        for ln in f:
+            mm = _MOD.match(ln)
+            if mm:
+                mod = mm.group(1); modules.add(mod); cur, depth = None, 0
+                continue
+            im = _INST.match(ln)
+            if im and depth == 0:
+                cur = im.group(1)
+            depth += ln.count('(') - ln.count(')')
+            if depth <= 0:
+                depth = 0
+            if cur and mod:
+                for pm in _PIN.finditer(ln):
+                    inst_pins.setdefault((mod, cur), {})[pm.group(1)] = pm.group(2).strip()
+    return inst_pins, modules
+
+
+def _rename_net(net, rmap):
+    return rmap.get(net, net) if isinstance(net, str) else net
+
+
+def _clone_gate(g, i, modname, rmap):
+    ng = dict(g)
+    ng['module_name'] = modname
+    ng['instance_name'] = f"{g.get('instance_name')}_{i}"
+    pc = {p: _rename_net(v, rmap) for p, v in (g.get('port_connections') or {}).items()}
+    ng['port_connections'] = pc
+    ng['port_connections_per_stage'] = {s: dict(pc) for s in STAGES}
+    if g.get('output_net') is not None:
+        ng['output_net'] = _rename_net(g.get('output_net'), rmap)
+    ng['source'] = 'eco_emit_uniquify'
+    ng['uniquify_copy'] = i
+    return ng
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
+    ap.add_argument('--rtl-diff', required=True)
+    ap.add_argument('--study', required=True)
+    ap.add_argument('--jira', required=True)
+    ap.add_argument('--output', required=True)
+    ap.add_argument('--ref-dir', required=True,
+                    help='REF_DIR: netlist is the ground truth for N and for each '
+                         'copy\'s own old net (fail-closed).')
+    args = ap.parse_args()
+    rtl_diff = json.loads(open(args.rtl_diff).read())
+    study = json.loads(open(args.study).read())
+
+    # families targeted by the ECO (RTL base names)
+    fam_bases, new_port_of = set(), {}
+    for c in rtl_diff.get('changes', []):
+        fb = c.get('uniquified_family')
+        if fb:
+            fam_bases.add(fb)
+            if c.get('change_type') == 'new_port' and c.get('declaration_type') == 'input':
+                new_port_of[fb] = {'port_name': c.get('new_token'),
+                                   'declaration_type': 'input',
+                                   'context_line': c.get('context_line')}
+    if not fam_bases:
+        marker = ("ECO_SCRIPT_LAUNCHED: eco_emit_uniquify.py\n"
+                  "  no uniquified_family changes — no-op.\n")
+        print(marker)
+        open(args.output, 'w').write(json.dumps(study, indent=2))
+        open(args.output.replace('.json', '_uniquify_marker.txt'), 'w').write(marker)
+        return 0
+
+    scans = {st: scan_stage(os.path.join(args.ref_dir, 'data', 'PreEco', f'{st}.v.gz'))
+             for st in STAGES}
+    errs, n_clone, n_portdecl = [], 0, 0
+
+    for fb in sorted(fam_bases):
+        for st in STAGES:
+            inst_pins, modules = scans[st]
+            entries = study.get(st, [])
+            # canonical _0 module for this family+stage (Synth/PP: <base>_0 ; Route: <base>_0_0)
+            canon_mod = None
+            for e in entries:
+                mn = e.get('module_name')
+                if isinstance(mn, str) and re.search(re.escape(fb) + r'_0(_0)?$', mn):
+                    canon_mod = mn; break
+            if not canon_mod:
+                continue
+            netbase = re.sub(r'_0(_0)?$', '', canon_mod)
+            # enumerate copies from the netlist (ground truth)
+            copy_mod = {}   # index -> module name in this stage
+            crE = re.compile(r'^' + re.escape(netbase) + r'_(\d+)(_0)?$')
+            for m in modules:
+                cm = crE.match(m)
+                if cm:
+                    copy_mod[int(cm.group(1))] = m
+            if not copy_mod:
+                continue
+            # canonical unit entries (gates + D/CP rewires) on the _0 module
+            canon_gates = [e for e in entries if e.get('change_type') == 'new_logic_gate'
+                           and e.get('module_name') == canon_mod]
+            canon_rews = [e for e in entries if e.get('change_type') == 'rewire'
+                          and e.get('module_name') == canon_mod
+                          and (_DPIN.match(str(e.get('pin', ''))) or e.get('pin') in _CLKPIN)]
+            # fresh ECO nets produced by the canonical gates
+            fresh = set()
+            for g in canon_gates:
+                for p, v in (g.get('port_connections') or {}).items():
+                    if p in _OUT_PINS and isinstance(v, str) and v.startswith('n_eco_'):
+                        fresh.add(v)
+            # per-copy old nets: (flop_cell, pin, old_net_0) from canonical rewires
+            flop_pins = [(r.get('cell_name') or r.get('instance_name'), r.get('pin'),
+                          r.get('old_net')) for r in canon_rews]
+
+            for i, modname in sorted(copy_mod.items()):
+                if i == 0:
+                    continue
+                # already cloned?
+                if any(e.get('change_type') == 'new_logic_gate' and e.get('module_name') == modname
+                       and e.get('source') == 'eco_emit_uniquify' for e in entries):
+                    continue
+                # resolve this copy's own old net for each rewire pin
+                rmap = {net: f'{net}_{i}' for net in fresh}
+                copy_ok = True
+                per_pin_net = {}
+                for cell, pin, old0 in flop_pins:
+                    pins = inst_pins.get((modname, cell))
+                    if not pins or pin not in pins:
+                        errs.append(f"{fb} copy {i} ({modname}) stage {st}: flop {cell!r}.{pin} "
+                                    f"not found in netlist — cannot resolve per-copy old net.")
+                        copy_ok = False; break
+                    per_pin_net[(cell, pin)] = pins[pin]
+                    if old0 is not None:
+                        rmap[old0] = pins[pin]
+                if not copy_ok:
+                    continue
+                # clone gates
+                for g in canon_gates:
+                    entries.append(_clone_gate(g, i, modname, rmap)); n_clone += 1
+                # clone D/CP rewires with this copy's own old net + suffixed new net
+                for r in canon_rews:
+                    nr = dict(r)
+                    nr['module_name'] = modname
+                    cell = r.get('cell_name') or r.get('instance_name')
+                    nr['old_net'] = per_pin_net[(cell, r.get('pin'))]
+                    nr['new_net'] = _rename_net(r.get('new_net'), rmap)
+                    nr.pop('old_net_per_stage', None)
+                    nr['source'] = 'eco_emit_uniquify'
+                    nr['uniquify_copy'] = i
+                    entries.append(nr); n_clone += 1
+
+            # per-copy port_declaration (all copies incl _0) — replaces the base-name one
+            npd = new_port_of.get(fb)
+            if npd:
+                have = {(e.get('module_name'), e.get('port_name'))
+                        for e in entries if e.get('change_type') == 'port_declaration'}
+                for i, modname in sorted(copy_mod.items()):
+                    if (modname, npd['port_name']) in have:
+                        continue
+                    entries.append({
+                        'change_type': 'port_declaration', 'module_name': modname,
+                        'port_name': npd['port_name'], 'declaration_type': 'input',
+                        'context_line': npd.get('context_line'),
+                        'source': 'eco_emit_uniquify', 'uniquify_copy': i,
+                    })
+                    n_portdecl += 1
+            study[st] = entries
+
+    if errs:
+        marker = ("ECO_SCRIPT_LAUNCHED: eco_emit_uniquify.py\n"
+                  f"  ABORTED — {len(errs)} copy resolution failure(s):\n"
+                  + "".join(f"    - {e}\n" for e in errs[:20])
+                  + ("    …\n" if len(errs) > 20 else "")
+                  + "  Study UNTOUCHED.\n")
+        print(marker)
+        open(args.output.replace('.json', '_uniquify_marker.txt'), 'w').write(marker)
+        return 2
+
+    open(args.output, 'w').write(json.dumps(study, indent=2))
+    marker = (f"ECO_SCRIPT_LAUNCHED: eco_emit_uniquify.py\n"
+              f"  families replicated: {sorted(fam_bases)}\n"
+              f"  cloned gate+rewire entries (all stages): {n_clone}\n"
+              f"  per-copy port_declarations added:        {n_portdecl}\n")
+    print(marker)
+    open(args.output.replace('.json', '_uniquify_marker.txt'), 'w').write(marker)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

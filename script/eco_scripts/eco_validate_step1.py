@@ -2479,6 +2479,12 @@ def main():
         nt = c.get('new_token')
         if not nt or not _eq_re.search(str(c.get('context_line') or '')):
             continue
+        # If Step 1 emitted a structured equality_decode schema, the deterministic
+        # builder (eco_emit_eq_decode.py) constructs the comparator and fixes the
+        # combine gate — a PENDING placeholder is then harmless. Only fail when the
+        # schema is ABSENT (nothing will build the match → Step 3 substitutes wrong).
+        if isinstance(c.get('equality_decode'), dict):
+            continue
         # Does the gate chain PEND the new_token itself (an equality decode deferred
         # instead of built)?
         pended_self = False

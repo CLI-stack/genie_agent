@@ -306,6 +306,17 @@ python3 script/eco_scripts/eco_expand_chains.py \
 
 Check output for `ECO_SCRIPT_LAUNCHED: eco_expand_chains.py` and `chains_expanded: N`. If N=0, no chains were missing (OK). If N>0, gates were injected — verify the study JSON now has the correct chain entries before proceeding.
 
+**MANDATORY post-Step 3: Run eco_emit_eq_decode.py (deterministic equality-match build):**
+```bash
+python3 script/eco_scripts/eco_emit_eq_decode.py \
+    --rtl-diff data/<TAG>_eco_rtl_diff.json \
+    --study    data/<TAG>_eco_preeco_study.json \
+    --jira     <JIRA> \
+    --ref-dir  <REF_DIR> \
+    --output   data/<TAG>_eco_preeco_study.json
+```
+For every `and_term`/`wire_swap` carrying an `equality_decode` schema (a `(sig == CONST)` term, rtl_diff_analyzer §2c) this builds the comparator (per-bit INV + AND-tree → fresh match net) and repoints the combine gate's new-term input onto it — so the match is built, never left PENDING. **You MUST verify stdout shows the launch line** `ECO_SCRIPT_LAUNCHED: eco_emit_eq_decode.py` (and `equality-decode gates spliced: N`); if the marker is absent the script did not run — re-run it. `--ref-dir` makes it FAIL-CLOSED (exit 2, study untouched) if a compared signal bit is absent from the netlist. No-op when no `equality_decode` change (marker still printed with `spliced: 0`).
+
 **MANDATORY post-Step 3: Run eco_emit_priority_force.py (deterministic priority_force build):**
 
 For every `priority_force` change in the RTL diff this splices the condition cone + per-bit force-mux gates (const-1 bit → `OR2(cond, old)`; const-0 bit → `INR2(old, cond)`) + the DFF-pin rewires, correct BY CONSTRUCTION — so Intent-B `sig=CONST-under-new-condition` forces are never left as PENDING or hand-built. No-op when the RTL diff has no priority_force change (0 across legacy corpus).
@@ -320,6 +331,17 @@ python3 script/eco_scripts/eco_emit_priority_force.py \
 ```
 
 Verify stdout shows `ECO_SCRIPT_LAUNCHED: eco_emit_priority_force.py` and `netlist-grounded: yes`. `--ref-dir` makes it FAIL-CLOSED: every `bits[].dff_cell`/`old_net` is checked against the PreEco Synthesize netlist and the build ABORTS (exit 2, study untouched, marker lists the mismatches) if any bit would rewire the wrong pin. On abort, the step-1 RTL diff has a wrong flop/net — fix it and re-run; do NOT proceed to Step 4. This runs BEFORE eco_emit_rewire_finalize so its DFF-pin rewires get SI/SE consistency added.
+
+**MANDATORY post-Step 3: Run eco_emit_uniquify.py (replicate ECO unit to all uniquified copies):**
+```bash
+python3 script/eco_scripts/eco_emit_uniquify.py \
+    --rtl-diff data/<TAG>_eco_rtl_diff.json \
+    --study    data/<TAG>_eco_preeco_study.json \
+    --jira     <JIRA> \
+    --ref-dir  <REF_DIR> \
+    --output   data/<TAG>_eco_preeco_study.json
+```
+For every change carrying `uniquified_family` (a synthesis-uniquified generate array) this clones the canonical `<base>_0` ECO unit — gates + consuming D/CP rewire + per-copy input `port_declaration` — to ALL N copies, suffixing each copy's fresh `n_eco` nets `_<i>` and resolving each copy's own old net from its module in the netlist. SI/SE are left for eco_emit_rewire_finalize (which runs next). **You MUST verify stdout shows** `ECO_SCRIPT_LAUNCHED: eco_emit_uniquify.py`; if absent, re-run. `--ref-dir` makes it FAIL-CLOSED (exit 2, study untouched) if a copy's module/flop-pin can't be resolved. Runs AFTER eq_decode + priority_force (so the `_0` unit is complete before cloning) and BEFORE eco_emit_rewire_finalize (so cloned rewires get SI/SE). No-op when no `uniquified_family` change.
 
 **MANDATORY post-Step 3: Run eco_emit_rewire_finalize.py (correct-by-construction rewires):**
 ```bash
