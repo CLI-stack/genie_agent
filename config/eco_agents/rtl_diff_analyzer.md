@@ -291,6 +291,23 @@ Record per-instance map:
 
 Required for `and_term` ECOs where a new AND term maps to an existing signal — the applier needs the actual flat net.
 
+**7b. Enumerate synthesis-uniquified generate arrays (MANDATORY when the changed child is in a generate loop).** If the changed module is instantiated inside a `generate`/`for` loop or a parameterized array (`genvar`, a `*_DEPTH`/count parameter), the RTL shows it **once** but synthesis **uniquifies** it into N distinct netlist modules `<base>_0 … <base>_<N-1>`. Grepping the RTL source (steps 6/7) will NOT reveal these — you MUST discover them from the NETLIST:
+```bash
+CHILD_BASE=<the changed child module name>   # e.g. the module whose RTL file changed
+# discover ALL uniquified copies of the child in the gate netlist (hierarchical)
+zcat <REF_DIR>/data/PreEco/Synthesize.v.gz \
+  | grep -oE "^module +([A-Za-z0-9_]*_)?${CHILD_BASE}_[0-9]+\b" | sort -uV
+# for EACH uniquified module found, locate its single parent instance + the driving net:
+zcat <REF_DIR>/data/PreEco/Synthesize.v.gz \
+  | grep -nE "<uniquified_module> +\w+ *\("
+```
+Populate `instances[]` and `flat_net_name_per_instance` with **ALL N** uniquified instances (not the single RTL instance). Also emit, on the change entry:
+```json
+"uniquified_family": "<CHILD_BASE>",   // the base module name (no numeric suffix)
+"uniquified_count":  <N>               // the netlist copy count = your completeness contract
+```
+`uniquified_count` is the ground-truth N the Step-3 validator uses to enforce that ALL N copies are covered (an (N-1)/N partial is a hard fail). If you cannot enumerate the family, do NOT guess N — leave the fields unset; the validator independently counts `<base>_<i>` copies from the netlist and fails on any shortfall. Route re-uniquifies with a trailing `_0` (`<base>_<i>_0`); Step 2/3 handle the suffix per stage.
+
 **8. Update `module_name` in JSON + RPT if declaring module differs from changed file** — also add a `Notes:` line explaining the redirect. Wrong `module_name` makes the hierarchy start at the wrong level → FM-036 / wrong scope filtering in Step 3.
 
 ---

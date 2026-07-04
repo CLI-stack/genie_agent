@@ -17,7 +17,7 @@ Usage:
 Exit: 0 = PASS (all complete), 1 = FAIL (issues found)
 """
 
-import argparse, json, os, re, subprocess, sys
+import argparse, gzip, json, os, re, subprocess, sys
 from pathlib import Path
 
 def main():
@@ -5307,6 +5307,67 @@ def main():
                 issues.append(
                     f"HIGH/TERM-OP: and_term term_op='and' (AND-narrow of {old_tok!r}) but combine gate "
                     f"{e.get('instance_name')!r} is {fam} (pure OR) — an AND-narrow cannot be an OR gate.")
+
+    # ── #3 uniquified-family completeness ─────────────────────────────────────
+    # If the ECO touches a synthesis-uniquified generate array (a child module
+    # replicated as <base>_0 … <base>_<N-1> in the netlist), the study MUST cover
+    # ALL N copies. The NETLIST is the ground truth for N — so this catches Step-1
+    # under-enumeration even when it emits no uniquified_* fields. General: family
+    # bases are discovered from the netlist and tied to modules named in the RTL
+    # diff (no module names hardcoded). A single-instance module is never a family
+    # (needs >=2 numbered copies), so recdsp-style changes never fire.
+    _syn_gz = os.path.join(args.ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
+    _mod_names = []
+    if os.path.isfile(_syn_gz):
+        try:
+            with gzip.open(_syn_gz, 'rt', errors='replace') as _f:
+                for _ln in _f:
+                    _m = re.match(r'^module\s+(\S+)', _ln)
+                    if _m:
+                        _mod_names.append(_m.group(1))
+        except Exception:
+            _mod_names = []
+    if _mod_names:
+        _uniq_re = re.compile(r'^(.*?)_(\d+)$')
+        _fam = {}                      # base -> set(index)
+        for nm in _mod_names:
+            um = _uniq_re.match(nm)
+            if um:
+                _fam.setdefault(um.group(1), set()).add(int(um.group(2)))
+        _families = {b: idx for b, idx in _fam.items() if len(idx) >= 2}
+        # module bases named by the RTL diff (strip any numeric suffix) — ties the
+        # completeness contract to the actual ECO target, not incidental lib families.
+        _changed = set()
+        for c in rtl_diff.get('changes', []):
+            for k in ('module_name', 'child_module_name', 'declaring_module', 'target_module'):
+                v = c.get(k)
+                if isinstance(v, str) and v:
+                    _changed.add(re.sub(r'_\d+$', '', v))
+        def _entry_refs(entry):
+            for k in ('module_name', 'child_module_name', 'instance_scope'):
+                v = entry.get(k)
+                if isinstance(v, str) and v:
+                    yield v
+        for base, all_idx in sorted(_families.items()):
+            if not any(base == cm or base.endswith('_' + cm) or base.endswith(cm)
+                       for cm in _changed if cm):
+                continue                # family not tied to any changed module
+            covered = set()
+            for e in study.get('Synthesize', []):
+                for ref in _entry_refs(e):
+                    mm = re.search(re.escape(base) + r'_(\d+)(?:_0)?$', ref)
+                    if mm:
+                        covered.add(int(mm.group(1)))
+            missing = sorted(all_idx - covered)
+            if missing:
+                _show = ', '.join(str(i) for i in missing[:20]) + (' …' if len(missing) > 20 else '')
+                issues.append(
+                    f"CRITICAL/UNIQUIFIED-INCOMPLETE: generate-array family {base!r} has "
+                    f"{len(all_idx)} uniquified copies in the netlist but the study covers only "
+                    f"{len(covered)} — missing {len(missing)} module index(es): [{_show}]. A "
+                    f"per-instance ECO on a generate array must cover EVERY uniquified copy; Step 1 "
+                    f"under-enumerated (see rtl_diff_analyzer.md step 7b — enumerate all <base>_<i> "
+                    f"from the netlist and populate flat_net_name_per_instance for ALL of them).")
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
