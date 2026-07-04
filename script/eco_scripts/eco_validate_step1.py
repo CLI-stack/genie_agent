@@ -2462,6 +2462,42 @@ def main():
     # term_op is ADVISORY (do not fail) — legacy and_term entries predate the field;
     # correctness is enforced downstream by the Step-3 truth-table check when set.
 
+    # ── EQUALITY-DECODE-PENDED guard ───────────────────────────────────────────
+    # An and_term/wire_swap new term of the form (sig == CONST) is NEW combinational
+    # logic — a bus-constant equality DECODE (rtl_diff_analyzer §2b) — and MUST be
+    # BUILT as comparator gates. It must NOT be deferred as a PENDING_FM_RESOLUTION
+    # of the new_token itself: FM cannot find a net that does not yet exist, so it
+    # echo-falls-back and Step 3 substitutes an unrelated ECO net. History: 9666 run
+    # 20260704085942 left (recdsp_c0mop==UMC_MOP_MRR) as
+    # PENDING_FM_RESOLUTION:recdsp_c0mop_mrr_match → Step 3 wired the OR-widen to the
+    # WCK-sync condition instead (Intent A silently wrong, all validators green).
+    eq_decode_issues = []
+    _eq_re = re.compile(r"==\s*(`?\w+|\d+'[bhdoBHDO][0-9a-fA-FxXzZ_]+)")
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') not in ('and_term', 'wire_swap'):
+            continue
+        nt = c.get('new_token')
+        if not nt or not _eq_re.search(str(c.get('context_line') or '')):
+            continue
+        # Does the gate chain PEND the new_token itself (an equality decode deferred
+        # instead of built)?
+        pended_self = False
+        for g in (c.get('and_term_gate_chain_design') or []):
+            for inp in (g.get('inputs') or []):
+                if isinstance(inp, str) and inp.startswith('PENDING_FM_RESOLUTION') \
+                        and inp.split(':', 1)[-1] == nt:
+                    pended_self = True
+        if pended_self:
+            eq_decode_issues.append(
+                f"changes[{idx}] {c.get('change_type')} new_token={nt!r} is an EQUALITY match "
+                f"(context has '== <CONST>') but the gate chain defers it as "
+                f"PENDING_FM_RESOLUTION:{nt} instead of BUILDING it. (sig == CONST) is NEW logic — "
+                f"decode it into comparator gates (rtl_diff_analyzer §2b bus-constant equality "
+                f"decode) in and_term_gate_chain_design, driving a fresh n_eco net. Leaving it "
+                f"PENDING makes Step 2 echo-fallback and Step 3 substitute an unrelated net.")
+    if eq_decode_issues:
+        overall_pass = False
+
     # ── UNIQUIFIED enumeration guard (needs --ref-dir) ─────────────────────────
     # A per-instance edit (and_term/wire_swap/new_port/port_connection) on a
     # synthesis-uniquified generate array must enumerate ALL N copies in
@@ -2519,6 +2555,8 @@ def main():
 
     out = {
         'rtl_diff': args.rtl_diff,
+        'eq_decode_issue_count':       len(eq_decode_issues),
+        'eq_decode_issues':            eq_decode_issues,
         'uniquified_enum_issue_count': len(uniquified_enum_issues),
         'uniquified_enum_issues':      uniquified_enum_issues,
         'priority_force_issue_count': len(priority_force_issues),
