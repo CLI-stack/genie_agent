@@ -2462,8 +2462,65 @@ def main():
     # term_op is ADVISORY (do not fail) — legacy and_term entries predate the field;
     # correctness is enforced downstream by the Step-3 truth-table check when set.
 
+    # ── UNIQUIFIED enumeration guard (needs --ref-dir) ─────────────────────────
+    # A per-instance edit (and_term/wire_swap/new_port/port_connection) on a
+    # synthesis-uniquified generate array must enumerate ALL N copies in
+    # instances[]. N is the netlist ground truth (count of <base>_<i> modules).
+    # Catches Step-1 under-enumeration at the earliest point. Fires only for
+    # families with >=2 numbered copies tied to a changed module (single-instance
+    # ECOs never trigger → regression-safe).
+    uniquified_enum_issues = []
+    if args.ref_dir:
+        import gzip as _gz2
+        _sgz = os.path.join(args.ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
+        if not os.path.isfile(_sgz):
+            _sgz = os.path.join(args.ref_dir, 'data', 'PostEco', 'Synthesize.v.gz')
+        _mods = []
+        if os.path.isfile(_sgz):
+            try:
+                with _gz2.open(_sgz, 'rt', errors='replace') as _fh:
+                    for _ln in _fh:
+                        _mm = re.match(r'^module\s+(\S+)', _ln)
+                        if _mm:
+                            _mods.append(_mm.group(1))
+            except Exception:
+                _mods = []
+        if _mods:
+            _ure = re.compile(r'^(.*?)_(\d+)$')
+            _famsz = {}
+            for _nm in _mods:
+                _m2 = _ure.match(_nm)
+                if _m2:
+                    _famsz.setdefault(_m2.group(1), set()).add(int(_m2.group(2)))
+            _fams = {b: ix for b, ix in _famsz.items() if len(ix) >= 2}
+            for idx, c in enumerate(rtl_diff.get('changes', [])):
+                if c.get('change_type') not in ('and_term', 'wire_swap', 'new_port', 'port_connection'):
+                    continue
+                cb = re.sub(r'_\d+$', '', str(c.get('module_name') or c.get('child_module_name') or ''))
+                if not cb:
+                    continue
+                # netlist family whose base matches this change's module
+                fam_n = None
+                for b, ix in _fams.items():
+                    if b == cb or b.endswith('_' + cb) or b.endswith(cb):
+                        fam_n = len(ix); break
+                if not fam_n:
+                    continue
+                n_enum = len(c.get('instances') or [])
+                if n_enum < fam_n:
+                    uniquified_enum_issues.append(
+                        f"changes[{idx}] {c.get('change_type')} on uniquified family "
+                        f"{cb!r} enumerates only {n_enum} instance(s) but the netlist has "
+                        f"{fam_n} copies (<base>_0..{fam_n-1}). A per-instance edit on a "
+                        f"generate array MUST list ALL {fam_n} in instances[] (step 7b) — "
+                        f"else Step 2/3 silently drop the un-enumerated copies.")
+    if uniquified_enum_issues:
+        overall_pass = False
+
     out = {
         'rtl_diff': args.rtl_diff,
+        'uniquified_enum_issue_count': len(uniquified_enum_issues),
+        'uniquified_enum_issues':      uniquified_enum_issues,
         'priority_force_issue_count': len(priority_force_issues),
         'priority_force_issues':      priority_force_issues,
         'pending_term_issue_count':   len(pending_term_issues),

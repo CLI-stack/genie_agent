@@ -99,6 +99,11 @@ for n in nets_to_query:
 
 `valid_nets` is the comprehensive query batch sent to FM.
 
+**UNIQUIFIED per-instance resolution (MANDATORY completeness).** When a `wire_swap`/`and_term` change carries `instances[]` of length N (a synthesis-uniquified generate array), the deriver expands `old_token` into ONE query per instance scope (`<parent>/<inst_i>/<old_token>`). **Every one of the N copies must resolve** — not just the first. Pitfall: a symbolic name like `SEQMAP_NET_425` is the local net name in the FIRST copy only; each other uniquified copy has its OWN local net for the same logical signal, so the symbolic query returns nothing for copies 1..N-1. When FM resolves `old_token` for `<inst_0>` but not for the rest:
+- Do NOT proceed with only the first copy resolved (Step 3 would rewire only that copy and leave the other N-1 a silent no-op).
+- Resolve each copy's OWN net: for each uniquified module `<base>_<i>`, locate the net that carries the same logical function (grep the module body for the driver feeding the target register's D-cone, or use the per-copy driver cell from `old_driver_cell_type`), and add a per-instance rename_map entry for it.
+- Step 2 validator **C13** hard-fails if `old_token` resolves for fewer than N instances — do NOT hand off to Step 3 until all N copies have a per-stage rename_map entry.
+
 **MANDATORY: derive the query list deterministically via script — do NOT hand-pick.**
 
 **MANDATORY FIRST ACTION — invoke the deterministic sanitize script:**

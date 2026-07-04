@@ -441,6 +441,57 @@ def main():
                     f"{stages_missing} stages. Without this, studier has no per-stage "
                     f"data and will substitute a wrong signal (GAP-2 in 9899 run).")
 
+    # C13 — UNIQUIFIED per-instance resolution completeness. When a wire_swap/
+    # and_term change enumerates instances[] (a synthesis-uniquified generate
+    # array), FM must resolve its old_token in EVERY instance scope, not just the
+    # first. History: 9666 fresh run (20260704085942) resolved SEQMAP_NET_425 for
+    # entry _0 only — the other 39 copies' compare net (a different per-copy name)
+    # never resolved, so Step 3 rewired only _0 and left 39/40 entries a silent
+    # no-op. A single symbolic old_token cannot resolve across copies whose local
+    # net names differ; this catch forces per-copy resolution before Step 3.
+    if args.rtl_diff and Path(args.rtl_diff).is_file() and args.rename_map and Path(args.rename_map).is_file():
+        _rtl_c13 = _load_json(args.rtl_diff) or {}
+        _rmap_c13 = _load_json(args.rename_map) or {}
+        _rkeys = [k for k in _rmap_c13.keys() if k != '_metadata']
+        for ci, c in enumerate(_rtl_c13.get('changes', [])):
+            if c.get('change_type') not in ('and_term', 'wire_swap'):
+                continue
+            insts = c.get('instances') or []
+            old_tok = c.get('old_token')
+            if len(insts) < 2 or not old_tok:
+                continue
+            # A BARE/shared resolution — a rename_map key that is exactly old_token, or
+            # ends with /old_token where the preceding path segment is NOT one of the
+            # instances — means the copies share ONE net name (e.g. 9899 DCQARB/DCQARB1
+            # both use QualPmArbWinVld_d1). One shared resolution covers all copies →
+            # not a partial. C13 only fires on INSTANCE-SCOPED partials (9666: each
+            # uniquified copy has its own local net, resolved for _0 only).
+            shared = False
+            for k in _rkeys:
+                if k == old_tok:
+                    shared = True; break
+                if k.endswith('/' + old_tok):
+                    prefix = k[:-(len(old_tok) + 1)]
+                    if prefix.rsplit('/', 1)[-1] not in insts:
+                        shared = True; break
+            if shared:
+                continue
+            resolved = [inst for inst in insts
+                        if any(k.endswith(f"/{inst}/{old_tok}") or k == f"{inst}/{old_tok}"
+                               for k in _rkeys)]
+            if 0 < len(resolved) < len(insts):
+                missing = [i for i in insts if i not in resolved][:8]
+                issues.append(
+                    f"C13: change[{ci}] {c.get('change_type')} old_token={old_tok!r} is a "
+                    f"uniquified generate-array edit across {len(insts)} instances but FM resolved "
+                    f"it for only {len(resolved)} — {len(insts) - len(resolved)} copies UNRESOLVED "
+                    f"(e.g. {missing}). Each uniquified copy's compare net has its own local name, "
+                    f"so one symbolic old_token only resolves in the first copy; Step 3 would then "
+                    f"rewire only the resolved copy and leave the rest a silent no-op. FIX: Step 1 "
+                    f"must supply per-copy old nets (flat_net_name_per_instance), or Step 2 must "
+                    f"resolve old_token in EACH instance scope (find each copy's own net in the "
+                    f"netlist), so all N copies get a per-stage rename_map entry.")
+
     out = {
         'queries':            args.queries,
         'queries_raw':        args.queries_raw,

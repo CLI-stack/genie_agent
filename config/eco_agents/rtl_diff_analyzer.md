@@ -308,6 +308,8 @@ Populate `instances[]` and `flat_net_name_per_instance` with **ALL N** uniquifie
 ```
 `uniquified_count` is the ground-truth N the Step-3 validator uses to enforce that ALL N copies are covered (an (N-1)/N partial is a hard fail). If you cannot enumerate the family, do NOT guess N — leave the fields unset; the validator independently counts `<base>_<i>` copies from the netlist and fails on any shortfall. Route re-uniquifies with a trailing `_0` (`<base>_<i>_0`); Step 2/3 handle the suffix per stage.
 
+**Applies to REWIRE edits too, not just new ports.** An `and_term`/`wire_swap` that edits logic inside a uniquified family (e.g. OR-widening a per-entry compare net) must ALSO set `instances[]` to all N copies + `uniquified_family`/`uniquified_count`. **Critical:** each uniquified copy's target net has its OWN local name — a single symbolic `old_token` (e.g. `SEQMAP_NET_425`) is the name in copy `_0` only; copies `_1..N-1` name the same logical net differently. So do NOT assume one `old_token` resolves for all copies: either populate `flat_net_name_per_instance` with each copy's own old net, or leave `old_token` as the `_0` name and rely on Step 2 to resolve it per copy (Step 2 validator C13 hard-fails if fewer than N copies resolve). Step 3 must then emit the full unit — gates + consuming rewire + port_declaration — for every copy (studier HARD RULE 10).
+
 **8. Update `module_name` in JSON + RPT if declaring module differs from changed file** — also add a `Notes:` line explaining the redirect. Wrong `module_name` makes the hierarchy start at the wrong level → FM-036 / wrong scope filtering in Step 3.
 
 ---
