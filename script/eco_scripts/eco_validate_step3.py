@@ -27,6 +27,9 @@ def main():
     p.add_argument('--ref-dir',  required=True)
     p.add_argument('--tag',      required=True)
     p.add_argument('--output',   required=True)
+    p.add_argument('--iter', type=int, default=None,
+                   help='catch-and-fix iteration number; when set, ALSO write '
+                        '<output>_iter<N>.json (history). Canonical --output stays latest/final.')
     args = p.parse_args()
 
     study    = json.loads(Path(args.study).read_text())
@@ -5462,6 +5465,9 @@ def main():
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}
     Path(args.output).write_text(json.dumps(result, indent=2))
+    if args.iter is not None:
+        _ip = (args.output[:-5] if args.output.endswith('.json') else args.output) + f'_iter{args.iter}.json'
+        Path(_ip).write_text(json.dumps(result, indent=2))
 
     marker_txt = (
         f"ECO_SCRIPT_LAUNCHED: eco_validate_step3.py\n"

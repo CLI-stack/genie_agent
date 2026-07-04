@@ -163,6 +163,10 @@ def main():
     ap.add_argument('--ref-dir',  default=None,
                     help='REF_DIR with data/PreEco/<stage>.v.gz for signal-in-scope check')
     ap.add_argument('--output',   required=True)
+    ap.add_argument('--iter', type=int, default=None,
+                    help='catch-and-fix iteration number; when set, ALSO write '
+                         '<output>_iter<N>.json (history). The canonical --output is '
+                         'always written and remains the latest/final result.')
     args = ap.parse_args()
 
     rtl_diff = json.load(open(args.rtl_diff))
@@ -2673,6 +2677,10 @@ def main():
     }
     with open(args.output, 'w') as f:
         json.dump(out, f, indent=2)
+    if args.iter is not None:
+        _ip = (args.output[:-5] if args.output.endswith('.json') else args.output) + f'_iter{args.iter}.json'
+        with open(_ip, 'w') as f:
+            json.dump(out, f, indent=2)
 
     print('ECO_SCRIPT_LAUNCHED: eco_validate_step1.py')
     print(f'  rtl_diff: {args.rtl_diff}')

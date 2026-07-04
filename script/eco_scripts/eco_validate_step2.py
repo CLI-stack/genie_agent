@@ -59,6 +59,9 @@ def main():
     p.add_argument('--rtl-diff',   required=False, default='', help='eco_rtl_diff.json — required for C9 Mode H recovery check')
     p.add_argument('--ref-dir',    required=False, default='', help='REF_DIR — used by C6 to verify preserved bus names exist as real wires in PP/Route netlists (avoids false-positive echo-fallback flags)')
     p.add_argument('--output',     required=True)
+    p.add_argument('--iter', type=int, default=None,
+                   help='catch-and-fix iteration number; when set, ALSO write '
+                        '<output>_iter<N>.json (history). Canonical --output stays latest/final.')
     args = p.parse_args()
 
     queries = _load_json(args.queries) or []
@@ -502,6 +505,9 @@ def main():
         'overall_pass':       not issues,
     }
     Path(args.output).write_text(json.dumps(out, indent=2))
+    if args.iter is not None:
+        _ip = (args.output[:-5] if args.output.endswith('.json') else args.output) + f'_iter{args.iter}.json'
+        Path(_ip).write_text(json.dumps(out, indent=2))
 
     print('ECO_SCRIPT_LAUNCHED: eco_validate_step2.py')
     print(f'  queries:    {args.queries}')

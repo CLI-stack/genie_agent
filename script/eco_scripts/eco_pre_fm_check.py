@@ -36,6 +36,10 @@ def parse_args():
     p.add_argument('--base-dir', required=True, dest='base_dir')
     p.add_argument('--ref-dir',  required=True, dest='ref_dir')
     p.add_argument('--jira',     required=True)
+    p.add_argument('--iter', type=int, default=None,
+                   help='catch-and-fix iteration number; when set, ALSO write the '
+                        'round json as <...>_round<R>_iter<N>.json (history). The canonical '
+                        'per-round json is always written and remains the latest/final.')
     return p.parse_args()
 
 
@@ -1912,6 +1916,10 @@ def main():
     }
     with open(out_json_path, 'w') as f:
         json.dump(out, f, indent=2)
+    if args.iter is not None:
+        _ip = (out_json_path[:-5] if out_json_path.endswith('.json') else out_json_path) + f'_iter{args.iter}.json'
+        with open(_ip, 'w') as f:
+            json.dump(out, f, indent=2)
 
     # ── Write RPT ─────────────────────────────────────────────────────────────
     status_str = 'PASS' if passed else 'FAIL'

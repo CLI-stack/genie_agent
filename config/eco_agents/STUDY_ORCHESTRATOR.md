@@ -366,12 +366,14 @@ python3 script/eco_scripts/eco_validate_step3.py \
 
 ```bash
 for i in 1 2 3; do
-  # Run validator
+  # Run validator — --iter $i also writes data/<TAG>_eco_validate_step3_iter$i.json
+  # (per-iteration history); the canonical data/<TAG>_eco_validate_step3.json is
+  # always overwritten with the latest and holds the FINAL result at loop exit.
   python3 script/eco_scripts/eco_validate_step3.py \
       --study data/<TAG>_eco_preeco_study.json \
       --rtl-diff data/<TAG>_eco_rtl_diff.json \
       --ref-dir <REF_DIR> --tag <TAG> \
-      --output data/<TAG>_eco_validate_step3.json
+      --output data/<TAG>_eco_validate_step3.json --iter $i
   [ $? -eq 0 ] && break  # PASS — exit loop
 
   # Auto-fix deterministic issues
