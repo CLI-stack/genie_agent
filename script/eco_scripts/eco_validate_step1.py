@@ -2361,8 +2361,47 @@ def main():
     if holdmux_enable_issues:
         overall_pass = False
 
+    # ── priority_force (#1) + term_op (#2) contract checks ───────────────────
+    _const_re = re.compile(r"^\d*'[bhdo][0-9a-fA-FxXzZ_]+$|^\d+$")
+    priority_force_issues, term_op_issues = [], []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        ct = c.get('change_type')
+        if ct == 'priority_force':
+            if not c.get('condition_gate_chain'):
+                priority_force_issues.append(
+                    f"changes[{idx}] priority_force missing condition_gate_chain — the branch "
+                    f"condition must be BUILT as gates, not left as a PENDING/synthetic net.")
+            fs = c.get('forced_signals') or []
+            if not fs:
+                priority_force_issues.append(
+                    f"changes[{idx}] priority_force has no forced_signals — every forced signal "
+                    f"(e.g. c0vld AND c0mop) must be listed with its constant.")
+            for f in fs:
+                if not _const_re.match(str(f.get('const', '')).strip()):
+                    priority_force_issues.append(
+                        f"changes[{idx}] priority_force forced_signals[{f.get('signal')!r}].const="
+                        f"{f.get('const')!r} is not a valid Verilog constant.")
+                if not f.get('old_next_state_net'):
+                    priority_force_issues.append(
+                        f"changes[{idx}] priority_force forced_signals[{f.get('signal')!r}] missing "
+                        f"old_next_state_net (needed for the force-mux else-leg).")
+        elif ct == 'and_term':
+            op = c.get('term_op')
+            if op not in ('and', 'or'):
+                term_op_issues.append(
+                    f"changes[{idx}] and_term (old_token={c.get('old_token')!r}) missing term_op "
+                    f"('and'|'or') — required to pick AND-narrow vs OR-widen gate (Intent-A MRR).")
+    if priority_force_issues:
+        overall_pass = False
+    # term_op is ADVISORY (do not fail) — legacy and_term entries predate the field;
+    # correctness is enforced downstream by the Step-3 truth-table check when set.
+
     out = {
         'rtl_diff': args.rtl_diff,
+        'priority_force_issue_count': len(priority_force_issues),
+        'priority_force_issues':      priority_force_issues,
+        'term_op_issue_count':        len(term_op_issues),
+        'term_op_issues':             term_op_issues,
         'mux_select_issue_count': len(mux_select_issues),
         'mux_select_issues':      mux_select_issues,
         'wire_swap_count':       len(results),
