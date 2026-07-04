@@ -2361,11 +2361,23 @@ def main():
     if holdmux_enable_issues:
         overall_pass = False
 
-    # ── priority_force (#1) + term_op (#2) contract checks ───────────────────
+    # ── priority_force (#1) + term_op (#2) + pending-term (catch mismodel) ────
     _const_re = re.compile(r"^\d*'[bhdo][0-9a-fA-FxXzZ_]+$|^\d+$")
-    priority_force_issues, term_op_issues = [], []
+    priority_force_issues, term_op_issues, pending_term_issues = [], [], []
     for idx, c in enumerate(rtl_diff.get('changes', [])):
         ct = c.get('change_type')
+        # A term punted to PENDING_FM_RESOLUTION is NOT a modeled edit — it means a
+        # condition/expression was deferred to a placeholder that fenets can't resolve
+        # (an expression is not a net). This is the recdsp WCK-sync CAS mismodel (9666):
+        # `and_term ... new=PENDING_FM_RESOLUTION:wck_sync_condition`. Must be a
+        # priority_force (force sig=CONST under <cond>) or a built condition_gate_chain.
+        if ct in ('and_term', 'wire_swap') and \
+           str(c.get('new_token', '')).startswith('PENDING_FM_RESOLUTION'):
+            pending_term_issues.append(
+                f"changes[{idx}] {ct} (target={c.get('target_register') or c.get('old_token')!r}) has "
+                f"new_token={c.get('new_token')!r} — a condition was punted to a PENDING placeholder "
+                f"instead of modeled. If it forces a signal to a constant under a new condition, use "
+                f"change_type=priority_force; otherwise build the condition as a gate chain. Never PENDING a term.")
         if ct == 'priority_force':
             if not c.get('condition_gate_chain'):
                 priority_force_issues.append(
@@ -2393,6 +2405,8 @@ def main():
                     f"('and'|'or') — required to pick AND-narrow vs OR-widen gate (Intent-A MRR).")
     if priority_force_issues:
         overall_pass = False
+    if pending_term_issues:
+        overall_pass = False
     # term_op is ADVISORY (do not fail) — legacy and_term entries predate the field;
     # correctness is enforced downstream by the Step-3 truth-table check when set.
 
@@ -2400,6 +2414,8 @@ def main():
         'rtl_diff': args.rtl_diff,
         'priority_force_issue_count': len(priority_force_issues),
         'priority_force_issues':      priority_force_issues,
+        'pending_term_issue_count':   len(pending_term_issues),
+        'pending_term_issues':        pending_term_issues,
         'term_op_issue_count':        len(term_op_issues),
         'term_op_issues':             term_op_issues,
         'mux_select_issue_count': len(mux_select_issues),
