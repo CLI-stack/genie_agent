@@ -4268,13 +4268,18 @@ def main():
             pcs = e.get('port_connections') or {}
             out_net = pcs.get('Z') or pcs.get('ZN') or pcs.get('Q', '')
             if out_net and out_net not in ("1'b0", "1'b1"):
-                if out_net in seen_out_nets and seen_out_nets[out_net] != inst:
+                # Scope by module_name — uniquified families have the same local
+                # wire name in each module (e.g. reg_dualdcqenmode_or in each
+                # ddrss_umcdat_t_umcrecrcqentry_N) which is correct per-module.
+                _mod52 = e.get('module_name') or ''
+                _net_mod_key = (_mod52, out_net)
+                if _net_mod_key in seen_out_nets and seen_out_nets[_net_mod_key] != inst:
                     issues.append(
                         f"Check 52 FAIL: output net {out_net!r} driven by both "
-                        f"{seen_out_nets[out_net]!r} and {inst!r} in {stage} — "
+                        f"{seen_out_nets[_net_mod_key]!r} and {inst!r} in {stage} — "
                         f"SVR-9 multiply-driven net. Remove the duplicate gate entry.")
                 else:
-                    seen_out_nets[out_net] = inst
+                    seen_out_nets[_net_mod_key] = inst
 
     # ── Check 53: Spurious shadow clock gate (not connected to any CP rewire) ─
     # A new CKOR*/ICG* gate that has no corresponding CP rewire (no DFF CP pin
@@ -4696,8 +4701,11 @@ def main():
             _m = _BIT_SUFFIX_RE.match(_e.get('instance_name', ''))
             if not _m: continue
             _base = _m.group(1)
-            _groups.setdefault(_base, []).append(_e)
-        for _base, _gates in _groups.items():
+            # Scope by module_name — uniquified families have a per-module
+            # instance so (base, module) is the correct grouping key.
+            _mod62 = _e.get('module_name') or ''
+            _groups.setdefault((_base, _mod62), []).append(_e)
+        for (_base, _mod62), _gates in _groups.items():
             if len(_gates) < 2: continue
             for _pin in ('A1', 'A2'):
                 _nets = set()
@@ -5461,6 +5469,58 @@ def main():
                     f"{und_sample[1]}) — per-copy intra-module net names are not suffixed consistently "
                     f"(a driver emits <net>_<i> while the load reads the unsuffixed <net>). Suffix "
                     f"EVERY per-copy ECO net so each copy is self-contained.")
+
+    # ── #4 rewire integrity (general — any ECO, not just uniquified) ───────────
+    # (a) DUPLICATE conflicting rewires: >=2 rewire entries on the same
+    #     (module, cell, pin) driving it to DIFFERENT nets — a flop pin can drive
+    #     only one net. History: studier + eco_emit_uniquify double-replication
+    #     put two D-pin rewires on each recrcqentry copy.
+    # (b) UNDRIVEN rewire target: a rewire whose n_eco_ new_net is produced by no
+    #     gate in the SAME module (driven only in another module = cross-copy leak,
+    #     or nowhere = dangling). Produced set is unioned across stages so a gate
+    #     emitted only in the Synthesize list doesn't false-flag.
+    _R4_STAGES = ('Synthesize', 'PrePlace', 'Route')
+    _R4_OUT = ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'S', 'CON', 'SN')
+    _R4_DPIN = re.compile(r'^(?:D\d*|CP|CK)$')
+    produced_by_mod = {}                       # module -> set(n_eco nets produced by a gate)
+    for st in _R4_STAGES:
+        for e in study.get(st, []):
+            if e.get('change_type') == 'new_logic_gate':
+                mod = e.get('module_name')
+                for p, v in (e.get('port_connections') or {}).items():
+                    if p in _R4_OUT and isinstance(v, str) and v.startswith('n_eco_'):
+                        produced_by_mod.setdefault(mod, set()).add(v)
+    _dup_seen, _und_seen = set(), set()
+    for st in _R4_STAGES:
+        pin_nets = {}                          # (mod, cell, pin) -> set(new_net)
+        for e in study.get(st, []):
+            if e.get('change_type') != 'rewire':
+                continue
+            cell = e.get('cell_name') or e.get('instance_name')
+            pin = e.get('pin')
+            key = (e.get('module_name'), cell, pin)
+            if e.get('new_net') is not None:
+                pin_nets.setdefault(key, set()).add(e.get('new_net'))
+            # (b) undriven n_eco rewire target (D/CP pins only — functional rewires)
+            nn = e.get('new_net')
+            if isinstance(nn, str) and nn.startswith('n_eco_') and _R4_DPIN.match(str(pin or '')):
+                mod = e.get('module_name')
+                if nn not in produced_by_mod.get(mod, set()) and (mod, nn) not in _und_seen:
+                    _und_seen.add((mod, nn))
+                    where = [m for m, ns in produced_by_mod.items() if nn in ns]
+                    issues.append(
+                        f"CRITICAL/REWIRE-UNDRIVEN: rewire {mod}/{cell}.{pin} -> {nn} but {nn} is "
+                        f"not driven by any gate in module {mod!r}"
+                        + (f" (driven only in {where[:3]} — cross-module/cross-copy leak)."
+                           if where else " (not driven anywhere — dangling ECO net)."))
+        for (mod, cell, pin), nets in pin_nets.items():
+            real = [n for n in nets if n is not None]
+            if len(real) > 1 and (mod, cell, pin) not in _dup_seen:
+                _dup_seen.add((mod, cell, pin))
+                issues.append(
+                    f"CRITICAL/DUP-REWIRE: pin {mod}/{cell}.{pin} is rewired to {len(real)} different "
+                    f"nets {sorted(str(n) for n in real)} — a flop pin can drive only one net "
+                    f"(conflicting/double rewire).")
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0

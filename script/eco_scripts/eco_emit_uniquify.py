@@ -157,9 +157,18 @@ def main():
             for i, modname in sorted(copy_mod.items()):
                 if i == 0:
                     continue
-                # already cloned?
-                if any(e.get('change_type') == 'new_logic_gate' and e.get('module_name') == modname
-                       and e.get('source') == 'eco_emit_uniquify' for e in entries):
+                # Skip a copy that ALREADY has its functional unit from ANY source —
+                # a prior uniquify run OR the studier itself replicating all N copies.
+                # Cloning on top double-drives the flop (duplicate D-pin rewires that
+                # reference copy _0's nets, undriven in copy i). Detect an existing
+                # in-copy gate or D/CP rewire on this module.
+                already = any(
+                    isinstance(e.get('module_name'), str) and e.get('module_name') == modname
+                    and (e.get('change_type') == 'new_logic_gate'
+                         or (e.get('change_type') == 'rewire'
+                             and (_DPIN.match(str(e.get('pin', ''))) or e.get('pin') in _CLKPIN)))
+                    for e in entries)
+                if already:
                     continue
                 # resolve this copy's own old net for each rewire pin
                 rmap = {net: f'{net}_{i}' for net in fresh}
