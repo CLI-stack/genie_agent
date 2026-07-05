@@ -536,16 +536,39 @@ def emit(rtl_diff, study, jira, ref_dir=None):
                         f"or verify the opcode. Set const_macro (the RTL macro name).")
             continue
         anchor = next((f for f in (c.get('forced_signals') or []) if f.get('const_macro')), None)
-        if ref_dir and extract_condition and resolve_rtl and anchor:
+        if ref_dir and anchor:
+            # const_macro is present + ref_dir given: the RTL MUST corroborate it.
+            # extract_condition finds `<signal> = `<const_macro>` in the RTL — exactly
+            # one match PROVES the macro name + branch are the real RTL assignment (not
+            # a plausible look-alike). 0 matches = wrong macro/signal; >1 = ambiguous.
+            # Any of these is fail-closed; we never fall back to the AI's stored expr
+            # when a const_macro anchor was asserted but the RTL does not confirm it.
+            if not (extract_condition and resolve_rtl):
+                errs.append(f"priority_force {mod}: const_macro asserted but extractor unavailable "
+                            f"— cannot verify/anchor against RTL.")
+                continue
             base = re.sub(r'^ddrss_\w+?_t_', '', mod)
             rtl = resolve_rtl(ref_dir=ref_dir, module=base)
-            ms = extract_condition(rtl, anchor['signal'], anchor['const_macro']) if rtl else []
-            if len(ms) == 1 and ms[0].get('condition_expr'):
-                cond_expr = ms[0]['condition_expr']
-            elif len(ms) > 1:
+            if not rtl:
+                errs.append(f"priority_force {mod}: cannot locate module RTL to anchor/verify "
+                            f"const_macro {anchor['const_macro']!r}.")
+                continue
+            ms = extract_condition(rtl, anchor['signal'], anchor['const_macro'])
+            if len(ms) == 0:
+                errs.append(f"priority_force {mod}: const_macro {anchor['const_macro']!r} is NOT "
+                            f"assigned to {anchor['signal']!r} anywhere in the RTL — wrong macro or "
+                            f"wrong signal. Cannot anchor the condition; refusing to fall back to the "
+                            f"stored condition_expr.")
+                continue
+            if len(ms) > 1:
                 errs.append(f"priority_force {mod}: condition anchor {anchor['signal']}="
                             f"{anchor['const_macro']} matched {len(ms)} assignments — ambiguous.")
                 continue
+            if not ms[0].get('condition_expr'):
+                errs.append(f"priority_force {mod}: anchored branch for {anchor['signal']}="
+                            f"{anchor['const_macro']} has no extractable guard condition.")
+                continue
+            cond_expr = ms[0]['condition_expr']
             # FAIL-CLOSED completeness: forced_signals must drive EVERY signal the
             # anchored RTL branch assigns. A dropped driven signal is a silent-wrong
             # ECO (the force would only partially apply).

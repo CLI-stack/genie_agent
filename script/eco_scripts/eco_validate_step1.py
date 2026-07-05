@@ -83,7 +83,24 @@ def _pf_condition_leaf_issues(rtl_diff, ref_dir):
         if not anchor:
             continue
         matches = extract_condition(rtl, anchor['signal'], anchor['const_macro'])
-        if not matches or not matches[0].get('condition_expr'):
+        if not matches:
+            # const_macro asserted but the RTL never assigns `signal = `const_macro` —
+            # the macro name or signal is WRONG. This is what lets a plausible-but-wrong
+            # const_macro through: the builder would then fall back to the stored
+            # condition_expr (possibly the wrong branch). Hard-fail here.
+            issues.append(
+                f"changes[{idx}] priority_force const_macro {anchor['const_macro']!r} is NOT "
+                f"assigned to {anchor['signal']!r} anywhere in {module!r} RTL — wrong macro or wrong "
+                f"signal. The condition cannot be anchored; fix const_macro to the macro the branch "
+                f"actually forces.")
+            continue
+        if len(matches) > 1:
+            issues.append(
+                f"changes[{idx}] priority_force const_macro {anchor['const_macro']!r} on "
+                f"{anchor['signal']!r} matches {len(matches)} RTL assignments — ambiguous; the branch "
+                f"cannot be uniquely anchored. Disambiguate the forced signal/value.")
+            continue
+        if not matches[0].get('condition_expr'):
             continue
         leaves = matches[0]['leaves']
         nl = _module_netlist_body(ref_dir, module)
