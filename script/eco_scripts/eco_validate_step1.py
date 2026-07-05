@@ -2416,6 +2416,38 @@ def main():
                     priority_force_issues.append(
                         f"changes[{idx}] priority_force forced_signals[{f.get('signal')!r}].const="
                         f"{f.get('const')!r} is not a valid Verilog constant.")
+                # OPCODE-VALUE grounding: const must equal const_macro's RTL define value.
+                # Catches a wrong-but-valid opcode (9666: UMC_MOP_CAS silently became
+                # 5'b00001 instead of 5'b01011) that the constant-validity check accepts.
+                cm = f.get('const_macro')
+                if cm and args.ref_dir:
+                    import subprocess as _sp
+                    _root = os.path.join(args.ref_dir, 'data', 'PreEco', 'SynRtl')
+                    try:
+                        _o = _sp.run(['grep', '-rhoE',
+                                      r"define[ \t]+" + re.escape(cm) + r"[ \t]+[0-9]+'[bBhHdD][0-9a-fA-FxXzZ_]+",
+                                      _root], capture_output=True, text=True, timeout=90).stdout
+                        _m2 = re.search(r"([0-9]+'[bBhHdD][0-9a-fA-FxXzZ_]+)", _o)
+                        _lit = _m2.group(1) if _m2 else None
+                    except Exception:
+                        _lit = None
+                    def _nc(s):
+                        mm = re.match(r"^\s*(\d+)'([bBhHdD])([0-9a-fA-FxXzZ_]+)\s*$", str(s or ''))
+                        if not mm:
+                            return None
+                        dd = mm.group(3).replace('_', '')
+                        if re.search(r'[xXzZ]', dd):
+                            return None
+                        try:
+                            return (int(mm.group(1)), int(dd, {'b': 2, 'h': 16, 'd': 10}[mm.group(2).lower()]))
+                        except Exception:
+                            return None
+                    if _lit is not None:   # not-found => cannot verify (do not fail)
+                        if _nc(_lit) is None or _nc(f.get('const')) != _nc(_lit):
+                            priority_force_issues.append(
+                                f"changes[{idx}] priority_force forced_signals[{f.get('signal')!r}] "
+                                f"const={f.get('const')!r} does NOT match macro {cm} = {_lit!r} from the "
+                                f"RTL `define` — WRONG opcode value (the ECO would force the wrong command).")
                 # classification proof: the RTL branch RHS must be a bare constant. If the
                 # analyzer records assignment_evidence (the verbatim `sig <= <RHS>` text),
                 # it MUST be constant-like — an expression here means this is really an

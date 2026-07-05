@@ -73,10 +73,44 @@ def _find_pins(inst_pins, mod, inst):
     return None
 
 
+def _resolve_macro(ref_dir, macro):
+    """Resolve `define <macro> N'b...` from the PreEco SynRtl headers. Returns the
+    literal string (e.g. "5'b01011") or None if not found."""
+    import subprocess
+    root = os.path.join(ref_dir, 'data', 'PreEco', 'SynRtl')
+    try:
+        out = subprocess.run(
+            ['grep', '-rhoE', r"define[ \t]+" + re.escape(macro) + r"[ \t]+[0-9]+'[bBhHdD][0-9a-fA-FxXzZ_]+",
+             root], capture_output=True, text=True, timeout=90).stdout
+    except Exception:
+        return None
+    for ln in out.splitlines():
+        m = re.search(r"([0-9]+'[bBhHdD][0-9a-fA-FxXzZ_]+)", ln)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _norm_const(lit):
+    """(width, int_value) from a Verilog literal, or None if unparsable/has x/z."""
+    m = re.match(r"^\s*(\d+)'([bBhHdD])([0-9a-fA-FxXzZ_]+)\s*$", str(lit or ''))
+    if not m:
+        return None
+    digits = m.group(3).replace('_', '')
+    if re.search(r'[xXzZ]', digits):
+        return None
+    base = {'b': 2, 'h': 16, 'd': 10}[m.group(2).lower()]
+    try:
+        return (int(m.group(1)), int(digits, base))
+    except Exception:
+        return None
+
+
 def ground_bits(rtl_diff, ref_dir):
     """Fail-closed: verify EVERY priority_force bit's (module, dff_cell).dff_pin actually
-    carries old_net in the PreEco Synthesize netlist. Returns a list of error strings;
-    empty means all bits are netlist-grounded and it is safe to build."""
+    carries old_net in the PreEco Synthesize netlist, AND (when const_macro is given)
+    that the forced const matches the macro's RTL define value. Returns a list of error
+    strings; empty means it is safe to build."""
     gz = os.path.join(ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
     inst_pins = _scan_pins(gz)
     errs = []
@@ -88,6 +122,22 @@ def ground_bits(rtl_diff, ref_dir):
         mod = c.get('module_name') or ''
         for f in c.get('forced_signals') or []:
             sig = f.get('signal')
+            # OPCODE-VALUE grounding: if the force targets a named macro (const_macro),
+            # the forced const MUST equal that macro's RTL `define` value. Catches a
+            # corrupted/mis-resolved opcode (e.g. UMC_MOP_CAS silently became 5'b00001
+            # instead of 5'b01011) that every schema check accepts as a valid constant.
+            cm = f.get('const_macro')
+            if cm:
+                resolved = _resolve_macro(ref_dir, cm)
+                nc, nr = _norm_const(f.get('const')), (_norm_const(resolved) if resolved else None)
+                if resolved is None:
+                    # can't resolve (macro defined outside SynRtl) => cannot verify, but
+                    # do NOT block a legit build; only a definitive mismatch aborts.
+                    pass
+                elif nc is None or nr is None or nc != nr:
+                    errs.append(f"changes[{ci}] {sig}: forced const {f.get('const')!r} does NOT match "
+                                f"macro {cm} = {resolved!r} from the RTL define — WRONG opcode value "
+                                f"(the ECO would force the wrong command). Fix const to match {cm}.")
             for bspec in f.get('bits') or []:
                 b = bspec.get('bit')
                 old = bspec.get('old_net')
