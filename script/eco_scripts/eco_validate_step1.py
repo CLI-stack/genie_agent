@@ -158,21 +158,62 @@ def _is_logic_line(s):
                           r'assign|always)\b|\.\w+\s*\(', s))
 
 
-def _count_logic_hunks(diff_text):
-    """Count contiguous diff hunks that change REAL logic (skip pure comment/date/path
-    hunks). Normal `diff` output: hunks start with a `<n>[acd]<n>` header."""
-    n, cur_has_logic, in_hunk = 0, False, False
+_HDL_KW = {'if', 'else', 'begin', 'end', 'case', 'endcase', 'default', 'input',
+           'output', 'inout', 'wire', 'reg', 'assign', 'always', 'posedge',
+           'negedge', 'or', 'and', 'not', 'module', 'endmodule', 'parameter',
+           'localparam', 'generate', 'endgenerate', 'for', 'genvar', 'integer'}
+
+
+def _line_tokens(s):
+    """Signal-like identifiers on a line (drop HDL keywords). Macros/params kept."""
+    return {t for t in re.findall(r'[A-Za-z_]\w*', re.sub(r'//.*$', '', s))
+            if t not in _HDL_KW}
+
+
+def _extract_logic_hunks(diff_text):
+    """Parse `diff` normal output into logic hunks. Each hunk -> the set of CHANGED
+    identifiers (symmetric difference of tokens between the removed `<` and added `>`
+    sides). Pure comment/date/path hunks are dropped. Used to check each real change
+    hunk is REPRESENTED by some rtl_diff change (signature match, not a raw count)."""
+    hunks, old_t, new_t, has_logic, in_hunk = [], set(), set(), False, False
+    def _flush():
+        if in_hunk and has_logic:
+            hunks.append((old_t ^ new_t) or (old_t | new_t))
     for ln in diff_text.split('\n'):
         if re.match(r'^\d+(,\d+)?[acd]\d+(,\d+)?$', ln):
-            if in_hunk and cur_has_logic:
-                n += 1
-            in_hunk, cur_has_logic = True, False
-        elif ln.startswith('<') or ln.startswith('>'):
+            _flush()
+            old_t, new_t, has_logic, in_hunk = set(), set(), False, True
+        elif ln.startswith('<'):
             if _is_logic_line(ln[1:]):
-                cur_has_logic = True
-    if in_hunk and cur_has_logic:
-        n += 1
-    return n
+                has_logic = True; old_t |= _line_tokens(ln[1:])
+        elif ln.startswith('>'):
+            if _is_logic_line(ln[1:]):
+                has_logic = True; new_t |= _line_tokens(ln[1:])
+    _flush()
+    return hunks
+
+
+def _change_fingerprints(changes, mb):
+    """PRIMARY signal tokens of the rtl_diff changes for module base `mb` — the
+    signals a change is ABOUT (targets/tokens/ports), NOT its condition inputs. A
+    hunk is represented if it shares a changed token with one of these."""
+    fps = set()
+    for c in changes:
+        if not (_module_base(c.get('module_name')) == mb
+                or _module_base(c.get('uniquified_family')) == mb):
+            continue
+        for k in ('new_token', 'old_token', 'target_register', 'port_name',
+                  'signal_name', 'new_net', 'old_net'):
+            if c.get(k):
+                fps.add(str(c[k]))
+        for f in (c.get('forced_signals') or []):
+            if f.get('signal'):
+                fps.add(str(f['signal']))
+        ed = c.get('equality_decode') or {}
+        for k in ('signal', 'new_token'):
+            if ed.get(k):
+                fps.add(str(ed[k]))
+    return fps
 
 
 def _module_base(name):
@@ -214,21 +255,30 @@ def _hunk_completeness_issues(rtl_diff, ref_dir):
                                    timeout=60).stdout
         except Exception:
             continue
-        hunks = _count_logic_hunks(dtext)
-        if hunks == 0:
+        hunks = _extract_logic_hunks(dtext)
+        if not hunks:
             continue                                    # comment/date/path noise only
         mb = re.sub(r'^rtl_', '', re.sub(r'\.s?v$', '', fn))
+        fps = _change_fingerprints(rtl_diff.get('changes', []), mb)
         nchanges = sum(1 for c in rtl_diff.get('changes', [])
                        if _module_base(c.get('module_name')) == mb
                        or _module_base(c.get('uniquified_family')) == mb)
-        if nchanges < hunks:
+        # Trigger on the COUNT deficit (fewer captured changes than changed hunks).
+        # This is robust to the const/macro token-representation gap: an OR-widen's
+        # changed token is the opcode MACRO (UMC_MOP_MRR) while the change is keyed on
+        # the signal (recdsp_c0mop) + const_binary, so pure signature matching would
+        # UNDER-claim and false-positive. The count is representation-agnostic and is
+        # what catches the 9666 MRR-guard miss (4 hunks, 3 changes). Signature is used
+        # only to enrich the message with the likely-missed hunk's changed signals.
+        if nchanges < len(hunks):
+            unrep = [h for h in hunks if not (h & fps)]
+            sample = sorted({t for h in (unrep or hunks) for t in h})[:12]
             issues.append(
-                f"HUNK-COMPLETENESS: {fn} has {hunks} changed logic hunk(s) in the RTL diff but the "
-                f"rtl_diff captured only {nchanges} change(s) for module {mb!r} — an edit was likely "
-                f"MISSED (a modified branch guard / condition change is easy to overlook when it shares "
-                f"signals with another change). Re-diff PreEco/SynRtl vs SynRtl for this file and add a "
-                f"change for every hunk (a tightened/broadened existing-branch guard is an enable_swap/"
-                f"and_term, NOT a priority_force).")
+                f"HUNK-COMPLETENESS: {fn} module {mb!r} — only {nchanges} rtl_diff change(s) captured "
+                f"for {len(hunks)} changed logic hunk(s). An edit was likely MISSED (commonly a "
+                f"tightened/broadened guard on an EXISTING branch — that is an enable_swap/and_term on "
+                f"the branch target, NOT a priority_force). Changed signals with no matching change: "
+                f"{sample}. Re-diff PreEco/SynRtl vs SynRtl and add a change covering every hunk.")
     return issues
 
 

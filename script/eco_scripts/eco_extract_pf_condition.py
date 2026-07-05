@@ -160,21 +160,33 @@ def extract_added_branch_condition(ref_dir, module, signal, value):
     `<signal>=<value>` branches that exist in the NEW RTL (data/SynRtl) but NOT in
     the OLD RTL (data/PreEco/SynRtl) — i.e. the branch(es) the ECO actually added.
 
-    Returns a list of {assignment_line, condition_expr, leaves} (usually length 1).
-    Empty if the module RTL can't be found in both trees or nothing was added."""
-    pre = _find_module_rtl(ref_dir, module, 'PreEco/SynRtl')
+    Returns a list of {assignment_line, condition_expr, leaves, assigned} (usually
+    length 1). Empty when the NEW-RTL module can't be found or nothing was added.
+    Edge cases handled: NEW module file missing -> [] (cannot determine); OLD module
+    file missing (a brand-new module) -> every NEW branch counts as added; a NEW
+    branch whose guard is unparsable (condition_expr None) is skipped (other checks
+    handle it); duplicate identical added branches are de-duped by condition."""
     new = _find_module_rtl(ref_dir, module, 'SynRtl')
-    if not (pre and new):
+    if not new:
         return []
-    pre_conds = {_norm_cond(m['condition_expr'])
-                 for m in extract_condition(pre, signal, value) if m.get('condition_expr')}
+    pre = _find_module_rtl(ref_dir, module, 'PreEco/SynRtl')
+    pre_conds = set()
+    if pre:
+        pre_conds = {_norm_cond(m['condition_expr'])
+                     for m in extract_condition(pre, signal, value) if m.get('condition_expr')}
     new_lines = _strip_comments(open(new, errors='replace').read()).split('\n')
-    added = []
+    added, seen = [], set()
     for m in extract_condition(new, signal, value):
-        if m.get('condition_expr') and _norm_cond(m['condition_expr']) not in pre_conds:
-            m = dict(m)
-            m['assigned'] = _block_assignments(new_lines, m['assignment_line'] - 1)
-            added.append(m)
+        ce = m.get('condition_expr')
+        if not ce:
+            continue
+        nc = _norm_cond(ce)
+        if nc in pre_conds or nc in seen:
+            continue
+        seen.add(nc)
+        m = dict(m)
+        m['assigned'] = _block_assignments(new_lines, m['assignment_line'] - 1)
+        added.append(m)
     return added
 
 
