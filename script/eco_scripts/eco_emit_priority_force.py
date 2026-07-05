@@ -30,6 +30,14 @@ Usage:
         --jira <JIRA> --ref-dir <REF_DIR> --output data/<TAG>_eco_preeco_study.json
 """
 import argparse, gzip, json, os, re, sys
+try:
+    from eco_rtl_config import RtlConfig
+except Exception:
+    RtlConfig = None
+try:
+    from eco_extract_pf_condition import extract_condition, resolve_rtl
+except Exception:
+    extract_condition = resolve_rtl = None
 
 STAGES = ('Synthesize', 'PrePlace', 'Route')
 _INV_CELL = 'INVD1BWP136P5M156H3P48CPDLVT'
@@ -297,6 +305,26 @@ def _find_pins(inst_pins, mod, inst):
     return None
 
 
+def _module_netlist_body(ref_dir, module):
+    """PreEco Synthesize netlist body text of <module> (and _0 variant)."""
+    gz = os.path.join(ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
+    body, grab = [], False
+    if os.path.isfile(gz):
+        try:
+            with gzip.open(gz, 'rt', errors='replace') as f:
+                for ln in f:
+                    mm = re.match(r'^module\s+(\S+)', ln)
+                    if mm:
+                        grab = mm.group(1) in (module, module + '_0')
+                    if grab:
+                        body.append(ln)
+                        if ln.lstrip().startswith('endmodule'):
+                            grab = False
+        except Exception:
+            body = []
+    return ''.join(body)
+
+
 def _resolve_macro(ref_dir, macro):
     """Resolve `define <macro> N'b...` from the PreEco SynRtl headers. Returns the
     literal string (e.g. "5'b01011") or None if not found."""
@@ -394,32 +422,73 @@ def _pcstage(pc):
     return {s: dict(pc) for s in STAGES}
 
 
-def emit(rtl_diff, study, jira):
+def emit(rtl_diff, study, jira, ref_dir=None):
     seq = [0]
     def nn(tag):
         seq[0] += 1
         return f"n_eco_{jira}_pf_{tag}_{seq[0]}"
-    added = 0
+    cfg = RtlConfig(ref_dir) if (ref_dir and RtlConfig) else None
+    _body_cache = {}
+    def _in_netlist_pred(module):
+        if not ref_dir:
+            return (lambda s: True)
+        if module not in _body_cache:
+            _body_cache[module] = _module_netlist_body(ref_dir, module)
+        txt = _body_cache[module]
+        return (lambda s: bool(re.search(r'\b' + re.escape(s) + r'\b', txt)))
+    added, errs = 0, []
     for c in rtl_diff.get('changes', []):
         if c.get('change_type') != 'priority_force':
             continue
         mod = c.get('module_name') or ''
         new_gates, new_rewires = [], []
-        # 1. condition cone (emit verbatim) -> cond net = last gate output
-        chain = c.get('condition_gate_chain') or []
+        # 1. condition cone — BUILD from condition_expr (anchored/extracted), correct
+        #    by construction. Prefer condition_expr on the change; else extract from
+        #    RTL anchored on the distinctive forced signal (the one with const_macro).
+        cond_expr = c.get('condition_expr')
+        if not cond_expr and ref_dir and extract_condition and resolve_rtl:
+            anchor = next((f for f in (c.get('forced_signals') or []) if f.get('const_macro')), None)
+            if anchor:
+                base = re.sub(r'^ddrss_\w+?_t_', '', mod)
+                rtl = resolve_rtl(ref_dir=ref_dir, module=base)
+                ms = extract_condition(rtl, anchor['signal'], anchor['const_macro']) if rtl else []
+                if len(ms) == 1 and ms[0].get('condition_expr'):
+                    cond_expr = ms[0]['condition_expr']
+                elif len(ms) > 1:
+                    errs.append(f"priority_force {mod}: condition anchor {anchor['signal']}="
+                                f"{anchor['const_macro']} matched {len(ms)} assignments — ambiguous.")
+                    continue
         cond = None
-        for g in chain:
-            pc = g.get('port_connections') or {}
-            new_gates.append({
-                'change_type': 'new_logic_gate', 'instance_name': g['instance_name'],
-                'cell_type': g.get('cell_type', ''), 'gate_function': g.get('gate_function', ''),
-                'output_net': g.get('output_net') or _out_of(pc),
-                'module_name': mod, 'port_connections': pc,
-                'port_connections_per_stage': g.get('port_connections_per_stage') or _pcstage(pc),
-                'confirmed': True, 'source': 'eco_emit_priority_force',
-            })
-            cond = g.get('output_net') or _out_of(pc)
+        if cond_expr and cfg is not None:
+            rtl = resolve_rtl(ref_dir=ref_dir, module=re.sub(r'^ddrss_\w+?_t_', '', mod)) if resolve_rtl else None
+            rtl_text = open(rtl, errors='replace').read() if rtl and os.path.isfile(rtl) else None
+            try:
+                cond, cone = synthesize_condition(cond_expr, jira, mod, cfg, nn,
+                                                  rtl_text=rtl_text, in_netlist=_in_netlist_pred(mod))
+                new_gates.extend(cone)
+            except _PErr as e:
+                errs.append(f"priority_force {mod}: cannot synthesize condition — {e}. cond_expr={cond_expr!r}")
+                continue
+        else:
+            # legacy fallback: emit a well-formed condition_gate_chain verbatim
+            for g in (c.get('condition_gate_chain') or []):
+                pc = g.get('port_connections') or {}
+                if not g.get('cell_type') or not pc:
+                    errs.append(f"priority_force {mod}: condition_gate_chain gate "
+                                f"{g.get('instance_name')!r} is an empty skeleton and no condition_expr "
+                                f"is available to build from.")
+                    cond = None; break
+                new_gates.append({
+                    'change_type': 'new_logic_gate', 'instance_name': g['instance_name'],
+                    'cell_type': g['cell_type'], 'gate_function': g.get('gate_function', ''),
+                    'output_net': g.get('output_net') or _out_of(pc),
+                    'module_name': mod, 'port_connections': pc,
+                    'port_connections_per_stage': g.get('port_connections_per_stage') or _pcstage(pc),
+                    'confirmed': True, 'source': 'eco_emit_priority_force'})
+                cond = g.get('output_net') or _out_of(pc)
         if not cond:
+            if cond_expr is None and not (c.get('condition_gate_chain')):
+                errs.append(f"priority_force {mod}: no condition_expr and no condition_gate_chain.")
             continue
         # NOTE: no INV(cond) is emitted — the force-muxes use `cond` directly
         # (OR2(cond,old) for a const-1 bit; INR2(A1=old,B1=cond)=old&~cond for a
@@ -470,7 +539,7 @@ def emit(rtl_diff, study, jira):
         for st in STAGES:
             study.setdefault(st, []).extend([dict(g) for g in new_gates] + [dict(r) for r in new_rewires])
             added += len(new_gates) + len(new_rewires)
-    return added
+    return added, errs
 
 
 def _out_of(pc):
@@ -505,10 +574,20 @@ def main():
             open(args.output.replace('.json', '_priority_force_marker.txt'), 'w').write(marker)
             return 2
 
-    n = emit(rtl_diff, study, args.jira)
+    n, build_errs = emit(rtl_diff, study, args.jira, ref_dir=args.ref_dir)
+    if build_errs:
+        marker = ("ECO_SCRIPT_LAUNCHED: eco_emit_priority_force.py\n"
+                  f"  ABORTED — {len(build_errs)} priority_force condition build error(s):\n"
+                  + "".join(f"    - {e}\n" for e in build_errs)
+                  + "  Study UNTOUCHED. Fix condition_expr / thread in missing leaves and re-run.\n")
+        print(marker)
+        open(args.output.replace('.json', '_priority_force_marker.txt'), 'w').write(marker)
+        return 2
+
     open(args.output, 'w').write(json.dumps(study, indent=2))
     marker = (f"ECO_SCRIPT_LAUNCHED: eco_emit_priority_force.py\n"
               f"  priority_force entries spliced (gates+rewires, all stages): {n}\n"
+              f"  condition: built from condition_expr (synthesized)\n"
               f"  netlist-grounded: {'yes' if args.ref_dir else 'NO (no --ref-dir)'}\n")
     print(marker)
     open(args.output.replace('.json', '_priority_force_marker.txt'), 'w').write(marker)
