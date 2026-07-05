@@ -60,9 +60,9 @@ def _pf_condition_leaf_issues(rtl_diff, ref_dir):
     """For each priority_force, anchor the RTL condition (via const_macro) and verify
     every leaf signal is AVAILABLE in the target module: present in the netlist, OR a
     local wire/assign in the module RTL (decomposable), OR threaded in by a new_port
-    in this rtl_diff. A leaf that is none of these (e.g. 9666 WckIsInSync, computed at
-    umcdat but absent from recdsp) is a genuinely-missing signal the condition cannot
-    use until it is ported in. Requires --ref-dir + the extractor; else returns []."""
+    in this rtl_diff. A leaf that is none of these — a signal computed in another
+    module but absent from the target — is genuinely missing; the condition cannot use
+    it until it is ported in. Requires --ref-dir + the extractor; else returns []."""
     if not (ref_dir and extract_condition and resolve_rtl):
         return []
     issues = []
@@ -105,8 +105,8 @@ def _pf_condition_leaf_issues(rtl_diff, ref_dir):
                 f"changes[{idx}] priority_force condition references signal(s) {sorted(missing)} "
                 f"NOT available in module {module!r} (absent from the netlist, not a local wire, and "
                 f"not threaded in by a new_port). The condition cannot be built until they are sourced "
-                f"— add a new_port + port_connection to bring each into the module (e.g. 9666 WckIsInSync "
-                f"is computed at umcdat and must be ported into recdsp).")
+                f"— add a new_port + port_connection to bring each signal into the module from wherever "
+                f"it is computed. Do NOT reconstruct it from a different available signal.")
     return issues
 
 # Prefixes that mean the cell's output goes LOW when its inputs go HIGH.
