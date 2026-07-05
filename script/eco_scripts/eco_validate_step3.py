@@ -5522,6 +5522,68 @@ def main():
                     f"nets {sorted(str(n) for n in real)} — a flop pin can drive only one net "
                     f"(conflicting/double rewire).")
 
+    # ── #5 empty/malformed gate ────────────────────────────────────────────────
+    # A new_logic_gate with no cell_type or no port_connections is an un-insertable
+    # skeleton (history: eco_emit_priority_force re-emitted an empty condition_gate_chain
+    # named eco_9666_c001..c004 with cell_type='' / port_connections=None). Step 4
+    # cannot build it; Step 5/FM see a broken/missing cell.
+    def _has_pins(e):
+        if e.get('port_connections'):
+            return True
+        return any(v for v in (e.get('port_connections_per_stage') or {}).values())
+    _r5_seen = set()
+    for st in _R4_STAGES:
+        for e in study.get(st, []):
+            if e.get('change_type') != 'new_logic_gate':
+                continue
+            inst = e.get('instance_name') or '?'
+            mod = e.get('module_name') or '?'
+            if (mod, inst) in _r5_seen:
+                continue
+            no_cell = not e.get('cell_type')
+            no_pins = not _has_pins(e)
+            if no_cell or no_pins:
+                _r5_seen.add((mod, inst))
+                what = ' and '.join(x for x in ('no cell_type' if no_cell else '',
+                                                'no port_connections' if no_pins else '') if x)
+                issues.append(
+                    f"CRITICAL/EMPTY-GATE: new_logic_gate {mod}/{inst} has {what} — an un-insertable "
+                    f"skeleton gate. Every gate needs a real cell_type + port_connections.")
+
+    # ── #6 dangling ECO gate (output never consumed) ───────────────────────────
+    # An n_eco_ gate output that no other gate/DFF input, rewire new_net, or
+    # port_connection consumes is dead logic (history: WCK-sync cone terms
+    # pf_c002/pf_c003 were computed but never folded into the force condition).
+    # Airtight consumed set: scan port_connections AND port_connections_per_stage
+    # input pins across ALL entry types, plus rewire/port-conn/chain net fields.
+    # (Narrow scanning caused false positives on legit studies.)
+    _consumed = set()
+    for st in _R4_STAGES:
+        for e in study.get(st, []):
+            for pc in [e.get('port_connections') or {}] + list((e.get('port_connections_per_stage') or {}).values()):
+                for p, v in (pc or {}).items():
+                    if p not in _R4_OUT and isinstance(v, str):
+                        _consumed.add(v)
+            for k in ('new_net', 'net_name', 'net_name_before', 'd_input_net', 'old_net'):
+                v = e.get(k)
+                if isinstance(v, str):
+                    _consumed.add(v)
+    _r6_seen = set()
+    for st in _R4_STAGES:
+        for e in study.get(st, []):
+            if e.get('change_type') != 'new_logic_gate':
+                continue
+            for p, v in (e.get('port_connections') or {}).items():
+                if p in _R4_OUT and isinstance(v, str) and v.startswith('n_eco_') and v not in _consumed:
+                    if v in _r6_seen:
+                        continue
+                    _r6_seen.add(v)
+                    issues.append(
+                        f"CRITICAL/DANGLING-CONE: gate {e.get('module_name')}/"
+                        f"{e.get('instance_name')} drives {v} but nothing consumes it (no gate/DFF "
+                        f"input, rewire, or port_connection reads it) — dead ECO logic. If this is a "
+                        f"condition term it was computed but never folded into the final cone.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}

@@ -7,7 +7,7 @@ placeholder. Splices force-mux gates + DFF-pin rewires into the study.
 
 Per priority_force change:
   1. Condition cone: the change's `condition_gate_chain` gates are emitted verbatim;
-     the last gate's output is the condition net `cond`. One shared INV(cond)->cond_n.
+     the last gate's output is the condition net `cond` (used directly by the muxes).
   2. Per forced signal, per bit b (const bit value decides the gate):
         const bit == 1  ->  OR2 (cond, old_bit)         -> force to 1 when cond
         const bit == 0  ->  INR2(A1=old_bit, B1=cond)    -> old & ~cond = force to 0
@@ -197,14 +197,9 @@ def emit(rtl_diff, study, jira):
             cond = g.get('output_net') or _out_of(pc)
         if not cond:
             continue
-        cond_n = nn('condn')
-        new_gates.append({
-            'change_type': 'new_logic_gate', 'instance_name': f'eco_{jira}_pf_inv_{seq[0]}',
-            'cell_type': _INV_CELL, 'gate_function': 'INV', 'output_net': cond_n,
-            'module_name': mod, 'port_connections': {'I': cond, 'ZN': cond_n},
-            'port_connections_per_stage': _pcstage({'I': cond, 'ZN': cond_n}),
-            'confirmed': True, 'source': 'eco_emit_priority_force',
-        })
+        # NOTE: no INV(cond) is emitted — the force-muxes use `cond` directly
+        # (OR2(cond,old) for a const-1 bit; INR2(A1=old,B1=cond)=old&~cond for a
+        # const-0 bit), so an inverted copy would be dead logic (dangling-cone).
         # 2. per forced signal, per bit force-mux + DFF-pin rewire
         for f in c.get('forced_signals') or []:
             cbits = _const_bits(f.get('const'))
