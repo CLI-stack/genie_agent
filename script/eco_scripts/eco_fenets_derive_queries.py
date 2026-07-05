@@ -95,6 +95,16 @@ def derive(rtl_diff, tile=''):
                 t = c.get(tok_field)
                 if not t:
                     continue
+                # Do NOT query a to-be-BUILT new term: an equality-decode match
+                # (eco_emit_eq_decode builds it) or a synthetic ECO net (bus OR/AND
+                # reduce, n_eco_/eco_). It cannot exist in PreEco, so FM echo-falls-back
+                # and Step-2 C6 would flag it as a false positive. old_token (the combine
+                # point) is still queried, so the studier loses nothing.
+                if tok_field == 'new_token' and (
+                        c.get('equality_decode')
+                        or t.startswith(_SKIP_INPUT_PREFIXES)
+                        or re.search(r'_eq_[A-Z0-9_]+$|_or$|_or_reduce$', t)):
+                    continue
                 s = c.get('target_scope') if tok_field == 'target_register' else scope
                 base_scope = s or scope
                 # Build list of scopes to query: primary scope + any extra instances

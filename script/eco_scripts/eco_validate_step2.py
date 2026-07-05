@@ -189,6 +189,19 @@ def main():
                         sig = ci.get('signal', '')
                         if sig:
                             expected_echo.add(sig)
+                    # A to-be-BUILT new term legitimately echo-falls-back: the
+                    # equality-decode match (eco_emit_eq_decode builds it) and any
+                    # synthetic ECO net (bus OR/AND reduce, n_eco_/eco_). These do not
+                    # exist in PreEco, so echo is correct — not a C6 failure.
+                    ed = c.get('equality_decode')
+                    if isinstance(ed, dict) and ed.get('new_token'):
+                        expected_echo.add(ed['new_token'])
+                    if c.get('change_type') in ('and_term', 'wire_swap'):
+                        nt = c.get('new_token')
+                        if isinstance(nt, str) and (
+                                nt.startswith(('n_eco_', 'eco_'))
+                                or re.search(r'_eq_[A-Z0-9_]+$|_or$|_or_reduce$', nt)):
+                            expected_echo.add(nt)
                     # Bus bits previously spare/unconnected (UNCONNECTED_*) have no
                     # named wire in PreEco, so FM returns FM-036 and echo-fallback
                     # is the correct and expected behavior — not a validation failure.
