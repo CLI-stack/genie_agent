@@ -111,6 +111,155 @@ def parse_condition(expr):
         raise _PErr(f"trailing tokens from {toks[pos[0]:]}")
     return ast
 
+
+# ── AST -> gate synthesis ───────────────────────────────────────────────────────
+# Builds real gates for a condition AST. Scalar nodes -> a 1-bit net; reduction
+# nodes expand per-bit over the resolved bus width (RtlConfig part-selects) and
+# reduce (AND-tree+INV for ~& / OR-tree+INV for ~|). Returns (cond_net, gates).
+_PARTSEL = re.compile(r'^(\w+)\[(`?\w+)\]$')
+
+
+def _reduction_width(node, cfg):
+    """Bus width of a reduction operand: from any part-select leaf's field width."""
+    found = [None]
+    def walk(n):
+        if n[0] == 'sig':
+            m = _PARTSEL.match(n[1])
+            if m and m.group(2).startswith('`') and cfg:
+                ps = cfg.part_select(m.group(2))
+                if ps:
+                    found[0] = ps[1] - ps[0] + 1
+        elif n[0] in ('and', 'or'):
+            for k in n[1]:
+                walk(k)
+        elif n[0] == 'not':
+            walk(n[1])
+    walk(node)
+    return found[0]
+
+
+def _bit_ref(sig, i, cfg):
+    """Per-bit net of a leaf for bit i inside a reduction: bare bus -> sig[i];
+    part-select sig[`FIELD] -> sig[base+i]; fixed sig[N] -> broadcast as-is."""
+    m = _PARTSEL.match(sig)
+    if not m:
+        return f'{sig}[{i}]'
+    base, idx = m.group(1), m.group(2)
+    if idx.startswith('`'):
+        ps = cfg.part_select(idx) if cfg else None
+        return f'{base}[{ps[0] + i}]' if ps else None
+    return sig
+
+
+def _wire_defs(rtl_text):
+    """Map local `wire <name> = <expr>;` (uncommented) -> RHS expr, for decomposing
+    intermediate condition wires (e.g. dsp_cmd_rdtok) that synthesis flattened."""
+    out = {}
+    if not rtl_text:
+        return out
+    txt = re.sub(r'//[^\n]*', '', rtl_text)
+    for m in re.finditer(r'\bwire\b[^;=]*\b(\w+)\s*=\s*([^;]+);', txt):
+        out.setdefault(m.group(1), re.sub(r'\s+', ' ', m.group(2)).strip())
+    return out
+
+
+class _CondSynth:
+    def __init__(self, jira, module, cfg, mk, rtl_text=None, in_netlist=None):
+        self.jira, self.module, self.cfg, self.mk = jira, module, cfg, mk
+        self.wires = _wire_defs(rtl_text)      # local wire decompositions
+        self.in_netlist = in_netlist or (lambda s: True)  # leaf presence predicate
+        self._decomposing = set()              # recursion guard
+        self.gates = []
+    def _resolve_sig(self, s):
+        """Resolve a single-bit macro select: base[`FIELD] -> base[N] when FIELD is
+        a scalar field. Leaves bare names / numeric selects unchanged."""
+        m = _PARTSEL.match(s)
+        if m and m.group(2).startswith('`') and self.cfg:
+            ps = self.cfg.part_select(m.group(2))
+            if ps and ps[0] == ps[1]:
+                return f'{m.group(1)}[{ps[0]}]'
+        return s
+    def _g(self, cell, fn, pc):
+        out = pc[[p for p in ('Z', 'ZN') if p in pc][0]]
+        self.gates.append({
+            'change_type': 'new_logic_gate',
+            'instance_name': f'eco_{self.jira}_pfc_{len(self.gates)}',
+            'cell_type': cell, 'gate_function': fn, 'output_net': out,
+            'module_name': self.module, 'port_connections': pc,
+            'port_connections_per_stage': _pcstage(pc),
+            'confirmed': True, 'source': 'eco_emit_priority_force'})
+        return out
+    def _and(self, nets):
+        cur = list(nets)
+        while len(cur) > 1:
+            a, b = cur.pop(0), cur.pop(0)
+            cur.append(self._g(_AND2_CELL, 'AND2', {'A1': a, 'A2': b, 'Z': self.mk('and')}))
+        return cur[0]
+    def _or(self, nets):
+        cur = list(nets)
+        while len(cur) > 1:
+            a, b = cur.pop(0), cur.pop(0)
+            cur.append(self._g(_OR2_CELL, 'OR2', {'A1': a, 'A2': b, 'Z': self.mk('or')}))
+        return cur[0]
+    def _inv(self, a):
+        return self._g(_INV_CELL, 'INV', {'I': a, 'ZN': self.mk('inv')})
+    def scalar(self, node):
+        k = node[0]
+        if k == 'sig':
+            s = self._resolve_sig(node[1])
+            base = _PARTSEL.match(s).group(1) if _PARTSEL.match(s) else s
+            # decompose a local intermediate wire that synthesis flattened away
+            # (present as a `wire =` in RTL but not a net in the netlist)
+            if (base in self.wires and base not in self._decomposing
+                    and not self.in_netlist(base)):
+                self._decomposing.add(base)
+                try:
+                    sub = self.scalar(parse_condition(self.wires[base]))
+                finally:
+                    self._decomposing.discard(base)
+                return sub
+            return s
+        if k == 'not':
+            return self._inv(self.scalar(node[1]))
+        if k == 'and':
+            return self._and([self.scalar(x) for x in node[1]])
+        if k == 'or':
+            return self._or([self.scalar(x) for x in node[1]])
+        if k == 'red':
+            _, op, inner = node
+            W = _reduction_width(inner, self.cfg)
+            if not W:
+                raise _PErr(f"cannot resolve reduction bus width for {inner}")
+            bits = [self.bit(inner, i) for i in range(W)]
+            if None in bits:
+                raise _PErr(f"unresolvable bit ref in reduction {inner}")
+            root = self._and(bits) if op == 'nand' else self._or(bits)
+            return self._inv(root)                       # ~& / ~|
+        raise _PErr(f"bad node {node}")
+    def bit(self, node, i):
+        k = node[0]
+        if k == 'sig':
+            return _bit_ref(node[1], i, self.cfg)
+        if k == 'not':
+            b = self.bit(node[1], i); return self._inv(b) if b else None
+        if k == 'and':
+            bs = [self.bit(x, i) for x in node[1]]
+            return self._and(bs) if None not in bs else None
+        if k == 'or':
+            bs = [self.bit(x, i) for x in node[1]]
+            return self._or(bs) if None not in bs else None
+        raise _PErr(f"reduction inner has nested reduction/unsupported node {node}")
+
+
+def synthesize_condition(cond_expr, jira, module, cfg, mk, rtl_text=None, in_netlist=None):
+    """Parse + synthesize a condition_expr into gates. Returns (cond_net, gates).
+    rtl_text + in_netlist enable local-wire decomposition of flattened intermediate
+    signals. Raises _PErr on anything unbuildable (caller fails closed)."""
+    ast = parse_condition(cond_expr)
+    s = _CondSynth(jira, module, cfg, mk, rtl_text=rtl_text, in_netlist=in_netlist)
+    cond = s.scalar(ast)
+    return cond, s.gates
+
 _MOD = re.compile(r'^\s*module\s+(\S+)')
 _INST = re.compile(r'^\s*[\w:]+\s+(\w+)\s*\(')
 _PIN = re.compile(r'\.(\w+)\s*\(\s*([^)]*?)\s*\)')
