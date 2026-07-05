@@ -522,6 +522,19 @@ def emit(rtl_diff, study, jira, ref_dir=None):
         #    over any AI-stored condition_expr (which can capture the wrong branch).
         #    Fall back to the stored condition_expr only when extraction isn't possible.
         cond_expr = None
+        # FAIL-CLOSED: a multi-bit opcode force MUST name its const_macro, else the
+        # condition cannot be anchored to the RTL and the value cannot be verified —
+        # the build would silently trust the AI's stored condition_expr (possibly the
+        # wrong branch). Refuse rather than build on unverifiable input.
+        _missing_macro = [f.get('signal') for f in (c.get('forced_signals') or [])
+                          if re.match(r"^\s*(\d+)'[bB][01xzXZ_]+\s*$", str(f.get('const', '')))
+                          and int(re.match(r"^\s*(\d+)", str(f.get('const'))).group(1)) > 1
+                          and not f.get('const_macro')]
+        if _missing_macro:
+            errs.append(f"priority_force {mod}: forced signal(s) {_missing_macro} pin a multi-bit "
+                        f"constant but have no const_macro — cannot anchor the condition to the RTL "
+                        f"or verify the opcode. Set const_macro (the RTL macro name).")
+            continue
         anchor = next((f for f in (c.get('forced_signals') or []) if f.get('const_macro')), None)
         if ref_dir and extract_condition and resolve_rtl and anchor:
             base = re.sub(r'^ddrss_\w+?_t_', '', mod)

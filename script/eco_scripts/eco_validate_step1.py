@@ -124,6 +124,31 @@ def _pf_condition_leaf_issues(rtl_diff, ref_dir):
                 f"it is computed. Do NOT reconstruct it from a different available signal.")
     return issues
 
+
+def _pf_const_macro_issues(rtl_diff):
+    """FAIL-CLOSED: a priority_force that pins a signal to a MULTI-BIT constant (an
+    opcode/enum, e.g. 5'b01011) MUST carry `const_macro` naming the RTL macro. Without
+    it (a) the constant cannot be verified against the RTL `define (a wrong-but-valid
+    opcode passes every schema check) and (b) the condition cannot be anchored to the
+    correct RTL branch — the builder then trusts the AI's stored condition_expr, which
+    may be the wrong branch. Trivial 1-bit forces (1'b0/1'b1) do not need a macro.
+    Runs with NO ref-dir dependency so the gate is always on."""
+    issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') != 'priority_force':
+            continue
+        for f in (c.get('forced_signals') or []):
+            m = re.match(r"^\s*(\d+)'[bB]([01xzXZ_]+)\s*$", str(f.get('const', '')))
+            width = int(m.group(1)) if m else None
+            if width and width > 1 and not f.get('const_macro'):
+                issues.append(
+                    f"changes[{idx}] priority_force forces {f.get('signal')!r} to a {width}-bit "
+                    f"constant {f.get('const')!r} but const_macro is not set. A multi-bit opcode/enum "
+                    f"MUST name its RTL macro so the value is verified against the `define AND the "
+                    f"condition is anchored to the correct RTL branch (else the builder silently trusts "
+                    f"the stored condition_expr). Set const_macro to the RTL macro name.")
+    return issues
+
 # Prefixes that mean the cell's output goes LOW when its inputs go HIGH.
 # Keep generic — covers TSMC/AMD/GF library naming conventions.
 INVERTING_PREFIXES = ('XNOR', 'XNR', 'NAND', 'NOR', 'INR', 'INV', 'IND', 'ND', 'NR')
@@ -2596,6 +2621,7 @@ def main():
     # priority_force condition-leaf availability (needs --ref-dir + extractor)
     pf_leaf_issues = _pf_condition_leaf_issues(rtl_diff, args.ref_dir)
     priority_force_issues.extend(pf_leaf_issues)
+    priority_force_issues.extend(_pf_const_macro_issues(rtl_diff))
 
     if priority_force_issues:
         overall_pass = False
