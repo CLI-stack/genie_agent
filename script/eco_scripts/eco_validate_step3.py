@@ -5541,6 +5541,25 @@ def main():
                         f"needs its OWN input port_declaration with module_name=<base>_<i> (not the RTL "
                         f"base name); otherwise the per-copy gates reference an undeclared port → FM "
                         f"out-of-scope (SVR-14).")
+                # (d) parent-side port_connection coverage — the parent instantiates the
+                #     array N times; the new input port must be CONNECTED on every parent
+                #     instance, not just copy _0 (else N-1 copies float the port → FM fail).
+                childbase = re.sub(r'^ddrss_\w+?_t_', '', base)
+                pc_insts = set()
+                for e in study.get('Synthesize', []):
+                    if e.get('change_type') != 'port_connection':
+                        continue
+                    inst = e.get('instance_name') or ''
+                    fam = e.get('uniquified_family') or ''
+                    if (childbase and childbase in inst) or (childbase and childbase in fam):
+                        pc_insts.add(inst)
+                if 0 < len(pc_insts) < len(all_idx):
+                    issues.append(
+                        f"CRITICAL/UNIQUIFIED-PORTCONN: family {base!r} gains a new input port but only "
+                        f"{len(pc_insts)}/{len(all_idx)} parent instances carry a port_connection for it. "
+                        f"The generate array instantiates the child N times — the new port must be "
+                        f"connected on EVERY parent instance (RCQ-style <PREFIX>_<i>__<child>), else the "
+                        f"other copies float the port and FM fails. eco_emit_uniquify replicates these.")
             # (d) intra-module UNDRIVEN ECO net — a per-copy ECO gate input n_eco_* must be
             #     driven inside the SAME copy. Catches per-copy net names not suffixed (driver
             #     emits <net>_<i> but the load reads the unsuffixed <net>).

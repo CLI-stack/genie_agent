@@ -138,6 +138,40 @@ def _pf_condition_leaf_issues(rtl_diff, ref_dir):
     return issues
 
 
+def _bus_width_int(bw):
+    """Normalize a bus_width field (int, 'msb:lsb' string, '[N:0]', or None) to a bit
+    count. None/absent => scalar (1)."""
+    if bw is None:
+        return 1
+    if isinstance(bw, int):
+        return bw if bw > 0 else 1
+    s = str(bw).strip()
+    m = re.match(r'^\[?\s*(\d+)\s*:\s*(\d+)\s*\]?$', s)
+    if m:
+        return abs(int(m.group(1)) - int(m.group(2))) + 1
+    return int(s) if s.isdigit() else 1
+
+
+def _rtl_port_width(ref_dir, module, port):
+    """Declared bit-width of `port` in the module's NEW RTL (data/SynRtl). Returns an
+    int (1 for scalar) or None if the RTL/declaration can't be found."""
+    if not (ref_dir and resolve_rtl and port):
+        return None
+    base = re.sub(r'^ddrss_\w+?_t_', '', module or '')
+    rtl = resolve_rtl(ref_dir=ref_dir, module=base, subdir='SynRtl')
+    if not rtl:
+        return None
+    try:
+        txt = open(rtl, errors='replace').read()
+    except Exception:
+        return None
+    m = re.search(r'\b(?:input|output|inout|wire|reg)\b\s*(?:\[\s*(\d+)\s*:\s*(\d+)\s*\])?\s*'
+                  + re.escape(port) + r'\b', txt)
+    if not m:
+        return None
+    return abs(int(m.group(1)) - int(m.group(2))) + 1 if m.group(1) else 1
+
+
 def _pf_const_macro_issues(rtl_diff):
     """FAIL-CLOSED: a priority_force that pins a signal to a MULTI-BIT constant (an
     opcode/enum, e.g. 5'b01011) MUST carry `const_macro` naming the RTL macro. Without
@@ -339,6 +373,18 @@ def main():
             decl_issues.append(f'changes[{idx}] duplicate new_port for module={key[0]!r} signal={key[1]!r} (first at index {seen[key]})')
         else:
             seen[key] = idx
+        # BUS WIDTH must match the NEW-RTL port declaration. A missing/1-bit bus_width
+        # on a multi-bit port silently threads only bit 0 (F5: reg_dualdcqenmode is
+        # `input [1:0]` but was captured with no bus_width).
+        port = c.get('new_token') or c.get('signal_name') or c.get('port_name')
+        rtl_w = _rtl_port_width(args.ref_dir, c.get('module_name'), port) if port else None
+        if rtl_w and rtl_w > 1:
+            got = _bus_width_int(c.get('bus_width'))
+            if got != rtl_w:
+                decl_issues.append(
+                    f"changes[{idx}] new_port {port!r} in {c.get('module_name')!r}: NEW RTL declares it "
+                    f"[{rtl_w-1}:0] ({rtl_w}-bit) but bus_width={c.get('bus_width')!r} ({got}-bit). "
+                    f"Set bus_width to {rtl_w} — a too-narrow port threads only the low bits.")
     # new_port(output) + flat_net_exists:true → must also query <signal>_d1
     # so studier can trace to the pure combinational source (not DFF D-input).
     nq_paths = {q.get('net_path', '') for q in rtl_diff.get('nets_to_query', [])}

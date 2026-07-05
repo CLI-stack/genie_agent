@@ -63,6 +63,22 @@ def scan_stage(gz):
     return inst_pins, modules
 
 
+def scan_family_instances(gz, netbase):
+    """Map copy index -> parent instance name for a uniquified child family, from the
+    netlist instantiation lines `<netbase>_<i>[_0] <inst> (`. Ground truth for
+    replicating a per-instance port_connection to every copy's parent instance."""
+    out = {}
+    if not os.path.isfile(gz):
+        return out
+    inst_re = re.compile(r'^\s*' + re.escape(netbase) + r'_(\d+)(?:_0)?\s+(\w+)\s*\(')
+    with gzip.open(gz, 'rt', errors='replace') as f:
+        for ln in f:
+            m = inst_re.match(ln)
+            if m:
+                out.setdefault(int(m.group(1)), m.group(2))
+    return out
+
+
 def _rename_net(net, rmap):
     return rmap.get(net, net) if isinstance(net, str) else net
 
@@ -114,7 +130,7 @@ def main():
 
     scans = {st: scan_stage(os.path.join(args.ref_dir, 'data', 'PreEco', f'{st}.v.gz'))
              for st in STAGES}
-    errs, n_clone, n_portdecl = [], 0, 0
+    errs, n_clone, n_portdecl, n_pc = [], 0, 0, 0
 
     for fb in sorted(fam_bases):
         for st in STAGES:
@@ -215,6 +231,29 @@ def main():
                         'source': 'eco_emit_uniquify', 'uniquify_copy': i,
                     })
                     n_portdecl += 1
+
+            # per-instance port_connection — the parent instantiates the array N times
+            # (RCQ_ENTRIES_<i>__<child>); the ECO must connect the new port on EVERY
+            # instance, not just copy _0 (else 39 copies float the port -> FM fail).
+            canon_pcs = [c for c in rtl_diff.get('changes', [])
+                         if c.get('change_type') == 'port_connection'
+                         and c.get('uniquified_family') == fb]
+            if canon_pcs:
+                gz = os.path.join(args.ref_dir, 'data', 'PreEco', f'{st}.v.gz')
+                fam_insts = scan_family_instances(gz, netbase)
+                for pc in canon_pcs:
+                    pname = pc.get('port_name') or pc.get('new_token')
+                    have = {e.get('instance_name') for e in entries
+                            if e.get('change_type') == 'port_connection'
+                            and (e.get('port_name') or e.get('new_token')) == pname}
+                    for i, inst in sorted(fam_insts.items()):
+                        if inst in have:
+                            continue
+                        npc = dict(pc)
+                        npc['instance_name'] = inst
+                        npc['source'] = 'eco_emit_uniquify'
+                        npc['uniquify_copy'] = i
+                        entries.append(npc); n_pc += 1
             study[st] = entries
 
     if errs:
@@ -231,7 +270,8 @@ def main():
     marker = (f"ECO_SCRIPT_LAUNCHED: eco_emit_uniquify.py\n"
               f"  families replicated: {sorted(fam_bases)}\n"
               f"  cloned gate+rewire entries (all stages): {n_clone}\n"
-              f"  per-copy port_declarations added:        {n_portdecl}\n")
+              f"  per-copy port_declarations added:        {n_portdecl}\n"
+              f"  per-instance port_connections added:     {n_pc}\n")
     print(marker)
     open(args.output.replace('.json', '_uniquify_marker.txt'), 'w').write(marker)
     return 0
