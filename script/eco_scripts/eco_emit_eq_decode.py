@@ -42,17 +42,26 @@ def _pcstage(pc):
     return {s: dict(pc) for s in STAGES}
 
 
+def _mod_key(n):
+    """Canonical module key: strip the tile prefix (ddrss_*_t_) and any uniquify
+    suffix (_<i>), so a change's short name (umcrecdsp) matches the netlist's
+    prefixed name (ddrss_umcdat_t_umcrecdsp) and its uniquified copies."""
+    return re.sub(r'_\d+$', '', re.sub(r'^ddrss_\w+?_t_', '', str(n or '')))
+
+
 def _module_body(gz, module):
-    """Return the text of `module <module> ... endmodule` (and the _0 variant)."""
+    """Return the text of the module(s) matching `module` — tolerant of the tile
+    prefix and uniquify suffix (the AI names modules inconsistently short vs full)."""
     if not os.path.isfile(gz):
         return ''
-    out, cur, depth = [], False, 0
+    want = _mod_key(module)
+    out, cur = [], False
     pat = re.compile(r'^module\s+(\S+)')
     with gzip.open(gz, 'rt', errors='replace') as f:
         for ln in f:
             m = pat.match(ln)
             if m:
-                cur = m.group(1) in (module, module + '_0')
+                cur = _mod_key(m.group(1)) == want
             if cur:
                 out.append(ln)
                 if ln.lstrip().startswith('endmodule'):

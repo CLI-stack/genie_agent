@@ -110,6 +110,7 @@ def _pf_condition_completeness(study, rtl_diff, ref_dir):
 
 def _pf_modbody(ref_dir, module):
     gz = os.path.join(ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
+    want = re.sub(r'_\d+$', '', re.sub(r'^ddrss_\w+?_t_', '', str(module or '')))
     body, grab = [], False
     if os.path.isfile(gz):
         try:
@@ -117,7 +118,7 @@ def _pf_modbody(ref_dir, module):
                 for ln in f:
                     mm = re.match(r'^module\s+(\S+)', ln)
                     if mm:
-                        grab = mm.group(1) in (module, module + '_0')
+                        grab = re.sub(r'_\d+$', '', re.sub(r'^ddrss_\w+?_t_', '', mm.group(1))) == want
                     if grab:
                         body.append(ln)
                         if ln.lstrip().startswith('endmodule'):

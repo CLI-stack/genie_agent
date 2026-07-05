@@ -36,12 +36,20 @@ except Exception:
 _PF_MODBODY_CACHE = {}
 
 
+def _mod_key(n):
+    """Canonical module key: strip tile prefix (ddrss_*_t_) + uniquify suffix (_<i>)
+    so a change's short name matches the netlist's prefixed/uniquified name."""
+    return re.sub(r'_\d+$', '', re.sub(r'^ddrss_\w+?_t_', '', str(n or '')))
+
+
 def _module_netlist_body(ref_dir, module):
-    """PreEco Synthesize netlist body of <module> (and its _0 route variant)."""
+    """PreEco Synthesize netlist body of <module> — tolerant of the tile prefix and
+    uniquify suffix (the AI names modules inconsistently short vs full)."""
     key = ('nl', ref_dir, module)
     if key in _PF_MODBODY_CACHE:
         return _PF_MODBODY_CACHE[key]
     gz = os.path.join(ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
+    want = _mod_key(module)
     body, grab = [], False
     if os.path.isfile(gz):
         try:
@@ -49,7 +57,7 @@ def _module_netlist_body(ref_dir, module):
                 for ln in f:
                     mm = re.match(r'^module\s+(\S+)', ln)
                     if mm:
-                        grab = mm.group(1) in (module, module + '_0')
+                        grab = _mod_key(mm.group(1)) == want
                     if grab:
                         body.append(ln)
                         if ln.lstrip().startswith('endmodule'):
