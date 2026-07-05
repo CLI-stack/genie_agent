@@ -35,9 +35,9 @@ try:
 except Exception:
     RtlConfig = None
 try:
-    from eco_extract_pf_condition import extract_condition, resolve_rtl
+    from eco_extract_pf_condition import extract_condition, resolve_rtl, branch_assignments
 except Exception:
-    extract_condition = resolve_rtl = None
+    extract_condition = resolve_rtl = branch_assignments = None
 
 STAGES = ('Synthesize', 'PrePlace', 'Route')
 _INV_CELL = 'INVD1BWP136P5M156H3P48CPDLVT'
@@ -58,8 +58,10 @@ class _PErr(Exception):
 
 
 def _tok(expr):
-    spec = [('WS', r'\s+'), ('RED', r'~[&|]'), ('NOT', r'~|!'),
-            ('AND', r'&&|&'), ('OR', r'\|\||\|'), ('LP', r'\('), ('RP', r'\)'),
+    # RED (multi-char reductions) must precede NOT/AND/OR/XOR so ~& etc. win.
+    spec = [('WS', r'\s+'), ('RED', r'~&|~\||~\^|\^~'), ('NOT', r'~|!'),
+            ('AND', r'&&|&'), ('OR', r'\|\||\|'), ('XOR', r'\^'),
+            ('LP', r'\('), ('RP', r'\)'),
             ('SIG', r'[A-Za-z_]\w*(?:\s*\[[^\]]*\])?')]
     rx = re.compile('|'.join(f'(?P<{n}>{p})' for n, p in spec))
     out, i = [], 0
@@ -99,13 +101,17 @@ def parse_condition(expr):
         while peek()[0] == 'AND':
             eat('AND'); kids.append(p_unary())
         return ('and', kids) if len(kids) > 1 else node
+    _REDOP = {'~&': 'nand', '~|': 'nor', '~^': 'xnor', '^~': 'xnor',
+              '&': 'and', '|': 'or', '^': 'xor'}
     def p_unary():
         k, v = peek()
         if k == 'NOT':
             eat('NOT'); return ('not', p_unary())
-        if k == 'RED':
-            eat('RED'); eat('LP'); inner = p_or(); eat('RP')
-            return ('red', 'nand' if v == '~&' else 'nor', inner)
+        # unary reduction: ~& ~| ~^ ^~ (multi-char), or a bitwise &/|/^ appearing
+        # in operand position (a leading binary operator would be a syntax error,
+        # so here it must be a reduction). Operand is a paren-expr or a bare bus.
+        if k == 'RED' or (k in ('AND', 'OR', 'XOR') and v in ('&', '|', '^')):
+            eat(k); return ('red', _REDOP[v], p_prim())
         return p_prim()
     def p_prim():
         k, v = peek()
@@ -125,10 +131,13 @@ def parse_condition(expr):
 # nodes expand per-bit over the resolved bus width (RtlConfig part-selects) and
 # reduce (AND-tree+INV for ~& / OR-tree+INV for ~|). Returns (cond_net, gates).
 _PARTSEL = re.compile(r'^(\w+)\[(`?\w+)\]$')
+_RANGE   = re.compile(r'^(\w+)\[\s*(\d+)\s*:\s*(\d+)\s*\]$')   # sig[7:0]
+_BITSEL  = re.compile(r'^(\w+)\[\s*\d+\s*\]$')                 # sig[3]
 
 
 def _reduction_width(node, cfg):
-    """Bus width of a reduction operand: from any part-select leaf's field width."""
+    """Bus width of a reduction operand: from a part-select leaf's field width
+    (macro `sig[`FIELD]`) or an explicit range (`sig[7:0]`)."""
     found = [None]
     def walk(n):
         if n[0] == 'sig':
@@ -137,6 +146,10 @@ def _reduction_width(node, cfg):
                 ps = cfg.part_select(m.group(2))
                 if ps:
                     found[0] = ps[1] - ps[0] + 1
+                return
+            r = _RANGE.match(n[1])
+            if r:
+                found[0] = abs(int(r.group(2)) - int(r.group(3))) + 1
         elif n[0] in ('and', 'or'):
             for k in n[1]:
                 walk(k)
@@ -147,8 +160,13 @@ def _reduction_width(node, cfg):
 
 
 def _bit_ref(sig, i, cfg):
-    """Per-bit net of a leaf for bit i inside a reduction: bare bus -> sig[i];
-    part-select sig[`FIELD] -> sig[base+i]; fixed sig[N] -> broadcast as-is."""
+    """Per-bit net of a leaf for bit i inside a reduction: explicit range
+    sig[hi:lo] -> sig[lo+i]; part-select sig[`FIELD] -> sig[base+i]; bare bus
+    -> sig[i]; fixed sig[N] -> broadcast as-is."""
+    r = _RANGE.match(sig)
+    if r:
+        base, hi, lo = r.group(1), int(r.group(2)), int(r.group(3))
+        return f'{base}[{min(hi, lo) + i}]'
     m = _PARTSEL.match(sig)
     if not m:
         return f'{sig}[{i}]'
@@ -159,22 +177,39 @@ def _bit_ref(sig, i, cfg):
     return sig
 
 
-def _wire_defs(rtl_text):
-    """Map local `wire <name> = <expr>;` (uncommented) -> RHS expr, for decomposing
-    intermediate condition wires (e.g. dsp_cmd_rdtok) that synthesis flattened."""
+def _local_defs(rtl_text):
+    """Map a module's local COMBINATIONAL definitions -> RHS expr, so condition
+    leaves that synthesis flattened away (they are no netlist net) can be rebuilt
+    from their real inputs. Covers three forms, keyed by the exact LHS token:
+      - `wire <name> = <expr>;`
+      - `assign <name>[i]? = <expr>;`
+      - `always @* <name>[i]? = <expr>;` / `always_comb <name>[i]? = <expr>;`
+        (single blocking assign; begin/end blocks are skipped — safe: an unfound
+        leaf is caught by the fail-closed grounding check, never emitted dangling).
+    Per-bit combinational regs (e.g. `always @* WckIsInSync[0] = |WckSyncCtr0[7:0]
+    | WckIsAlwaysInSync0;`) are keyed as `WckIsInSync[0]`."""
     out = {}
     if not rtl_text:
         return out
     txt = re.sub(r'//[^\n]*', '', rtl_text)
+    txt = re.sub(r'/\*.*?\*/', '', txt, flags=re.DOTALL)
+    clean = lambda e: re.sub(r'\s+', ' ', e).strip()
+    nospc = lambda s: re.sub(r'\s+', '', s)
     for m in re.finditer(r'\bwire\b[^;=]*\b(\w+)\s*=\s*([^;]+);', txt):
-        out.setdefault(m.group(1), re.sub(r'\s+', ' ', m.group(2)).strip())
+        out.setdefault(m.group(1), clean(m.group(2)))
+    for m in re.finditer(r'\bassign\b\s+(\w+(?:\s*\[\s*\d+\s*\])?)\s*=\s*([^;]+);', txt):
+        out.setdefault(nospc(m.group(1)), clean(m.group(2)))
+    for m in re.finditer(
+            r'\balways\b\s*(?:@\s*\*|@\s*\(\s*\*\s*\)|_comb)\s*'
+            r'(\w+(?:\s*\[\s*\d+\s*\])?)\s*=\s*([^;]+);', txt):
+        out.setdefault(nospc(m.group(1)), clean(m.group(2)))
     return out
 
 
 class _CondSynth:
     def __init__(self, jira, module, cfg, mk, rtl_text=None, in_netlist=None):
         self.jira, self.module, self.cfg, self.mk = jira, module, cfg, mk
-        self.wires = _wire_defs(rtl_text)      # local wire decompositions
+        self.wires = _local_defs(rtl_text)     # local combinational decompositions
         self.in_netlist = in_netlist or (lambda s: True)  # leaf presence predicate
         self._decomposing = set()              # recursion guard
         self.gates = []
@@ -211,20 +246,31 @@ class _CondSynth:
         return cur[0]
     def _inv(self, a):
         return self._g(_INV_CELL, 'INV', {'I': a, 'ZN': self.mk('inv')})
+    def _decomp_key(self, s):
+        """Return the local_defs key to decompose `s` by, or None. Prefers an exact
+        token match (per-bit reg like WckIsInSync[0]); else the bare base name (a
+        whole-signal wire/assign). Only decomposes when the base is NOT a netlist
+        net (a flattened intermediate), never a real port/reg."""
+        base = (_PARTSEL.match(s) or _RANGE.match(s) or _BITSEL.match(s))
+        base = base.group(1) if base else s
+        if self.in_netlist(base):
+            return None
+        if s in self.wires and s not in self._decomposing:
+            return s
+        if base in self.wires and base not in self._decomposing:
+            return base
+        return None
     def scalar(self, node):
         k = node[0]
         if k == 'sig':
             s = self._resolve_sig(node[1])
-            base = _PARTSEL.match(s).group(1) if _PARTSEL.match(s) else s
-            # decompose a local intermediate wire that synthesis flattened away
-            # (present as a `wire =` in RTL but not a net in the netlist)
-            if (base in self.wires and base not in self._decomposing
-                    and not self.in_netlist(base)):
-                self._decomposing.add(base)
+            key = self._decomp_key(s)
+            if key is not None:
+                self._decomposing.add(key)
                 try:
-                    sub = self.scalar(parse_condition(self.wires[base]))
+                    sub = self.scalar(parse_condition(self.wires[key]))
                 finally:
-                    self._decomposing.discard(base)
+                    self._decomposing.discard(key)
                 return sub
             return s
         if k == 'not':
@@ -235,19 +281,32 @@ class _CondSynth:
             return self._or([self.scalar(x) for x in node[1]])
         if k == 'red':
             _, op, inner = node
+            if op == 'xor' or op == 'xnor':
+                raise _PErr(f"xor/xnor reduction unsupported (no XOR cell): {inner}")
             W = _reduction_width(inner, self.cfg)
             if not W:
                 raise _PErr(f"cannot resolve reduction bus width for {inner}")
             bits = [self.bit(inner, i) for i in range(W)]
             if None in bits:
                 raise _PErr(f"unresolvable bit ref in reduction {inner}")
-            root = self._and(bits) if op == 'nand' else self._or(bits)
-            return self._inv(root)                       # ~& / ~|
+            root = self._and(bits) if op in ('and', 'nand') else self._or(bits)
+            return self._inv(root) if op in ('nand', 'nor') else root
         raise _PErr(f"bad node {node}")
     def bit(self, node, i):
         k = node[0]
         if k == 'sig':
-            return _bit_ref(node[1], i, self.cfg)
+            ref = _bit_ref(node[1], i, self.cfg)
+            if ref is None:
+                return None
+            key = self._decomp_key(ref)              # per-bit reg (WckIsInSync[0])
+            if key is not None:
+                self._decomposing.add(key)
+                try:
+                    sub = self.scalar(parse_condition(self.wires[key]))
+                finally:
+                    self._decomposing.discard(key)
+                return sub
+            return ref
         if k == 'not':
             b = self.bit(node[1], i); return self._inv(b) if b else None
         if k == 'and':
@@ -266,6 +325,21 @@ def synthesize_condition(cond_expr, jira, module, cfg, mk, rtl_text=None, in_net
     ast = parse_condition(cond_expr)
     s = _CondSynth(jira, module, cfg, mk, rtl_text=rtl_text, in_netlist=in_netlist)
     cond = s.scalar(ast)
+    # FAIL-CLOSED grounding: every leaf feeding the cone (a gate input that no
+    # other cone gate produces) must be a real netlist net or a constant. If any
+    # leaf is ungrounded the condition was built on a signal the module does not
+    # have — raise so the caller aborts instead of emitting a dangling reference.
+    outs = {g['output_net'] for g in s.gates}
+    leaves = {v for g in s.gates for p, v in g['port_connections'].items()
+              if p not in ('Z', 'ZN') and isinstance(v, str) and v not in outs}
+    bad = sorted(l for l in leaves
+                 if not re.match(r"^\d*'[bhdo]", l) and not l.isdigit()
+                 and not s.in_netlist((_BITSEL.match(l) or _PARTSEL.match(l)
+                                       or _RANGE.match(l)).group(1)
+                                      if (_BITSEL.match(l) or _PARTSEL.match(l)
+                                          or _RANGE.match(l)) else l))
+    if bad:
+        raise _PErr(f"condition leaves not grounded in netlist: {bad[:12]}")
     return cond, s.gates
 
 _MOD = re.compile(r'^\s*module\s+(\S+)')
@@ -459,6 +533,18 @@ def emit(rtl_diff, study, jira, ref_dir=None):
                 errs.append(f"priority_force {mod}: condition anchor {anchor['signal']}="
                             f"{anchor['const_macro']} matched {len(ms)} assignments — ambiguous.")
                 continue
+            # FAIL-CLOSED completeness: forced_signals must drive EVERY signal the
+            # anchored RTL branch assigns. A dropped driven signal is a silent-wrong
+            # ECO (the force would only partially apply).
+            if branch_assignments and rtl:
+                expected = set(branch_assignments(rtl, anchor['signal'], anchor['const_macro']))
+                have = {f.get('signal') for f in (c.get('forced_signals') or [])}
+                miss = sorted(expected - have)
+                if miss:
+                    errs.append(f"priority_force {mod}: forced_signals is INCOMPLETE — the RTL "
+                                f"branch also assigns {miss}, but they are not in forced_signals. "
+                                f"Every signal the branch drives must be forced.")
+                    continue
         if not cond_expr:
             cond_expr = c.get('condition_expr')
         cond = None

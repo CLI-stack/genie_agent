@@ -162,6 +162,61 @@ def extract_condition(rtl_path, signal, value):
     return out
 
 
+def branch_assignments(rtl_path, signal, value):
+    """IMPORTABLE. Return the sorted set of LHS signal names assigned in the SAME
+    begin/end block as the `<signal> = <value>` anchor — i.e. every signal the
+    forced branch drives. Used to verify forced_signals completeness (a dropped
+    driven signal is a silent-wrong ECO). Returns [] if unreadable / no match."""
+    if not rtl_path or not os.path.isfile(rtl_path):
+        return []
+    lines = _strip_comments(open(rtl_path, errors='replace').read()).split('\n')
+    val = str(value).lstrip('`')
+    assign_re = re.compile(r'\b' + re.escape(signal) + r'\s*(?:<=|=)\s*`?' + re.escape(val) + r'\b')
+    tok_re = re.compile(r'\b(begin|end)\b')
+    asg_re = re.compile(r'(\w+)\s*(?:\[[^\]]*\])?\s*(?:<=|=)(?!=)')
+    names = set()
+    for i, ln in enumerate(lines):
+        if not assign_re.search(ln):
+            continue
+        # opening begin of the anchor's block (same balance walk as _guard_condition)
+        balance = 0; begin_line = begin_pos = None
+        for j in range(i, -1, -1):
+            for m in reversed(list(tok_re.finditer(lines[j]))):
+                if m.group(1) == 'end':
+                    balance += 1
+                else:
+                    balance -= 1
+                    if balance < 0:
+                        begin_line, begin_pos = j, m.start(); break
+            if begin_line is not None:
+                break
+        if begin_line is None:
+            continue
+        # forward to the matching end
+        depth = 0; started = False; end_line = None
+        for j in range(begin_line, len(lines)):
+            seg = lines[j][begin_pos:] if j == begin_line else lines[j]
+            for m in tok_re.finditer(seg):
+                if m.group(1) == 'begin':
+                    depth += 1; started = True
+                else:
+                    depth -= 1
+                    if started and depth == 0:
+                        end_line = j; break
+            if end_line is not None:
+                break
+        if end_line is None:
+            end_line = len(lines) - 1
+        # collect LHS names of blocking/nonblocking assigns in [begin_line, end_line]
+        for j in range(begin_line, end_line + 1):
+            seg = lines[j][begin_pos:] if j == begin_line else lines[j]
+            for m in asg_re.finditer(seg):
+                nm = m.group(1)
+                if nm not in _KEYWORDS:
+                    names.add(nm)
+    return sorted(names)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--rtl')

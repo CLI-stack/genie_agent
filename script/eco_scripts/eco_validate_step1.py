@@ -26,6 +26,10 @@ try:
     from eco_extract_pf_condition import extract_condition, resolve_rtl
 except Exception:
     extract_condition = resolve_rtl = None
+try:
+    from eco_emit_priority_force import _local_defs
+except Exception:
+    _local_defs = None
 
 
 _PF_MODBODY_CACHE = {}
@@ -84,6 +88,15 @@ def _pf_condition_leaf_issues(rtl_diff, ref_dir):
         leaves = matches[0]['leaves']
         nl = _module_netlist_body(ref_dir, module)
         rtltxt = open(rtl, errors='replace').read()
+        # local combinational defs (wire/assign/always@*) that synthesis flattened —
+        # these are decomposable to real leaves, NOT missing. Base-index so a per-bit
+        # reg (WckIsInSync[0]=...) makes the bare bus 'WckIsInSync' decomposable.
+        ld = _local_defs(rtltxt) if _local_defs else {}
+        ld_bases = set(ld)
+        for k in ld:
+            b = re.match(r'^(\w+)\[', k)
+            if b:
+                ld_bases.add(b.group(1))
         # new_port tokens threaded into this module by the ECO
         ported = {ch.get('new_token') for ch in rtl_diff.get('changes', [])
                   if ch.get('change_type') == 'new_port'
@@ -94,7 +107,9 @@ def _pf_condition_leaf_issues(rtl_diff, ref_dir):
                 continue                                   # macro field index, not a signal
             if re.search(r'\b' + re.escape(leaf) + r'\b', nl):
                 continue                                   # present in netlist
-            # local wire/assign in module RTL (uncommented) => decomposable
+            if leaf in ld_bases:
+                continue                                   # local wire/assign/always@* => decomposable
+            # fallback: local wire/assign in module RTL (uncommented)
             if re.search(r'^\s*(?:wire\b[^;]*\b|assign\s+)' + re.escape(leaf) + r'\b', rtltxt, re.MULTILINE):
                 continue
             if leaf in ported:
