@@ -34,9 +34,11 @@ def _strip_comments(text):
     return text
 
 
-def _find_module_rtl(ref_dir, module):
-    """Locate the RTL source file for a module under <ref>/data/PreEco/SynRtl."""
-    root = os.path.join(ref_dir, 'data', 'PreEco', 'SynRtl')
+def _find_module_rtl(ref_dir, module, subdir='PreEco/SynRtl'):
+    """Locate the RTL source file for a module under <ref>/data/<subdir>.
+    subdir='PreEco/SynRtl' is the OLD (pre-ECO) RTL; subdir='SynRtl' is the NEW
+    (ECO-changed) target RTL. The added-branch diff needs both."""
+    root = os.path.join(ref_dir, 'data', *subdir.split('/'))
     base = re.sub(r'^ddrss_\w+?_t_', '', module)  # strip tile prefix if present
     for cand in (f'rtl_{base}.v', f'{base}.v', f'rtl_{module}.v'):
         p = os.path.join(root, cand)
@@ -133,13 +135,108 @@ def _leaves(cond):
     return sorted(ids)
 
 
-def resolve_rtl(rtl=None, ref_dir=None, module=None):
-    """Return the RTL file path from an explicit --rtl or (ref_dir, module)."""
+def resolve_rtl(rtl=None, ref_dir=None, module=None, subdir='PreEco/SynRtl'):
+    """Return the RTL file path from an explicit --rtl or (ref_dir, module).
+    subdir selects PreEco/SynRtl (old) vs SynRtl (new/target)."""
     if rtl and os.path.isfile(rtl):
         return rtl
     if ref_dir and module:
-        return _find_module_rtl(ref_dir, module)
+        return _find_module_rtl(ref_dir, module, subdir)
     return None
+
+
+def _norm_cond(s):
+    return re.sub(r'\s+', '', s or '')
+
+
+def extract_added_branch_condition(ref_dir, module, signal, value):
+    """IMPORTABLE — DIFF-AWARE ground truth for a priority_force condition.
+
+    An ECO priority_force ADDS a new branch `else if (<cond>) <signal> = <value>`.
+    The same `<signal> = <value>` may ALSO appear in a PRE-EXISTING branch with a
+    different guard (e.g. recdsp_c0mop=`UMC_MOP_CAS exists in both the pre-existing
+    RD-case branch and the ECO's new MRR-case branch). Grepping a single file cannot
+    tell them apart. This diffs the branches: it returns the condition(s) of
+    `<signal>=<value>` branches that exist in the NEW RTL (data/SynRtl) but NOT in
+    the OLD RTL (data/PreEco/SynRtl) — i.e. the branch(es) the ECO actually added.
+
+    Returns a list of {assignment_line, condition_expr, leaves} (usually length 1).
+    Empty if the module RTL can't be found in both trees or nothing was added."""
+    pre = _find_module_rtl(ref_dir, module, 'PreEco/SynRtl')
+    new = _find_module_rtl(ref_dir, module, 'SynRtl')
+    if not (pre and new):
+        return []
+    pre_conds = {_norm_cond(m['condition_expr'])
+                 for m in extract_condition(pre, signal, value) if m.get('condition_expr')}
+    new_lines = _strip_comments(open(new, errors='replace').read()).split('\n')
+    added = []
+    for m in extract_condition(new, signal, value):
+        if m.get('condition_expr') and _norm_cond(m['condition_expr']) not in pre_conds:
+            m = dict(m)
+            m['assigned'] = _block_assignments(new_lines, m['assignment_line'] - 1)
+            added.append(m)
+    return added
+
+
+def _block_assignments(lines, assign_idx):
+    """LHS signal names of blocking/nonblocking assigns in the begin/end block that
+    contains lines[assign_idx]. Used for forced_signals completeness."""
+    tok_re = re.compile(r'\b(begin|end)\b')
+    balance = 0; begin_line = begin_pos = None
+    for j in range(assign_idx, -1, -1):
+        for m in reversed(list(tok_re.finditer(lines[j]))):
+            if m.group(1) == 'end':
+                balance += 1
+            else:
+                balance -= 1
+                if balance < 0:
+                    begin_line, begin_pos = j, m.start(); break
+        if begin_line is not None:
+            break
+    if begin_line is None:
+        return []
+    depth = 0; started = False; end_line = None
+    for j in range(begin_line, len(lines)):
+        seg = lines[j][begin_pos:] if j == begin_line else lines[j]
+        for m in tok_re.finditer(seg):
+            if m.group(1) == 'begin':
+                depth += 1; started = True
+            else:
+                depth -= 1
+                if started and depth == 0:
+                    end_line = j; break
+        if end_line is not None:
+            break
+    if end_line is None:
+        end_line = len(lines) - 1
+    asg_re = re.compile(r'(\w+)\s*(?:\[[^\]]*\])?\s*(?:<=|=)(?!=)')
+    names = set()
+    for j in range(begin_line, end_line + 1):
+        seg = lines[j][begin_pos:] if j == begin_line else lines[j]
+        for m in asg_re.finditer(seg):
+            if m.group(1) not in _KEYWORDS:
+                names.add(m.group(1))
+    return sorted(names)
+
+
+def extract_condition(rtl_path, signal, value):
+    """IMPORTABLE. Given an RTL file, the forced signal, and its value/macro, find
+    every `<signal> = <value>` assignment and return the guarding condition of each:
+      [{assignment_line, condition_expr, leaves}]
+    Reused by eco_emit_priority_force (to build the cone) and by the validators
+    (completeness check). Returns [] if the file is unreadable or nothing matches."""
+    if not rtl_path or not os.path.isfile(rtl_path):
+        return []
+    lines = _strip_comments(open(rtl_path, errors='replace').read()).split('\n')
+    val = str(value).lstrip('`')
+    assign_re = re.compile(r'\b' + re.escape(signal) + r'\s*(?:<=|=)\s*`?' + re.escape(val) + r'\b')
+    out = []
+    for i, ln in enumerate(lines):
+        if assign_re.search(ln):
+            cond = _guard_condition(lines, i)
+            out.append({'assignment_line': i + 1, 'condition_expr': cond,
+                        'leaves': _leaves(cond) if cond else []})
+    return out
 
 
 def extract_condition(rtl_path, signal, value):

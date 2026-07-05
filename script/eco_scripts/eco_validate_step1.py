@@ -23,9 +23,10 @@ Exit: 0 = all wire_swap entries pass, 1 = any failure.
 import argparse, gzip, json, os, re, sys
 from eco_validate_io import write_result
 try:
-    from eco_extract_pf_condition import extract_condition, resolve_rtl
+    from eco_extract_pf_condition import (extract_condition, resolve_rtl,
+                                          extract_added_branch_condition, _leaves)
 except Exception:
-    extract_condition = resolve_rtl = None
+    extract_condition = resolve_rtl = extract_added_branch_condition = _leaves = None
 try:
     from eco_emit_priority_force import _local_defs
 except Exception:
@@ -67,7 +68,7 @@ def _pf_condition_leaf_issues(rtl_diff, ref_dir):
     in this rtl_diff. A leaf that is none of these — a signal computed in another
     module but absent from the target — is genuinely missing; the condition cannot use
     it until it is ported in. Requires --ref-dir + the extractor; else returns []."""
-    if not (ref_dir and extract_condition and resolve_rtl):
+    if not (ref_dir and extract_added_branch_condition and resolve_rtl):
         return []
     issues = []
     for idx, c in enumerate(rtl_diff.get('changes', [])):
@@ -75,34 +76,29 @@ def _pf_condition_leaf_issues(rtl_diff, ref_dir):
             continue
         module = c.get('module_name') or ''
         base = re.sub(r'^ddrss_\w+?_t_', '', module)
-        rtl = resolve_rtl(ref_dir=ref_dir, module=base)
+        rtl = resolve_rtl(ref_dir=ref_dir, module=base)   # old RTL — for local-def decomposition
         if not rtl:
             continue
-        # anchor on the DISTINCTIVE forced signal (one that carries a const_macro)
+        # GROUND TRUTH: the ECO adds a branch — its condition is the guard present in the
+        # NEW RTL (data/SynRtl) but ABSENT in the OLD (data/PreEco/SynRtl). Anchor on a
+        # const_macro forced signal. The AI's condition_expr is only a fallback.
         anchor = next((f for f in (c.get('forced_signals') or []) if f.get('const_macro')), None)
         if not anchor:
             continue
-        matches = extract_condition(rtl, anchor['signal'], anchor['const_macro'])
-        if not matches:
-            # const_macro asserted but the RTL never assigns `signal = `const_macro` —
-            # the macro name or signal is WRONG. This is what lets a plausible-but-wrong
-            # const_macro through: the builder would then fall back to the stored
-            # condition_expr (possibly the wrong branch). Hard-fail here.
+        added = extract_added_branch_condition(ref_dir, base, anchor['signal'], anchor['const_macro'])
+        if len(added) > 1:
             issues.append(
-                f"changes[{idx}] priority_force const_macro {anchor['const_macro']!r} is NOT "
-                f"assigned to {anchor['signal']!r} anywhere in {module!r} RTL — wrong macro or wrong "
-                f"signal. The condition cannot be anchored; fix const_macro to the macro the branch "
-                f"actually forces.")
+                f"changes[{idx}] priority_force: the ECO diff adds {len(added)} branches assigning "
+                f"{anchor['signal']}={anchor['const_macro']} — ambiguous; cannot uniquely anchor.")
             continue
-        if len(matches) > 1:
-            issues.append(
-                f"changes[{idx}] priority_force const_macro {anchor['const_macro']!r} on "
-                f"{anchor['signal']!r} matches {len(matches)} RTL assignments — ambiguous; the branch "
-                f"cannot be uniquely anchored. Disambiguate the forced signal/value.")
-            continue
-        if not matches[0].get('condition_expr'):
-            continue
-        leaves = matches[0]['leaves']
+        if len(added) == 1:
+            leaves = added[0]['leaves']
+        else:
+            # no added branch found in the diff — validate the AI's condition_expr leaves
+            cond_expr = c.get('condition_expr')
+            if not cond_expr or not _leaves:
+                continue
+            leaves = _leaves(cond_expr)
         nl = _module_netlist_body(ref_dir, module)
         rtltxt = open(rtl, errors='replace').read()
         # local combinational defs (wire/assign/always@*) that synthesis flattened —

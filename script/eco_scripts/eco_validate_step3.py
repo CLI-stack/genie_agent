@@ -22,10 +22,10 @@ from pathlib import Path
 from eco_validate_io import write_result
 try:
     from eco_rtl_config import RtlConfig
-    from eco_extract_pf_condition import extract_condition, resolve_rtl
+    from eco_extract_pf_condition import extract_condition, resolve_rtl, extract_added_branch_condition
     from eco_emit_priority_force import synthesize_condition, _PErr
 except Exception:
-    RtlConfig = extract_condition = resolve_rtl = synthesize_condition = None
+    RtlConfig = extract_condition = resolve_rtl = synthesize_condition = extract_added_branch_condition = None
     _PErr = Exception
 
 
@@ -58,9 +58,13 @@ def _pf_condition_completeness(study, rtl_diff, ref_dir):
         anchor = next((f for f in (c.get('forced_signals') or []) if f.get('const_macro')), None)
         if not anchor:
             continue
-        rtl = resolve_rtl(ref_dir=ref_dir, module=re.sub(r'^ddrss_\w+?_t_', '', mod))
-        ms = extract_condition(rtl, anchor['signal'], anchor['const_macro']) if rtl else []
-        if len(ms) != 1 or not ms[0].get('condition_expr'):
+        base = re.sub(r'^ddrss_\w+?_t_', '', mod)
+        rtl = resolve_rtl(ref_dir=ref_dir, module=base)
+        # GROUND TRUTH: the ECO-added branch (present in SynRtl, absent in PreEco).
+        added = (extract_added_branch_condition(ref_dir, base, anchor['signal'], anchor['const_macro'])
+                 if extract_added_branch_condition else [])
+        cond_expr = added[0]['condition_expr'] if len(added) == 1 else c.get('condition_expr')
+        if not cond_expr:
             continue
         rtl_text = open(rtl, errors='replace').read() if rtl else None
         nl = _pf_modbody(ref_dir, mod)
@@ -70,7 +74,7 @@ def _pf_condition_completeness(study, rtl_diff, ref_dir):
             def _mk(t):
                 seq[0] += 1
                 return f"_exp_{t}_{seq[0]}"
-            _cond, cone = synthesize_condition(ms[0]['condition_expr'], 'exp', mod, cfg, _mk,
+            _cond, cone = synthesize_condition(cond_expr, 'exp', mod, cfg, _mk,
                                                rtl_text=rtl_text, in_netlist=innl)
         except _PErr:
             continue                                   # unbuildable -> other checks handle

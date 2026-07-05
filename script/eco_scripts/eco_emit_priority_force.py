@@ -35,9 +35,10 @@ try:
 except Exception:
     RtlConfig = None
 try:
-    from eco_extract_pf_condition import extract_condition, resolve_rtl, branch_assignments
+    from eco_extract_pf_condition import (extract_condition, resolve_rtl,
+                                          branch_assignments, extract_added_branch_condition)
 except Exception:
-    extract_condition = resolve_rtl = branch_assignments = None
+    extract_condition = resolve_rtl = branch_assignments = extract_added_branch_condition = None
 
 STAGES = ('Synthesize', 'PrePlace', 'Route')
 _INV_CELL = 'INVD1BWP136P5M156H3P48CPDLVT'
@@ -516,73 +517,51 @@ def emit(rtl_diff, study, jira, ref_dir=None):
             continue
         mod = c.get('module_name') or ''
         new_gates, new_rewires = [], []
-        # 1. condition cone — BUILD from condition_expr (anchored/extracted), correct
-        #    by construction. The RTL is ground truth: when a const_macro anchor +
-        #    ref_dir are available, extract the condition from the RTL and PREFER it
-        #    over any AI-stored condition_expr (which can capture the wrong branch).
-        #    Fall back to the stored condition_expr only when extraction isn't possible.
-        cond_expr = None
-        # FAIL-CLOSED: a multi-bit opcode force MUST name its const_macro, else the
-        # condition cannot be anchored to the RTL and the value cannot be verified —
-        # the build would silently trust the AI's stored condition_expr (possibly the
-        # wrong branch). Refuse rather than build on unverifiable input.
+        # 1. condition cone. GROUND TRUTH is the DIFF: an ECO priority_force ADDS a
+        #    branch, so its condition is the guard of the branch that is present in the
+        #    NEW RTL (data/SynRtl) but ABSENT in the OLD RTL (data/PreEco/SynRtl).
+        #    extract_added_branch_condition isolates exactly that — this is what makes
+        #    it robust when the SAME `signal=value` also appears in a pre-existing
+        #    branch (grepping one file cannot tell them apart). We anchor on a forced
+        #    signal whose value is a named macro (the RTL writes the macro, not the
+        #    literal). The AI-captured condition_expr is used only as a fallback.
+        cond_expr, expected_forced = None, None
         _missing_macro = [f.get('signal') for f in (c.get('forced_signals') or [])
                           if re.match(r"^\s*(\d+)'[bB][01xzXZ_]+\s*$", str(f.get('const', '')))
                           and int(re.match(r"^\s*(\d+)", str(f.get('const'))).group(1)) > 1
                           and not f.get('const_macro')]
         if _missing_macro:
             errs.append(f"priority_force {mod}: forced signal(s) {_missing_macro} pin a multi-bit "
-                        f"constant but have no const_macro — cannot anchor the condition to the RTL "
-                        f"or verify the opcode. Set const_macro (the RTL macro name).")
+                        f"constant but have no const_macro — needed to anchor the added branch in the "
+                        f"RTL diff and to verify the opcode value. Set const_macro (the RTL macro name).")
             continue
         anchor = next((f for f in (c.get('forced_signals') or []) if f.get('const_macro')), None)
-        if ref_dir and anchor:
-            # const_macro is present + ref_dir given: the RTL MUST corroborate it.
-            # extract_condition finds `<signal> = `<const_macro>` in the RTL — exactly
-            # one match PROVES the macro name + branch are the real RTL assignment (not
-            # a plausible look-alike). 0 matches = wrong macro/signal; >1 = ambiguous.
-            # Any of these is fail-closed; we never fall back to the AI's stored expr
-            # when a const_macro anchor was asserted but the RTL does not confirm it.
-            if not (extract_condition and resolve_rtl):
-                errs.append(f"priority_force {mod}: const_macro asserted but extractor unavailable "
-                            f"— cannot verify/anchor against RTL.")
-                continue
+        if ref_dir and extract_added_branch_condition and anchor:
             base = re.sub(r'^ddrss_\w+?_t_', '', mod)
-            rtl = resolve_rtl(ref_dir=ref_dir, module=base)
-            if not rtl:
-                errs.append(f"priority_force {mod}: cannot locate module RTL to anchor/verify "
-                            f"const_macro {anchor['const_macro']!r}.")
+            added_branches = extract_added_branch_condition(ref_dir, base, anchor['signal'], anchor['const_macro'])
+            if len(added_branches) > 1:
+                errs.append(f"priority_force {mod}: the ECO diff adds {len(added_branches)} branches "
+                            f"assigning {anchor['signal']}={anchor['const_macro']} — ambiguous.")
                 continue
-            ms = extract_condition(rtl, anchor['signal'], anchor['const_macro'])
-            if len(ms) == 0:
-                errs.append(f"priority_force {mod}: const_macro {anchor['const_macro']!r} is NOT "
-                            f"assigned to {anchor['signal']!r} anywhere in the RTL — wrong macro or "
-                            f"wrong signal. Cannot anchor the condition; refusing to fall back to the "
-                            f"stored condition_expr.")
-                continue
-            if len(ms) > 1:
-                errs.append(f"priority_force {mod}: condition anchor {anchor['signal']}="
-                            f"{anchor['const_macro']} matched {len(ms)} assignments — ambiguous.")
-                continue
-            if not ms[0].get('condition_expr'):
-                errs.append(f"priority_force {mod}: anchored branch for {anchor['signal']}="
-                            f"{anchor['const_macro']} has no extractable guard condition.")
-                continue
-            cond_expr = ms[0]['condition_expr']
-            # FAIL-CLOSED completeness: forced_signals must drive EVERY signal the
-            # anchored RTL branch assigns. A dropped driven signal is a silent-wrong
-            # ECO (the force would only partially apply).
-            if branch_assignments and rtl:
-                expected = set(branch_assignments(rtl, anchor['signal'], anchor['const_macro']))
-                have = {f.get('signal') for f in (c.get('forced_signals') or [])}
-                miss = sorted(expected - have)
-                if miss:
-                    errs.append(f"priority_force {mod}: forced_signals is INCOMPLETE — the RTL "
-                                f"branch also assigns {miss}, but they are not in forced_signals. "
-                                f"Every signal the branch drives must be forced.")
-                    continue
+            if len(added_branches) == 1:
+                cond_expr = added_branches[0]['condition_expr']
+                expected_forced = set(added_branches[0].get('assigned') or [])
         if not cond_expr:
             cond_expr = c.get('condition_expr')
+        if not cond_expr:
+            errs.append(f"priority_force {mod}: no condition — the RTL diff shows no added "
+                        f"{anchor['signal'] if anchor else 'signal'} branch and no condition_expr was "
+                        f"provided. Cannot build the force.")
+            continue
+        # FAIL-CLOSED completeness: forced_signals must drive EVERY signal the ADDED
+        # branch assigns (a dropped driven signal = a partially-applied, wrong ECO).
+        if expected_forced:
+            have = {f.get('signal') for f in (c.get('forced_signals') or [])}
+            miss = sorted(expected_forced - have)
+            if miss:
+                errs.append(f"priority_force {mod}: forced_signals is INCOMPLETE — the added RTL "
+                            f"branch also assigns {miss}, not in forced_signals. Force every driven signal.")
+                continue
         cond = None
         if cond_expr and cfg is not None:
             rtl = resolve_rtl(ref_dir=ref_dir, module=re.sub(r'^ddrss_\w+?_t_', '', mod)) if resolve_rtl else None
