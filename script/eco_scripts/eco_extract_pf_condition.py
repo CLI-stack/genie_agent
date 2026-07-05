@@ -133,6 +133,35 @@ def _leaves(cond):
     return sorted(ids)
 
 
+def resolve_rtl(rtl=None, ref_dir=None, module=None):
+    """Return the RTL file path from an explicit --rtl or (ref_dir, module)."""
+    if rtl and os.path.isfile(rtl):
+        return rtl
+    if ref_dir and module:
+        return _find_module_rtl(ref_dir, module)
+    return None
+
+
+def extract_condition(rtl_path, signal, value):
+    """IMPORTABLE. Given an RTL file, the forced signal, and its value/macro, find
+    every `<signal> = <value>` assignment and return the guarding condition of each:
+      [{assignment_line, condition_expr, leaves}]
+    Reused by eco_emit_priority_force (to build the cone) and by the validators
+    (completeness check). Returns [] if the file is unreadable or nothing matches."""
+    if not rtl_path or not os.path.isfile(rtl_path):
+        return []
+    lines = _strip_comments(open(rtl_path, errors='replace').read()).split('\n')
+    val = str(value).lstrip('`')
+    assign_re = re.compile(r'\b' + re.escape(signal) + r'\s*(?:<=|=)\s*`?' + re.escape(val) + r'\b')
+    out = []
+    for i, ln in enumerate(lines):
+        if assign_re.search(ln):
+            cond = _guard_condition(lines, i)
+            out.append({'assignment_line': i + 1, 'condition_expr': cond,
+                        'leaves': _leaves(cond) if cond else []})
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--rtl')
@@ -143,29 +172,14 @@ def main():
     ap.add_argument('--output', required=True)
     args = ap.parse_args()
 
-    rtl = args.rtl
-    if not rtl and args.ref_dir and args.module:
-        rtl = _find_module_rtl(args.ref_dir, args.module)
+    rtl = resolve_rtl(args.rtl, args.ref_dir, args.module)
     if not rtl or not os.path.isfile(rtl):
         print(f"ECO_SCRIPT_LAUNCHED: eco_extract_pf_condition.py\n  ERROR: RTL not found "
               f"(rtl={args.rtl} ref-dir={args.ref_dir} module={args.module})")
         json.dump({'error': 'rtl_not_found', 'matches': []}, open(args.output, 'w'), indent=2)
         return 2
 
-    text = _strip_comments(open(rtl, errors='replace').read())
-    lines = text.split('\n')
-    val = args.value.lstrip('`')
-    # match `<signal> = <value>` or `<signal> <= <value>`; value may carry a backtick
-    assign_re = re.compile(r'\b' + re.escape(args.signal) + r'\s*(?:<=|=)\s*`?' + re.escape(val) + r'\b')
-    matches = []
-    for i, ln in enumerate(lines):
-        if assign_re.search(ln):
-            cond = _guard_condition(lines, i)
-            matches.append({
-                'assignment_line': i + 1,
-                'condition_expr': cond,
-                'leaves': _leaves(cond) if cond else [],
-            })
+    matches = extract_condition(rtl, args.signal, args.value)
 
     out = {'rtl': rtl, 'signal': args.signal, 'value': args.value,
            'match_count': len(matches), 'matches': matches}
