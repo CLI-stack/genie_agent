@@ -20,6 +20,107 @@ Exit: 0 = PASS (all complete), 1 = FAIL (issues found)
 import argparse, gzip, json, os, re, subprocess, sys
 from pathlib import Path
 from eco_validate_io import write_result
+try:
+    from eco_rtl_config import RtlConfig
+    from eco_extract_pf_condition import extract_condition, resolve_rtl
+    from eco_emit_priority_force import synthesize_condition, _PErr
+except Exception:
+    RtlConfig = extract_condition = resolve_rtl = synthesize_condition = None
+    _PErr = Exception
+
+
+def _pf_condition_completeness(study, rtl_diff, ref_dir):
+    """The built priority_force condition cone must match the RTL condition. Re-synth
+    the expected cone from the anchored condition_expr -> expected real-net leaf set;
+    trace the study's cone back from the muxes' cond input -> actual leaf set; a
+    mismatch means the study built the WRONG/incomplete condition (e.g. dropped the
+    WCK reductions, or reconstructed from the wrong signal). Needs --ref-dir+helpers."""
+    if not (ref_dir and RtlConfig and synthesize_condition and extract_condition):
+        return []
+    cfg = RtlConfig(ref_dir)
+    syn = study.get('Synthesize', [])
+    _OUT = ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'S', 'CON', 'SN')
+    # net -> list of input nets (producer graph over study gates)
+    producer = {}
+    for e in syn:
+        if e.get('change_type') != 'new_logic_gate':
+            continue
+        pc = e.get('port_connections') or {}
+        outs = [v for k, v in pc.items() if k in _OUT]
+        ins = [v for k, v in pc.items() if k not in _OUT and isinstance(v, str)]
+        for o in outs:
+            producer[o] = ins
+    issues = []
+    for c in rtl_diff.get('changes', []):
+        if c.get('change_type') != 'priority_force':
+            continue
+        mod = c.get('module_name') or ''
+        anchor = next((f for f in (c.get('forced_signals') or []) if f.get('const_macro')), None)
+        if not anchor:
+            continue
+        rtl = resolve_rtl(ref_dir=ref_dir, module=re.sub(r'^ddrss_\w+?_t_', '', mod))
+        ms = extract_condition(rtl, anchor['signal'], anchor['const_macro']) if rtl else []
+        if len(ms) != 1 or not ms[0].get('condition_expr'):
+            continue
+        rtl_text = open(rtl, errors='replace').read() if rtl else None
+        nl = _pf_modbody(ref_dir, mod)
+        innl = (lambda s: bool(re.search(r'\b' + re.escape(s) + r'\b', nl)))
+        try:
+            seq = [0]
+            def _mk(t):
+                seq[0] += 1
+                return f"_exp_{t}_{seq[0]}"
+            _cond, cone = synthesize_condition(ms[0]['condition_expr'], 'exp', mod, cfg, _mk,
+                                               rtl_text=rtl_text, in_netlist=innl)
+        except _PErr:
+            continue                                   # unbuildable -> other checks handle
+        exp_leaves = {v for g in cone for k, v in g['port_connections'].items()
+                      if k not in _OUT and isinstance(v, str) and not v.startswith('_exp_')}
+        # study cond net = the condition input of this change's force-muxes
+        cond_nets = set()
+        for e in syn:
+            if e.get('source') == 'eco_emit_priority_force' and 'pf_mux' in str(e.get('instance_name', '')):
+                pc = e.get('port_connections') or {}
+                cond_nets.add(pc.get('A1') if e.get('gate_function') == 'OR2' else pc.get('B1'))
+        # trace back from cond nets to real-net leaves
+        act_leaves, seen, stack = set(), set(), [n for n in cond_nets if n]
+        while stack:
+            n = stack.pop()
+            if n in seen:
+                continue
+            seen.add(n)
+            if n in producer:
+                stack.extend(producer[n])
+            elif isinstance(n, str) and not re.match(r"^\d*'[bhd]", n):
+                act_leaves.add(n)
+        missing = sorted(exp_leaves - act_leaves)
+        extra = sorted(act_leaves - exp_leaves)
+        if missing or extra:
+            issues.append(
+                f"CRITICAL/PF-CONDITION-MISMATCH: priority_force {mod} condition cone does not match "
+                f"the RTL condition. Missing expected leaves {missing[:8]}; unexpected leaves "
+                f"{extra[:8]}. The built condition is wrong/incomplete (dropped terms or wrong signals) "
+                f"— rebuild it from condition_expr via eco_emit_priority_force.")
+    return issues
+
+
+def _pf_modbody(ref_dir, module):
+    gz = os.path.join(ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
+    body, grab = [], False
+    if os.path.isfile(gz):
+        try:
+            with gzip.open(gz, 'rt', errors='replace') as f:
+                for ln in f:
+                    mm = re.match(r'^module\s+(\S+)', ln)
+                    if mm:
+                        grab = mm.group(1) in (module, module + '_0')
+                    if grab:
+                        body.append(ln)
+                        if ln.lstrip().startswith('endmodule'):
+                            grab = False
+        except Exception:
+            body = []
+    return ''.join(body)
 
 def main():
     p = argparse.ArgumentParser()
@@ -5583,6 +5684,12 @@ def main():
                         f"{e.get('instance_name')} drives {v} but nothing consumes it (no gate/DFF "
                         f"input, rewire, or port_connection reads it) — dead ECO logic. If this is a "
                         f"condition term it was computed but never folded into the final cone.")
+
+    # ── priority_force condition cone matches the RTL condition ──────────────
+    try:
+        issues.extend(_pf_condition_completeness(study, rtl_diff, args.ref_dir))
+    except Exception as _e:
+        print(f"[pf-condition-check skipped] {_e}", file=sys.stderr)
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0

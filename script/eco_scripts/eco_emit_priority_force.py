@@ -443,21 +443,24 @@ def emit(rtl_diff, study, jira, ref_dir=None):
         mod = c.get('module_name') or ''
         new_gates, new_rewires = [], []
         # 1. condition cone — BUILD from condition_expr (anchored/extracted), correct
-        #    by construction. Prefer condition_expr on the change; else extract from
-        #    RTL anchored on the distinctive forced signal (the one with const_macro).
-        cond_expr = c.get('condition_expr')
-        if not cond_expr and ref_dir and extract_condition and resolve_rtl:
-            anchor = next((f for f in (c.get('forced_signals') or []) if f.get('const_macro')), None)
-            if anchor:
-                base = re.sub(r'^ddrss_\w+?_t_', '', mod)
-                rtl = resolve_rtl(ref_dir=ref_dir, module=base)
-                ms = extract_condition(rtl, anchor['signal'], anchor['const_macro']) if rtl else []
-                if len(ms) == 1 and ms[0].get('condition_expr'):
-                    cond_expr = ms[0]['condition_expr']
-                elif len(ms) > 1:
-                    errs.append(f"priority_force {mod}: condition anchor {anchor['signal']}="
-                                f"{anchor['const_macro']} matched {len(ms)} assignments — ambiguous.")
-                    continue
+        #    by construction. The RTL is ground truth: when a const_macro anchor +
+        #    ref_dir are available, extract the condition from the RTL and PREFER it
+        #    over any AI-stored condition_expr (which can capture the wrong branch).
+        #    Fall back to the stored condition_expr only when extraction isn't possible.
+        cond_expr = None
+        anchor = next((f for f in (c.get('forced_signals') or []) if f.get('const_macro')), None)
+        if ref_dir and extract_condition and resolve_rtl and anchor:
+            base = re.sub(r'^ddrss_\w+?_t_', '', mod)
+            rtl = resolve_rtl(ref_dir=ref_dir, module=base)
+            ms = extract_condition(rtl, anchor['signal'], anchor['const_macro']) if rtl else []
+            if len(ms) == 1 and ms[0].get('condition_expr'):
+                cond_expr = ms[0]['condition_expr']
+            elif len(ms) > 1:
+                errs.append(f"priority_force {mod}: condition anchor {anchor['signal']}="
+                            f"{anchor['const_macro']} matched {len(ms)} assignments — ambiguous.")
+                continue
+        if not cond_expr:
+            cond_expr = c.get('condition_expr')
         cond = None
         if cond_expr and cfg is not None:
             rtl = resolve_rtl(ref_dir=ref_dir, module=re.sub(r'^ddrss_\w+?_t_', '', mod)) if resolve_rtl else None
