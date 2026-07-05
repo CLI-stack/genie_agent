@@ -35,6 +35,81 @@ STAGES = ('Synthesize', 'PrePlace', 'Route')
 _INV_CELL = 'INVD1BWP136P5M156H3P48CPDLVT'
 _OR2_CELL = 'OR2D1BWP136P5M156H3P48CPDLVT'
 _INR2_CELL = 'INR2D1BWP136P5M156H3P48CPDLVT'
+_AND2_CELL = 'AND2D1BWP136P5M156H3P48CPDLVT'
+
+
+# ── Boolean condition parser: RTL condition_expr -> AST ─────────────────────────
+# Grammar (Verilog boolean subset used by priority_force conditions):
+#   or   := and ( '|' and )*
+#   and  := unary ( '&' unary )*
+#   unary:= '~' unary | ('~&'|'~|') '(' or ')' | primary
+#   prim := '(' or ')' | SIG          (SIG = ident with optional [..] select)
+# AST nodes: ('sig',s) ('not',a) ('and',[..]) ('or',[..]) ('red','nand'|'nor',a)
+class _PErr(Exception):
+    pass
+
+
+def _tok(expr):
+    spec = [('WS', r'\s+'), ('RED', r'~[&|]'), ('NOT', r'~|!'),
+            ('AND', r'&&|&'), ('OR', r'\|\||\|'), ('LP', r'\('), ('RP', r'\)'),
+            ('SIG', r'[A-Za-z_]\w*(?:\s*\[[^\]]*\])?')]
+    rx = re.compile('|'.join(f'(?P<{n}>{p})' for n, p in spec))
+    out, i = [], 0
+    while i < len(expr):
+        m = rx.match(expr, i)
+        if not m:
+            raise _PErr(f"unparsable token at {expr[i:i+20]!r}")
+        i = m.end()
+        if m.lastgroup == 'WS':
+            continue
+        out.append((m.lastgroup, re.sub(r'\s+', '', m.group())))
+    return out
+
+
+def parse_condition(expr):
+    """Parse a Verilog boolean condition into an AST. Raises _PErr on anything
+    outside the supported operator set (so the caller can fail-closed)."""
+    toks = _tok(expr)
+    pos = [0]
+    def peek():
+        return toks[pos[0]] if pos[0] < len(toks) else (None, None)
+    def eat(kind=None):
+        k, v = peek()
+        if kind and k != kind:
+            raise _PErr(f"expected {kind}, got {k} ({v})")
+        pos[0] += 1
+        return v
+    def p_or():
+        node = p_and()
+        kids = [node]
+        while peek()[0] == 'OR':
+            eat('OR'); kids.append(p_and())
+        return ('or', kids) if len(kids) > 1 else node
+    def p_and():
+        node = p_unary()
+        kids = [node]
+        while peek()[0] == 'AND':
+            eat('AND'); kids.append(p_unary())
+        return ('and', kids) if len(kids) > 1 else node
+    def p_unary():
+        k, v = peek()
+        if k == 'NOT':
+            eat('NOT'); return ('not', p_unary())
+        if k == 'RED':
+            eat('RED'); eat('LP'); inner = p_or(); eat('RP')
+            return ('red', 'nand' if v == '~&' else 'nor', inner)
+        return p_prim()
+    def p_prim():
+        k, v = peek()
+        if k == 'LP':
+            eat('LP'); inner = p_or(); eat('RP'); return inner
+        if k == 'SIG':
+            eat('SIG'); return ('sig', v)
+        raise _PErr(f"unexpected token {k} ({v})")
+    ast = p_or()
+    if pos[0] != len(toks):
+        raise _PErr(f"trailing tokens from {toks[pos[0]:]}")
+    return ast
 
 _MOD = re.compile(r'^\s*module\s+(\S+)')
 _INST = re.compile(r'^\s*[\w:]+\s+(\w+)\s*\(')

@@ -20,8 +20,94 @@ Usage:
 
 Exit: 0 = all wire_swap entries pass, 1 = any failure.
 """
-import argparse, json, os, re, sys
+import argparse, gzip, json, os, re, sys
 from eco_validate_io import write_result
+try:
+    from eco_extract_pf_condition import extract_condition, resolve_rtl
+except Exception:
+    extract_condition = resolve_rtl = None
+
+
+_PF_MODBODY_CACHE = {}
+
+
+def _module_netlist_body(ref_dir, module):
+    """PreEco Synthesize netlist body of <module> (and its _0 route variant)."""
+    key = ('nl', ref_dir, module)
+    if key in _PF_MODBODY_CACHE:
+        return _PF_MODBODY_CACHE[key]
+    gz = os.path.join(ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
+    body, grab = [], False
+    if os.path.isfile(gz):
+        try:
+            with gzip.open(gz, 'rt', errors='replace') as f:
+                for ln in f:
+                    mm = re.match(r'^module\s+(\S+)', ln)
+                    if mm:
+                        grab = mm.group(1) in (module, module + '_0')
+                    if grab:
+                        body.append(ln)
+                        if ln.lstrip().startswith('endmodule'):
+                            grab = False
+        except Exception:
+            body = []
+    txt = ''.join(body)
+    _PF_MODBODY_CACHE[key] = txt
+    return txt
+
+
+def _pf_condition_leaf_issues(rtl_diff, ref_dir):
+    """For each priority_force, anchor the RTL condition (via const_macro) and verify
+    every leaf signal is AVAILABLE in the target module: present in the netlist, OR a
+    local wire/assign in the module RTL (decomposable), OR threaded in by a new_port
+    in this rtl_diff. A leaf that is none of these (e.g. 9666 WckIsInSync, computed at
+    umcdat but absent from recdsp) is a genuinely-missing signal the condition cannot
+    use until it is ported in. Requires --ref-dir + the extractor; else returns []."""
+    if not (ref_dir and extract_condition and resolve_rtl):
+        return []
+    issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') != 'priority_force':
+            continue
+        module = c.get('module_name') or ''
+        base = re.sub(r'^ddrss_\w+?_t_', '', module)
+        rtl = resolve_rtl(ref_dir=ref_dir, module=base)
+        if not rtl:
+            continue
+        # anchor on the DISTINCTIVE forced signal (one that carries a const_macro)
+        anchor = next((f for f in (c.get('forced_signals') or []) if f.get('const_macro')), None)
+        if not anchor:
+            continue
+        matches = extract_condition(rtl, anchor['signal'], anchor['const_macro'])
+        if not matches or not matches[0].get('condition_expr'):
+            continue
+        leaves = matches[0]['leaves']
+        nl = _module_netlist_body(ref_dir, module)
+        rtltxt = open(rtl, errors='replace').read()
+        # new_port tokens threaded into this module by the ECO
+        ported = {ch.get('new_token') for ch in rtl_diff.get('changes', [])
+                  if ch.get('change_type') == 'new_port'
+                  and re.sub(r'^ddrss_\w+?_t_', '', str(ch.get('module_name') or '')) == base}
+        missing = []
+        for leaf in leaves:
+            if leaf.startswith('`'):
+                continue                                   # macro field index, not a signal
+            if re.search(r'\b' + re.escape(leaf) + r'\b', nl):
+                continue                                   # present in netlist
+            # local wire/assign in module RTL (uncommented) => decomposable
+            if re.search(r'^\s*(?:wire\b[^;]*\b|assign\s+)' + re.escape(leaf) + r'\b', rtltxt, re.MULTILINE):
+                continue
+            if leaf in ported:
+                continue                                   # being threaded in by a new_port
+            missing.append(leaf)
+        if missing:
+            issues.append(
+                f"changes[{idx}] priority_force condition references signal(s) {sorted(missing)} "
+                f"NOT available in module {module!r} (absent from the netlist, not a local wire, and "
+                f"not threaded in by a new_port). The condition cannot be built until they are sourced "
+                f"— add a new_port + port_connection to bring each into the module (e.g. 9666 WckIsInSync "
+                f"is computed at umcdat and must be ported into recdsp).")
+    return issues
 
 # Prefixes that mean the cell's output goes LOW when its inputs go HIGH.
 # Keep generic — covers TSMC/AMD/GF library naming conventions.
@@ -2492,6 +2578,10 @@ def main():
                     f"assignment_evidence={ev!r} — a BARE CONSTANT RHS pins the signal to a value, "
                     f"which is a priority_force (force sig=CONST under <cond>), NOT a term fold. "
                     f"Reclassify as change_type=priority_force with forced_signals[].bits[].")
+    # priority_force condition-leaf availability (needs --ref-dir + extractor)
+    pf_leaf_issues = _pf_condition_leaf_issues(rtl_diff, args.ref_dir)
+    priority_force_issues.extend(pf_leaf_issues)
+
     if priority_force_issues:
         overall_pass = False
     if pending_term_issues:
