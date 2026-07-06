@@ -30,7 +30,7 @@ Usage:
         --output /tmp/resolve_<net>.json
     # Use resolved_net from JSON directly if not UNRESOLVABLE
 """
-import argparse, json, os, re, subprocess, sys
+import argparse, json, os, re, shlex, subprocess, sys
 
 _OUT_PINS = ('ZN', 'ZN1', 'Z', 'Q', 'QN', 'CO', 'Y', 'S')
 _MAX_BACKWARD = 3
@@ -38,10 +38,13 @@ _MAX_CONSUMERS = 15
 
 
 def zgrep_count(pattern, gz):
-    """Count word occurrences of pattern in gz file."""
+    """Count word occurrences of a LITERAL net/cell name in gz. Uses -F (fixed
+    string) so bracketed bus bits like `WckSyncCtr0[0]` are matched literally — as a
+    regex, `[0]` is a character class and never matches the bracketed net."""
     try:
-        r = subprocess.run(f'zgrep -cw "{pattern}" {gz}',
-                           shell=True, capture_output=True, text=True, timeout=20)
+        r = subprocess.run(['bash', '-c',
+                            f'zgrep -cwF -- {shlex.quote(pattern)} {shlex.quote(gz)}'],
+                           capture_output=True, text=True, timeout=20)
         return int(r.stdout.strip() or 0)
     except Exception:
         return 0
