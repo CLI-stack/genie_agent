@@ -60,10 +60,10 @@ class _PErr(Exception):
 
 def _tok(expr):
     # RED (multi-char reductions) must precede NOT/AND/OR/XOR so ~& etc. win.
-    spec = [('WS', r'\s+'), ('RED', r'~&|~\||~\^|\^~'), ('NOT', r'~|!'),
+    spec = [('WS', r'\s+'), ('RED', r'~&|~\||~\^|\^~'), ('EQ', r'==|!='), ('NOT', r'~|!'),
             ('AND', r'&&|&'), ('OR', r'\|\||\|'), ('XOR', r'\^'),
             ('LP', r'\('), ('RP', r'\)'),
-            ('SIG', r'[A-Za-z_]\w*(?:\s*\[[^\]]*\])?')]
+            ('SIG', r"\d+'[bBhHdD][0-9a-fA-FxXzZ_]+|`?[A-Za-z_]\w*(?:\s*\[[^\]]*\])?")]
     rx = re.compile('|'.join(f'(?P<{n}>{p})' for n, p in spec))
     out, i = [], 0
     while i < len(expr):
@@ -97,11 +97,17 @@ def parse_condition(expr):
             eat('OR'); kids.append(p_and())
         return ('or', kids) if len(kids) > 1 else node
     def p_and():
-        node = p_unary()
+        node = p_equality()
         kids = [node]
         while peek()[0] == 'AND':
-            eat('AND'); kids.append(p_unary())
+            eat('AND'); kids.append(p_equality())
         return ('and', kids) if len(kids) > 1 else node
+    def p_equality():
+        node = p_unary()
+        if peek()[0] == 'EQ':
+            op = eat('EQ'); rhs = p_unary()
+            return ('eq' if op == '==' else 'neq', node, rhs)
+        return node
     _REDOP = {'~&': 'nand', '~|': 'nor', '~^': 'xnor', '^~': 'xnor',
               '&': 'and', '|': 'or', '^': 'xor'}
     def p_unary():
@@ -280,6 +286,25 @@ class _CondSynth:
         return cur[0]
     def _inv(self, a):
         return self._g(self.cells['INV'], 'INV', {'I': a, 'ZN': self.mk('inv')})
+    def _eq(self, lhs_node, rhs_node, negate):
+        """Build `lhs == const` as a bit comparator: per bit, lhs[i] (const bit 1) or
+        INV(lhs[i]) (const bit 0), AND-reduced. `!=` adds a final INV. const/width come
+        from the RHS literal or macro (via cfg.defs)."""
+        if lhs_node[0] != 'sig' or rhs_node[0] != 'sig':
+            raise _PErr(f"unsupported equality operands {lhs_node} == {rhs_node}")
+        rhs = rhs_node[1]
+        lit = rhs if re.match(r"^\d+'[bBhHdD]", rhs) else (self.cfg.defs.get(rhs.lstrip('`')) if self.cfg else None)
+        bits = _const_bits(lit) if lit else None
+        if not bits:
+            raise _PErr(f"cannot resolve equality RHS {rhs!r} to a constant")
+        base = re.sub(r'\[.*$', '', lhs_node[1])
+        terms = []
+        for i in range(len(bits)):
+            b = bits[len(bits) - 1 - i]            # bits are MSB..LSB
+            netbit = f'{base}[{i}]'
+            terms.append(netbit if b == '1' else self._inv(netbit))
+        eqnet = self._and(terms)
+        return self._inv(eqnet) if negate else eqnet
     def _decomp_key(self, s):
         """Return the local_defs key to decompose `s` by, or None. Prefers an exact
         token match (per-bit reg like WckIsInSync[0]); else the bare base name (a
@@ -296,6 +321,8 @@ class _CondSynth:
         return None
     def scalar(self, node):
         k = node[0]
+        if k in ('eq', 'neq'):
+            return self._eq(node[1], node[2], negate=(k == 'neq'))
         if k == 'sig':
             s = self._resolve_sig(node[1])
             key = self._decomp_key(s)
