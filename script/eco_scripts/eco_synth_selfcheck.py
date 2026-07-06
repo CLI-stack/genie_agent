@@ -378,13 +378,14 @@ def run(ref_dir, module, signal, n=5000, seed=1):
     if out['errors']:
         print("EMIT ERRORS:", out['errors']); return False
     gates = out['gates']
-    width = max(int(re.search(r'\[(\d+)\]', rw['old_net']).group(1))
-                for rw in out['rewires']) + 1 if out['rewires'] else (wm_new.get(signal) or 1)
+    def _bit_of(rw):
+        m = re.search(r'\[(\d+)\]', rw['old_net'])
+        return int(m.group(1)) if m else 0        # scalar signal (no [b]) -> bit 0
+    width = (max(_bit_of(rw) for rw in out['rewires']) + 1) if out['rewires'] else (wm_new.get(signal) or 1)
     # net_orig leaf per bit (from the driver rewires)
     orig_leaf = {}
     for rw in out['rewires']:
-        b = int(re.search(r'\[(\d+)\]', rw['old_net']).group(1))
-        orig_leaf[b] = rw['new_net']
+        orig_leaf[_bit_of(rw)] = rw['new_net']
 
     # leaf base signals the cone reads (strip [i]); net_orig names are computed, not random
     allnets = {g['output_net'] for g in gates}
