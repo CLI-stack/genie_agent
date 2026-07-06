@@ -135,8 +135,10 @@ cd <BASE_DIR>
 python3 script/eco_scripts/eco_fenets_derive_queries.py \
     --rtl-diff data/<TAG>_eco_rtl_diff.json \
     --tile     <TILE> \
+    --ref-dir  <REF_DIR> \
     --output   data/<TAG>_eco_fenets_queries_raw.json
 ```
+`--ref-dir` enables deriving `priority_force` condition-cone leaves (decomposed exactly as Step 3 builds them, incl. `always @*` locals like WckIsInSync → WckSyncCtr*), so fenets resolves each leaf per-stage into the rename map. Without it, the cone leaves are absent from PrePlace/Route (bus-bit flatten / MB-flop banking) and Step 3 hits `NET-ABSENT-IN-STAGE`.
 
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_fenets_runner.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `TILE`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
@@ -152,6 +154,7 @@ cd <BASE_DIR> && python3 script/eco_scripts/eco_fenets_rename_map.py \
     --rtl-diff data/<TAG>_eco_rtl_diff.json \
     --raw-dir  data/ \
     --tag      <TAG> --tile <TILE> \
+    --ref-dir  <REF_DIR> \
     --output   data/<TAG>_eco_fenets_rename_map.json
 cp <BASE_DIR>/data/<TAG>_eco_fenets_rename_map.json <AI_ECO_FLOW_DIR>/
 ```
@@ -331,10 +334,11 @@ python3 script/eco_scripts/eco_emit_priority_force.py \
     --study    data/<TAG>_eco_preeco_study.json \
     --jira     <JIRA> \
     --ref-dir  <REF_DIR> \
+    --rename-map data/<TAG>_eco_fenets_rename_map.json \
     --output   data/<TAG>_eco_preeco_study.json
 ```
 
-Verify stdout shows `ECO_SCRIPT_LAUNCHED: eco_emit_priority_force.py` and `netlist-grounded: yes`. `--ref-dir` makes it FAIL-CLOSED: every `bits[].dff_cell`/`old_net` is checked against the PreEco Synthesize netlist and the build ABORTS (exit 2, study untouched, marker lists the mismatches) if any bit would rewire the wrong pin. On abort, the step-1 RTL diff has a wrong flop/net — fix it and re-run; do NOT proceed to Step 4. This runs BEFORE eco_emit_rewire_finalize so its DFF-pin rewires get SI/SE consistency added.
+Verify stdout shows `ECO_SCRIPT_LAUNCHED: eco_emit_priority_force.py` and `netlist-grounded: yes`. `--rename-map` supplies the AUTHORITATIVE per-stage net names (formal FM equivalence) for the condition-cone leaves, so the cone applies in PrePlace/Route (P&R renames those internal nets). It falls back to a bus-bit flatten heuristic then as-is; leftover `NET-ABSENT-IN-STAGE` stragglers are handled by the verifier's `eco_resolve_synth_internal.py`. `--ref-dir` makes it FAIL-CLOSED: every `bits[].dff_cell`/`old_net` is checked against the PreEco Synthesize netlist and the build ABORTS (exit 2, study untouched, marker lists the mismatches) if any bit would rewire the wrong pin. On abort, the step-1 RTL diff has a wrong flop/net — fix it and re-run; do NOT proceed to Step 4. This runs BEFORE eco_emit_rewire_finalize so its DFF-pin rewires get SI/SE consistency added.
 
 **MANDATORY post-Step 3: Run eco_emit_uniquify.py (replicate ECO unit to all uniquified copies):**
 ```bash

@@ -489,8 +489,10 @@ python3 script/eco_scripts/eco_emit_priority_force.py \
     --rtl-diff data/<TAG>_eco_rtl_diff.json \
     --study data/<TAG>_eco_preeco_study.json --jira <JIRA> \
     --ref-dir <REF_DIR> \
+    --rename-map data/<TAG>_eco_fenets_rename_map.json \
     --output data/<TAG>_eco_preeco_study.json
 ```
+`--rename-map` gives the authoritative per-stage net names (formal FM equivalence) for the condition-cone leaves so the cone applies across PrePlace/Route (P&R renames those internal nets); falls back to a bus-bit flatten heuristic.
 `--ref-dir` makes it FAIL-CLOSED: aborts (exit 2, study untouched) if any `bits[].dff_cell`/`old_net` does not match the PreEco Synthesize netlist. On abort, fix the RTL diff's flop/net and re-run — do NOT proceed.
 
 **MANDATORY: Run eco_emit_rewire_finalize.py after expand_chains** (same as STUDY Step 3) — fills per-stage cell/pin for P&R-merged flops and emits per-module SI/SE=1'b0 so REWIRE-CELL-ABSENT / Check 64 pass by construction:
