@@ -446,9 +446,17 @@ def _mod_key(n):
     return re.sub(r'_\d+$', '', re.sub(r'^ddrss_\w+?_t_', '', str(n or '')))
 
 
+_MOD_BODY_CACHE = {}
+
+
 def _module_netlist_body(ref_dir, module, stage='Synthesize'):
     """PreEco <stage> netlist body text of <module> — tolerant of the tile prefix
-    and uniquify suffix (the AI names modules inconsistently short vs full)."""
+    and uniquify suffix (the AI names modules inconsistently short vs full). Cached:
+    the gzipped netlists are large and this is called repeatedly per stage."""
+    ck = (ref_dir, _mod_key(module), stage)
+    hit = _MOD_BODY_CACHE.get(ck)
+    if hit is not None:
+        return hit
     gz = os.path.join(ref_dir, 'data', 'PreEco', f'{stage}.v.gz')
     want = _mod_key(module)
     body, grab = [], False
@@ -465,7 +473,9 @@ def _module_netlist_body(ref_dir, module, stage='Synthesize'):
                             grab = False
         except Exception:
             body = []
-    return ''.join(body)
+    out = ''.join(body)
+    _MOD_BODY_CACHE[ck] = out
+    return out
 
 
 def _resolve_macro(ref_dir, macro):

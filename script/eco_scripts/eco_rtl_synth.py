@@ -93,8 +93,21 @@ _UNARY = {'NOT', 'LNOT', 'MINUS', 'AND', 'OR', 'XOR', 'RNAND', 'RNOR', 'RXNOR'}
 _REDMAP = {'AND': '&', 'OR': '|', 'XOR': '^', 'RNAND': '~&', 'RNOR': '~|', 'RXNOR': '~^'}
 
 
+_PARSE_CACHE = {}
+
+
 def parse_expr(expr):
-    """Parse a Verilog expression string -> AST. Raises _SErr fail-closed."""
+    """Parse a Verilog expression string -> AST (memoized; ASTs are immutable tuples).
+    Raises _SErr fail-closed."""
+    cached = _PARSE_CACHE.get(expr)
+    if cached is not None:
+        return cached
+    ast = _parse_expr(expr)
+    _PARSE_CACHE[expr] = ast
+    return ast
+
+
+def _parse_expr(expr):
     toks = tokenize(expr)
     pos = [0]
 
@@ -237,7 +250,20 @@ def build_width_map(rtl_text, macros=None):
     return wm
 
 
+_BOUND_CACHE = {}
+
+
 def _eval_bound(expr, macros):
+    key = (expr, id(macros))
+    hit = _BOUND_CACHE.get(key)
+    if hit is not None or key in _BOUND_CACHE:
+        return hit
+    r = __eval_bound(expr, macros)
+    _BOUND_CACHE[key] = r
+    return r
+
+
+def __eval_bound(expr, macros):
     e = expr.strip()
     if macros:
         for _ in range(6):
@@ -260,8 +286,21 @@ def _eval_bound(expr, macros):
     return int(e) if m else None
 
 
+_WIDTH_CACHE = {}
+
+
 def width_of(node, wm, macros=None):
-    """Infer the bit width of an AST node. Returns int or None (unknown)."""
+    """Infer the bit width of an AST node (memoized; env-independent). int or None."""
+    key = (node, id(wm))
+    hit = _WIDTH_CACHE.get(key)
+    if hit is not None or key in _WIDTH_CACHE:
+        return hit
+    r = _width_of(node, wm, macros)
+    _WIDTH_CACHE[key] = r
+    return r
+
+
+def _width_of(node, wm, macros=None):
     t = node[0]
     if t == 'num':
         return node[1]
@@ -565,13 +604,65 @@ class _Synth:
         # Recursion stops here, so combinational feedback through registers terminates.
         if self._is_reg(name):
             return netname
-        # local COMBINATIONAL signal (blocking = only) -> rebuild recursively
+        # PER-BIT combinational driver: `sig[k] = expr` (each bit its own always block,
+        # e.g. WckIsInSync[k] = |WckSyncCtrk | ...). Must lower bit i from ITS OWN driver,
+        # not replicate bit 0. Only when there is no whole-signal driver.
+        pb = self._perbit_bit(name, i)
+        if pb is not None:
+            return pb
+        # local COMBINATIONAL signal (whole-signal blocking =) -> rebuild recursively
         if name in self._building:
             raise _SErr(f"combinational cycle on {name}")
         rebuilt = self._rebuild(name)
         if rebuilt is None:
             raise _SErr(f"signal {name!r} not in netlist, not a register, not rebuildable")
         return rebuilt.get(i, "1'b0")
+
+    def _perbit_bit(self, name, i):
+        """Lower bit i of a signal driven bit/part-wise (`name[SEL] = RHS`). Returns the
+        net, or None if `name` is not per-bit driven (has a whole-signal driver or no
+        matching bit driver). Memoized per (name, i)."""
+        from eco_cone_rebuild import has_whole_driver, perbit_drivers
+        if not hasattr(self, '_pb_cache'):
+            self._pb_cache = {}
+            self._pb_whole = {}
+        if name not in self._pb_whole:
+            self._pb_whole[name] = has_whole_driver(self.rtl, name)
+        if self._pb_whole[name]:
+            return None
+        key = (name, i)
+        if key in self._pb_cache:
+            return self._pb_cache[key]
+        for sel, rhs in perbit_drivers(self.rtl, name):
+            lo, hi = self._sel_range(sel)
+            if lo is None or not (lo <= i <= hi):
+                continue
+            if name in self._building:
+                raise _SErr(f"combinational cycle on {name}")
+            self._building.add(name)
+            try:
+                r = self.bit(parse_expr(rhs), i - lo)
+            finally:
+                self._building.discard(name)
+            self._pb_cache[key] = r
+            return r
+        return None
+
+    def _sel_range(self, sel):
+        """A bit/part-select LHS string -> (lo, hi) inclusive, or (None, None). Handles a
+        plain index, `MSB:LSB`, and a `FIELD macro (range or scalar)."""
+        s = sel.strip()
+        if ':' in s:
+            a, b = s.split(':', 1)
+            hi = _eval_bound(a, self.macros); lo = _eval_bound(b, self.macros)
+            if hi is None or lo is None:
+                return (None, None)
+            return (min(hi, lo), max(hi, lo))
+        ps = self.cfg.part_select(s.lstrip('`')) if self.cfg else None
+        if ps:
+            return ps
+        v = _eval_bound(s, self.macros)
+        return (v, v) if v is not None else (None, None)
 
     def _is_reg(self, name):
         if not hasattr(self, '_reg_cache'):

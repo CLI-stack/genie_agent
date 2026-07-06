@@ -30,10 +30,55 @@ class _CErr(Exception):
     pass
 
 
+_STRIP_CACHE = {}
+
+
 def _strip_comments(text):
-    text = re.sub(r'//[^\n]*', '', text)
-    text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
-    return text
+    key = id(text)
+    hit = _STRIP_CACHE.get(key)
+    if hit is not None and hit[0] is text:      # guard against id reuse
+        return hit[1]
+    out = re.sub(r'/\*.*?\*/', '', re.sub(r'//[^\n]*', '', text), flags=re.DOTALL)
+    _STRIP_CACHE[key] = (text, out)
+    return out
+
+
+_WHOLE_CACHE = {}
+_PERBIT_CACHE = {}
+
+
+def has_whole_driver(rtl_text, signal):
+    """True if `signal` has an unselected (whole-signal) blocking/continuous assignment
+    (`signal = ...`, no bit/part select). Distinguishes a signal driven as a whole (case/
+    if chain, e.g. recdsp_c0mop) from one driven bit-by-bit (WckIsInSync[k])."""
+    key = (id(rtl_text), signal)
+    hit = _WHOLE_CACHE.get(key)
+    if hit is not None:
+        return hit
+    r = bool(re.search(r'\b' + re.escape(signal) + r'\s*=(?!=)', _strip_comments(rtl_text)))
+    _WHOLE_CACHE[key] = r
+    return r
+
+
+def perbit_drivers(rtl_text, signal):
+    """All simple bit/part-select assignments to `signal`: returns [(sel_str, rhs_str)]
+    for each `signal[SEL] = RHS;` (blocking or continuous, NOT `<=`). Handles the common
+    per-bit combinational fan (`always @* signal[k] = expr;`). Conditional per-bit assigns
+    (inside if/case) are not modeled here — the caller lowers RHS via parse_expr and fails
+    closed if RHS is not a plain expression."""
+    key = (id(rtl_text), signal)
+    hit = _PERBIT_CACHE.get(key)
+    if hit is not None:
+        return hit
+    txt = _strip_comments(rtl_text)
+    out = []
+    for m in re.finditer(r'\b' + re.escape(signal) + r'\s*\[([^\]]+)\]\s*=(?!=)\s*', txt):
+        end = txt.find(';', m.end())
+        if end < 0:
+            continue
+        out.append((m.group(1).strip(), txt[m.end():end].strip()))
+    _PERBIT_CACHE[key] = out
+    return out
 
 
 def _find_always_block(text, signal):
@@ -262,15 +307,24 @@ class _Parser:
         raise _CErr("case label missing ':'")
 
 
+_ALWAYS_CACHE = {}
+
+
 def parse_always(rtl_text, signal):
-    """Priority-value tree for `signal` from its `always` block in rtl_text.
-    Returns {'default': value|None, 'assigns': [(path_cond, value), ...]} where
-    path_cond is a list of (expr, sense) AND-terms. Raises _CErr fail-closed."""
+    """Priority-value tree for `signal` from its `always` block in rtl_text (memoized per
+    (rtl_text identity, signal)). Returns {'default': value|None, 'assigns': [(path_cond,
+    value), ...]} where path_cond is a list of (expr, sense) AND-terms. Fail-closed."""
+    key = (id(rtl_text), signal)
+    cached = _ALWAYS_CACHE.get(key)
+    if cached is not None:
+        return cached
     text = _strip_comments(rtl_text)
     body = _find_always_block(text, signal)
     p = _Parser(signal)
     p.parse(body, [])
-    return {'default': p.default, 'assigns': p.assigns}
+    tree = {'default': p.default, 'assigns': p.assigns}
+    _ALWAYS_CACHE[key] = tree
+    return tree
 
 
 # ── DELTA: diff OLD vs NEW priority-value trees ──────────────────────────────
