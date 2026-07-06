@@ -871,6 +871,12 @@ def _map_stage_net(net, stage, scope, rename_map):
     if isinstance(entry, dict):
         v = entry.get(stage)
         if isinstance(v, str) and v and not v.startswith(_BAD_MAP_VALS):
+            # strip annotation prefixes the rename-map builder adds (e.g. an input-port
+            # bit is recorded 'input_port:reg_cs_enable[0]' — the real net is the part
+            # after the annotation). Without this the ':' -prefixed string is spliced as
+            # a pin value and is NET-ABSENT in every stage.
+            if v.startswith('input_port:'):
+                v = v.split(':', 1)[1]
             return v
     return None
 

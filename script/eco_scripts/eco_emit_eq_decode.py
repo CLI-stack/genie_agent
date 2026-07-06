@@ -126,7 +126,25 @@ def _find_combine(study, output_net, inst_name):
     return hits
 
 
-def emit(rtl_diff, study, jira, ground_body_of):
+def _resolver(ref_dir, module, rename_map, scope):
+    """Per-stage net resolver for comparator leaves (sig[b]) — mirrors priority_force:
+    fenets rename map (authoritative) then the flat-name heuristic (sig[b]->sig_b_).
+    Internal n_eco_ nets are absent from both and pass through unchanged. Returns a
+    function (net, stage)->name, or None when ref_dir is not available."""
+    if not ref_dir:
+        return None
+    try:
+        from eco_emit_priority_force import _stage_net_tokens, _stage_net, _map_stage_net
+    except Exception:
+        return None
+    toks = {st: _stage_net_tokens(ref_dir, module, st) for st in STAGES}
+
+    def _resolve(net, st):
+        return (_map_stage_net(net, st, scope, rename_map) or _stage_net(net, toks[st]))
+    return _resolve
+
+
+def emit(rtl_diff, study, jira, ground_body_of, ref_dir=None, rename_map=None):
     seq = [0]
     def nn(tag):
         seq[0] += 1
@@ -197,6 +215,19 @@ def emit(rtl_diff, study, jira, ground_body_of):
                         if p in g['port_connections']:
                             g['port_connections'][p] = match_net
                             g['port_connections_per_stage'] = _pcstage(g['port_connections'])
+            # PER-STAGE resolution of comparator leaves (sig[b]) — P&R renames the
+            # combinational signal's bits (sig[b]->sig_b_ or MB-banked), so echoing the
+            # Synthesize name to PP/Route would be NET-ABSENT. Resolve via rename map +
+            # flat heuristic; internal n_eco_ nets pass through unchanged.
+            scope = c.get('scope') or c.get('instance_scope') or ''
+            resolve = _resolver(ref_dir, mod, rename_map, scope)
+            if resolve:
+                for g in gates:
+                    pcs = g.get('port_connections_per_stage') or _pcstage(g['port_connections'])
+                    for st in STAGES:
+                        if isinstance(pcs.get(st), dict):
+                            pcs[st] = {p: resolve(v, st) for p, v in pcs[st].items()}
+                    g['port_connections_per_stage'] = pcs
             for st in STAGES:
                 study.setdefault(st, []).extend(dict(g) for g in gates)
             added += len(gates) * len(STAGES)
@@ -229,10 +260,20 @@ def main():
     ap.add_argument('--jira', required=True)
     ap.add_argument('--output', required=True)
     ap.add_argument('--ref-dir', help='REF_DIR: fail-closed grounding of signal bits '
-                    'against PreEco Synthesize netlist.')
+                    'against PreEco Synthesize netlist; also enables per-stage resolution '
+                    'of the comparator leaves (sig[b]->sig_b_ / MB-banked).')
+    ap.add_argument('--rename-map', default=None,
+                    help='fenets rename map JSON — AUTHORITATIVE per-stage names for the '
+                         'comparator signal bits (before the flat-name heuristic).')
     args = ap.parse_args()
     rtl_diff = json.loads(open(args.rtl_diff).read())
     study = json.loads(open(args.study).read())
+    rename_map = None
+    if args.rename_map and os.path.isfile(args.rename_map):
+        try:
+            rename_map = json.loads(open(args.rename_map).read())
+        except Exception:
+            rename_map = None
 
     ground = None
     if args.ref_dir:
@@ -243,7 +284,7 @@ def main():
                 _cache[mod] = _module_body(gz, mod)
             return _cache[mod]
 
-    n, errs = emit(rtl_diff, study, args.jira, ground)
+    n, errs = emit(rtl_diff, study, args.jira, ground, ref_dir=args.ref_dir, rename_map=rename_map)
     if errs:
         marker = ("ECO_SCRIPT_LAUNCHED: eco_emit_eq_decode.py\n"
                   f"  ABORTED — {len(errs)} equality_decode change(s) not buildable:\n"

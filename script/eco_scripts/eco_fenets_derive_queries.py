@@ -217,6 +217,27 @@ def derive(rtl_diff, tile='', ref_dir=None):
                         'source':   f'changes[{idx}].and_term_cond_input',
                     })
 
+            # Cat 1c: equality_decode comparator leaves. eco_emit_eq_decode builds a
+            # `signal == CONST` comparator from signal[0..width-1]; that signal is often
+            # COMBINATIONAL, so P&R renames its bits (sig[b]->sig_b_ / MB-banked) and the
+            # comparator needs per-stage names. Derive each bit as a query so the rename
+            # map carries authoritative per-stage names (else PP/Route -> NET-ABSENT).
+            ed = c.get('equality_decode')
+            if isinstance(ed, dict) and ed.get('signal') and ed.get('width'):
+                esig = ed['signal']
+                try:
+                    ew = int(ed['width'])
+                except (TypeError, ValueError):
+                    ew = 0
+                for b in range(ew):
+                    bit = f'{esig}[{b}]'
+                    out.append({
+                        'net_path': _abs_path(tile, scope, bit),
+                        'signal':   bit,
+                        'category': 1,
+                        'source':   f'changes[{idx}].equality_decode_leaf',
+                    })
+
         # Cat 2 + 3 + 4: new_logic_dff context
         if ct in ('new_logic', 'new_logic_dff'):
             if c.get('dff_clock'):

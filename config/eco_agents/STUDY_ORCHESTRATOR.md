@@ -320,8 +320,10 @@ python3 script/eco_scripts/eco_emit_eq_decode.py \
     --study    data/<TAG>_eco_preeco_study.json \
     --jira     <JIRA> \
     --ref-dir  <REF_DIR> \
+    --rename-map data/<TAG>_eco_fenets_rename_map.json \
     --output   data/<TAG>_eco_preeco_study.json
 ```
+`--rename-map` + `--ref-dir` resolve the comparator's signal-bit leaves per stage (rename map authoritative, then a `sig[b]->sig_b_` flat heuristic) — so a comparator over a COMBINATIONAL signal whose bits P&R flattens/MB-banks does not go NET-ABSENT in PrePlace/Route. No-op for a signal that keeps bracket notation across stages (leaves resolve to themselves).
 For every `and_term`/`wire_swap` carrying an `equality_decode` schema (a `(sig == CONST)` term, rtl_diff_analyzer §2c) this builds the comparator (per-bit INV + AND-tree → fresh match net) and repoints the combine gate's new-term input onto it — so the match is built, never left PENDING. **You MUST verify stdout shows the launch line** `ECO_SCRIPT_LAUNCHED: eco_emit_eq_decode.py` (and `equality-decode gates spliced: N`); if the marker is absent the script did not run — re-run it. `--ref-dir` makes it FAIL-CLOSED (exit 2, study untouched) if a compared signal bit is absent from the netlist. No-op when no `equality_decode` change (marker still printed with `spliced: 0`).
 
 **MANDATORY post-Step 3: Run eco_emit_priority_force.py (deterministic priority_force build):**
