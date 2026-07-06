@@ -1045,6 +1045,66 @@ def main():
                 if net.startswith('n_eco_') and net not in driven:
                     issues.append(f"CRITICAL: {e.get('instance_name','?')}.{pin}={net} in {stage} — undriven ECO net (no entry's Z/ZN/Q drives it)")
 
+    # ── 9b. NET-ABSENT: every REAL-net input leaf must exist in the stage netlist ─
+    # Check 9 only catches undriven n_eco_ nets. A real-net leaf (e.g. dsp_condsok[10],
+    # WckSyncCtr0[0]) that the verifier did NOT resolve is neither an ECO net nor a
+    # constant, so it slips past Check 9 and becomes an undriven gate input at FM (Mode A).
+    # Flag it here: an input pin whose net is not ECO / constant / ECO-driven and is
+    # absent from that stage's PreEco netlist (bare token or cell of a cell/pin ref).
+    _CONST_RE = re.compile(r"^\d*'[bBhHdDoO]")
+    _stage_tok_cache = {}
+    def _stage_tokens(stage):
+        if stage not in _stage_tok_cache:
+            gz = os.path.join(args.ref_dir, 'data', 'PreEco', f'{stage}.v.gz')
+            toks = set()
+            if os.path.isfile(gz):
+                try:
+                    with gzip.open(gz, 'rt', errors='replace') as f:
+                        for ln in f:
+                            if '(' in ln or '.' in ln:      # instance/port lines carry nets
+                                toks.update(re.findall(r'[A-Za-z_][\w\[\]]*', ln))
+                except Exception:
+                    toks = set()
+            _stage_tok_cache[stage] = toks
+        return _stage_tok_cache[stage]
+
+    if getattr(args, 'ref_dir', None):
+        _absent_seen = set()
+        for stage in ['Synthesize', 'PrePlace', 'Route']:
+            toks = _stage_tokens(stage)
+            if not toks:
+                continue
+            driven = {n for e in study.get(stage, [])
+                      for p, n in (e.get('port_connections') or {}).items()
+                      if p in OUT_PINS and isinstance(n, str)}
+            driven |= {e.get('new_net') for e in study.get(stage, [])
+                       if e.get('change_type') == 'rewire' and (e.get('driver_side') or e.get('net_force'))
+                       and isinstance(e.get('new_net'), str)}
+            for e in study.get(stage, []):
+                if not e.get('confirmed', True):
+                    continue
+                pcs = (e.get('port_connections_per_stage') or {}).get(stage)
+                if not isinstance(pcs, dict):
+                    pcs = e.get('port_connections') if stage == 'Synthesize' else None
+                if not isinstance(pcs, dict):
+                    continue
+                for pin, net in pcs.items():
+                    if pin in OUT_PINS or not isinstance(net, str) or not net:
+                        continue
+                    if net.startswith(('n_eco_', 'eco_')) or _CONST_RE.match(net) or net in driven:
+                        continue
+                    if net in toks or net.split('/')[0] in toks:
+                        continue
+                    key = (stage, net)
+                    if key in _absent_seen:
+                        continue
+                    _absent_seen.add(key)
+                    issues.append(
+                        f"CRITICAL/NET-ABSENT: {e.get('instance_name','?')}.{pin}={net} in {stage} "
+                        f"— not in the PreEco netlist and not an ECO/const/driven net. The verifier "
+                        f"did not resolve this leaf; it would be an undriven gate input at FM. Fix its "
+                        f"per-stage name (rename map / verifier) or thread it in.")
+
     # ── 10. Stale-reference guard: when a port_connection renames net A→B,
     # no other entry's input pin may still reference A (becomes stale post-Step 4)
     for stage in ['Synthesize', 'PrePlace', 'Route']:
