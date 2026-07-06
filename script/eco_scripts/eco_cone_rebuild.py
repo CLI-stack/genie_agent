@@ -523,10 +523,35 @@ def emit_comb_net_force(ref_dir, module, signal, jira='eco', rename_map=None):
     # give every cone/mux gate a per-stage view, then resolve leaf nets per stage
     # (fenets rename map authoritative, then flat-name heuristic; internal n_eco_ names
     # are absent from both and pass through unchanged).
-    scope = ''
+    # The rename map keys are scoped ('<tile-relative-scope>/<leaf>', e.g.
+    # 'rec/recdsp/WckSyncCtr0[0]'); a comb_net_force change carries no scope, so index the
+    # map by bare leaf name and use each key's own scope. Cone leaves are single-module
+    # (unique bare names), so this is unambiguous.
+    leaf2key = {}
+    for k in (rename_map or {}):
+        if k != '_metadata':
+            leaf2key.setdefault(k.rsplit('/', 1)[-1], k)
     toks = {st: _stage_net_tokens(ref_dir, module, st) for st in STAGES}
+    def _exists(v, st):
+        return isinstance(v, str) and (v in toks[st] or v.split('/')[0] in toks[st])
     def _resolve(nn_, st):
-        return (_map_stage_net(nn_, st, scope, rename_map) or _stage_net(nn_, toks[st]))
+        # Prefer the fenets map, but ONLY when it gives a REAL renamed net (exists in the
+        # stage netlist and is not just an echo of the query). A bracket echo / FM-036
+        # entry must NOT override the flat-name heuristic (which flattens sig[b]->sig_b_).
+        fk = leaf2key.get(nn_)
+        if fk:
+            mapped = _map_stage_net(nn_, st, fk.rsplit('/', 1)[0], rename_map)
+            if mapped and mapped != nn_ and _exists(mapped, st):
+                return mapped
+        flat = _stage_net(nn_, toks[st])
+        if _exists(flat, st):
+            return flat
+        # last resort: a real map value even if it equals the bare name
+        if fk:
+            mapped = _map_stage_net(nn_, st, fk.rsplit('/', 1)[0], rename_map)
+            if _exists(mapped, st):
+                return mapped
+        return flat
     for g in gates:
         pcs = g.get('port_connections_per_stage') or _pcstage(g['port_connections'])
         for st in STAGES:
