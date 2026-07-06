@@ -987,6 +987,12 @@ def main():
         driven = {n for e in study.get(stage, [])
                     for p, n in (e.get('port_connections') or {}).items()
                     if p in OUT_PINS and isinstance(n, str)}
+        # A driver-side rewire renames an EXISTING cell's output pin to new_net, so
+        # that net is now driven by the (renamed) existing cell — not by a study
+        # new_logic_gate. Count it as driven (combinational net-force pattern).
+        driven |= {e.get('new_net') for e in study.get(stage, [])
+                   if e.get('change_type') == 'rewire' and (e.get('driver_side') or e.get('net_force'))
+                   and isinstance(e.get('new_net'), str)}
         for e in study.get(stage, []):
             if not e.get('confirmed', True):
                 continue
@@ -5375,31 +5381,53 @@ def main():
     for e in _syn3:
         if e.get('change_type') == 'rewire' and (e.get('new_net') in _pf_mux_outs):
             _pf_rewire_nets.add(e.get('new_net'))
+    # driver-side (combinational) rewires: old_net = the forced net that is re-driven
+    _pf_driver_renamed = {e.get('old_net') for e in _syn3
+                          if e.get('change_type') == 'rewire'
+                          and (e.get('driver_side') or e.get('net_force'))}
     for c in rtl_diff.get('changes', []):
         if c.get('change_type') != 'priority_force':
             continue
         for f in (c.get('forced_signals') or []):
             sig = f.get('signal')
             nbits = len(f.get('bits') or [])
-            # per-signal force-mux gates (instance embeds the signal name)
-            sig_muxes = {e.get('output_net') for e in _syn3
+            # REGISTERED force-muxes (D-pin model): instance _pf_mux_<sig>_, output is a
+            # fresh net rewired onto a flop .D. COMBINATIONAL net-force: instance
+            # _pf_netmux_<sig>_, output IS the forced net, validated by a driver-side
+            # rewire that renames the net's original driver output.
+            reg_muxes = {e.get('output_net') for e in _syn3
                          if e.get('change_type') == 'new_logic_gate'
                          and f"_pf_mux_{sig}_" in str(e.get('instance_name') or '')}
-            sig_muxes.discard(None); sig_muxes.discard('')
-            if not sig_muxes:
+            comb_muxes = {e.get('output_net') for e in _syn3
+                          if e.get('change_type') == 'new_logic_gate'
+                          and f"_pf_netmux_{sig}_" in str(e.get('instance_name') or '')}
+            reg_muxes.discard(None); reg_muxes.discard('')
+            comb_muxes.discard(None); comb_muxes.discard('')
+            if not reg_muxes and not comb_muxes:
                 issues.append(
                     f"CRITICAL/PRIORITY-FORCE: forced signal {sig!r} has NO force-mux gate in the "
                     f"study — Intent-B constant force (e.g. c0vld=1 / mop=CAS) not built. Run "
                     f"eco_emit_priority_force.py (emits OR2 per const-1 bit, INR2 per const-0 bit).")
                 continue
-            wired = sig_muxes & _pf_rewire_nets
-            if len(wired) < len(sig_muxes):
+            # registered: each mux output must be rewired onto a flop .D
+            reg_wired = reg_muxes & _pf_rewire_nets
+            if len(reg_wired) < len(reg_muxes):
                 issues.append(
-                    f"CRITICAL/PRIORITY-FORCE: forced signal {sig!r} has {len(sig_muxes)} force-mux "
-                    f"gate(s) but only {len(wired)} DFF-pin rewire(s) onto them — the flop .D of "
+                    f"CRITICAL/PRIORITY-FORCE: forced signal {sig!r} has {len(reg_muxes)} force-mux "
+                    f"gate(s) but only {len(reg_wired)} DFF-pin rewire(s) onto them — the flop .D of "
                     f"unwired bits still reads the OLD next-state net, so the force is dead. Each "
                     f"force-mux output must be rewired onto its bit's flop .D pin.")
-            elif nbits and len(sig_muxes) < nbits:
+            # combinational: each net-force mux output (the forced net) must have a
+            # driver-side rewire renaming its original combinational driver output.
+            comb_unwired = comb_muxes - _pf_driver_renamed
+            if comb_unwired:
+                issues.append(
+                    f"CRITICAL/PRIORITY-FORCE: forced signal {sig!r} net-force mux output(s) "
+                    f"{sorted(comb_unwired)[:6]} have NO driver-side rewire renaming the original "
+                    f"combinational driver — the force-mux would collide with the existing driver on "
+                    f"the same net. Each net-force mux needs the driver output-pin rename.")
+            sig_muxes = reg_muxes | comb_muxes
+            if nbits and len(sig_muxes) < nbits:
                 issues.append(
                     f"CRITICAL/PRIORITY-FORCE: forced signal {sig!r} declares {nbits} bit(s) but only "
                     f"{len(sig_muxes)} force-mux gate(s) were built — {nbits - len(sig_muxes)} forced "

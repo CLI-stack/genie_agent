@@ -207,11 +207,42 @@ def _local_defs(rtl_text):
     return out
 
 
+_DEFAULT_CELLS = {'INV': _INV_CELL, 'AND2': _AND2_CELL, 'OR2': _OR2_CELL, 'INR2': _INR2_CELL}
+
+
+def _resolve_cells(ref_dir, module):
+    """Resolve the exact library cell names for INV/AND2/OR2/INR2 from the module's
+    PreEco netlist (cell naming varies by library — e.g. AN2D1 vs AND2D1, OR2D1AMD
+    vs OR2D1). Falls back to the defaults; a wrong cell is caught fail-closed by
+    step3's GATE-TYPE-NOT-IN-PREECO, but resolving avoids that failure entirely."""
+    cells = dict(_DEFAULT_CELLS)
+    if not ref_dir:
+        return cells
+    body = _module_netlist_body(ref_dir, module)
+    if not body:
+        return cells
+    def pick(fam_pats, default):
+        cands = set()
+        for pat in fam_pats:
+            cands.update(re.findall(r'\b(' + pat + r'[A-Za-z0-9]*BWP\w+)\b', body))
+        if not cands:
+            return default
+        # prefer a plain functional cell: NOT a spare gate (SPG), NOT low-leakage (LL),
+        # then the shortest name (fewest special qualifiers) for a clean A1/A2/Z gate.
+        return sorted(cands, key=lambda c: ('SPG' in c, c.endswith('LL'), len(c)))[0]
+    cells['INV']  = pick([r'INVD1'], _INV_CELL)
+    cells['AND2'] = pick([r'AN2D1', r'AND2D1'], _AND2_CELL)
+    cells['OR2']  = pick([r'OR2D1'], _OR2_CELL)
+    cells['INR2'] = pick([r'INR2D1'], _INR2_CELL)
+    return cells
+
+
 class _CondSynth:
-    def __init__(self, jira, module, cfg, mk, rtl_text=None, in_netlist=None):
+    def __init__(self, jira, module, cfg, mk, rtl_text=None, in_netlist=None, cells=None):
         self.jira, self.module, self.cfg, self.mk = jira, module, cfg, mk
         self.wires = _local_defs(rtl_text)     # local combinational decompositions
         self.in_netlist = in_netlist or (lambda s: True)  # leaf presence predicate
+        self.cells = cells or _DEFAULT_CELLS   # library-resolved cell names
         self._decomposing = set()              # recursion guard
         self.gates = []
     def _resolve_sig(self, s):
@@ -231,22 +262,24 @@ class _CondSynth:
             'cell_type': cell, 'gate_function': fn, 'output_net': out,
             'module_name': self.module, 'port_connections': pc,
             'port_connections_per_stage': _pcstage(pc),
-            'confirmed': True, 'source': 'eco_emit_priority_force'})
+            'confirmed': True, 'source': 'eco_emit_priority_force',
+            'reason': f'priority_force condition cone: {fn} gate.',
+            'notes': f'priority_force condition cone ({fn}) -> {out}.'})
         return out
     def _and(self, nets):
         cur = list(nets)
         while len(cur) > 1:
             a, b = cur.pop(0), cur.pop(0)
-            cur.append(self._g(_AND2_CELL, 'AND2', {'A1': a, 'A2': b, 'Z': self.mk('and')}))
+            cur.append(self._g(self.cells['AND2'], 'AND2', {'A1': a, 'A2': b, 'Z': self.mk('and')}))
         return cur[0]
     def _or(self, nets):
         cur = list(nets)
         while len(cur) > 1:
             a, b = cur.pop(0), cur.pop(0)
-            cur.append(self._g(_OR2_CELL, 'OR2', {'A1': a, 'A2': b, 'Z': self.mk('or')}))
+            cur.append(self._g(self.cells['OR2'], 'OR2', {'A1': a, 'A2': b, 'Z': self.mk('or')}))
         return cur[0]
     def _inv(self, a):
-        return self._g(_INV_CELL, 'INV', {'I': a, 'ZN': self.mk('inv')})
+        return self._g(self.cells['INV'], 'INV', {'I': a, 'ZN': self.mk('inv')})
     def _decomp_key(self, s):
         """Return the local_defs key to decompose `s` by, or None. Prefers an exact
         token match (per-bit reg like WckIsInSync[0]); else the bare base name (a
@@ -319,12 +352,12 @@ class _CondSynth:
         raise _PErr(f"reduction inner has nested reduction/unsupported node {node}")
 
 
-def synthesize_condition(cond_expr, jira, module, cfg, mk, rtl_text=None, in_netlist=None):
+def synthesize_condition(cond_expr, jira, module, cfg, mk, rtl_text=None, in_netlist=None, cells=None):
     """Parse + synthesize a condition_expr into gates. Returns (cond_net, gates).
     rtl_text + in_netlist enable local-wire decomposition of flattened intermediate
     signals. Raises _PErr on anything unbuildable (caller fails closed)."""
     ast = parse_condition(cond_expr)
-    s = _CondSynth(jira, module, cfg, mk, rtl_text=rtl_text, in_netlist=in_netlist)
+    s = _CondSynth(jira, module, cfg, mk, rtl_text=rtl_text, in_netlist=in_netlist, cells=cells)
     cond = s.scalar(ast)
     # FAIL-CLOSED grounding: every leaf feeding the cone (a gate input that no
     # other cone gate produces) must be a real netlist net or a constant. If any
@@ -386,10 +419,10 @@ def _mod_key(n):
     return re.sub(r'_\d+$', '', re.sub(r'^ddrss_\w+?_t_', '', str(n or '')))
 
 
-def _module_netlist_body(ref_dir, module):
-    """PreEco Synthesize netlist body text of <module> — tolerant of the tile prefix
+def _module_netlist_body(ref_dir, module, stage='Synthesize'):
+    """PreEco <stage> netlist body text of <module> — tolerant of the tile prefix
     and uniquify suffix (the AI names modules inconsistently short vs full)."""
-    gz = os.path.join(ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
+    gz = os.path.join(ref_dir, 'data', 'PreEco', f'{stage}.v.gz')
     want = _mod_key(module)
     body, grab = [], False
     if os.path.isfile(gz):
@@ -570,13 +603,15 @@ def emit(rtl_diff, study, jira, ref_dir=None):
                 errs.append(f"priority_force {mod}: forced_signals is INCOMPLETE — the added RTL "
                             f"branch also assigns {miss}, not in forced_signals. Force every driven signal.")
                 continue
+        _cells = _resolve_cells(ref_dir, mod) if ref_dir else _DEFAULT_CELLS
         cond = None
         if cond_expr and cfg is not None:
             rtl = resolve_rtl(ref_dir=ref_dir, module=re.sub(r'^ddrss_\w+?_t_', '', mod)) if resolve_rtl else None
             rtl_text = open(rtl, errors='replace').read() if rtl and os.path.isfile(rtl) else None
             try:
                 cond, cone = synthesize_condition(cond_expr, jira, mod, cfg, nn,
-                                                  rtl_text=rtl_text, in_netlist=_in_netlist_pred(mod))
+                                                  rtl_text=rtl_text, in_netlist=_in_netlist_pred(mod),
+                                                  cells=_cells)
                 new_gates.extend(cone)
             except _PErr as e:
                 errs.append(f"priority_force {mod}: cannot synthesize condition — {e}. cond_expr={cond_expr!r}")
@@ -614,7 +649,9 @@ def emit(rtl_diff, study, jira, ref_dir=None):
         #        (net -> net_orig) and make the force-mux drive `net` itself, so ALL
         #        fanout sees the force (not just one flop D-pin). This is what a
         #        combinational-cone ECO (e.g. a signal assigned in `always @(*)`) needs.
-        dmap = _driver_map(ref_dir, mod) if ref_dir else {}
+        # per-stage driver maps (P&R renames the driving cell instance)
+        dmaps = {st: (_driver_map(ref_dir, mod, st) if ref_dir else {}) for st in STAGES}
+        dmap = dmaps['Synthesize']
         for f in c.get('forced_signals') or []:
             cbits = _const_bits(f.get('const'))
             bits = f.get('bits') or []
@@ -634,14 +671,13 @@ def emit(rtl_diff, study, jira, ref_dir=None):
                 comb = bool(drv) and not drv[2]            # driven by a comb gate (.Z)
                 if comb:
                     # ── COMBINATIONAL: re-drive the net so all fanout sees the force ──
-                    drv_inst, drv_pin, _ = drv
                     net_orig = nn(f"{sig}_{b}_orig")
                     if cval == '1':
                         pc = {'A1': cond, 'A2': net_orig, 'Z': net}   # net = cond | old
-                        cell, fn = _OR2_CELL, 'OR2'
+                        cell, fn = _cells['OR2'], 'OR2'
                     else:
                         pc = {'A1': net_orig, 'B1': cond, 'ZN': net}  # net = old & ~cond
-                        cell, fn = _INR2_CELL, 'INR2'
+                        cell, fn = _cells['INR2'], 'INR2'
                     new_gates.append({
                         'change_type': 'new_logic_gate',
                         'instance_name': f"eco_{jira}_pf_netmux_{sig}_{b}",
@@ -649,18 +685,33 @@ def emit(rtl_diff, study, jira, ref_dir=None):
                         'module_name': mod, 'port_connections': pc,
                         'port_connections_per_stage': _pcstage(pc),
                         'confirmed': True, 'source': 'eco_emit_priority_force', 'net_force': True,
+                        'reason': f"priority_force (combinational): force {net}={cval} for all fanout.",
                         'notes': f"priority_force (combinational): re-drive {net}={cval} when "
                                  f"condition, else the original combinational value {net_orig}.",
                     })
-                    # rename the comb driver's OUTPUT pin: net -> net_orig (all fanout
-                    # now flows through the force-mux instead of straight from the driver)
+                    # rename the comb driver's OUTPUT pin: net -> net_orig, PER STAGE
+                    # (the driver cell instance is renamed by P&R, so resolve it in each
+                    # stage's netlist). Fail-closed if a stage lacks a comb driver.
+                    cps, pps = {}, {}
+                    ok = True
+                    for st in STAGES:
+                        sd = dmaps[st].get(net)
+                        if not sd or sd[2]:
+                            errs.append(f"priority_force {mod}: net {net} has no combinational driver "
+                                        f"in {st} netlist — cannot re-drive it in that stage.")
+                            ok = False; break
+                        cps[st], pps[st] = sd[0], sd[1]
+                    if not ok:
+                        continue
                     new_rewires.append({
-                        'change_type': 'rewire', 'instance_name': drv_inst, 'cell_name': drv_inst,
-                        'module_name': mod, 'pin': drv_pin, 'old_net': net, 'new_net': net_orig,
+                        'change_type': 'rewire', 'instance_name': cps['Synthesize'],
+                        'cell_name': cps['Synthesize'], 'cell_name_per_stage': cps,
+                        'module_name': mod, 'pin': pps['Synthesize'], 'pin_per_stage': pps,
+                        'old_net': net, 'new_net': net_orig,
                         'confirmed': True, 'force_reapply': True, 'source': 'eco_emit_priority_force',
                         'net_force': True, 'driver_side': True,
                         'notes': f"priority_force: redirect combinational driver of {net} through the "
-                                 f"force-mux (output-pin rename {net}->{net_orig}).",
+                                 f"force-mux (output-pin rename {net}->{net_orig}, per-stage cell).",
                     })
                     continue
                 # ── REGISTERED (or unknown driver): force the flop D-pin ──
@@ -672,10 +723,10 @@ def emit(rtl_diff, study, jira, ref_dir=None):
                 fresh = nn(f"{sig}_{b}")
                 if cval == '1':
                     pc = {'A1': cond, 'A2': old, 'Z': fresh}
-                    cell, fn = _OR2_CELL, 'OR2'
+                    cell, fn = _cells['OR2'], 'OR2'
                 else:
                     pc = {'A1': old, 'B1': cond, 'ZN': fresh}
-                    cell, fn = _INR2_CELL, 'INR2'
+                    cell, fn = _cells['INR2'], 'INR2'
                 new_gates.append({
                     'change_type': 'new_logic_gate',
                     'instance_name': f"eco_{jira}_pf_mux_{sig}_{b}",
@@ -683,6 +734,7 @@ def emit(rtl_diff, study, jira, ref_dir=None):
                     'module_name': mod, 'port_connections': pc,
                     'port_connections_per_stage': bspec.get('port_connections_per_stage') or _pcstage(pc),
                     'confirmed': True, 'source': 'eco_emit_priority_force',
+                    'reason': f"priority_force: force {sig}[{b}]={cval} at flop D-pin.",
                     'notes': f"priority_force: force {sig}[{b}]={cval} when condition, else hold.",
                 })
                 rw = {
@@ -711,12 +763,13 @@ def emit(rtl_diff, study, jira, ref_dir=None):
 _OUT_PINS_DRV = ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO')
 
 
-def _driver_map(ref_dir, module):
-    """Map each net in <module>'s PreEco netlist to its driver: net -> (inst, out_pin,
-    is_flop). is_flop = the driving instance is clocked (has CP/CK). Lets the forcer
-    tell a REGISTERED forced signal (drive the flop D-pin) from a COMBINATIONAL one
-    (must re-drive the net itself so ALL fanout sees the force, not just one flop)."""
-    body = _module_netlist_body(ref_dir, module)
+def _driver_map(ref_dir, module, stage='Synthesize'):
+    """Map each net in <module>'s PreEco <stage> netlist to its driver: net -> (inst,
+    out_pin, is_flop). is_flop = the driving instance is clocked (has CP/CK). Lets the
+    forcer tell a REGISTERED forced signal (drive the flop D-pin) from a COMBINATIONAL
+    one (re-drive the net so ALL fanout sees the force). Per-stage because P&R renames
+    the driver cell instance."""
+    body = _module_netlist_body(ref_dir, module, stage)
     dmap = {}
     for stmt in body.split(';'):
         m = re.match(r'\s*([\w:]+)\s+(\w+)\s*\(', stmt)
