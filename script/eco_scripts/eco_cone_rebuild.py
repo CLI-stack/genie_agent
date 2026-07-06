@@ -404,14 +404,10 @@ except Exception:
     _Synth = parse_expr = build_width_map = None
 
 
-def lower_delta(ref_dir, module, signal, jira='eco'):
-    """Rebuild the DELTA of `signal`'s cone (NEW vs OLD RTL) as gates using the recursive
-    RTL synthesizer (_Synth). Fully general: the changed subtree is lowered as a priority
-    mux tree (default, then each branch overrides in order) where BOTH the branch
-    conditions AND the branch values are grounded recursively to real netlist nets /
-    registers — no constant-only restriction. Returns
-      {'selector', 'region_bits':{b:net}, 'width', 'gates', 'summary'} or None (no delta).
-    Raises _CErr fail-closed on anything unsupported."""
+def _synth_setup(ref_dir, module, jira='eco'):
+    """Build a shared _Synth (+ mk, rtl texts, width map) for a module. Multiple signals in
+    the same module reuse ONE synth so its _sig_cache/_path_cache dedup the shared logic
+    (e.g. the WCK-sync guard on both recdsp_c0mop and recdsp_c0vld is built once)."""
     if not (_Synth and RtlConfig):
         raise _CErr("synthesizer unavailable")
     base = _mod_key(module) if _mod_key else re.sub(r'^ddrss_\w+?_t_', '', module)
@@ -419,13 +415,9 @@ def lower_delta(ref_dir, module, signal, jira='eco'):
     new_rtl = resolve_rtl(ref_dir=ref_dir, module=base, subdir='SynRtl')
     old_rtl = resolve_rtl(ref_dir=ref_dir, module=base, subdir='PreEco/SynRtl')
     if not (new_rtl and old_rtl):
-        raise _CErr(f"cannot locate {signal} RTL in both trees")
+        raise _CErr(f"cannot locate {module} RTL in both trees")
     rtl_text = open(new_rtl, errors='replace').read()
-    nt = parse_always(rtl_text, signal)
-    ot = parse_always(open(old_rtl, errors='replace').read(), signal)
-    delta = compute_delta(ot, nt)
-    if delta is None:
-        return None
+    old_text = open(old_rtl, errors='replace').read()
     cfg = RtlConfig(ref_dir)
     nlbody = _module_netlist_body(ref_dir, module) if _module_netlist_body else ''
     innl = (lambda s: bool(re.search(r'\b' + re.escape(s) + r'\b', nlbody))) if nlbody else (lambda s: True)
@@ -436,29 +428,31 @@ def lower_delta(ref_dir, module, signal, jira='eco'):
         seq[0] += 1
         return f'n_eco_{jira}_cr_{t}_{seq[0]}'
     synth = _Synth(cfg, wm, rtl_text, innl, mk, module)
-    # SURGICAL selector (engineer's trick): instead of rebuilding the whole priority
-    # PREFIX (which drags in dsp_cnt_end / dsp_cmd_valid / timers -> thousands of gates),
-    # reuse the ORIGINAL signal value as the region detector. `orig == <old region value>`
-    # is equivalent to "the old chain reached & fired the changed branch" (the entire
-    # prefix), because orig already encodes the full chain. The subtree conditions are
-    # LOCAL (prefix stripped), so region logic stays tiny. The comparator itself is built
-    # in emit_comb_net_force (it needs the per-bit net_orig nets); here we return the OLD
-    # region value(s) it must match.
+    return synth, mk, rtl_text, old_text, wm
+
+
+def _region_of(synth, rtl_text, old_text, signal, wm):
+    """Build `signal`'s changed-region logic INTO the given (possibly shared) synth. Returns
+    {'region_bits', 'width', 'old_region_values'} or None (no delta). Uses the SURGICAL
+    model: the caller detects the region via `orig == old_region_values`; here we build only
+    the LOCAL (prefix-stripped) subtree fold — no priority prefix rebuild."""
+    nt = parse_always(rtl_text, signal)
+    ot = parse_always(old_text, signal)
+    delta = compute_delta(ot, nt)
+    if delta is None:
+        return None
     old_region_values = []
     for c, v in ot['assigns']:
         if _starts_with(c, delta['prefix']) and v not in old_region_values:
             old_region_values.append(v)
     try:
-        # width: signal decl, else widest branch/default value
         width = wm.get(signal)
         if not width:
             vals = [v for _, v in delta['subtree']] + ([delta['default']] if delta['default'] else [])
             width = max([synth._w(parse_expr(v)) or 1 for v in vals] or [1])
-        # subtree -> priority mux tree per bit, LOCAL conditions only (prefix stripped).
-        # Compute each branch's selector ONCE (hoisted out of the bit loop) — otherwise the
-        # WCK-sync guard logic is rebuilt per bit (width x duplication). Per-bit work is then
-        # just cheap constant muxes.
         dflt_ast = parse_expr(delta['default']) if delta['default'] is not None else None
+        # branch selectors computed once (hoisted); _path_scalar is memoized so a guard
+        # shared with another signal is not rebuilt.
         branch_asts = [(synth._path_scalar(cond), parse_expr(val)) for cond, val in delta['subtree']]
         region_bits = {}
         for b in range(width):
@@ -469,34 +463,31 @@ def lower_delta(ref_dir, module, signal, jira='eco'):
     except Exception as e:
         raise _CErr(f"delta lowering failed for {signal}: {e}")
     return {'region_bits': region_bits, 'width': width, 'old_region_values': old_region_values,
-            'gates': synth.gates, 'summary': delta['summary'], 'synth': synth, 'mk': mk}
+            'summary': delta['summary']}
 
 
-def emit_comb_net_force(ref_dir, module, signal, jira='eco', rename_map=None):
-    """Emit the ECO for a COMBINATIONAL net delta (e.g. B2 recdsp_c0mop): re-drive the
-    net so ALL fanout sees the new value inside the changed region and the original value
-    elsewhere. Per bit b:
-        net[b] = selector ? region_bits[b] : net[b]_orig
-    where the original combinational driver's output pin is renamed net -> net_orig (a
-    per-stage driver-side rewire), so the mux feeds every consumer. Returns
-      {'gates':[...], 'rewires':[...], 'errors':[...], 'summary':str} (study-shaped,
-    per-stage-resolved). Raises _CErr fail-closed on structural problems."""
-    from eco_emit_priority_force import (_driver_map, _stage_net_tokens, _stage_net,
-                                         _map_stage_net, _pcstage, STAGES)
-    r = lower_delta(ref_dir, module, signal, jira)
+def lower_delta(ref_dir, module, signal, jira='eco'):
+    """Single-signal surgical delta lowering. Returns {'region_bits','width',
+    'old_region_values','gates','summary','synth','mk'} or None (no delta)."""
+    synth, mk, rtl_text, old_text, wm = _synth_setup(ref_dir, module, jira)
+    r = _region_of(synth, rtl_text, old_text, signal, wm)
     if r is None:
-        return {'gates': [], 'rewires': [], 'errors': [], 'summary': 'no delta'}
-    synth, width = r['synth'], r['width']
-    mk = r['mk']
+        return None
+    r.update({'gates': synth.gates, 'synth': synth, 'mk': mk})
+    return r
+
+
+def _emit_signal_muxes(synth, mk, r, module, signal, dmaps):
+    """Build `signal`'s per-bit force-muxes + driver rewires INTO the given synth (shared
+    across signals in a batch). Returns (rewires, errs). The region logic is already in the
+    synth (from _region_of); this adds the orig-comparator selector + muxes + rewires."""
+    from eco_emit_priority_force import STAGES
+    width = r['width']
     old_vals = r.get('old_region_values') or []
-    dmaps = {st: _driver_map(ref_dir, module, st) for st in STAGES}
     is_bus = width > 1
     errs, rewires = [], []
-
-    def _net(b):
-        return f'{signal}[{b}]' if is_bus else signal
-
-    # ── pass 1: validate each bit's combinational driver + reserve net_orig ──
+    _net = lambda b: (f'{signal}[{b}]' if is_bus else signal)
+    # pass 1: validate each bit's combinational driver + reserve net_orig
     orig_bit, drv_ps = {}, {}
     for b in range(width):
         net = _net(b)
@@ -513,23 +504,17 @@ def emit_comb_net_force(ref_dir, module, signal, jira='eco', rename_map=None):
         orig_bit[b] = mk(f'{signal}_{b}_orig')
         drv_ps[b] = (cps, pps)
     if errs:
-        return {'gates': synth.gates, 'rewires': [], 'errors': errs, 'summary': r['summary']}
+        return [], errs
     if not old_vals:
-        return {'gates': synth.gates, 'rewires': [],
-                'errors': [f"{signal}: no OLD region value — cannot build the orig-based region detector."],
-                'summary': r['summary']}
-
-    # ── SURGICAL selector: sel = OR over old region values v of (orig == v). This reuses
-    # the existing signal (net_orig bits) as the region detector — replacing the entire
-    # rebuilt priority prefix with a small equality comparator (engineer's trick). ──
+        return [], [f"{signal}: no OLD region value — cannot build the orig-based region detector."]
+    # SURGICAL selector: sel = OR over old region values v of (orig == v).
     sel = "1'b0"
     for v in old_vals:
         vast = parse_expr(v)
         eq_terms = [synth._xnor(orig_bit[b], synth.bit(vast, b)) for b in range(width) if b in orig_bit]
         sel = synth._or(sel, synth._reduce(eq_terms, 'and'))
     nsel = synth._inv(sel)
-
-    # ── pass 2: per-bit force-mux net[b] = sel ? region[b] : net_orig[b] + driver rewire ──
+    # pass 2: per-bit force-mux net[b] = sel ? region[b] : net_orig[b] + driver rewire
     for b in range(width):
         if b not in orig_bit:
             continue
@@ -552,6 +537,34 @@ def emit_comb_net_force(ref_dir, module, signal, jira='eco', rename_map=None):
             'notes': f"comb net-force (surgical): redirect combinational driver of {net} through "
                      f"the region mux (output-pin rename {net}->{net_orig}, per-stage cell).",
         })
+    return rewires, errs
+
+
+def emit_comb_net_force(ref_dir, module, signal, jira='eco', rename_map=None):
+    """Single-signal comb net-force ECO (wrapper around the batch emitter)."""
+    return emit_comb_net_force_batch(ref_dir, module, [signal], jira, rename_map)
+
+
+def emit_comb_net_force_batch(ref_dir, module, signals, jira='eco', rename_map=None):
+    """Emit comb net-force for one OR MORE signals in the SAME module through a SHARED synth,
+    so common logic (e.g. the WCK-sync guard on recdsp_c0mop AND recdsp_c0vld) is built once
+    (synth _sig_cache/_path_cache dedup). Each signal: net[b] = (orig==old_region) ? region
+    : net_orig[b], with the original comb driver's output pin renamed per stage. Returns
+      {'gates','rewires','errors','summary'} (study-shaped, per-stage resolved once)."""
+    from eco_emit_priority_force import (_driver_map, _stage_net_tokens, _stage_net,
+                                         _map_stage_net, _pcstage, STAGES)
+    synth, mk, rtl_text, old_text, wm = _synth_setup(ref_dir, module, jira)
+    dmaps = {st: _driver_map(ref_dir, module, st) for st in STAGES}
+    rewires, errs, summ = [], [], {}
+    for signal in signals:
+        r = _region_of(synth, rtl_text, old_text, signal, wm)
+        if r is None:
+            continue
+        summ[signal] = r['summary']
+        rw, e = _emit_signal_muxes(synth, mk, r, module, signal, dmaps)
+        rewires.extend(rw); errs.extend(e)
+    if errs:
+        return {'gates': synth.gates, 'rewires': [], 'errors': errs, 'summary': summ}
     gates = synth.gates
     # give every cone/mux gate a per-stage view, then resolve leaf nets per stage
     # (fenets rename map authoritative, then flat-name heuristic; internal n_eco_ names
@@ -595,7 +608,7 @@ def emit_comb_net_force(ref_dir, module, signal, jira='eco', rename_map=None):
     for rw in rewires:
         ops = {st: _resolve(rw['old_net'], st) for st in STAGES}
         rw['old_net_per_stage'] = ops
-    return {'gates': gates, 'rewires': rewires, 'errors': errs, 'summary': r['summary']}
+    return {'gates': gates, 'rewires': rewires, 'errors': errs, 'summary': summ}
 
 
 # small gate helpers reusing the resolved library cells
@@ -665,19 +678,29 @@ def emit_into_study(rtl_diff, study, jira, ref_dir, rename_map=None):
     changes = [c for c in rtl_diff.get('changes', []) if c.get('change_type') == 'comb_net_force']
     if not changes:
         return 0, []
-    pending, errs = [], []
+    # Group signals by module so all comb_net_force signals in the same module are emitted
+    # through ONE shared synth (dedups common logic, e.g. the WCK-sync guard on both
+    # recdsp_c0mop and recdsp_c0vld -> ~half the gates).
+    import collections
+    by_mod = collections.OrderedDict()
+    errs = []
     for i, c in enumerate(changes):
         mod = c.get('module_name'); sig = c.get('signal') or c.get('new_token') or c.get('target')
         if not mod or not sig:
             errs.append(f"comb_net_force[{i}]: missing module_name or signal.")
             continue
+        by_mod.setdefault(mod, []).append(sig)
+    if errs:
+        return 0, errs
+    pending = []
+    for mod, sigs in by_mod.items():
         try:
-            out = emit_comb_net_force(ref_dir, mod, sig, jira=jira, rename_map=rename_map)
+            out = emit_comb_net_force_batch(ref_dir, mod, sigs, jira=jira, rename_map=rename_map)
         except Exception as e:
-            errs.append(f"comb_net_force[{i}] {mod}/{sig}: build failed: {e}")
+            errs.append(f"comb_net_force {mod}/{sigs}: build failed: {e}")
             continue
         if out['errors']:
-            errs.extend(f"comb_net_force[{i}] {mod}/{sig}: {m}" for m in out['errors'])
+            errs.extend(f"comb_net_force {mod}: {m}" for m in out['errors'])
             continue
         pending.append(out['gates'] + out['rewires'])
     if errs:

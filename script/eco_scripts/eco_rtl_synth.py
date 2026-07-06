@@ -731,13 +731,21 @@ class _Synth:
             self._building.discard(name)
 
     def _path_scalar(self, path_cond):
-        """AND of (expr,sense) terms -> 1-bit net."""
+        """AND of (expr,sense) terms -> 1-bit net. Memoized by the normalized condition so a
+        guard shared across signals/branches (e.g. the WCK-sync condition on both c0mop and
+        c0vld) is built once, not per use."""
+        if not hasattr(self, '_path_cache'):
+            self._path_cache = {}
+        key = tuple((re.sub(r'\s+', '', e), s) for e, s in path_cond)
+        if key in self._path_cache:
+            return self._path_cache[key]
         net = "1'b1"
         for expr, sense in path_cond:
             s = self.scalar(parse_expr(expr))
             if not sense:
                 s = self._inv(s)
             net = self._and(net, s)
+        self._path_cache[key] = net
         return net
 
 
