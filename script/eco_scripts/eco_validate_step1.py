@@ -2837,6 +2837,22 @@ def main():
             comb_net_force_issues.append(
                 f"changes[{idx}] comb_net_force missing `signal` — the combinational net to "
                 f"re-drive (the builder diffs its PreEco vs new RTL cone).")
+    # DOUBLE-DRIVE guard: a comb_net_force rebuilds a net's ENTIRE new cone (it diffs
+    # PreEco vs new RTL), so it subsumes any priority_force that also forces that SAME
+    # net. Emitting both would splice two driver-side rewires of the net -> conflict.
+    _cnf_targets = {(c.get('module_name'), (c.get('signal') or c.get('new_token') or c.get('target')))
+                    for c in rtl_diff.get('changes', []) if c.get('change_type') == 'comb_net_force'}
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') != 'priority_force':
+            continue
+        for f in (c.get('forced_signals') or []):
+            if (c.get('module_name'), f.get('signal')) in _cnf_targets:
+                comb_net_force_issues.append(
+                    f"changes[{idx}] priority_force forces {f.get('signal')!r} which is ALSO a "
+                    f"comb_net_force target in the same module — double-drive. The comb_net_force "
+                    f"already rebuilds that net's full new cone; remove it from this "
+                    f"priority_force's forced_signals (keep only the nets comb_net_force does "
+                    f"NOT own, e.g. a separate valid/enable bit).")
     if comb_net_force_issues:
         overall_pass = False
 
