@@ -605,21 +605,71 @@ def emit(rtl_diff, study, jira, ref_dir=None):
         # NOTE: no INV(cond) is emitted — the force-muxes use `cond` directly
         # (OR2(cond,old) for a const-1 bit; INR2(A1=old,B1=cond)=old&~cond for a
         # const-0 bit), so an inverted copy would be dead logic (dangling-cone).
-        # 2. per forced signal, per bit force-mux + DFF-pin rewire
+        # 2. per forced signal, per bit force-mux + rewire. The TARGET depends on how
+        #    the forced net is driven in the netlist:
+        #      - REGISTERED (flop .Q): rewire the flop D-pin (force-mux between the old
+        #        D-input and the flop). Correct — the flop is the only consumer of D.
+        #      - COMBINATIONAL (comb gate .Z): the net fans out to MANY consumers, so
+        #        we must RE-DRIVE THE NET: rename the comb driver's output pin
+        #        (net -> net_orig) and make the force-mux drive `net` itself, so ALL
+        #        fanout sees the force (not just one flop D-pin). This is what a
+        #        combinational-cone ECO (e.g. a signal assigned in `always @(*)`) needs.
+        dmap = _driver_map(ref_dir, mod) if ref_dir else {}
         for f in c.get('forced_signals') or []:
             cbits = _const_bits(f.get('const'))
             bits = f.get('bits') or []
             if cbits is None or not bits:
                 continue
+            sig = f.get('signal', 'sig')
+            is_bus = len(cbits) > 1
             for bspec in bits:
                 b = bspec.get('bit')
                 old = bspec.get('old_net')
                 dff_cell = bspec.get('dff_cell'); dff_pin = bspec.get('dff_pin', 'D')
-                if b is None or old is None or not dff_cell:
+                if b is None:
                     continue
-                # const bit for this position (bits given MSB..LSB; index by width-1-b)
                 cval = cbits[len(cbits) - 1 - b] if b < len(cbits) else '0'
-                fresh = nn(f"{f.get('signal','sig')}_{b}")
+                net = f'{sig}[{b}]' if is_bus else sig     # the forced net's own name
+                drv = dmap.get(net)
+                comb = bool(drv) and not drv[2]            # driven by a comb gate (.Z)
+                if comb:
+                    # ── COMBINATIONAL: re-drive the net so all fanout sees the force ──
+                    drv_inst, drv_pin, _ = drv
+                    net_orig = nn(f"{sig}_{b}_orig")
+                    if cval == '1':
+                        pc = {'A1': cond, 'A2': net_orig, 'Z': net}   # net = cond | old
+                        cell, fn = _OR2_CELL, 'OR2'
+                    else:
+                        pc = {'A1': net_orig, 'B1': cond, 'ZN': net}  # net = old & ~cond
+                        cell, fn = _INR2_CELL, 'INR2'
+                    new_gates.append({
+                        'change_type': 'new_logic_gate',
+                        'instance_name': f"eco_{jira}_pf_netmux_{sig}_{b}",
+                        'cell_type': cell, 'gate_function': fn, 'output_net': net,
+                        'module_name': mod, 'port_connections': pc,
+                        'port_connections_per_stage': _pcstage(pc),
+                        'confirmed': True, 'source': 'eco_emit_priority_force', 'net_force': True,
+                        'notes': f"priority_force (combinational): re-drive {net}={cval} when "
+                                 f"condition, else the original combinational value {net_orig}.",
+                    })
+                    # rename the comb driver's OUTPUT pin: net -> net_orig (all fanout
+                    # now flows through the force-mux instead of straight from the driver)
+                    new_rewires.append({
+                        'change_type': 'rewire', 'instance_name': drv_inst, 'cell_name': drv_inst,
+                        'module_name': mod, 'pin': drv_pin, 'old_net': net, 'new_net': net_orig,
+                        'confirmed': True, 'force_reapply': True, 'source': 'eco_emit_priority_force',
+                        'net_force': True, 'driver_side': True,
+                        'notes': f"priority_force: redirect combinational driver of {net} through the "
+                                 f"force-mux (output-pin rename {net}->{net_orig}).",
+                    })
+                    continue
+                # ── REGISTERED (or unknown driver): force the flop D-pin ──
+                if old is None or not dff_cell:
+                    if drv and drv[2]:
+                        errs.append(f"priority_force {mod}: {net} is registered but bits[] lacks "
+                                    f"dff_cell/old_net for bit {b}.")
+                    continue
+                fresh = nn(f"{sig}_{b}")
                 if cval == '1':
                     pc = {'A1': cond, 'A2': old, 'Z': fresh}
                     cell, fn = _OR2_CELL, 'OR2'
@@ -628,18 +678,18 @@ def emit(rtl_diff, study, jira, ref_dir=None):
                     cell, fn = _INR2_CELL, 'INR2'
                 new_gates.append({
                     'change_type': 'new_logic_gate',
-                    'instance_name': f"eco_{jira}_pf_mux_{f.get('signal','sig')}_{b}",
+                    'instance_name': f"eco_{jira}_pf_mux_{sig}_{b}",
                     'cell_type': cell, 'gate_function': fn, 'output_net': fresh,
                     'module_name': mod, 'port_connections': pc,
                     'port_connections_per_stage': bspec.get('port_connections_per_stage') or _pcstage(pc),
                     'confirmed': True, 'source': 'eco_emit_priority_force',
-                    'notes': f"priority_force: force {f.get('signal')}[{b}]={cval} when condition, else hold.",
+                    'notes': f"priority_force: force {sig}[{b}]={cval} when condition, else hold.",
                 })
                 rw = {
                     'change_type': 'rewire', 'instance_name': dff_cell, 'cell_name': dff_cell,
                     'module_name': mod, 'pin': dff_pin, 'old_net': old, 'new_net': fresh,
                     'confirmed': True, 'force_reapply': True, 'source': 'eco_emit_priority_force',
-                    'notes': f"priority_force DFF-pin rewire for {f.get('signal')}[{b}].",
+                    'notes': f"priority_force DFF-pin rewire for {sig}[{b}].",
                 }
                 if bspec.get('cell_name_per_stage'):
                     rw['cell_name_per_stage'] = bspec['cell_name_per_stage']
@@ -652,6 +702,33 @@ def emit(rtl_diff, study, jira, ref_dir=None):
             study.setdefault(st, []).extend([dict(g) for g in new_gates] + [dict(r) for r in new_rewires])
             added += len(new_gates) + len(new_rewires)
     return added, errs
+
+
+# Unambiguous OUTPUT pins only. 'S'/'SN'/'CON' are excluded: 'S' is the SELECT
+# INPUT on MUX cells (MUX2*.S) as well as an adder sum output, so treating it as a
+# driver mis-attributes a mux select as the net's driver. A net whose true driver is
+# an adder sum is simply not classified (falls back to the safe registered path).
+_OUT_PINS_DRV = ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO')
+
+
+def _driver_map(ref_dir, module):
+    """Map each net in <module>'s PreEco netlist to its driver: net -> (inst, out_pin,
+    is_flop). is_flop = the driving instance is clocked (has CP/CK). Lets the forcer
+    tell a REGISTERED forced signal (drive the flop D-pin) from a COMBINATIONAL one
+    (must re-drive the net itself so ALL fanout sees the force, not just one flop)."""
+    body = _module_netlist_body(ref_dir, module)
+    dmap = {}
+    for stmt in body.split(';'):
+        m = re.match(r'\s*([\w:]+)\s+(\w+)\s*\(', stmt)
+        if not m or m.group(1) == 'module':
+            continue
+        inst = m.group(2)
+        pins = dict(re.findall(r'\.(\w+)\s*\(\s*([^)]*?)\s*\)', stmt))
+        is_flop = any(p in ('CP', 'CK') for p in pins)
+        for p, net in pins.items():
+            if p in _OUT_PINS_DRV and net.strip():
+                dmap[net.strip()] = (inst, p, is_flop)
+    return dmap
 
 
 def _out_of(pc):

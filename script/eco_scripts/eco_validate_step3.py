@@ -83,7 +83,7 @@ def _pf_condition_completeness(study, rtl_diff, ref_dir):
         # study cond net = the condition input of this change's force-muxes
         cond_nets = set()
         for e in syn:
-            if e.get('source') == 'eco_emit_priority_force' and 'pf_mux' in str(e.get('instance_name', '')):
+            if e.get('source') == 'eco_emit_priority_force' and re.search(r'pf_(net)?mux', str(e.get('instance_name', ''))):
                 pc = e.get('port_connections') or {}
                 cond_nets.add(pc.get('A1') if e.get('gate_function') == 'OR2' else pc.get('B1'))
         # trace back from cond nets to real-net leaves
@@ -3543,16 +3543,22 @@ def main():
         stage = study.get(stage_name, [])
         if not stage:
             continue
-        # Collect old_net values from rewire entries (= renamed nets)
+        # Collect old_net values from rewire entries (= renamed nets). EXEMPT the
+        # deliberate combinational net-force (driver_side/net_force): re-driving a
+        # combinational net by renaming its comb driver's OUTPUT pin and muxing the
+        # forced value onto the original net is the CORRECT pattern for a signal with
+        # combinational fanout (a DFF-pin rewire would only reach one consumer). The
+        # driver-rename-and_term anti-pattern this check targets is the REGISTERED case.
         renamed_old_nets = {(e.get('old_net') or '').strip()
                             for e in stage
                             if e.get('change_type') == 'rewire'
-                            and e.get('old_net')}
+                            and e.get('old_net')
+                            and not (e.get('net_force') or e.get('driver_side'))}
         if not renamed_old_nets:
             continue
         # Find new_logic_gate entries whose output pin equals a renamed old_net
         for e in stage:
-            if e.get('change_type') != 'new_logic_gate':
+            if e.get('change_type') != 'new_logic_gate' or e.get('net_force'):
                 continue
             inst = e.get('instance_name', '?')
             pcs = e.get('port_connections') or {}
