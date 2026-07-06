@@ -403,7 +403,87 @@ def lower_delta(ref_dir, module, signal, jira='eco'):
     except Exception as e:
         raise _CErr(f"delta lowering failed for {signal}: {e}")
     return {'selector': selector, 'region_bits': region_bits, 'width': width,
-            'gates': synth.gates, 'summary': delta['summary']}
+            'gates': synth.gates, 'summary': delta['summary'], 'synth': synth, 'mk': mk}
+
+
+def emit_comb_net_force(ref_dir, module, signal, jira='eco', rename_map=None):
+    """Emit the ECO for a COMBINATIONAL net delta (e.g. B2 recdsp_c0mop): re-drive the
+    net so ALL fanout sees the new value inside the changed region and the original value
+    elsewhere. Per bit b:
+        net[b] = selector ? region_bits[b] : net[b]_orig
+    where the original combinational driver's output pin is renamed net -> net_orig (a
+    per-stage driver-side rewire), so the mux feeds every consumer. Returns
+      {'gates':[...], 'rewires':[...], 'errors':[...], 'summary':str} (study-shaped,
+    per-stage-resolved). Raises _CErr fail-closed on structural problems."""
+    from eco_emit_priority_force import (_driver_map, _stage_net_tokens, _stage_net,
+                                         _map_stage_net, _pcstage, STAGES)
+    r = lower_delta(ref_dir, module, signal, jira)
+    if r is None:
+        return {'gates': [], 'rewires': [], 'errors': [], 'summary': 'no delta'}
+    synth, sel, width = r['synth'], r['selector'], r['width']
+    mk = r['mk']
+    dmaps = {st: _driver_map(ref_dir, module, st) for st in STAGES}
+    is_bus = width > 1
+    errs, rewires = [], []
+    for b in range(width):
+        region = r['region_bits'].get(b, "1'b0")
+        net = f'{signal}[{b}]' if is_bus else signal
+        drv = dmaps['Synthesize'].get(net)
+        if not drv:
+            errs.append(f"{net}: no driver in Synthesize netlist — cannot re-drive.")
+            continue
+        if drv[2]:
+            errs.append(f"{net}: driven by a flop (.Q); expected a combinational driver.")
+            continue
+        net_orig = mk(f'{signal}_{b}_orig')
+        # net = selector ? region : net_orig  (final OR2 outputs `net` itself; synth._and
+        # folds constants, so a const region collapses to the cheap half automatically).
+        t_reg = synth._and(sel, region)
+        t_old = synth._and(synth._inv(sel), net_orig)
+        if t_reg == "1'b0" and t_old == "1'b0":
+            errs.append(f"{net}: mux folds to constant 0 for both legs — refusing (fail-closed).")
+            continue
+        synth._g(synth.cells['OR2'], 'OR2', {'A1': t_reg, 'A2': t_old, 'Z': net})
+        # rename the comb driver's OUTPUT pin net -> net_orig, PER STAGE (fail-closed if a
+        # stage lacks a combinational driver for the net).
+        cps, pps, ok = {}, {}, True
+        for st in STAGES:
+            sd = dmaps[st].get(net)
+            if not sd or sd[2]:
+                errs.append(f"{net}: no combinational driver in {st} netlist.")
+                ok = False; break
+            cps[st], pps[st] = sd[0], sd[1]
+        if not ok:
+            continue
+        rewires.append({
+            'change_type': 'rewire', 'instance_name': cps['Synthesize'],
+            'cell_name': cps['Synthesize'], 'cell_name_per_stage': cps,
+            'module_name': module, 'pin': pps['Synthesize'], 'pin_per_stage': pps,
+            'old_net': net, 'new_net': net_orig,
+            'confirmed': True, 'force_reapply': True, 'source': 'eco_cone_rebuild',
+            'net_force': True, 'driver_side': True,
+            'notes': f"comb net-force: redirect combinational driver of {net} through the "
+                     f"cone-rebuild mux (output-pin rename {net}->{net_orig}, per-stage cell).",
+        })
+    gates = synth.gates
+    # give every cone/mux gate a per-stage view, then resolve leaf nets per stage
+    # (fenets rename map authoritative, then flat-name heuristic; internal n_eco_ names
+    # are absent from both and pass through unchanged).
+    scope = ''
+    toks = {st: _stage_net_tokens(ref_dir, module, st) for st in STAGES}
+    def _resolve(nn_, st):
+        return (_map_stage_net(nn_, st, scope, rename_map) or _stage_net(nn_, toks[st]))
+    for g in gates:
+        pcs = g.get('port_connections_per_stage') or _pcstage(g['port_connections'])
+        for st in STAGES:
+            if isinstance(pcs.get(st), dict):
+                pcs[st] = {p: _resolve(v, st) for p, v in pcs[st].items()}
+        g['port_connections_per_stage'] = pcs
+        g.setdefault('instance_name', g['output_net'])
+    for rw in rewires:
+        ops = {st: _resolve(rw['old_net'], st) for st in STAGES}
+        rw['old_net_per_stage'] = ops
+    return {'gates': gates, 'rewires': rewires, 'errors': errs, 'summary': r['summary']}
 
 
 # small gate helpers reusing the resolved library cells
@@ -441,6 +521,22 @@ def _or_nets(nets, gates, mk, cfg):
 
 if __name__ == '__main__':
     import sys, json
+    if len(sys.argv) >= 4 and sys.argv[1] == '--emit':
+        ref, sig = sys.argv[2], sys.argv[3]
+        mod = sys.argv[4] if len(sys.argv) > 4 else 'ddrss_umcdat_t_umcrecdsp'
+        out = emit_comb_net_force(ref, mod, sig, jira='9666')
+        allnets = {g['output_net'] for g in out['gates']}
+        leaves = sorted({v for g in out['gates'] for k, v in g['port_connections'].items()
+                         if k not in ('Z', 'ZN') and isinstance(v, str) and v not in allnets
+                         and not v.startswith(("1'b", "0'b"))})
+        print(f"gates={len(out['gates'])} rewires={len(out['rewires'])} errors={len(out['errors'])}")
+        print(f"summary={out['summary']}")
+        print(f"leaves ({len(leaves)}): {leaves}")
+        for e in out['errors']:
+            print('  ERR:', e)
+        for rw in out['rewires']:
+            print(f"  rewire {rw['old_net']}->{rw['new_net']} pin_per_stage={rw['pin_per_stage']}")
+        sys.exit(0)
     if len(sys.argv) >= 4 and sys.argv[1] == '--lower':
         ref, sig = sys.argv[2], sys.argv[3]
         mod = sys.argv[4] if len(sys.argv) > 4 else 'ddrss_umcdat_t_umcrecdsp'
