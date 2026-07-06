@@ -271,9 +271,14 @@ def width_of(node, wm, macros=None):
         return 1
     if t == 'part':
         hi = _const_int(node[2]); lo = _const_int(node[3])
+        if hi is None:
+            hi = _eval_bound(_flatten(node[2]), macros)
+        if lo is None:
+            lo = _eval_bound(_flatten(node[3]), macros)
         return abs(hi - lo) + 1 if (hi is not None and lo is not None) else None
     if t == 'idxpart':
-        return _const_int(node[3])   # int if width literal; else resolved at lowering
+        w = _const_int(node[3])
+        return w if w is not None else _eval_bound(_flatten(node[3]), macros)
     if t == 'un':
         return 1 if node[1] == '!' else width_of(node[2], wm, macros)
     if t == 'red':
@@ -494,7 +499,32 @@ class _Synth:
             return self._or(self.scalar(a), self.scalar(b))
         if op in ('==', '!='):
             return self._eq(a, b, op == '!=')
+        if op in ('<', '>', '<=', '>='):
+            return self._cmp(a, b, op)
         raise _SErr(f"binary op {op} unsupported")
+
+    def _cmp(self, a, b, op):
+        """Unsigned magnitude comparator -> 1-bit net. Built from AND/OR/INV only."""
+        wa = self._w(a); wb = self._w(b)
+        w = max([x for x in (wa, wb) if x], default=1)
+        # a>b = OR_k ( a_k & ~b_k & AND_{j>k} (a_j==b_j) ); a<b symmetric.
+        gt_terms, lt_terms, eq_terms = [], [], []
+        eq_bits = [self._xnor(self.bit(a, k), self.bit(b, k)) for k in range(w)]
+        for k in range(w):
+            higher_eq = self._reduce(eq_bits[k + 1:], 'and') if k + 1 < w else "1'b1"
+            ak, bk = self.bit(a, k), self.bit(b, k)
+            gt_terms.append(self._and(self._and(ak, self._inv(bk)), higher_eq))
+            lt_terms.append(self._and(self._and(self._inv(ak), bk), higher_eq))
+        gt = self._reduce(gt_terms, 'or')
+        lt = self._reduce(lt_terms, 'or')
+        eq = self._reduce(eq_bits, 'and')
+        if op == '>':
+            return gt
+        if op == '<':
+            return lt
+        if op == '>=':
+            return self._or(gt, eq)
+        return self._or(lt, eq)   # '<='
 
     def _eq(self, a, b, neg):
         wa = self._w(a); wb = self._w(b)
@@ -553,27 +583,52 @@ class _Synth:
                 re.search(r'\b' + re.escape(name) + r'\s*(?:\[[^\]]*\])?\s*<=', self._stripped))
         return self._reg_cache[name]
 
+    def _cont_assign_rhs(self, name):
+        """RHS of a continuous assignment (`assign name = ...;` or `wire ... name = ...;`).
+        Returns the RHS string or None. Reached only after the always-block tree is empty,
+        so a `name = expr;` here is a continuous (combinational) driver, not a procedural
+        blocking assign (which would live inside an always block parse_always would find)."""
+        if not hasattr(self, '_ca_cache'):
+            self._ca_cache = {}
+        if name in self._ca_cache:
+            return self._ca_cache[name]
+        if not hasattr(self, '_stripped'):
+            self._stripped = re.sub(r'/\*.*?\*/', '', re.sub(r'//[^\n]*', '', self.rtl), flags=re.DOTALL)
+        # `name =` but not `<=`, `==`, `>=`, `<=`, `!=` (the \s* won't swallow a leading
+        # operator char, and (?!=) rejects `==`).
+        m = re.search(r'\b' + re.escape(name) + r'\s*=(?!=)\s*(.*?);', self._stripped, re.DOTALL)
+        rhs = m.group(1).strip() if m else None
+        self._ca_cache[name] = rhs
+        return rhs
+
     def _rebuild(self, name):
         if name in self._sig_cache:
             return self._sig_cache[name]
         try:
             tree = _parse_always_for(self.rtl, name)
         except Exception:
-            return None
-        if tree is None:
-            return None
+            tree = None
+        has_always = bool(tree and (tree.get('default') is not None or tree.get('assigns')))
         self._building.add(name)
         try:
             w = self.wm.get(name) or 1
-            dflt_ast = parse_expr(tree['default']) if tree.get('default') is not None else None
-            branch_asts = [(cond, parse_expr(val)) for cond, val in tree['assigns']]
-            bits = {}
-            for i in range(w):
-                cur = self.bit(dflt_ast, i) if dflt_ast is not None else "1'b0"
-                for cond, vast in branch_asts:
-                    sel = self._path_scalar(cond)
-                    cur = self._mux(sel, self.bit(vast, i), cur)
-                bits[i] = cur
+            if has_always:
+                dflt_ast = parse_expr(tree['default']) if tree.get('default') is not None else None
+                branch_asts = [(cond, parse_expr(val)) for cond, val in tree['assigns']]
+                bits = {}
+                for i in range(w):
+                    cur = self.bit(dflt_ast, i) if dflt_ast is not None else "1'b0"
+                    for cond, vast in branch_asts:
+                        sel = self._path_scalar(cond)
+                        cur = self._mux(sel, self.bit(vast, i), cur)
+                    bits[i] = cur
+            else:
+                # continuous assignment (`assign`/`wire name = expr;`)
+                rhs = self._cont_assign_rhs(name)
+                if rhs is None:
+                    return None
+                vast = parse_expr(rhs)
+                bits = {i: self.bit(vast, i) for i in range(w)}
             self._sig_cache[name] = bits
             return bits
         finally:

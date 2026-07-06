@@ -340,31 +340,25 @@ def compute_delta(old_tree, new_tree):
     }
 
 
-# ── LOWER: delta -> gates (constant-value subtree => per-bit boolean) ─────────
+# ── LOWER: delta -> gates (recursive _Synth grounds selector + values) ────────
 try:
-    from eco_emit_priority_force import (synthesize_condition, _PErr as _PF,
-                                         _const_bits, _module_netlist_body, _mod_key)
+    from eco_emit_priority_force import _module_netlist_body, _mod_key
     from eco_rtl_config import RtlConfig
+    from eco_rtl_synth import _Synth, parse_expr, build_width_map
 except Exception:
-    synthesize_condition = _const_bits = _module_netlist_body = _mod_key = RtlConfig = None
-    _PF = Exception
-
-
-def _cond_to_expr(cond):
-    """(expr,sense) AND-terms -> a single condition string for synthesize_condition."""
-    if not cond:
-        return "1'b1"
-    return ' & '.join((f'({e})' if s else f'~({e})') for e, s in cond)
+    _module_netlist_body = _mod_key = RtlConfig = None
+    _Synth = parse_expr = build_width_map = None
 
 
 def lower_delta(ref_dir, module, signal, jira='eco'):
-    """Rebuild the DELTA of `signal`'s cone (NEW vs OLD RTL) as gates. Only supports a
-    CONSTANT-valued subtree (opcodes/enums) — the per-bit value is then pure boolean:
-      region_bit[b] = OR over subtree branches whose value has bit b set (branches are
-      mutually exclusive via the parser's negations) | default_bit[b].
-    Returns {'selector', 'region_bits':{b:net}, 'width', 'gates', 'orig'} or None
-    (no delta). Raises _CErr fail-closed on anything unsupported (non-const value, etc.)."""
-    if not (synthesize_condition and RtlConfig):
+    """Rebuild the DELTA of `signal`'s cone (NEW vs OLD RTL) as gates using the recursive
+    RTL synthesizer (_Synth). Fully general: the changed subtree is lowered as a priority
+    mux tree (default, then each branch overrides in order) where BOTH the branch
+    conditions AND the branch values are grounded recursively to real netlist nets /
+    registers — no constant-only restriction. Returns
+      {'selector', 'region_bits':{b:net}, 'width', 'gates', 'summary'} or None (no delta).
+    Raises _CErr fail-closed on anything unsupported."""
+    if not (_Synth and RtlConfig):
         raise _CErr("synthesizer unavailable")
     base = _mod_key(module) if _mod_key else re.sub(r'^ddrss_\w+?_t_', '', module)
     from eco_extract_pf_condition import resolve_rtl
@@ -372,7 +366,8 @@ def lower_delta(ref_dir, module, signal, jira='eco'):
     old_rtl = resolve_rtl(ref_dir=ref_dir, module=base, subdir='PreEco/SynRtl')
     if not (new_rtl and old_rtl):
         raise _CErr(f"cannot locate {signal} RTL in both trees")
-    nt = parse_always(open(new_rtl, errors='replace').read(), signal)
+    rtl_text = open(new_rtl, errors='replace').read()
+    nt = parse_always(rtl_text, signal)
     ot = parse_always(open(old_rtl, errors='replace').read(), signal)
     delta = compute_delta(ot, nt)
     if delta is None:
@@ -380,46 +375,35 @@ def lower_delta(ref_dir, module, signal, jira='eco'):
     cfg = RtlConfig(ref_dir)
     nlbody = _module_netlist_body(ref_dir, module) if _module_netlist_body else ''
     innl = (lambda s: bool(re.search(r'\b' + re.escape(s) + r'\b', nlbody))) if nlbody else (lambda s: True)
-    rtl_text = open(new_rtl, errors='replace').read()
+    macros = {k: cfg.value(k) for k in cfg.defs if cfg.value(k) is not None} if cfg else {}
+    wm = build_width_map(rtl_text, macros)
     seq = [0]
     def mk(t):
         seq[0] += 1
         return f'n_eco_{jira}_cr_{t}_{seq[0]}'
-    gates = []
-    def synth(expr):
-        cn, gg = synthesize_condition(expr, jira, module, cfg, mk, rtl_text=rtl_text, in_netlist=innl)
-        gates.extend(gg)
-        return cn
-    # selector = the region prefix
-    selector = synth(_cond_to_expr(delta['prefix']))
-    # subtree branches -> (cond_net, const_bits) ; require constant values
-    branches = []
-    for suffix, value in delta['subtree']:
-        cb = _const_bits(value) or (_const_bits(cfg.defs.get(str(value).lstrip('`'))) if cfg else None)
-        if not cb:
-            raise _CErr(f"non-constant subtree value {value!r} (delta rebuild supports "
-                        f"constant/enum branches only)")
-        branches.append((synth(_cond_to_expr(suffix)), cb))
-    dfl = _const_bits(delta['default']) or (_const_bits(cfg.defs.get(str(delta['default']).lstrip('`'))) if cfg and delta['default'] else None)
-    width = max([len(cb) for _, cb in branches] + ([len(dfl)] if dfl else []) or [1])
-    # per bit: OR of branch conds where that opcode bit == 1 (branches mutually exclusive)
-    region_bits = {}
-    for b in range(width):
-        ones = []
-        for cn, cb in branches:
-            bit = cb[len(cb) - 1 - b] if b < len(cb) else '0'
-            if bit == '1':
-                ones.append(cn)
-        dbit = (dfl[len(dfl) - 1 - b] if dfl and b < len(dfl) else '0')
-        if dbit == '1':
-            # default contributes when NO branch matches: default & ~OR(all branch conds)
-            allc = [cn for cn, _ in branches]
-            nm = _or_nets(allc, gates, mk, cfg) if allc else None
-            term = _and2(_inv_net(nm, gates, mk, cfg), None, gates, mk, cfg) if nm else "1'b1"
-            ones = ones + ([term] if term != "1'b1" else [])
-        region_bits[b] = _or_nets(ones, gates, mk, cfg) if ones else "1'b0"
+    synth = _Synth(cfg, wm, rtl_text, innl, mk, module)
+    try:
+        # selector = region prefix (path down to the changed subtree)
+        selector = synth._path_scalar(delta['prefix'])
+        # width: signal decl, else widest branch/default value
+        width = wm.get(signal)
+        if not width:
+            vals = [v for _, v in delta['subtree']] + ([delta['default']] if delta['default'] else [])
+            width = max([synth._w(parse_expr(v)) or 1 for v in vals] or [1])
+        # subtree -> priority mux tree per bit (default, then branches override in order)
+        dflt_ast = parse_expr(delta['default']) if delta['default'] is not None else None
+        branch_asts = [(cond, parse_expr(val)) for cond, val in delta['subtree']]
+        region_bits = {}
+        for b in range(width):
+            cur = synth.bit(dflt_ast, b) if dflt_ast is not None else "1'b0"
+            for cond, vast in branch_asts:
+                sel = synth._path_scalar(cond)
+                cur = synth._mux(sel, synth.bit(vast, b), cur)
+            region_bits[b] = cur
+    except Exception as e:
+        raise _CErr(f"delta lowering failed for {signal}: {e}")
     return {'selector': selector, 'region_bits': region_bits, 'width': width,
-            'gates': gates, 'summary': delta['summary']}
+            'gates': synth.gates, 'summary': delta['summary']}
 
 
 # small gate helpers reusing the resolved library cells
