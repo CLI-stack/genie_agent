@@ -750,6 +750,23 @@ def emit(rtl_diff, study, jira, ref_dir=None):
                 if bspec.get('old_net_per_stage'):
                     rw['old_net_per_stage'] = bspec['old_net_per_stage']
                 new_rewires.append(rw)
+        # PER-STAGE NET RESOLUTION: the cone/mux leaves are resolved against the
+        # Synthesize netlist, but P&R flattens bus bits (sig[i] -> sig_i_). Rewrite
+        # each entry's per-stage nets to the name that actually exists in that stage,
+        # so the gates/rewires apply in PrePlace/Route (not just Synthesize).
+        if ref_dir:
+            toks = {st: _stage_net_tokens(ref_dir, mod, st) for st in STAGES}
+            for g in new_gates:
+                pcs = g.get('port_connections_per_stage') or {}
+                for st in STAGES:
+                    if st in pcs and isinstance(pcs[st], dict):
+                        pcs[st] = {p: _stage_net(v, toks[st]) for p, v in pcs[st].items()}
+                g['port_connections_per_stage'] = pcs
+            for r in new_rewires:
+                ops = dict(r.get('old_net_per_stage') or {})
+                for st in STAGES:
+                    ops[st] = _stage_net(ops.get(st, r.get('old_net')), toks[st])
+                r['old_net_per_stage'] = ops
         for st in STAGES:
             study.setdefault(st, []).extend([dict(g) for g in new_gates] + [dict(r) for r in new_rewires])
             added += len(new_gates) + len(new_rewires)
@@ -761,6 +778,40 @@ def emit(rtl_diff, study, jira, ref_dir=None):
 # driver mis-attributes a mux select as the net's driver. A net whose true driver is
 # an adder sum is simply not classified (falls back to the safe registered path).
 _OUT_PINS_DRV = ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO')
+_STAGE_TOKS_CACHE = {}
+
+
+def _stage_net_tokens(ref_dir, module, stage):
+    """Set of net tokens present in <module>'s PreEco <stage> netlist (cached). Used
+    to pick the stage-correct net name — P&R flattens bus bits `sig[i]` -> `sig_i_`."""
+    key = (ref_dir, _mod_key(module), stage)
+    if key in _STAGE_TOKS_CACHE:
+        return _STAGE_TOKS_CACHE[key]
+    body = _module_netlist_body(ref_dir, module, stage)
+    toks = set(re.findall(r'\.\w+\s*\(\s*([^)]*?)\s*\)', body))
+    # split concatenations/buses into individual tokens too
+    flat = set()
+    for t in toks:
+        flat.update(re.findall(r"[A-Za-z_]\w*(?:\[\d+\])?|\w+_\d+_", t))
+    _STAGE_TOKS_CACHE[key] = flat
+    return flat
+
+
+def _flatten_bit(net):
+    """P&R bus-bit flatten: sig[i] -> sig_i_ (a common Synth->P&R renaming)."""
+    return re.sub(r'\[(\d+)\]', r'_\1_', net) if isinstance(net, str) else net
+
+
+def _stage_net(net, toks):
+    """Stage-correct name for `net`: keep as-is if present (or a fresh n_eco_/const),
+    else try the flat `sig_i_` form; leave unchanged if neither (verifier/resolver
+    handles a genuine rename)."""
+    if not isinstance(net, str) or net.startswith('n_eco_') or re.match(r"^\d*'[bhdo]", net):
+        return net
+    if net in toks:
+        return net
+    fn = _flatten_bit(net)
+    return fn if (fn != net and fn in toks) else net
 
 
 def _driver_map(ref_dir, module, stage='Synthesize'):
