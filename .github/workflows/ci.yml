@@ -35,7 +35,7 @@ jobs:
         run: |
           echo "=== Scanning for Atlassian tokens ==="
           # ATATT3x is the prefix for all Atlassian API tokens
-          if grep -rn "ATATT3x" --include="*.csh" --include="*.py" --include="*.sh" --include="*.yml" --include="*.md" .; then
+          if grep -rn "ATATT3x" --include="*.csh" --include="*.py" --include="*.sh" --include="*.yml" --include="*.md" --exclude-dir=".github" .; then
             echo ""
             echo "ERROR: Atlassian API token detected in a committed file."
             echo "Remove the token and use atlassian_env.csh (gitignored) instead."
