@@ -290,11 +290,16 @@ _WIDTH_CACHE = {}
 
 
 def width_of(node, wm, macros=None):
-    """Infer the bit width of an AST node (memoized; env-independent). int or None."""
-    key = (node, id(wm))
-    hit = _WIDTH_CACHE.get(key)
-    if hit is not None or key in _WIDTH_CACHE:
-        return hit
+    """Infer the bit width of an AST node (memoized; env-independent). int or None.
+    Some nodes ('concat' holds a list of children, 'rep') are not hashable — fall back
+    to no-cache for those instead of crashing."""
+    try:
+        key = (node, id(wm))
+        hit = _WIDTH_CACHE.get(key)
+        if hit is not None or key in _WIDTH_CACHE:
+            return hit
+    except TypeError:
+        return _width_of(node, wm, macros)
     r = _width_of(node, wm, macros)
     _WIDTH_CACHE[key] = r
     return r

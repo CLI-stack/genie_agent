@@ -224,6 +224,37 @@ def _module_base(name):
     return re.sub(r'_\d+$', '', b)
 
 
+_REG_SIG_CACHE = {}
+
+
+def _is_registered_signal(signal, module, ref_dir):
+    """True if `signal` is a REGISTER (assigned via nonblocking `<=`) in `module`'s new
+    RTL. Used to reject comb_net_force on a flop (it re-drives combinational nets only).
+    Best-effort: resolves the module RTL under data/SynRtl; returns False if unresolvable
+    (the emitter still fail-closes on a flop driver)."""
+    if not (signal and module and ref_dir):
+        return False
+    key = (ref_dir, module, signal)
+    if key in _REG_SIG_CACHE:
+        return _REG_SIG_CACHE[key]
+    base = re.sub(r'_\d+$', '', re.sub(r'^ddrss_\w+?_t_', '', str(module)))
+    text = None
+    try:
+        from eco_extract_pf_condition import resolve_rtl
+        path = resolve_rtl(ref_dir=ref_dir, module=base, subdir='SynRtl')
+        if path and os.path.isfile(path):
+            text = open(path, errors='replace').read()
+    except Exception:
+        text = None
+    res = False
+    if text:
+        text = re.sub(r'//[^\n]*', '', text)
+        bare = str(signal).split('[')[0].strip()
+        res = bool(re.search(r'\b' + re.escape(bare) + r'\s*(?:\[[^\]]*\])?\s*<=', text))
+    _REG_SIG_CACHE[key] = res
+    return res
+
+
 def _hunk_completeness_issues(rtl_diff, ref_dir):
     """FAIL-CLOSED completeness: every changed LOGIC hunk in the PreEco/SynRtl->SynRtl
     diff must be represented by a change in the rtl_diff. Counts real-code hunks per
@@ -2833,10 +2864,28 @@ def main():
             comb_net_force_issues.append(
                 f"changes[{idx}] comb_net_force missing module_name — the builder needs the "
                 f"module whose RTL/netlist define the signal's cone.")
-        if not (c.get('signal') or c.get('new_token') or c.get('target')):
+        sig_cnf = c.get('signal') or c.get('new_token') or c.get('target')
+        if not sig_cnf:
             comb_net_force_issues.append(
                 f"changes[{idx}] comb_net_force missing `signal` — the combinational net to "
                 f"re-drive (the builder diffs its PreEco vs new RTL cone).")
+        # comb_net_force does NOT replicate across uniquified copies — that is what
+        # eco_emit_uniquify does for and_term/new_port. A uniquified change wrongly
+        # classified as comb_net_force builds only the canonical module -> 39 copies missed.
+        if c.get('uniquified_family'):
+            comb_net_force_issues.append(
+                f"changes[{idx}] comb_net_force on {sig_cnf!r} has uniquified_family="
+                f"{c.get('uniquified_family')!r} — comb_net_force cannot replicate to copies. "
+                f"An OR/AND term folded into a uniquified compare net is an `and_term` "
+                f"(term_op set) that eco_emit_uniquify clones to all copies.")
+        # comb_net_force is COMBINATIONAL-only (it renames a comb driver's output pin). A
+        # REGISTER (nonblocking <=) must be modeled as and_term/eq_decode/enable_swap on the
+        # gate-net feeding its D/enable cone, not re-driven as if combinational.
+        if sig_cnf and args.ref_dir and _is_registered_signal(sig_cnf, c.get('module_name'), args.ref_dir):
+            comb_net_force_issues.append(
+                f"changes[{idx}] comb_net_force target {sig_cnf!r} is a REGISTER (assigned via "
+                f"nonblocking <= in RTL) — comb_net_force re-drives a combinational net. Model the "
+                f"change on the gate-net feeding its D/enable cone (and_term/eq_decode/enable_swap).")
     # DOUBLE-DRIVE guard: a comb_net_force rebuilds a net's ENTIRE new cone (it diffs
     # PreEco vs new RTL), so it subsumes any priority_force that also forces that SAME
     # net. Emitting both would splice two driver-side rewires of the net -> conflict.
