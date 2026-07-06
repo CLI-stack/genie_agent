@@ -538,7 +538,7 @@ def _pcstage(pc):
     return {s: dict(pc) for s in STAGES}
 
 
-def emit(rtl_diff, study, jira, ref_dir=None):
+def emit(rtl_diff, study, jira, ref_dir=None, rename_map=None):
     seq = [0]
     def nn(tag):
         seq[0] += 1
@@ -751,21 +751,27 @@ def emit(rtl_diff, study, jira, ref_dir=None):
                     rw['old_net_per_stage'] = bspec['old_net_per_stage']
                 new_rewires.append(rw)
         # PER-STAGE NET RESOLUTION: the cone/mux leaves are resolved against the
-        # Synthesize netlist, but P&R flattens bus bits (sig[i] -> sig_i_). Rewrite
-        # each entry's per-stage nets to the name that actually exists in that stage,
-        # so the gates/rewires apply in PrePlace/Route (not just Synthesize).
+        # Synthesize netlist, but P&R renames internal nets (bus-bit flatten
+        # sig[i]->sig_i_, MB-flop banking, CTS restructuring). Resolve each entry's
+        # per-stage nets in priority order: (1) fenets rename map (AUTHORITATIVE —
+        # formal FM equivalence, handles MB banking that name heuristics cannot),
+        # (2) flat-name heuristic, (3) as-is (verifier/resolver handles the rest).
         if ref_dir:
+            scope = c.get('scope') or c.get('instance_scope') or ''
             toks = {st: _stage_net_tokens(ref_dir, mod, st) for st in STAGES}
+            def _resolve(net, st):
+                return (_map_stage_net(net, st, scope, rename_map)
+                        or _stage_net(net, toks[st]))
             for g in new_gates:
                 pcs = g.get('port_connections_per_stage') or {}
                 for st in STAGES:
                     if st in pcs and isinstance(pcs[st], dict):
-                        pcs[st] = {p: _stage_net(v, toks[st]) for p, v in pcs[st].items()}
+                        pcs[st] = {p: _resolve(v, st) for p, v in pcs[st].items()}
                 g['port_connections_per_stage'] = pcs
             for r in new_rewires:
                 ops = dict(r.get('old_net_per_stage') or {})
                 for st in STAGES:
-                    ops[st] = _stage_net(ops.get(st, r.get('old_net')), toks[st])
+                    ops[st] = _resolve(ops.get(st, r.get('old_net')), st)
                 r['old_net_per_stage'] = ops
         for st in STAGES:
             study.setdefault(st, []).extend([dict(g) for g in new_gates] + [dict(r) for r in new_rewires])
@@ -814,6 +820,24 @@ def _stage_net(net, toks):
     return fn if (fn != net and fn in toks) else net
 
 
+_BAD_MAP_VALS = ('UNRESOLV', 'NEEDS_', 'MODE_', 'PENDING')
+
+
+def _map_stage_net(net, stage, scope, rename_map):
+    """Authoritative per-stage net from the fenets rename map (formal FM equivalence),
+    keyed by '<scope>/<net>'. Returns None when unavailable so the caller falls back
+    to the flat-name heuristic. This is what makes P&R-renamed leaves (MB-flop
+    banking, bus-bit flatten) resolve correctly instead of by name-guessing."""
+    if not (rename_map and isinstance(net, str)):
+        return None
+    entry = rename_map.get(f'{scope}/{net}'.strip('/')) or rename_map.get(net)
+    if isinstance(entry, dict):
+        v = entry.get(stage)
+        if isinstance(v, str) and v and not v.startswith(_BAD_MAP_VALS):
+            return v
+    return None
+
+
 def _driver_map(ref_dir, module, stage='Synthesize'):
     """Map each net in <module>'s PreEco <stage> netlist to its driver: net -> (inst,
     out_pin, is_flop). is_flop = the driving instance is clocked (has CP/CK). Lets the
@@ -851,9 +875,19 @@ def main():
     ap.add_argument('--ref-dir', help='REF_DIR: when given, every priority_force bit is '
                     'grounded against PreEco Synthesize netlist and the build ABORTS '
                     '(nonzero exit, study untouched) on any dff_cell/old_net mismatch.')
+    ap.add_argument('--rename-map', default=None,
+                    help='fenets rename map JSON (<TAG>_eco_fenets_rename_map.json). '
+                         'AUTHORITATIVE per-stage net resolution for cone leaves — used '
+                         'before the flat-name heuristic so P&R-renamed nets resolve correctly.')
     args = ap.parse_args()
     rtl_diff = json.loads(open(args.rtl_diff).read())
     study = json.loads(open(args.study).read())
+    rename_map = None
+    if args.rename_map and os.path.isfile(args.rename_map):
+        try:
+            rename_map = json.loads(open(args.rename_map).read())
+        except Exception:
+            rename_map = None
 
     # Fail-closed grounding: refuse to build on hallucinated/wrong nets.
     if args.ref_dir:
@@ -867,7 +901,7 @@ def main():
             open(args.output.replace('.json', '_priority_force_marker.txt'), 'w').write(marker)
             return 2
 
-    n, build_errs = emit(rtl_diff, study, args.jira, ref_dir=args.ref_dir)
+    n, build_errs = emit(rtl_diff, study, args.jira, ref_dir=args.ref_dir, rename_map=rename_map)
     if build_errs:
         marker = ("ECO_SCRIPT_LAUNCHED: eco_emit_priority_force.py\n"
                   f"  ABORTED — {len(build_errs)} priority_force condition build error(s):\n"

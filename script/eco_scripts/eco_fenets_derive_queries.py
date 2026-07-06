@@ -36,6 +36,63 @@ Usage:
 """
 import argparse, json, re, sys
 from pathlib import Path
+try:
+    from eco_rtl_config import RtlConfig
+    from eco_extract_pf_condition import extract_added_branch_condition, resolve_rtl
+    from eco_emit_priority_force import (synthesize_condition, _PErr, _OUT_PINS_DRV,
+                                         _module_netlist_body)
+except Exception:
+    RtlConfig = extract_added_branch_condition = resolve_rtl = None
+    synthesize_condition = _module_netlist_body = None
+    _PErr = Exception
+    _OUT_PINS_DRV = ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO')
+
+
+def _pf_cone_leaves(change, ref_dir):
+    """Real-net leaves of a priority_force condition cone — decomposed exactly as the
+    Step-3 emitter will build it (diff-aware added-branch condition -> synthesize).
+    These are the nets fenets must resolve per-stage so the cone applies in P&R.
+    Returns [] when the helpers/ref_dir are unavailable or the condition is unbuildable."""
+    if not (ref_dir and RtlConfig and synthesize_condition and extract_added_branch_condition):
+        return []
+    mod = change.get('module_name') or ''
+    base = re.sub(r'^ddrss_\w+?_t_', '', mod)
+    anchor = next((f for f in (change.get('forced_signals') or []) if f.get('const_macro')), None)
+    cond_expr = None
+    if anchor:
+        added = extract_added_branch_condition(ref_dir, base, anchor['signal'], anchor['const_macro'])
+        if len(added) == 1:
+            cond_expr = added[0].get('condition_expr')
+    if not cond_expr:
+        cond_expr = change.get('condition_expr')
+    if not cond_expr:
+        return []
+    cfg = RtlConfig(ref_dir)
+    rtl = resolve_rtl(ref_dir=ref_dir, module=base) if resolve_rtl else None
+    rtl_text = open(rtl, errors='replace').read() if rtl else None
+    # REAL netlist predicate so local always@* regs (e.g. WckIsInSync) decompose to
+    # their actual netlist leaves (WckSyncCtr*) — exactly as the Step-3 emitter does.
+    nlbody = _module_netlist_body(ref_dir, mod) if _module_netlist_body else ''
+    innl = (lambda s: bool(re.search(r'\b' + re.escape(s) + r'\b', nlbody))) if nlbody else None
+    seq = [0]
+    def _mk(t):
+        seq[0] += 1
+        return f'_q_{t}_{seq[0]}'
+    try:
+        _c, cone = synthesize_condition(cond_expr, 'q', mod, cfg, _mk,
+                                        rtl_text=rtl_text, in_netlist=innl)
+    except _PErr:
+        return []
+    outs = {g['output_net'] for g in cone}
+    leaves = set()
+    for g in cone:
+        for p, v in (g.get('port_connections') or {}).items():
+            if p in _OUT_PINS_DRV or not isinstance(v, str):
+                continue
+            if v in outs or v.startswith('_q_') or re.match(r"^\d*'[bhdo]", v):
+                continue
+            leaves.add(v)
+    return sorted(leaves)
 
 
 _SKIP_INPUT_PREFIXES = ("n_eco_", "eco_", "1'b", "0'b", "1'h", "0'h")
@@ -69,7 +126,7 @@ def _abs_path(tile, scope, signal):
     return '/'.join(p.strip('/') for p in parts if p)
 
 
-def derive(rtl_diff, tile=''):
+def derive(rtl_diff, tile='', ref_dir=None):
     out = []
     # Signals introduced by this ECO (new ports/wires) do not exist in PreEco and
     # are not queryable via find_equivalent_nets — used to skip them below.
@@ -324,6 +381,20 @@ def derive(rtl_diff, tile=''):
                         'source':   f'changes[{idx}].enable_chain[{g.get("seq","?")}]',
                     })
 
+        # Cat 4b: priority_force condition-cone leaves. The cone is synthesized at
+        # Step 3, but its leaves are derivable now from the diff-aware added-branch
+        # condition. Query them so fenets resolves each per-stage — the emitter then
+        # consumes the rename map (P&R renames these internal nets, e.g. bus-bit
+        # flatten + MB-flop banking, which name heuristics cannot resolve reliably).
+        if ct == 'priority_force':
+            for leaf in _pf_cone_leaves(c, ref_dir):
+                out.append({
+                    'net_path': _abs_path(tile, scope, leaf),
+                    'signal':   leaf,
+                    'category': 4,
+                    'source':   f'changes[{idx}].priority_force_cone_leaf',
+                })
+
     # Deduplicate by net_path (preserve first source)
     seen, unique = set(), []
     for q in out:
@@ -342,6 +413,9 @@ def main():
                         'rtl_diff scope is relative. Without this, FM queries '
                         'will miss the tile-root level.')
     p.add_argument('--output',   required=True)
+    p.add_argument('--ref-dir',  default=None,
+                   help='REF_DIR — enables deriving priority_force condition-cone '
+                        'leaves (decomposed like Step 3) so fenets resolves them per-stage.')
     args = p.parse_args()
 
     try:
@@ -350,7 +424,7 @@ def main():
         print(f'FAIL: cannot read rtl_diff: {e}', file=sys.stderr)
         return 1
 
-    queries = derive(rtl, args.tile)
+    queries = derive(rtl, args.tile, ref_dir=args.ref_dir)
     Path(args.output).write_text(json.dumps(queries, indent=2))
 
     by_cat = {}

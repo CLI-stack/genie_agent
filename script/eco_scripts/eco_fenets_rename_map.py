@@ -34,6 +34,10 @@ Output schema:
 """
 import argparse, glob, json, os, re, subprocess, sys
 from pathlib import Path
+try:
+    from eco_fenets_derive_queries import _pf_cone_leaves
+except Exception:
+    _pf_cone_leaves = None
 
 # ── Raw FM rpt parser ────────────────────────────────────────────────────────
 
@@ -121,14 +125,22 @@ def parse_raw_rpt(path):
 
 # ── Build query plan from rtl_diff ───────────────────────────────────────────
 
-def derive_queries(rtl_diff):
+def derive_queries(rtl_diff, ref_dir=None):
     """Walk changes[] and produce list of {net_path, signal, source} for every
     net we want a per-stage rename for. See eco_fenets_runner.md STEP A
-    for the 7 categories."""
+    for the 7 categories. With ref_dir, also derives priority_force condition-cone
+    leaves (matching eco_fenets_derive_queries) so the map covers them."""
     queries = []
     for idx, c in enumerate(rtl_diff.get('changes', [])):
         ct = c.get('change_type', '')
         scope = c.get('scope') or c.get('instance_scope') or ''
+
+        # priority_force condition-cone leaves (same derivation as the query script)
+        if ct == 'priority_force' and ref_dir and _pf_cone_leaves:
+            for leaf in _pf_cone_leaves(c, ref_dir):
+                queries.append({'net_path': f'{scope}/{leaf}'.strip('/'),
+                                'signal': leaf,
+                                'source': f'changes[{idx}].priority_force_cone_leaf'})
 
         # Cat 1: wire_swap / and_term tokens
         if ct in ('wire_swap', 'and_term'):
@@ -250,7 +262,7 @@ def build_rename_map(rtl_diff, fm_results, tag, tile, raw_rpts, ref_dir=''):
     """fm_results is dict {(stage, signal): {status, positive, inverted}} merged
     across all parsed raw rpts. ref_dir is used by _wire_on_pin for Patch #3
     polarity-correct actual_wire emission."""
-    queries = derive_queries(rtl_diff)
+    queries = derive_queries(rtl_diff, ref_dir)
     rmap = {
         '_metadata': {
             'tag': tag,
