@@ -340,6 +340,18 @@ python3 script/eco_scripts/eco_emit_priority_force.py \
 
 Verify stdout shows `ECO_SCRIPT_LAUNCHED: eco_emit_priority_force.py` and `netlist-grounded: yes`. `--rename-map` supplies the AUTHORITATIVE per-stage net names (formal FM equivalence) for the condition-cone leaves, so the cone applies in PrePlace/Route (P&R renames those internal nets). It falls back to a bus-bit flatten heuristic then as-is; leftover `NET-ABSENT-IN-STAGE` stragglers are handled by the verifier's `eco_resolve_synth_internal.py`. `--ref-dir` makes it FAIL-CLOSED: every `bits[].dff_cell`/`old_net` is checked against the PreEco Synthesize netlist and the build ABORTS (exit 2, study untouched, marker lists the mismatches) if any bit would rewire the wrong pin. On abort, the step-1 RTL diff has a wrong flop/net — fix it and re-run; do NOT proceed to Step 4. This runs BEFORE eco_emit_rewire_finalize so its DFF-pin rewires get SI/SE consistency added.
 
+**MANDATORY post-Step 3: Run eco_cone_rebuild.py --emit-into-study (deterministic combinational net-force build):**
+```bash
+python3 script/eco_scripts/eco_cone_rebuild.py --emit-into-study \
+    --rtl-diff data/<TAG>_eco_rtl_diff.json \
+    --study    data/<TAG>_eco_preeco_study.json \
+    --jira     <JIRA> \
+    --ref-dir  <REF_DIR> \
+    --rename-map data/<TAG>_eco_fenets_rename_map.json \
+    --output   data/<TAG>_eco_preeco_study.json
+```
+For every `comb_net_force` change this rebuilds the combinational signal's changed cone region from the PreEco-vs-new RTL diff and re-drives the net across ALL fanout, per stage: the original driver's output pin is renamed `net → net_orig` (driver-side `rewire`) and a mux `net = region_selector ? rebuilt_region : net_orig` is spliced, so the net takes the new value inside the changed region and the original value elsewhere. All cone leaves are grounded to real netlist nets/registers (local combinational signals, per-bit `sig[i]=` drivers, and continuous assigns are lowered recursively); `--rename-map` supplies AUTHORITATIVE per-stage names, falling back to a bus-bit flatten heuristic. **You MUST verify stdout shows** `ECO_SCRIPT_LAUNCHED: eco_cone_rebuild.py --emit-into-study` (and `comb_net_force entries spliced: N`); if absent, re-run. `--ref-dir` makes it FAIL-CLOSED (exit 2, study UNTOUCHED) if any leaf is ungrounded or a stage lacks a combinational driver for the net. Runs AFTER priority_force (so any constant net-force muxes already exist) and BEFORE eco_emit_uniquify + eco_emit_rewire_finalize. No-op when the RTL diff has no `comb_net_force` change (marker still printed with `spliced: 0`).
+
 **MANDATORY post-Step 3: Run eco_emit_uniquify.py (replicate ECO unit to all uniquified copies):**
 ```bash
 python3 script/eco_scripts/eco_emit_uniquify.py \

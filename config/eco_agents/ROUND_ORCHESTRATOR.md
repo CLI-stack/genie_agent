@@ -495,6 +495,17 @@ python3 script/eco_scripts/eco_emit_priority_force.py \
 `--rename-map` gives the authoritative per-stage net names (formal FM equivalence) for the condition-cone leaves so the cone applies across PrePlace/Route (P&R renames those internal nets); falls back to a bus-bit flatten heuristic.
 `--ref-dir` makes it FAIL-CLOSED: aborts (exit 2, study untouched) if any `bits[].dff_cell`/`old_net` does not match the PreEco Synthesize netlist. On abort, fix the RTL diff's flop/net and re-run — do NOT proceed.
 
+**MANDATORY: Run eco_cone_rebuild.py --emit-into-study after expand_chains** (same as STUDY Step 3) — for every `comb_net_force` change, rebuilds the combinational signal's changed cone region (PreEco-vs-new RTL) and re-drives the net across all fanout per stage (driver output-pin rename `net→net_orig` + mux `net = selector ? region : net_orig`), grounding every leaf at real netlist nets/registers. No-op when none present. Runs BEFORE rewire_finalize:
+```bash
+python3 script/eco_scripts/eco_cone_rebuild.py --emit-into-study \
+    --rtl-diff data/<TAG>_eco_rtl_diff.json \
+    --study data/<TAG>_eco_preeco_study.json --jira <JIRA> \
+    --ref-dir <REF_DIR> \
+    --rename-map data/<TAG>_eco_fenets_rename_map.json \
+    --output data/<TAG>_eco_preeco_study.json
+```
+`--ref-dir` makes it FAIL-CLOSED (exit 2, study untouched) on any ungrounded leaf or missing per-stage combinational driver. Verify stdout shows `ECO_SCRIPT_LAUNCHED: eco_cone_rebuild.py --emit-into-study`.
+
 **MANDATORY: Run eco_emit_rewire_finalize.py after expand_chains** (same as STUDY Step 3) — fills per-stage cell/pin for P&R-merged flops and emits per-module SI/SE=1'b0 so REWIRE-CELL-ABSENT / Check 64 pass by construction:
 ```bash
 python3 script/eco_scripts/eco_emit_rewire_finalize.py \
