@@ -38,6 +38,10 @@ try:
     from eco_fenets_derive_queries import _pf_cone_leaves
 except Exception:
     _pf_cone_leaves = None
+try:
+    from eco_cone_rebuild import cone_leaves as _cnf_cone_leaves
+except Exception:
+    _cnf_cone_leaves = None
 
 # ── Raw FM rpt parser ────────────────────────────────────────────────────────
 
@@ -141,6 +145,16 @@ def derive_queries(rtl_diff, ref_dir=None):
                 queries.append({'net_path': f'{scope}/{leaf}'.strip('/'),
                                 'signal': leaf,
                                 'source': f'changes[{idx}].priority_force_cone_leaf'})
+
+        # comb_net_force cone leaves (mirror eco_fenets_derive_queries Cat 4c) so the
+        # map emits per-stage keys for the rebuilt cone leaves that were queried.
+        if ct == 'comb_net_force' and ref_dir and _cnf_cone_leaves:
+            sig = c.get('signal') or c.get('new_token') or c.get('target')
+            if sig:
+                for leaf in _cnf_cone_leaves(ref_dir, c.get('module_name') or '', sig):
+                    queries.append({'net_path': f'{scope}/{leaf}'.strip('/'),
+                                    'signal': leaf,
+                                    'source': f'changes[{idx}].comb_net_force_cone_leaf'})
 
         # Cat 1: wire_swap / and_term tokens
         if ct in ('wire_swap', 'and_term'):
