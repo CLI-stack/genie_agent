@@ -97,21 +97,28 @@ class RtlConfig:
         return int(m.group(1)) if m else None
 
     def part_select(self, field):
-        """Resolve a `+:` part-select field macro -> (lsb, msb) inclusive, or None.
-        Handles 'BASE_EXPR +: WIDTH_EXPR' where terms are nested macros."""
+        """Resolve a field macro -> (lsb, msb) inclusive, or None. Handles both forms:
+        'BASE_EXPR +: WIDTH_EXPR' (indexed part-select) and 'MSB_EXPR : LSB_EXPR'
+        (plain range, e.g. `29:27`), plus a plain scalar index ('FLDCHAN 1')."""
         field = field.lstrip('`')
         raw = self.defs.get(field)
         if raw is None:
             return None
-        m = re.match(r'(.+?)\+:(.+)', raw)
-        if not m:
-            # a plain scalar index like 'FLDCHAN 1'
-            v = self.value(field)
-            return (v, v) if v is not None else None
-        base = self._eval_expr(m.group(1)); width = self._eval_expr(m.group(2))
-        if base is None or width is None:
-            return None
-        return (base, base + width - 1)
+        m = re.match(r'(.+?)\+:(.+)', raw)                 # BASE +: WIDTH
+        if m:
+            base = self._eval_expr(m.group(1)); width = self._eval_expr(m.group(2))
+            if base is None or width is None:
+                return None
+            return (base, base + width - 1)
+        # MSB : LSB range (avoid matching a ternary a?b:c — require no '?')
+        m2 = re.match(r'^\s*([^?:]+?)\s*:\s*([^?:]+?)\s*$', raw)
+        if m2:
+            hi = self._eval_expr(m2.group(1)); lo = self._eval_expr(m2.group(2))
+            if hi is not None and lo is not None:
+                return (min(hi, lo), max(hi, lo))
+        # plain scalar index like 'FLDCHAN 1'
+        v = self.value(field)
+        return (v, v) if v is not None else None
 
     def _eval_expr(self, expr):
         for _ in range(10):
