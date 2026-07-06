@@ -273,8 +273,90 @@ def parse_always(rtl_text, signal):
     return {'default': p.default, 'assigns': p.assigns}
 
 
+# ── DELTA: diff OLD vs NEW priority-value trees ──────────────────────────────
+
+def _nterm(expr):
+    return re.sub(r'\s+', '', expr)
+
+
+def _ncond(cond):
+    return tuple((_nterm(e), s) for e, s in cond)
+
+
+def _nval(v):
+    return re.sub(r'\s+', '', str(v))
+
+
+def _starts_with(cond, prefix):
+    if len(cond) < len(prefix):
+        return False
+    return _ncond(cond[:len(prefix)]) == _ncond(prefix)
+
+
+def _common_prefix(conds):
+    """Longest common leading (expr,sense) prefix across a list of path conditions."""
+    if not conds:
+        return []
+    pref = list(conds[0])
+    for c in conds[1:]:
+        k = 0
+        while k < len(pref) and k < len(c) and _nterm(pref[k][0]) == _nterm(c[k][0]) and pref[k][1] == c[k][1]:
+            k += 1
+        pref = pref[:k]
+        if not pref:
+            break
+    return pref
+
+
+def compute_delta(old_tree, new_tree):
+    """Diff two priority-value trees for the SAME signal. Returns the minimal changed
+    region as {prefix, subtree, default, summary} or None when the trees are identical.
+
+      prefix   : list of (expr, sense) — the path selector common to every
+                 changed/removed entry (e.g. the enclosing `case`-item + outer negations).
+      subtree  : [(suffix_cond, value)] — the NEW entries under `prefix`, conditions
+                 relative to the prefix; folded (last-wins) they give the new value in
+                 the region. `default` is the tree default (value when no branch matches).
+
+    The patch is then:  S = (prefix active) ? fold(subtree, default) : S_old_driver .
+    This rebuilds ONLY the changed region, gated by its selector — proportional to the
+    ECO, not the whole cone."""
+    old_keys = {(_ncond(c), _nval(v)) for c, v in old_tree['assigns']}
+    new_keys = {(_ncond(c), _nval(v)) for c, v in new_tree['assigns']}
+    added   = [(c, v) for c, v in new_tree['assigns'] if (_ncond(c), _nval(v)) not in old_keys]
+    removed = [(c, v) for c, v in old_tree['assigns'] if (_ncond(c), _nval(v)) not in new_keys]
+    default_changed = _nval(old_tree.get('default')) != _nval(new_tree.get('default'))
+    if not added and not removed and not default_changed:
+        return None
+    region = [c for c, _ in added] + [c for c, _ in removed]
+    prefix = _common_prefix(region) if region else []
+    subtree = [(c[len(prefix):], v) for c, v in new_tree['assigns'] if _starts_with(c, prefix)]
+    return {
+        'prefix': prefix,
+        'subtree': subtree,
+        'default': new_tree.get('default'),
+        'summary': {'added': len(added), 'removed': len(removed),
+                    'default_changed': default_changed, 'subtree_branches': len(subtree)},
+    }
+
+
 if __name__ == '__main__':
     import sys, json
+    if len(sys.argv) >= 5 and sys.argv[1] == '--delta':
+        old_rtl, new_rtl, sig = sys.argv[2], sys.argv[3], sys.argv[4]
+        ot = parse_always(open(old_rtl, errors='replace').read(), sig)
+        nt = parse_always(open(new_rtl, errors='replace').read(), sig)
+        d = compute_delta(ot, nt)
+        if d is None:
+            print(f"{sig}: no delta (trees identical)"); sys.exit(0)
+        print(f"{sig}: summary={d['summary']}")
+        sel = ' & '.join((('' if s else '~') + f'({e})') for e, s in d['prefix'])
+        print(f"region selector (prefix): {sel[:200]}")
+        print(f"new sub-tree ({len(d['subtree'])} branches), default={d['default']}:")
+        for c, v in d['subtree']:
+            cc = ' & '.join((('' if s else '~') + f'({e})') for e, s in c)
+            print(f"    when {cc[:140] or '(always)'}  ->  {v}")
+        sys.exit(0)
     rtl, sig = sys.argv[1], sys.argv[2]
     tree = parse_always(open(rtl, errors='replace').read(), sig)
     print(f"default: {tree['default']}")
