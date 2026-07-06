@@ -340,8 +340,137 @@ def compute_delta(old_tree, new_tree):
     }
 
 
+# ── LOWER: delta -> gates (constant-value subtree => per-bit boolean) ─────────
+try:
+    from eco_emit_priority_force import (synthesize_condition, _PErr as _PF,
+                                         _const_bits, _module_netlist_body, _mod_key)
+    from eco_rtl_config import RtlConfig
+except Exception:
+    synthesize_condition = _const_bits = _module_netlist_body = _mod_key = RtlConfig = None
+    _PF = Exception
+
+
+def _cond_to_expr(cond):
+    """(expr,sense) AND-terms -> a single condition string for synthesize_condition."""
+    if not cond:
+        return "1'b1"
+    return ' & '.join((f'({e})' if s else f'~({e})') for e, s in cond)
+
+
+def lower_delta(ref_dir, module, signal, jira='eco'):
+    """Rebuild the DELTA of `signal`'s cone (NEW vs OLD RTL) as gates. Only supports a
+    CONSTANT-valued subtree (opcodes/enums) — the per-bit value is then pure boolean:
+      region_bit[b] = OR over subtree branches whose value has bit b set (branches are
+      mutually exclusive via the parser's negations) | default_bit[b].
+    Returns {'selector', 'region_bits':{b:net}, 'width', 'gates', 'orig'} or None
+    (no delta). Raises _CErr fail-closed on anything unsupported (non-const value, etc.)."""
+    if not (synthesize_condition and RtlConfig):
+        raise _CErr("synthesizer unavailable")
+    base = _mod_key(module) if _mod_key else re.sub(r'^ddrss_\w+?_t_', '', module)
+    from eco_extract_pf_condition import resolve_rtl
+    new_rtl = resolve_rtl(ref_dir=ref_dir, module=base, subdir='SynRtl')
+    old_rtl = resolve_rtl(ref_dir=ref_dir, module=base, subdir='PreEco/SynRtl')
+    if not (new_rtl and old_rtl):
+        raise _CErr(f"cannot locate {signal} RTL in both trees")
+    nt = parse_always(open(new_rtl, errors='replace').read(), signal)
+    ot = parse_always(open(old_rtl, errors='replace').read(), signal)
+    delta = compute_delta(ot, nt)
+    if delta is None:
+        return None
+    cfg = RtlConfig(ref_dir)
+    nlbody = _module_netlist_body(ref_dir, module) if _module_netlist_body else ''
+    innl = (lambda s: bool(re.search(r'\b' + re.escape(s) + r'\b', nlbody))) if nlbody else (lambda s: True)
+    rtl_text = open(new_rtl, errors='replace').read()
+    seq = [0]
+    def mk(t):
+        seq[0] += 1
+        return f'n_eco_{jira}_cr_{t}_{seq[0]}'
+    gates = []
+    def synth(expr):
+        cn, gg = synthesize_condition(expr, jira, module, cfg, mk, rtl_text=rtl_text, in_netlist=innl)
+        gates.extend(gg)
+        return cn
+    # selector = the region prefix
+    selector = synth(_cond_to_expr(delta['prefix']))
+    # subtree branches -> (cond_net, const_bits) ; require constant values
+    branches = []
+    for suffix, value in delta['subtree']:
+        cb = _const_bits(value) or (_const_bits(cfg.defs.get(str(value).lstrip('`'))) if cfg else None)
+        if not cb:
+            raise _CErr(f"non-constant subtree value {value!r} (delta rebuild supports "
+                        f"constant/enum branches only)")
+        branches.append((synth(_cond_to_expr(suffix)), cb))
+    dfl = _const_bits(delta['default']) or (_const_bits(cfg.defs.get(str(delta['default']).lstrip('`'))) if cfg and delta['default'] else None)
+    width = max([len(cb) for _, cb in branches] + ([len(dfl)] if dfl else []) or [1])
+    # per bit: OR of branch conds where that opcode bit == 1 (branches mutually exclusive)
+    region_bits = {}
+    for b in range(width):
+        ones = []
+        for cn, cb in branches:
+            bit = cb[len(cb) - 1 - b] if b < len(cb) else '0'
+            if bit == '1':
+                ones.append(cn)
+        dbit = (dfl[len(dfl) - 1 - b] if dfl and b < len(dfl) else '0')
+        if dbit == '1':
+            # default contributes when NO branch matches: default & ~OR(all branch conds)
+            allc = [cn for cn, _ in branches]
+            nm = _or_nets(allc, gates, mk, cfg) if allc else None
+            term = _and2(_inv_net(nm, gates, mk, cfg), None, gates, mk, cfg) if nm else "1'b1"
+            ones = ones + ([term] if term != "1'b1" else [])
+        region_bits[b] = _or_nets(ones, gates, mk, cfg) if ones else "1'b0"
+    return {'selector': selector, 'region_bits': region_bits, 'width': width,
+            'gates': gates, 'summary': delta['summary']}
+
+
+# small gate helpers reusing the resolved library cells
+def _lib():
+    from eco_emit_priority_force import _DEFAULT_CELLS
+    return _DEFAULT_CELLS
+
+
+def _g(gates, mk, cell, fn, pc):
+    out = pc.get('Z') or pc.get('ZN')
+    gates.append({'change_type': 'new_logic_gate', 'instance_name': f'eco_cr_{len(gates)}',
+                  'cell_type': cell, 'gate_function': fn, 'output_net': out, 'module_name': '',
+                  'port_connections': pc, 'confirmed': True, 'source': 'eco_cone_rebuild',
+                  'reason': f'cone-rebuild {fn}'})
+    return out
+
+
+def _inv_net(a, gates, mk, cfg):
+    return _g(gates, mk, _lib()['INV'], 'INV', {'I': a, 'ZN': mk('inv')})
+
+
+def _and2(a, b, gates, mk, cfg):
+    if b is None:
+        return a
+    return _g(gates, mk, _lib()['AND2'], 'AND2', {'A1': a, 'A2': b, 'Z': mk('and')})
+
+
+def _or_nets(nets, gates, mk, cfg):
+    cur = list(nets)
+    while len(cur) > 1:
+        a, b = cur.pop(0), cur.pop(0)
+        cur.append(_g(gates, mk, _lib()['OR2'], 'OR2', {'A1': a, 'A2': b, 'Z': mk('or')}))
+    return cur[0]
+
+
 if __name__ == '__main__':
     import sys, json
+    if len(sys.argv) >= 4 and sys.argv[1] == '--lower':
+        ref, sig = sys.argv[2], sys.argv[3]
+        mod = sys.argv[4] if len(sys.argv) > 4 else 'ddrss_umcdat_t_umcrecdsp'
+        r = lower_delta(ref, mod, sig, jira='9666')
+        if r is None:
+            print('no delta'); sys.exit(0)
+        outs = {g['output_net'] for g in r['gates']}
+        leaves = sorted({v for g in r['gates'] for k, v in g['port_connections'].items()
+                         if k not in ('Z', 'ZN') and isinstance(v, str) and v not in outs
+                         and not v.startswith(("1'b", "0'b"))})
+        print(f"width={r['width']} gates={len(r['gates'])} selector={r['selector']}")
+        print(f"region_bits={r['region_bits']}")
+        print(f"leaves ({len(leaves)}): {leaves}")
+        sys.exit(0)
     if len(sys.argv) >= 5 and sys.argv[1] == '--delta':
         old_rtl, new_rtl, sig = sys.argv[2], sys.argv[3], sys.argv[4]
         ot = parse_always(open(old_rtl, errors='replace').read(), sig)
