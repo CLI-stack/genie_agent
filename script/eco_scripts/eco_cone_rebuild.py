@@ -573,8 +573,78 @@ def _or_nets(nets, gates, mk, cfg):
     return cur[0]
 
 
+def emit_into_study(rtl_diff, study, jira, ref_dir, rename_map=None):
+    """Splice every `comb_net_force` change in rtl_diff into `study` (all stages), using
+    the deterministic emit_comb_net_force builder. Mirrors eco_emit_priority_force.emit:
+    returns (added, errors). On ANY builder error the study is left UNTOUCHED (caller
+    aborts fail-closed). Each comb_net_force change needs only {module_name, signal} — the
+    delta, region, selector, gates and per-stage driver rewires are all derived from RTL +
+    netlist deterministically."""
+    from eco_emit_priority_force import STAGES
+    changes = [c for c in rtl_diff.get('changes', []) if c.get('change_type') == 'comb_net_force']
+    if not changes:
+        return 0, []
+    pending, errs = [], []
+    for i, c in enumerate(changes):
+        mod = c.get('module_name'); sig = c.get('signal') or c.get('new_token') or c.get('target')
+        if not mod or not sig:
+            errs.append(f"comb_net_force[{i}]: missing module_name or signal.")
+            continue
+        try:
+            out = emit_comb_net_force(ref_dir, mod, sig, jira=jira, rename_map=rename_map)
+        except Exception as e:
+            errs.append(f"comb_net_force[{i}] {mod}/{sig}: build failed: {e}")
+            continue
+        if out['errors']:
+            errs.extend(f"comb_net_force[{i}] {mod}/{sig}: {m}" for m in out['errors'])
+            continue
+        pending.append(out['gates'] + out['rewires'])
+    if errs:
+        return 0, errs                              # fail-closed: study untouched
+    added = 0
+    for entries in pending:
+        for st in STAGES:
+            study.setdefault(st, []).extend(dict(e) for e in entries)
+            added += len(entries)
+    return added, []
+
+
 if __name__ == '__main__':
     import sys, json
+    if len(sys.argv) >= 2 and sys.argv[1] == '--emit-into-study':
+        import argparse, os
+        ap = argparse.ArgumentParser()
+        ap.add_argument('--emit-into-study', action='store_true')
+        ap.add_argument('--rtl-diff', required=True)
+        ap.add_argument('--study', required=True)
+        ap.add_argument('--jira', required=True)
+        ap.add_argument('--ref-dir', required=True)
+        ap.add_argument('--output', required=True)
+        ap.add_argument('--rename-map', default=None)
+        a = ap.parse_args()
+        rtl_diff = json.loads(open(a.rtl_diff).read())
+        study = json.loads(open(a.study).read())
+        rmap = None
+        if a.rename_map and os.path.isfile(a.rename_map):
+            try:
+                rmap = json.loads(open(a.rename_map).read())
+            except Exception:
+                rmap = None
+        n, errs = emit_into_study(rtl_diff, study, a.jira, a.ref_dir, rename_map=rmap)
+        if errs:
+            marker = ("ECO_SCRIPT_LAUNCHED: eco_cone_rebuild.py --emit-into-study\n"
+                      f"  ABORTED — {len(errs)} comb_net_force build error(s):\n"
+                      + "".join(f"    - {e}\n" for e in errs)
+                      + "  Study UNTOUCHED. Fix the comb_net_force change(s) and re-run.\n")
+            print(marker)
+            open(a.output.replace('.json', '_comb_net_force_marker.txt'), 'w').write(marker)
+            sys.exit(2)
+        open(a.output, 'w').write(json.dumps(study, indent=2))
+        marker = ("ECO_SCRIPT_LAUNCHED: eco_cone_rebuild.py --emit-into-study\n"
+                  f"  comb_net_force entries spliced (gates+rewires, all stages): {n}\n")
+        print(marker)
+        open(a.output.replace('.json', '_comb_net_force_marker.txt'), 'w').write(marker)
+        sys.exit(0)
     if len(sys.argv) >= 4 and sys.argv[1] == '--emit':
         ref, sig = sys.argv[2], sys.argv[3]
         mod = sys.argv[4] if len(sys.argv) > 4 else 'ddrss_umcdat_t_umcrecdsp'

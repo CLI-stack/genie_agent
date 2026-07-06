@@ -108,6 +108,49 @@ def _pf_condition_completeness(study, rtl_diff, ref_dir):
     return issues
 
 
+def _cnf_completeness(study, rtl_diff, ref_dir):
+    """Validate every `comb_net_force` change was actually BUILT (not left a placeholder)
+    and is well-formed. Per change {module_name, signal}, in the Synthesize stage:
+      - ≥1 driver-side net-force rewire from eco_cone_rebuild whose old_net is signal/signal[b]
+        (absence ⇒ the deterministic builder did not run ⇒ placeholder ⇒ CRITICAL);
+      - each such rewire carries cell_name_per_stage + pin_per_stage + old_net_per_stage for
+        all 3 stages;
+      - the original net (old_net) is re-driven by a mux gate (a gate whose output_net ==
+        old_net), so all fanout sees the forced value.
+    The builder itself fails closed on ungrounded leaves / missing comb driver, so a PRESENT
+    well-formed emission is grounded by construction; this check guards the wiring."""
+    issues = []
+    changes = [c for c in rtl_diff.get('changes', []) if c.get('change_type') == 'comb_net_force']
+    if not changes:
+        return issues
+    syn = study.get('Synthesize', [])
+    gate_outs = {e.get('output_net') for e in syn if e.get('change_type') == 'new_logic_gate'}
+    for c in changes:
+        sig = c.get('signal') or c.get('new_token') or c.get('target')
+        if not sig:
+            issues.append("CRITICAL: comb_net_force change missing `signal` — cannot validate.")
+            continue
+        rws = [e for e in syn if e.get('change_type') == 'rewire' and e.get('driver_side')
+               and e.get('net_force') and e.get('source') == 'eco_cone_rebuild'
+               and (e.get('old_net') == sig or str(e.get('old_net', '')).startswith(sig + '['))]
+        if not rws:
+            issues.append(f"CRITICAL: comb_net_force {sig} — no driver-side net-force rewire from "
+                          f"eco_cone_rebuild in study. The deterministic builder did not run "
+                          f"(placeholder). Run eco_cone_rebuild.py --emit-into-study.")
+            continue
+        for rw in rws:
+            on = rw.get('old_net')
+            for fld in ('cell_name_per_stage', 'pin_per_stage', 'old_net_per_stage'):
+                d = rw.get(fld)
+                if not (isinstance(d, dict) and all(d.get(s) for s in ('Synthesize', 'PrePlace', 'Route'))):
+                    issues.append(f"HIGH: comb_net_force {sig} rewire {on} missing {fld} for all stages.")
+            if on not in gate_outs:
+                issues.append(f"CRITICAL: comb_net_force {sig} — original net {on} renamed to "
+                              f"{rw.get('new_net')} but no mux gate re-drives {on}; fanout would "
+                              f"see an undriven net.")
+    return issues
+
+
 def _pf_modbody(ref_dir, module):
     gz = os.path.join(ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
     want = re.sub(r'_\d+$', '', re.sub(r'^ddrss_\w+?_t_', '', str(module or '')))
@@ -5748,6 +5791,12 @@ def main():
         issues.extend(_pf_condition_completeness(study, rtl_diff, args.ref_dir))
     except Exception as _e:
         print(f"[pf-condition-check skipped] {_e}", file=sys.stderr)
+
+    # ── comb_net_force emissions built (not placeholders) and well-formed ─────
+    try:
+        issues.extend(_cnf_completeness(study, rtl_diff, args.ref_dir))
+    except Exception as _e:
+        print(f"[comb-net-force-check skipped] {_e}", file=sys.stderr)
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0

@@ -2821,6 +2821,25 @@ def main():
                     f"assignment_evidence={ev!r} — a BARE CONSTANT RHS pins the signal to a value, "
                     f"which is a priority_force (force sig=CONST under <cond>), NOT a term fold. "
                     f"Reclassify as change_type=priority_force with forced_signals[].bits[].")
+    # comb_net_force schema: a combinational net re-driven under a new region (selector ?
+    # new : original). The deterministic builder (eco_cone_rebuild.emit_comb_net_force)
+    # derives the delta/region/gates from RTL+netlist given ONLY {module_name, signal}, so
+    # step1 need only identify the signal — but it MUST identify it (module_name + signal).
+    comb_net_force_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') != 'comb_net_force':
+            continue
+        if not c.get('module_name'):
+            comb_net_force_issues.append(
+                f"changes[{idx}] comb_net_force missing module_name — the builder needs the "
+                f"module whose RTL/netlist define the signal's cone.")
+        if not (c.get('signal') or c.get('new_token') or c.get('target')):
+            comb_net_force_issues.append(
+                f"changes[{idx}] comb_net_force missing `signal` — the combinational net to "
+                f"re-drive (the builder diffs its PreEco vs new RTL cone).")
+    if comb_net_force_issues:
+        overall_pass = False
+
     # priority_force condition-leaf availability (needs --ref-dir + extractor)
     pf_leaf_issues = _pf_condition_leaf_issues(rtl_diff, args.ref_dir)
     priority_force_issues.extend(pf_leaf_issues)
@@ -2942,6 +2961,8 @@ def main():
         'uniquified_enum_issues':      uniquified_enum_issues,
         'priority_force_issue_count': len(priority_force_issues),
         'priority_force_issues':      priority_force_issues,
+        'comb_net_force_issue_count': len(comb_net_force_issues),
+        'comb_net_force_issues':      comb_net_force_issues,
         'pending_term_issue_count':   len(pending_term_issues),
         'pending_term_issues':        pending_term_issues,
         'term_op_issue_count':        len(term_op_issues),
