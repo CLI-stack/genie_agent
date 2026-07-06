@@ -41,9 +41,10 @@ try:
     from eco_extract_pf_condition import extract_added_branch_condition, resolve_rtl
     from eco_emit_priority_force import (synthesize_condition, _PErr, _OUT_PINS_DRV,
                                          _module_netlist_body)
+    from eco_cone_rebuild import cone_leaves
 except Exception:
     RtlConfig = extract_added_branch_condition = resolve_rtl = None
-    synthesize_condition = _module_netlist_body = None
+    synthesize_condition = _module_netlist_body = cone_leaves = None
     _PErr = Exception
     _OUT_PINS_DRV = ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO')
 
@@ -415,6 +416,22 @@ def derive(rtl_diff, tile='', ref_dir=None):
                     'category': 4,
                     'source':   f'changes[{idx}].priority_force_cone_leaf',
                 })
+
+        # Cat 4c: comb_net_force cone leaves. The builder (eco_cone_rebuild) rebuilds the
+        # signal's whole changed cone (selector = full priority-prefix), whose leaves
+        # include bus bits P&R renames/optimizes (bracket AND flat forms may be absent) —
+        # only fenets FM equivalence resolves those. Query them so the rename map covers
+        # the cone; the emitter consumes the map (then flat heuristic) per stage.
+        if ct == 'comb_net_force' and ref_dir and cone_leaves:
+            sig = c.get('signal') or c.get('new_token') or c.get('target')
+            if sig:
+                for leaf in cone_leaves(ref_dir, c.get('module_name') or '', sig):
+                    out.append({
+                        'net_path': _abs_path(tile, scope, leaf),
+                        'signal':   leaf,
+                        'category': 4,
+                        'source':   f'changes[{idx}].comb_net_force_cone_leaf',
+                    })
 
     # Deduplicate by net_path (preserve first source)
     seen, unique = set(), []

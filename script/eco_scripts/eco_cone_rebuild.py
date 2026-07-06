@@ -573,6 +573,29 @@ def _or_nets(nets, gates, mk, cfg):
     return cur[0]
 
 
+def cone_leaves(ref_dir, module, signal, jira='q'):
+    """Real netlist-leaf names of a comb_net_force signal's rebuilt cone — the nets fenets
+    must resolve per-stage so the re-drive applies in P&R (analog of priority_force's
+    _pf_cone_leaves). Returns a sorted list of bare/bus-bit leaf names, or [] if there is
+    no delta or the cone can't be built."""
+    try:
+        r = lower_delta(ref_dir, module, signal, jira=jira)
+    except Exception:
+        return []
+    if not r:
+        return []
+    outs = {g['output_net'] for g in r['gates']}
+    leaves = set()
+    for g in r['gates']:
+        for p, v in (g.get('port_connections') or {}).items():
+            if p in ('Z', 'ZN') or not isinstance(v, str):
+                continue
+            if v in outs or v.startswith(('n_eco_', 'eco_')) or re.match(r"^\d*'[bhdo]", v):
+                continue
+            leaves.add(v)
+    return sorted(leaves)
+
+
 def emit_into_study(rtl_diff, study, jira, ref_dir, rename_map=None):
     """Splice every `comb_net_force` change in rtl_diff into `study` (all stages), using
     the deterministic emit_comb_net_force builder. Mirrors eco_emit_priority_force.emit:
