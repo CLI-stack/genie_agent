@@ -436,27 +436,39 @@ def lower_delta(ref_dir, module, signal, jira='eco'):
         seq[0] += 1
         return f'n_eco_{jira}_cr_{t}_{seq[0]}'
     synth = _Synth(cfg, wm, rtl_text, innl, mk, module)
+    # SURGICAL selector (engineer's trick): instead of rebuilding the whole priority
+    # PREFIX (which drags in dsp_cnt_end / dsp_cmd_valid / timers -> thousands of gates),
+    # reuse the ORIGINAL signal value as the region detector. `orig == <old region value>`
+    # is equivalent to "the old chain reached & fired the changed branch" (the entire
+    # prefix), because orig already encodes the full chain. The subtree conditions are
+    # LOCAL (prefix stripped), so region logic stays tiny. The comparator itself is built
+    # in emit_comb_net_force (it needs the per-bit net_orig nets); here we return the OLD
+    # region value(s) it must match.
+    old_region_values = []
+    for c, v in ot['assigns']:
+        if _starts_with(c, delta['prefix']) and v not in old_region_values:
+            old_region_values.append(v)
     try:
-        # selector = region prefix (path down to the changed subtree)
-        selector = synth._path_scalar(delta['prefix'])
         # width: signal decl, else widest branch/default value
         width = wm.get(signal)
         if not width:
             vals = [v for _, v in delta['subtree']] + ([delta['default']] if delta['default'] else [])
             width = max([synth._w(parse_expr(v)) or 1 for v in vals] or [1])
-        # subtree -> priority mux tree per bit (default, then branches override in order)
+        # subtree -> priority mux tree per bit, LOCAL conditions only (prefix stripped).
+        # Compute each branch's selector ONCE (hoisted out of the bit loop) — otherwise the
+        # WCK-sync guard logic is rebuilt per bit (width x duplication). Per-bit work is then
+        # just cheap constant muxes.
         dflt_ast = parse_expr(delta['default']) if delta['default'] is not None else None
-        branch_asts = [(cond, parse_expr(val)) for cond, val in delta['subtree']]
+        branch_asts = [(synth._path_scalar(cond), parse_expr(val)) for cond, val in delta['subtree']]
         region_bits = {}
         for b in range(width):
             cur = synth.bit(dflt_ast, b) if dflt_ast is not None else "1'b0"
-            for cond, vast in branch_asts:
-                sel = synth._path_scalar(cond)
-                cur = synth._mux(sel, synth.bit(vast, b), cur)
+            for bsel, vast in branch_asts:
+                cur = synth._mux(bsel, synth.bit(vast, b), cur)
             region_bits[b] = cur
     except Exception as e:
         raise _CErr(f"delta lowering failed for {signal}: {e}")
-    return {'selector': selector, 'region_bits': region_bits, 'width': width,
+    return {'region_bits': region_bits, 'width': width, 'old_region_values': old_region_values,
             'gates': synth.gates, 'summary': delta['summary'], 'synth': synth, 'mk': mk}
 
 
@@ -474,41 +486,62 @@ def emit_comb_net_force(ref_dir, module, signal, jira='eco', rename_map=None):
     r = lower_delta(ref_dir, module, signal, jira)
     if r is None:
         return {'gates': [], 'rewires': [], 'errors': [], 'summary': 'no delta'}
-    synth, sel, width = r['synth'], r['selector'], r['width']
+    synth, width = r['synth'], r['width']
     mk = r['mk']
+    old_vals = r.get('old_region_values') or []
     dmaps = {st: _driver_map(ref_dir, module, st) for st in STAGES}
     is_bus = width > 1
     errs, rewires = [], []
+
+    def _net(b):
+        return f'{signal}[{b}]' if is_bus else signal
+
+    # ── pass 1: validate each bit's combinational driver + reserve net_orig ──
+    orig_bit, drv_ps = {}, {}
     for b in range(width):
+        net = _net(b)
+        cps, pps, ok = {}, {}, True
+        for st in STAGES:
+            sd = dmaps[st].get(net)
+            if not sd:
+                errs.append(f"{net}: no driver in {st} netlist — cannot re-drive."); ok = False; break
+            if sd[2]:
+                errs.append(f"{net}: driven by a flop (.Q) in {st}; expected a combinational driver."); ok = False; break
+            cps[st], pps[st] = sd[0], sd[1]
+        if not ok:
+            continue
+        orig_bit[b] = mk(f'{signal}_{b}_orig')
+        drv_ps[b] = (cps, pps)
+    if errs:
+        return {'gates': synth.gates, 'rewires': [], 'errors': errs, 'summary': r['summary']}
+    if not old_vals:
+        return {'gates': synth.gates, 'rewires': [],
+                'errors': [f"{signal}: no OLD region value — cannot build the orig-based region detector."],
+                'summary': r['summary']}
+
+    # ── SURGICAL selector: sel = OR over old region values v of (orig == v). This reuses
+    # the existing signal (net_orig bits) as the region detector — replacing the entire
+    # rebuilt priority prefix with a small equality comparator (engineer's trick). ──
+    sel = "1'b0"
+    for v in old_vals:
+        vast = parse_expr(v)
+        eq_terms = [synth._xnor(orig_bit[b], synth.bit(vast, b)) for b in range(width) if b in orig_bit]
+        sel = synth._or(sel, synth._reduce(eq_terms, 'and'))
+    nsel = synth._inv(sel)
+
+    # ── pass 2: per-bit force-mux net[b] = sel ? region[b] : net_orig[b] + driver rewire ──
+    for b in range(width):
+        if b not in orig_bit:
+            continue
         region = r['region_bits'].get(b, "1'b0")
-        net = f'{signal}[{b}]' if is_bus else signal
-        drv = dmaps['Synthesize'].get(net)
-        if not drv:
-            errs.append(f"{net}: no driver in Synthesize netlist — cannot re-drive.")
-            continue
-        if drv[2]:
-            errs.append(f"{net}: driven by a flop (.Q); expected a combinational driver.")
-            continue
-        net_orig = mk(f'{signal}_{b}_orig')
-        # net = selector ? region : net_orig  (final OR2 outputs `net` itself; synth._and
-        # folds constants, so a const region collapses to the cheap half automatically).
+        net, net_orig = _net(b), orig_bit[b]
         t_reg = synth._and(sel, region)
-        t_old = synth._and(synth._inv(sel), net_orig)
+        t_old = synth._and(nsel, net_orig)
         if t_reg == "1'b0" and t_old == "1'b0":
             errs.append(f"{net}: mux folds to constant 0 for both legs — refusing (fail-closed).")
             continue
         synth._g(synth.cells['OR2'], 'OR2', {'A1': t_reg, 'A2': t_old, 'Z': net})
-        # rename the comb driver's OUTPUT pin net -> net_orig, PER STAGE (fail-closed if a
-        # stage lacks a combinational driver for the net).
-        cps, pps, ok = {}, {}, True
-        for st in STAGES:
-            sd = dmaps[st].get(net)
-            if not sd or sd[2]:
-                errs.append(f"{net}: no combinational driver in {st} netlist.")
-                ok = False; break
-            cps[st], pps[st] = sd[0], sd[1]
-        if not ok:
-            continue
+        cps, pps = drv_ps[b]
         rewires.append({
             'change_type': 'rewire', 'instance_name': cps['Synthesize'],
             'cell_name': cps['Synthesize'], 'cell_name_per_stage': cps,
@@ -516,8 +549,8 @@ def emit_comb_net_force(ref_dir, module, signal, jira='eco', rename_map=None):
             'old_net': net, 'new_net': net_orig,
             'confirmed': True, 'force_reapply': True, 'source': 'eco_cone_rebuild',
             'net_force': True, 'driver_side': True,
-            'notes': f"comb net-force: redirect combinational driver of {net} through the "
-                     f"cone-rebuild mux (output-pin rename {net}->{net_orig}, per-stage cell).",
+            'notes': f"comb net-force (surgical): redirect combinational driver of {net} through "
+                     f"the region mux (output-pin rename {net}->{net_orig}, per-stage cell).",
         })
     gates = synth.gates
     # give every cone/mux gate a per-stage view, then resolve leaf nets per stage
@@ -719,7 +752,7 @@ if __name__ == '__main__':
         leaves = sorted({v for g in r['gates'] for k, v in g['port_connections'].items()
                          if k not in ('Z', 'ZN') and isinstance(v, str) and v not in outs
                          and not v.startswith(("1'b", "0'b"))})
-        print(f"width={r['width']} gates={len(r['gates'])} selector={r['selector']}")
+        print(f"width={r['width']} gates={len(r['gates'])} old_region_values={r['old_region_values']}")
         print(f"region_bits={r['region_bits']}")
         print(f"leaves ({len(leaves)}): {leaves}")
         sys.exit(0)
