@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
-"""eco_emit_intent_c.py — deterministic emitter for an intent-C OR-fold: an RTL
-change of the form `term | R` inserted into one operand of an equality compare that
-feeds a registered signal, replicated across a uniquified generate array.
+"""eco_emit_compare_fold.py — deterministic emitter for a COMPARE-OPERAND OR-fold: an
+RTL change of the form `term | R` inserted into one operand of an equality compare that
+feeds a registered signal (optionally replicated across a uniquified generate array).
+
+This is NOT a plain OR-widen at the flop D-net (`D | R`). The fold lives INSIDE an
+equality comparison operand, so in the netlist it becomes a localized force on the
+SHARED mismatch net of the compared term-pair — a distinct pattern the generic
+`and_term` OR-widen handler models incorrectly.
 
   RTL:  {.. , op | (|Rbus)} == {.. , msc_bit | (|Rbus)}   (in SOME branches only)
 
@@ -159,7 +164,7 @@ def _gate(inst, cell, fn, pc, out_net):
     return {'change_type': 'new_logic_gate', 'instance_name': inst, 'cell_type': cell,
             'gate_function': fn, 'output_net': out_net, 'port_connections': pc,
             'port_connections_per_stage': pcs, 'confirmed': True,
-            'source': 'eco_emit_intent_c'}
+            'source': 'eco_emit_compare_fold'}
 
 
 def build_fold(ref_dir, netlist_module, jira, params, cells=None):
@@ -196,7 +201,7 @@ def build_fold(ref_dir, netlist_module, jira, params, cells=None):
     gates = []
     # rename driver output M -> m_raw
     rename = {'instance_name': drv_inst, 'pin': drv_pin, 'old_net': M, 'new_net': m_raw,
-              'change_type': 'rewire', 'source': 'eco_emit_intent_c'}
+              'change_type': 'rewire', 'source': 'eco_emit_compare_fold'}
     # OR-reduce Rbits -> r_net (tree of OR2)
     cur = list(Rbits)
     level = 0
@@ -239,7 +244,7 @@ def main():
     ap.add_argument('--ref-dir', required=True)
     ap.add_argument('--netlist-module', required=True)
     ap.add_argument('--jira', default='chk')
-    ap.add_argument('--params', required=True, help='JSON file with intent-C params')
+    ap.add_argument('--params', required=True, help='JSON file with compare-fold params')
     ap.add_argument('--out', default=None)
     args = ap.parse_args()
     params = json.loads(open(args.params).read())
