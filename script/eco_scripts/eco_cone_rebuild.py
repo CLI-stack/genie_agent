@@ -559,7 +559,8 @@ def emit_comb_net_force_batch(ref_dir, module, signals, jira='eco', rename_map=N
     : net_orig[b], with the original comb driver's output pin renamed per stage. Returns
       {'gates','rewires','errors','summary'} (study-shaped, per-stage resolved once)."""
     from eco_emit_priority_force import (_driver_map, _stage_net_tokens, _stage_net,
-                                         _map_stage_net, _pcstage, STAGES)
+                                         _map_stage_net, _pcstage, STAGES,
+                                         _module_netlist_body)
     synth, mk, rtl_text, old_text, wm = _synth_setup(ref_dir, module, jira)
     dmaps = {st: _driver_map(ref_dir, module, st) for st in STAGES}
     rewires, errs, summ = [], [], {}
@@ -587,24 +588,69 @@ def emit_comb_net_force_batch(ref_dir, module, signals, jira='eco', rename_map=N
         if k != '_metadata':
             leaf2key.setdefault(k.rsplit('/', 1)[-1], k)
     toks = {st: _stage_net_tokens(ref_dir, module, st) for st in STAGES}
+    bodies = {st: _module_netlist_body(ref_dir, module, st) for st in STAGES}
     def _exists(v, st):
         return isinstance(v, str) and (v in toks[st] or v.split('/')[0] in toks[st])
+    def _pin_wire_in_cell(cell, pin, st):
+        m = re.search(r'\b' + re.escape(cell) + r'\s*\((.*?)\)\s*;', bodies[st], re.S)
+        if not m:
+            return ''
+        pm = re.search(r'\.\s*' + re.escape(pin) + r'\s*\(\s*([A-Za-z_][\w\[\]]*)\s*\)', m.group(1))
+        w = pm.group(1) if pm else ''
+        return w if (w and _exists(w, st)) else ''
+    def _reg_wire_by_constituent(cons, st):
+        # Find a flop instance (single or MB-banked) whose `_MB_`-split constituent list
+        # contains EXACTLY `cons` (e.g. 'dsp_cmd_pgst_reg_0_'); its output pin is
+        # Q<idx+1> (1-based position in the bank), or bare Q for a single-bit flop.
+        for cm in re.finditer(r'\b(\w*' + re.escape(cons) + r'\w*)\s*\(', bodies[st]):
+            cell = cm.group(1)
+            parts = cell.split('_MB_')
+            idx = next((j for j, p in enumerate(parts) if p == cons), None)
+            if idx is None:
+                continue
+            pin = 'Q' if len(parts) == 1 else f'Q{idx + 1}'
+            w = _pin_wire_in_cell(cell, pin, st)
+            if w:
+                return w
+        return ''
+    def _reg_leaf_wire(nn_, st):
+        # Resolve a REGISTERED leaf to its OWN flop's Q-output net in stage `st`, derived
+        # STRUCTURALLY from the leaf name (never from an FM pin-path, which can name a
+        # scan-input/other-flop pin and silently resolve to the wrong signal). A bare
+        # bracket name SIG[b] survives only in Synthesize; at P&R the flop-Q wire is
+        # renamed (bus-flatten SIG_b_, an inserted buffer -> FxPrePlace_ZBUF_*/dftopt*,
+        # or an MB-flop re-bank that renumbers pins). Reading the signal's OWN flop-Q pin
+        # is unambiguous across all three cases.
+        m = re.match(r'^([A-Za-z_]\w*)\[(\d+)\]$', nn_)
+        if m:
+            cons = f'{m.group(1)}_reg_{m.group(2)}_'
+        elif re.match(r'^[A-Za-z_]\w*$', nn_):
+            cons = f'{nn_}_reg'
+        else:
+            return ''
+        return _reg_wire_by_constituent(cons, st)
     def _resolve(nn_, st):
-        # Prefer the fenets map, but ONLY when it gives a REAL renamed net (exists in the
-        # stage netlist and is not just an echo of the query). A bracket echo / FM-036
-        # entry must NOT override the flat-name heuristic (which flattens sig[b]->sig_b_).
+        # Prefer the fenets map, but ONLY when it gives a REAL renamed NET (a plain net
+        # name present in the stage netlist — not a '<cell>/<pin>' path, which we resolve
+        # structurally below). A bracket echo / FM-036 entry must NOT override the
+        # flat-name heuristic (which flattens sig[b]->sig_b_).
         fk = leaf2key.get(nn_)
         if fk:
             mapped = _map_stage_net(nn_, st, fk.rsplit('/', 1)[0], rename_map)
-            if mapped and mapped != nn_ and _exists(mapped, st):
+            if (mapped and mapped != nn_ and '/' not in mapped and _exists(mapped, st)):
                 return mapped
         flat = _stage_net(nn_, toks[st])
         if _exists(flat, st):
             return flat
+        # REGISTERED leaf: its bare/flat name is absent at P&R (buffered / MB re-banked).
+        # Resolve to the signal's OWN flop-Q output net, structurally.
+        w = _reg_leaf_wire(nn_, st)
+        if w:
+            return w
         # last resort: a real map value even if it equals the bare name
         if fk:
             mapped = _map_stage_net(nn_, st, fk.rsplit('/', 1)[0], rename_map)
-            if _exists(mapped, st):
+            if '/' not in (mapped or '/') and _exists(mapped, st):
                 return mapped
         return flat
     for g in gates:
