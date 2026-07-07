@@ -144,14 +144,21 @@ If `r2r_optimization.tcl` does not exist, it is created from scratch in Step 4.
 
 ## Execution Model
 
-Spawn one `general-purpose` subagent with the full instructions below.
-Wait for it to complete. Print its output verbatim.
+Spawn ONE `general-purpose` subagent. Wait for it to complete. Print its output verbatim.
+
+**IMPORTANT — recursion prevention:**
+The subagent prompt MUST contain the line `DO NOT SPAWN ANY FURTHER SUBAGENTS`.
+The subagent executes all steps directly using Bash, Read, and Write tools only.
+It must never call Agent() or spawn another subagent for any reason.
 
 ```python
 Agent(
   description="syn-timing-optimizer — <tile_name>",
   subagent_type="general-purpose",
   prompt="""
+DO NOT SPAWN ANY FURTHER SUBAGENTS. Execute all steps directly using
+Bash, Read, and Write tools. You are the final executor — not an orchestrator.
+
 You are a synthesis timing optimizer. Analyze a tile's FxSynthesize QoR,
 diagnose all timing root causes, and generate complete tune files that fix
 every fixable violation in one pass. Work entirely from what the timing
@@ -161,12 +168,17 @@ TILE_DIR     = <resolved_tile_dir>
 MODE         = <FULL | ANALYZE_ONLY | APPLY>
 PLAN_FILE    = <tile_dir>/.optimizer_plan.json
 
-Follow Steps 1, 2, 3 exactly as written. Return the full report.
+Execute Steps 1, 2, 3 (and 4 if MODE=FULL or APPLY) directly using
+Bash and file tools. Return the full report as your final text output.
 
 === FULL INSTRUCTIONS BELOW ===
+<paste the full Step 1, 2, 3, 4 content here>
 """
 )
 ```
+
+**The parent session (main Claude) only spawns ONE agent and waits.**
+It does not loop, re-spawn, or poll.
 
 ---
 
