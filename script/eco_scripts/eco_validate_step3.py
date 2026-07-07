@@ -1052,21 +1052,57 @@ def main():
     # Flag it here: an input pin whose net is not ECO / constant / ECO-driven and is
     # absent from that stage's PreEco netlist (bare token or cell of a cell/pin ref).
     _CONST_RE = re.compile(r"^\d*'[bBhHdDoO]")
-    _stage_tok_cache = {}
+    # X3: keys that live alongside real pins inside port_connections_per_stage[stage]
+    # but are metadata annotations, NOT pin→net entries. Iterating them treats the
+    # metadata VALUE (e.g. net_source="real_rtl_name") as a net and false-flags it.
+    _META_KEYS = {'net_source', 'source', 'origin', 'note', 'comment', 'net_origin', 'resolved_by'}
+    def _modkey(n):
+        return re.sub(r'_\d+$', '', re.sub(r'^ddrss_\w+?_t_', '', str(n or '')))
+    # Build BOTH the global token set and a per-module token map in ONE pass per stage
+    # (X4). Per-module scoping catches a leaf that exists somewhere in the stage but
+    # NOT in the module where the gate is inserted (e.g. a P&R-renamed SEQMAP_NET).
+    _stage_tok_cache = {}      # stage -> global token set
+    _stage_modtok_cache = {}   # stage -> {mod_key -> token set}
+    def _build_tokens(stage):
+        if stage in _stage_tok_cache:
+            return
+        gz = os.path.join(args.ref_dir, 'data', 'PreEco', f'{stage}.v.gz')
+        glob, permod, cur = set(), {}, None
+        if os.path.isfile(gz):
+            try:
+                with gzip.open(gz, 'rt', errors='replace') as f:
+                    for ln in f:
+                        mm = re.match(r'^\s*module\s+(\S+)', ln)
+                        if mm:
+                            cur = _modkey(mm.group(1))
+                            permod.setdefault(cur, set())
+                        if '(' in ln or '.' in ln:      # instance/port lines carry nets
+                            t = re.findall(r'[A-Za-z_][\w\[\]]*', ln)
+                            glob.update(t)
+                            if cur is not None:
+                                permod[cur].update(t)
+            except Exception:
+                glob, permod = set(), {}
+        _stage_tok_cache[stage] = glob
+        _stage_modtok_cache[stage] = permod
     def _stage_tokens(stage):
-        if stage not in _stage_tok_cache:
-            gz = os.path.join(args.ref_dir, 'data', 'PreEco', f'{stage}.v.gz')
-            toks = set()
-            if os.path.isfile(gz):
-                try:
-                    with gzip.open(gz, 'rt', errors='replace') as f:
-                        for ln in f:
-                            if '(' in ln or '.' in ln:      # instance/port lines carry nets
-                                toks.update(re.findall(r'[A-Za-z_][\w\[\]]*', ln))
-                except Exception:
-                    toks = set()
-            _stage_tok_cache[stage] = toks
+        _build_tokens(stage)
         return _stage_tok_cache[stage]
+    def _module_tokens(stage, module):
+        _build_tokens(stage)
+        return _stage_modtok_cache[stage].get(_modkey(module))
+
+    # ECO-added ports/nets do NOT exist in the PreEco netlist by design (they are
+    # created by this ECO). A new port like `reg_dualdcqenmode` has no eco_ prefix, so
+    # it would false-flag as NET-ABSENT — collect declared ECO port names and exclude
+    # them (and their bit-slices) from the leaf-existence check.
+    _eco_ports = set()
+    for _st in ('Synthesize', 'PrePlace', 'Route'):
+        for _e in study.get(_st, []):
+            if _e.get('change_type') in ('port_declaration', 'new_port'):
+                _nm = _e.get('port_name') or _e.get('new_token') or _e.get('new_port')
+                if _nm:
+                    _eco_ports.add(str(_nm).split('[')[0])
 
     if getattr(args, 'ref_dir', None):
         _absent_seen = set()
@@ -1088,20 +1124,32 @@ def main():
                     pcs = e.get('port_connections') if stage == 'Synthesize' else None
                 if not isinstance(pcs, dict):
                     continue
+                mtoks = _module_tokens(stage, e.get('module_name'))
                 for pin, net in pcs.items():
-                    if pin in OUT_PINS or not isinstance(net, str) or not net:
+                    if pin in OUT_PINS or pin in _META_KEYS or not isinstance(net, str) or not net:
                         continue
                     if net.startswith(('n_eco_', 'eco_')) or _CONST_RE.match(net) or net in driven:
                         continue
-                    if net in toks or net.split('/')[0] in toks:
+                    if net.split('[')[0].split('/')[0] in _eco_ports:
                         continue
-                    key = (stage, net)
+                    base = net.split('/')[0]
+                    in_global = (net in toks or base in toks)
+                    # X4: when the entry's own module resolves to a non-empty body, the
+                    # leaf must exist in THAT module. When it does NOT resolve (uniquify
+                    # name mismatch, C3), fall back to the global check — never false-flag.
+                    in_module = (net in mtoks or base in mtoks) if mtoks else None
+                    if in_global and (in_module is None or in_module):
+                        continue
+                    key = (stage, e.get('module_name'), net)
                     if key in _absent_seen:
                         continue
                     _absent_seen.add(key)
+                    where = ("the PreEco netlist" if not in_global
+                             else f"module {e.get('module_name')!r} (present elsewhere in stage, "
+                                  f"absent from this module — P&R-renamed?)")
                     issues.append(
                         f"CRITICAL/NET-ABSENT: {e.get('instance_name','?')}.{pin}={net} in {stage} "
-                        f"— not in the PreEco netlist and not an ECO/const/driven net. The verifier "
+                        f"— not in {where} and not an ECO/const/driven net. The verifier "
                         f"did not resolve this leaf; it would be an undriven gate input at FM. Fix its "
                         f"per-stage name (rename map / verifier) or thread it in.")
 

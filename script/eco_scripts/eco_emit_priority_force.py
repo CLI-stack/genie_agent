@@ -238,6 +238,8 @@ def _resolve_cells(ref_dir, module):
         return sorted(cands, key=lambda c: ('SPG' in c, c.endswith('LL'), len(c)))[0]
     cells['INV']  = pick([r'INVD1'], _INV_CELL)
     cells['AND2'] = pick([r'AN2D1', r'AND2D1'], _AND2_CELL)
+    cells['AND3'] = pick([r'AN3D1', r'AND3D1'], 'AND3D1BWP136P5M156H3P48CPDLVT')
+    cells['AND4'] = pick([r'AN4D1', r'AND4D1'], 'AND4D1BWP136P5M156H3P48CPDLVT')
     cells['OR2']  = pick([r'OR2D1'], _OR2_CELL)
     cells['INR2'] = pick([r'INR2D1'], _INR2_CELL)
     return cells

@@ -77,8 +77,15 @@ def _bit_present(body, sig, b):
     return any(re.search(p, body) for p in pats)
 
 
-def _reduce_and(terms, mk_net, jira, tagbase, mod, gates, seq):
-    """AND-reduce a list of nets to one, using AND4/AND3/AND2. Appends gates."""
+def _reduce_and(terms, mk_net, jira, tagbase, mod, gates, seq, cells=None):
+    """AND-reduce a list of nets to one, using AND4/AND3/AND2. Appends gates.
+    `cells` is the per-module library-resolved cell map (AND2/AND3/AND4); when
+    omitted, falls back to the hardcoded defaults (which may not exist in every
+    library — pass resolved cells to avoid CELL_TYPE_STAGE_VALID / FE-LINK-2)."""
+    cells = cells or {}
+    a2 = cells.get('AND2', _AND2_CELL)
+    a3 = cells.get('AND3', _AND3_CELL)
+    a4 = cells.get('AND4', _AND4_CELL)
     level = 0
     cur = list(terms)
     if len(cur) == 1:
@@ -91,9 +98,9 @@ def _reduce_and(terms, mk_net, jira, tagbase, mod, gates, seq):
             if len(grp) == 1:
                 nxt.append(grp[0]); i += 1; continue
             cell, fn, pins_in = {
-                2: (_AND2_CELL, 'AND2', ('A1', 'A2')),
-                3: (_AND3_CELL, 'AND3', ('A1', 'A2', 'A3')),
-                4: (_AND4_CELL, 'AND4', ('A1', 'A2', 'A3', 'A4')),
+                2: (a2, 'AND2', ('A1', 'A2')),
+                3: (a3, 'AND3', ('A1', 'A2', 'A3')),
+                4: (a4, 'AND4', ('A1', 'A2', 'A3', 'A4')),
             }[len(grp)]
             out = mk_net(f'{tagbase}_a{level}_{i}')
             pc = {p: g for p, g in zip(pins_in, grp)}
@@ -174,6 +181,15 @@ def emit(rtl_diff, study, jira, ground_body_of, ref_dir=None, rename_map=None):
                         f"(studier did not build the and_term OR/AND gate).")
             continue
         mod = combine[0].get('module_name') or c.get('module_name') or ''
+        # Resolve exact library cell names from the module's PreEco netlist (AN2D1 vs
+        # AND2D1, etc.) — hardcoded AND2D1/AND3D1 do not exist in every library and
+        # would fail step3 CELL_TYPE_STAGE_VALID / FM FE-LINK-2.
+        try:
+            from eco_emit_priority_force import _resolve_cells
+            cells = _resolve_cells(ref_dir, mod)
+        except Exception:
+            cells = {}
+        inv_cell = cells.get('INV', _INV_CELL)
         match_net = f'n_eco_{jira}_eq_{sig}_{cb}'
         # Build the comparator ONCE (idempotent) — but the combine-gate rewrite below
         # still runs for EVERY change that shares this match net (e.g. the same opcode
@@ -197,15 +213,15 @@ def emit(rtl_diff, study, jira, ground_body_of, ref_dir=None, rename_map=None):
                     terms.append(bitnet)
                 else:
                     inv_out = nn(f'{sig}_n{b}')
-                    gates.append(_gate(f'eco_{jira}_eq_{sig}_inv{b}_{seq[0]}', _INV_CELL, 'INV',
+                    gates.append(_gate(f'eco_{jira}_eq_{sig}_inv{b}_{seq[0]}', inv_cell, 'INV',
                                        inv_out, mod, {'I': bitnet, 'ZN': inv_out}))
                     terms.append(inv_out)
-            red = _reduce_and(terms, nn, jira, f'{sig}_{cb}', mod, gates, seq)
+            red = _reduce_and(terms, nn, jira, f'{sig}_{cb}', mod, gates, seq, cells)
             # optional final polarity: != -> invert the equality
             final = red
             if not match:
                 final = nn(f'{sig}_{cb}_ne')
-                gates.append(_gate(f'eco_{jira}_eq_{sig}_ne_{seq[0]}', _INV_CELL, 'INV',
+                gates.append(_gate(f'eco_{jira}_eq_{sig}_ne_{seq[0]}', inv_cell, 'INV',
                                    final, mod, {'I': red, 'ZN': final}))
             # rename the reduce root to the canonical match_net (stable/idempotent)
             for g in gates:
