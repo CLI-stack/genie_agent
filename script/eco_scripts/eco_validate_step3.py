@@ -245,6 +245,41 @@ def _cnf_completeness(study, rtl_diff, ref_dir):
     return issues
 
 
+def _compare_fold_completeness(study, rtl_diff, ref_dir):
+    """Validate every `compare_fold` change was BUILT by eco_emit_compare_fold (net-force),
+    not left for the and_term OR-widen path. Per change, in Synthesize: >=1 driver-side
+    net-force rewire from eco_emit_compare_fold, and its renamed original net (old_net = the
+    mismatch net) is re-driven by a new_logic_gate (the fold INR2). The emitter self-checks
+    the fold function exhaustively, so a PRESENT well-formed emission is correct by
+    construction; this guards the wiring + that the wrong builder was not used."""
+    issues = []
+    changes = [c for c in rtl_diff.get('changes', []) if c.get('change_type') == 'compare_fold']
+    if not changes:
+        return issues
+    syn = study.get('Synthesize', [])
+    gate_outs = {e.get('output_net') for e in syn if e.get('change_type') == 'new_logic_gate'
+                 and e.get('source') == 'eco_emit_compare_fold'}
+    rws = [e for e in syn if e.get('change_type') == 'rewire'
+           and e.get('source') == 'eco_emit_compare_fold'
+           and e.get('driver_side') and e.get('net_force')]
+    if not rws:
+        issues.append("CRITICAL: compare_fold change(s) present but no driver-side net-force "
+                      "rewire from eco_emit_compare_fold in study — the deterministic builder "
+                      "did not run (placeholder / wrong builder). Run eco_emit_compare_fold.py.")
+        return issues
+    for rw in rws:
+        on = rw.get('old_net')
+        for fld in ('cell_name_per_stage', 'pin_per_stage', 'old_net_per_stage'):
+            d = rw.get(fld)
+            if not (isinstance(d, dict) and all(d.get(s) for s in ('Synthesize', 'PrePlace', 'Route'))):
+                issues.append(f"HIGH: compare_fold rewire {on} missing {fld} for all stages.")
+        if on not in gate_outs:
+            issues.append(f"CRITICAL: compare_fold — mismatch net {on} renamed to "
+                          f"{rw.get('new_net')} but no compare_fold gate re-drives {on}; "
+                          f"fanout would see an undriven net.")
+    return issues
+
+
 def _pf_modbody(ref_dir, module):
     gz = os.path.join(ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
     want = re.sub(r'_\d+$', '', re.sub(r'^ddrss_\w+?_t_', '', str(module or '')))
@@ -6027,6 +6062,12 @@ def main():
         issues.extend(_cnf_completeness(study, rtl_diff, args.ref_dir))
     except Exception as _e:
         print(f"[comb-net-force-check skipped] {_e}", file=sys.stderr)
+
+    # ── compare_fold emissions built by eco_emit_compare_fold (not and_term) ──
+    try:
+        issues.extend(_compare_fold_completeness(study, rtl_diff, args.ref_dir))
+    except Exception as _e:
+        print(f"[compare-fold-check skipped] {_e}", file=sys.stderr)
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0

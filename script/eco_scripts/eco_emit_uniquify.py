@@ -173,10 +173,14 @@ def main():
             # ground-truth _0 module for this stage so canon_gates/rews match.
             canon_mod = copy_mod.get(0, canon_mod)
             # canonical unit entries (gates + D/CP rewires) on the _0 module
+            # compare_fold entries are emitted per-copy by eco_emit_compare_fold itself
+            # (it loops the family), so uniquify must NOT clone/replicate them.
             canon_gates = [e for e in entries if e.get('change_type') == 'new_logic_gate'
-                           and e.get('module_name') == canon_mod]
+                           and e.get('module_name') == canon_mod
+                           and e.get('source') != 'eco_emit_compare_fold']
             canon_rews = [e for e in entries if e.get('change_type') == 'rewire'
                           and e.get('module_name') == canon_mod
+                          and e.get('source') != 'eco_emit_compare_fold'
                           and (_DPIN.match(str(e.get('pin', ''))) or e.get('pin') in _CLKPIN)]
             # fresh ECO nets produced by the canonical gates
             fresh = set()
@@ -198,6 +202,7 @@ def main():
                 # in-copy gate or D/CP rewire on this module.
                 already = any(
                     isinstance(e.get('module_name'), str) and e.get('module_name') == modname
+                    and e.get('source') != 'eco_emit_compare_fold'
                     and (e.get('change_type') == 'new_logic_gate'
                          or (e.get('change_type') == 'rewire'
                              and (_DPIN.match(str(e.get('pin', ''))) or e.get('pin') in _CLKPIN)))

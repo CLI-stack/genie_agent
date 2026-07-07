@@ -62,6 +62,8 @@ Phase 0 — new_logic / port changes (complete ALL before Phase 1):
           (was 0i)
   □ 0.16  Process enable_swap      [SKIP IF no enable_swap changes]
           (was Phase 0e)
+  □ 0.17  Process compare_fold via eco_emit_compare_fold.py
+          [SKIP IF no compare_fold changes]
 
 Phase 1 — wire_swap (FM-driven, per stage):
   □ 1.0   PRE-PHASE — driver_substitution / intermediate_net_insertion
@@ -791,6 +793,28 @@ For bus DFFs: emit N rewire entries (one per bit cell), all sharing the same ena
 From `new_enable_gate_chain[]` in the RTL diff, emit one `new_logic_gate` entry per gate — same as wire_swap condition gate chain handling. These gates produce `new_enable_net` from its sub-expressions.
 
 Log: `ENABLE_SWAP: <target_register> CE pin rewired from <old_enable_net> → <new_enable_net> | <N> gate(s) inserted`
+
+---
+
+### Phase 0.17 — Process `compare_fold` changes via `eco_emit_compare_fold.py`
+> **SKIP IF** no `compare_fold` changes in rtl_diff.
+> **DONE WHEN** the study contains, for every compare_fold change (all uniquified copies × 3 stages), a driver-side net-force `rewire` (`source: eco_emit_compare_fold`) renaming the mismatch net's driver output, plus the fold gates (OR-reduce + AND2/INR2 + INR2) re-driving the original mismatch net.
+
+A `compare_fold` is an OR-fold inside an equality-compare operand feeding a register (see rtl_diff_analyzer.md). Do **NOT** hand-model it and do **NOT** treat it as an `and_term` OR-widen — the deterministic builder self-derives everything (the shared mismatch net `M = opA ^ opB`, the stage-stable separating literal `S`, per-stage names, per-copy replication) and emits a surgical net-force `M_new = M & ~(R & S)`, exhaustively self-checking the fold function (fail-closed on any mismatch).
+
+Run ONCE (it processes all compare_fold changes and all uniquified copies internally):
+```bash
+python3 script/eco_scripts/eco_emit_compare_fold.py \
+  --rtl-diff   data/<TAG>_eco_rtl_diff.json \
+  --study      data/<TAG>_eco_preeco_study.json \
+  --jira       <JIRA> \
+  --ref-dir    <REF_DIR> \
+  --rename-map data/<TAG>_eco_fenets_rename_map.json \
+  --output     data/<TAG>_eco_preeco_study.json
+```
+Exit 0 = emitted (marker `<TAG>_eco_preeco_study_compare_fold_marker.txt`); exit 2 = ABORT (study untouched; read the marker for the fail-closed reason and fix Step-1/Step-2). It splices `rewire` + `new_logic_gate` entries (with `port_connections_per_stage` and `module_name_per_stage`) into all 3 stage lists itself. **It also handles uniquified replication itself** — `eco_emit_uniquify.py` explicitly skips `source: eco_emit_compare_fold` entries, so do NOT expect (or force) uniquify to clone them.
+
+Log: `COMPARE_FOLD: <N> fold(s) emitted (per uniquified copy) via eco_emit_compare_fold`
 
 ---
 

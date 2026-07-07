@@ -539,7 +539,8 @@ def build_for_module(ref_dir, stage_mods, jira, params, tag='', rename_map=None,
               'pin_per_stage': {st: per_stage_drv[st][1] for st in STAGES},
               'old_net': per_stage_M['Synthesize'],
               'old_net_per_stage': {st: per_stage_M[st] for st in STAGES},
-              'new_net': m_raw, 'source': 'eco_emit_compare_fold'}
+              'new_net': m_raw, 'driver_side': True, 'net_force': True,
+              'source': 'eco_emit_compare_fold'}
     return {'gates': merged, 'rename': rename, 'errors': []}
 
 
