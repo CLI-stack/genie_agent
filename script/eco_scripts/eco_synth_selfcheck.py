@@ -118,6 +118,19 @@ class _Interp:
         v = self.eval(node)
         return v
 
+    def _pw(self, node):
+        """Part width for concat/rep packing. width_of() reports 1 for EVERY 'bit'
+        node, but a bit-select whose index is a range macro (e.g. rcqe_cam[`FLDCSB]
+        = cam[26:29]) is 4 bits wide. eval() already returns the full field via
+        _macro_field, so packing it with width 1 would truncate it to its LSB and
+        corrupt the concat (breaking {..}=={..} field compares). Resolve the macro
+        field width here; fall back to width_of for everything else."""
+        if node[0] == 'bit':
+            ps = self._macro_field(node[2])
+            if ps and ps[0] != ps[1]:
+                return abs(ps[1] - ps[0]) + 1
+        return width_of(node, self.wm, self.macros) or 1
+
     def eval(self, node):
         t = node[0]
         if t == 'num':
@@ -187,11 +200,11 @@ class _Interp:
         if t == 'concat':
             val = 0
             for p in node[1]:
-                w = width_of(p, self.wm, self.macros) or 1
+                w = self._pw(p)
                 val = (val << w) | self._mask(self.eval(p), w)
             return val
         if t == 'rep':
-            p = node[2]; w = width_of(p, self.wm, self.macros) or 1
+            p = node[2]; w = self._pw(p)
             pv = self._mask(self.eval(p), w); val = 0
             for _ in range(node[1]):
                 val = (val << w) | pv
