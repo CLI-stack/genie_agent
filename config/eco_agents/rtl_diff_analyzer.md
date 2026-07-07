@@ -119,6 +119,8 @@ Classify as `and_term` (NOT `wire_swap`). `old_token` = the **gate-level net** t
 
 **Set `term_op` to the actual RTL operator — AND vs OR are different gates.** An `and_term` NARROWS (`& ~new` or `& new`); an **OR widening** BROADENS the expression (e.g. `(mop==RD)` → `(mop==RD) | (mop==MRR)`). For a widening set `term_op: "or"` (default `"and"`): Step 3 must build `OR2/NOR2(old_token, new_term) → fresh` (never AND). Emitting an AND gate for an RTL OR-widen (or vice-versa) inverts the logic → FM mismatch. Step 1 validator requires `term_op` present; Step 3 validator brute-forces the emitted gate's truth-table against `old_token <term_op> new_term`.
 
+**`compare_fold` — an OR-fold INSIDE an equality-compare operand feeding a register (NOT an OR at the D-net).** When the ECO ORs a new term into ONE operand of an equality comparison that assigns a register, e.g. `reg <= ({.., op | (|<NewSig>)} == {.., cmp | (|<NewSig>)}) ? VAL : reg;` (the `| <NewSig>` is inside the `{..} == {..}`), this is **`change_type: compare_fold`** — do NOT classify it as `and_term`/`wire_swap`. Rationale: the synthesized netlist represents the compared term-pair by a single SHARED mismatch net (`opA ^ opB`) used across MANY branches; an `and_term` OR-widen would build `OR2(D-net, NewSig)` and force the register bit high, and would also corrupt the sibling branches that do NOT fold. The deterministic builder `eco_emit_compare_fold.py` instead does a condition-localized surgical net-force `M_new = M & ~(R & S)` (S = a stage-stable branch-select field bit it derives itself). **Emit ONLY these fields** (the builder self-derives operands, mismatch net, opcodes, and the separating literal from the RTL + netlist): `module_name`, `compare_signal` (= the register, i.e. `target_register`), `context_line` (the full ECO'd RTL line — do not truncate the `== {` compare), `fold_signal` (= `<NewSig>`, the OR-folded term; may also be given as `new_token`), and for a uniquified generate array `uniquified_family`/`uniquified_count`/`instances` (ALL copies). Do NOT emit `old_token` as an OR-widen target, `term_op`, or `and_term_gate_chain_design` — those belong to a real `and_term`. **The Step-1 validator deterministically detects this signature (`| (|NewSig)` inside an `== {..}`) and HARD-FAILS if it is classified as `and_term`/`wire_swap`, or if a `compare_fold` lacks the signature — so mis-classification cannot slip through.**
+
 **`priority_force` — a new branch that FORCES signals to constants (do NOT force-fit into and_term/enable_swap).** When the ECO adds a branch like `else if (<cond>) begin sigA <= CONST_A; sigB <= <OPCODE_MACRO>; end` (one or more signals pinned to constants/opcodes under a new condition), classify as `change_type: priority_force`.
 
 **Discriminator — priority_force vs and_term (decide by the RHS of the new assignment):**
@@ -214,7 +216,7 @@ For each change record:
 {
   "file": "<rtl_file.v>",
   "module_name": "<declaring_module>",
-  "change_type": "<wire_swap|and_term|new_port|port_promotion|new_logic|port_connection|enable_swap>",
+  "change_type": "<wire_swap|and_term|compare_fold|new_port|port_promotion|new_logic|port_connection|enable_swap>",
   "old_token": "<old_signal_name>",
   "new_token": "<new_signal_name>",
   "context_line": "<full RTL line containing the change>",
@@ -902,7 +904,7 @@ Write to `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json` (always use the full absolute
     {
       "file": "<rtl_file.v>",
       "module_name": "<declaring_module>",
-      "change_type": "<wire_swap|and_term|new_port|port_promotion|new_logic|port_connection|enable_swap>",
+      "change_type": "<wire_swap|and_term|compare_fold|new_port|port_promotion|new_logic|port_connection|enable_swap>",
       "old_token": "<old_signal_name>",
       "new_token": "<new_signal_name>",
       "context_line": "<full RTL line containing the change>",

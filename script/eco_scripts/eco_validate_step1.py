@@ -506,6 +506,27 @@ def signals_in_module(text, module_name):
     return sigs
 
 
+def _detect_compare_fold_signature(context_line, new_token):
+    """DETERMINISTIC detector for a COMPARE-OPERAND OR-fold, independent of any md wording.
+    True when the new term is OR-folded INSIDE an operand of an equality-of-concatenations
+    (`... | (|<tok>) ... } == {` or `| <tok>` within the braces) that feeds a register —
+    i.e. the fold lives INSIDE the compare, NOT as an OR at the flop D-net top. A plain
+    D-net OR-widen (`D | tok`, no enclosing concat brace) returns False. Robust to a
+    truncated context_line (only needs the LHS fold + an `== {` marker)."""
+    if not context_line or not new_token:
+        return False
+    cl = context_line
+    tok = re.escape(str(new_token))
+    fm = (re.search(r'\|\s*\(\s*\|\s*' + tok + r'\s*\)', cl)
+          or re.search(r'\|\s*' + tok + r'\b', cl))
+    if not fm:
+        return False
+    if not re.search(r'==\s*\{', cl):            # equality of a concatenation
+        return False
+    pre = cl[:fm.start()]                          # fold must sit inside an open concat brace
+    return pre.count('{') > pre.count('}')
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--rtl-diff', required=True)
@@ -2995,7 +3016,7 @@ def main():
                     _famsz.setdefault(_m2.group(1), set()).add(int(_m2.group(2)))
             _fams = {b: ix for b, ix in _famsz.items() if len(ix) >= 2}
             for idx, c in enumerate(rtl_diff.get('changes', [])):
-                if c.get('change_type') not in ('and_term', 'wire_swap', 'new_port', 'port_connection'):
+                if c.get('change_type') not in ('and_term', 'wire_swap', 'new_port', 'port_connection', 'compare_fold'):
                     continue
                 cb = re.sub(r'_\d+$', '', str(c.get('module_name') or c.get('child_module_name') or ''))
                 if not cb:
@@ -3018,12 +3039,53 @@ def main():
     if uniquified_enum_issues:
         overall_pass = False
 
+    # ── COMPARE-FOLD classification guard (deterministic, fail-closed) ──────────
+    # A compare-operand OR-fold (`term | R` INSIDE an `== {..}` operand feeding a
+    # register) must be change_type=compare_fold — NOT and_term/wire_swap. The generic
+    # and_term OR-widen builder would emit `OR2(D-net, R)` (forces the register bit) and
+    # the Step-3 validator would brute-force it against `old_token OR new_term`, both
+    # functionally wrong. This deterministic detector catches the misclassification
+    # regardless of md guidance (BOTH directions).
+    compare_fold_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        ct = c.get('change_type')
+        ctx = c.get('context_line', '')
+        tok = c.get('fold_signal') or c.get('new_token')
+        sig = _detect_compare_fold_signature(ctx, tok)
+        if sig and ct in ('and_term', 'wire_swap'):
+            compare_fold_issues.append(
+                f"changes[{idx}] is a COMPARE-OPERAND OR-fold (term '{tok}' folded inside an "
+                f"'== {{..}}' operand feeding a register) but is classified as {ct!r}. It MUST be "
+                f"change_type='compare_fold' (built by eco_emit_compare_fold.py). The generic "
+                f"and_term OR-widen would drive OR2(D-net, {tok}) and corrupt the register. "
+                f"RTL: {ctx.strip()[:160]}")
+        if ct == 'compare_fold':
+            if not sig:
+                compare_fold_issues.append(
+                    f"changes[{idx}] change_type='compare_fold' but context_line shows no "
+                    f"compare-operand OR-fold signature (need `<operand> | (|{tok}) ... }} == {{`). "
+                    f"RTL: {ctx.strip()[:160]}")
+            if not (c.get('compare_signal') or c.get('target_register')):
+                compare_fold_issues.append(
+                    f"changes[{idx}] compare_fold missing compare_signal/target_register — the "
+                    f"emitter needs the registered compare target.")
+            if not (c.get('fold_signal') or c.get('new_token')):
+                compare_fold_issues.append(
+                    f"changes[{idx}] compare_fold missing fold_signal/new_token — the OR-folded term.")
+            if not c.get('module_name'):
+                compare_fold_issues.append(
+                    f"changes[{idx}] compare_fold missing module_name.")
+    if compare_fold_issues:
+        overall_pass = False
+
     out = {
         'rtl_diff': args.rtl_diff,
         'eq_decode_issue_count':       len(eq_decode_issues),
         'eq_decode_issues':            eq_decode_issues,
         'uniquified_enum_issue_count': len(uniquified_enum_issues),
         'uniquified_enum_issues':      uniquified_enum_issues,
+        'compare_fold_issue_count':    len(compare_fold_issues),
+        'compare_fold_issues':         compare_fold_issues,
         'priority_force_issue_count': len(priority_force_issues),
         'priority_force_issues':      priority_force_issues,
         'comb_net_force_issue_count': len(comb_net_force_issues),
@@ -3177,6 +3239,8 @@ def main():
     for p in mb_holdmux_issues:
         print(f'    - {p}')
     for p in holdmux_enable_issues:
+        print(f'    - {p}')
+    for p in compare_fold_issues:
         print(f'    - {p}')
     for r in results:
         if r['issues']:
