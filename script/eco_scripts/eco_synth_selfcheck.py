@@ -452,9 +452,11 @@ def run(ref_dir, module, signal, n=5000, seed=1):
 
 
 if __name__ == '__main__':
+    if len(sys.argv) < 4:
+        sys.exit("usage: eco_synth_selfcheck.py <ref_dir> <signal> <module> [n_vectors]")
     ref = sys.argv[1]
     sig = sys.argv[2]
-    mod = sys.argv[3] if len(sys.argv) > 3 else 'ddrss_umcdat_t_umcrecdsp'
+    mod = sys.argv[3]
     n = int(sys.argv[4]) if len(sys.argv) > 4 else 5000
     ok = run(ref, mod, sig, n=n)
     sys.exit(0 if ok else 1)

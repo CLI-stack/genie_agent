@@ -804,10 +804,10 @@ if __name__ == '__main__':
         print(marker)
         open(a.output.replace('.json', '_comb_net_force_marker.txt'), 'w').write(marker)
         sys.exit(0)
-    if len(sys.argv) >= 4 and sys.argv[1] == '--emit':
-        ref, sig = sys.argv[2], sys.argv[3]
-        mod = sys.argv[4] if len(sys.argv) > 4 else 'ddrss_umcdat_t_umcrecdsp'
-        out = emit_comb_net_force(ref, mod, sig, jira='9666')
+    if len(sys.argv) >= 5 and sys.argv[1] == '--emit':
+        ref, sig, mod = sys.argv[2], sys.argv[3], sys.argv[4]
+        jira = sys.argv[5] if len(sys.argv) > 5 else 'ECO'
+        out = emit_comb_net_force(ref, mod, sig, jira=jira)
         allnets = {g['output_net'] for g in out['gates']}
         leaves = sorted({v for g in out['gates'] for k, v in g['port_connections'].items()
                          if k not in ('Z', 'ZN') and isinstance(v, str) and v not in allnets
@@ -820,10 +820,10 @@ if __name__ == '__main__':
         for rw in out['rewires']:
             print(f"  rewire {rw['old_net']}->{rw['new_net']} pin_per_stage={rw['pin_per_stage']}")
         sys.exit(0)
-    if len(sys.argv) >= 4 and sys.argv[1] == '--lower':
-        ref, sig = sys.argv[2], sys.argv[3]
-        mod = sys.argv[4] if len(sys.argv) > 4 else 'ddrss_umcdat_t_umcrecdsp'
-        r = lower_delta(ref, mod, sig, jira='9666')
+    if len(sys.argv) >= 5 and sys.argv[1] == '--lower':
+        ref, sig, mod = sys.argv[2], sys.argv[3], sys.argv[4]
+        jira = sys.argv[5] if len(sys.argv) > 5 else 'ECO'
+        r = lower_delta(ref, mod, sig, jira=jira)
         if r is None:
             print('no delta'); sys.exit(0)
         outs = {g['output_net'] for g in r['gates']}
@@ -849,6 +849,11 @@ if __name__ == '__main__':
             cc = ' & '.join((('' if s else '~') + f'({e})') for e, s in c)
             print(f"    when {cc[:140] or '(always)'}  ->  {v}")
         sys.exit(0)
+    if len(sys.argv) < 3 or sys.argv[1].startswith('--'):
+        sys.exit("usage: eco_cone_rebuild.py <rtl_file> <signal>\n"
+                 "   or: eco_cone_rebuild.py --emit  <ref_dir> <signal> <module> [jira]\n"
+                 "   or: eco_cone_rebuild.py --lower <ref_dir> <signal> <module> [jira]\n"
+                 "   or: eco_cone_rebuild.py --emit-into-study ... (see argparse block)")
     rtl, sig = sys.argv[1], sys.argv[2]
     tree = parse_always(open(rtl, errors='replace').read(), sig)
     print(f"default: {tree['default']}")
