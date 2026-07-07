@@ -451,28 +451,21 @@ Pass `GAP15_CHECK_PATH=data/<TAG>_eco_and_term_port_check.json` to the studier s
 
 Wait for eco_netlist_re_studier to complete and verify `eco_step3_netlist_study_round<NEXT_ROUND>.rpt` exists.
 
-**Pass 6f-B — Spawn eco_netlist_verifier** with `config/eco_agents/eco_netlist_verifier.md` prepended. Pass:
-- `TAG`, `REF_DIR`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
-- `GAP15_CHECK_PATH=data/<TAG>_eco_and_term_port_check.json`
-- `SPEC_SOURCES` (same mapping — verifier uses it for per-stage net resolution in Check 2)
-- Task: re-enrich ALL entries in `eco_preeco_study.json` with per-stage nets, gap checks, port boundary, consumer cascade, CTS checks
-
-Wait for eco_netlist_verifier to complete.
-
-**CHECKPOINT 6f (MANDATORY — verify ALL four outputs before continuing):**
+**CHECKPOINT 6f-A (verify re_studier output before running the emitters):**
 ```bash
 ls <BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt
 ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt
-ls <BASE_DIR>/data/<TAG>_eco_step3_netlist_verify.rpt
-ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_verify.rpt
 ```
 If re_studier RPT missing → re_studier failed. Re-spawn Pass 6f-A.
 
-**Study JSON additive check after verifier:** For every `revised_change` entry in the analysis JSON, verify its `cell_name`/`instance_name` still exists in `eco_preeco_study.json` for the matching stage. If any is missing → re_studier deleted a required entry → re-spawn Pass 6f-A with explicit `PRESERVE_ENTRIES` list.
-If verifier RPT missing → verifier failed. Re-spawn Pass 6f-B.
-Verify `eco_preeco_study.json` modified time is after Step 6d completed. Do NOT proceed to eco_expand_chains without all four.
+> **ORDERING (Pass 6f-B / verifier now runs AFTER the emitters):** the emitters below
+> (expand_chains → priority_force → eco_cone_rebuild → rewire_finalize) SPLICE gates/rewires into
+> the study. The verifier must run AFTER them so its Check 2 (per-stage net resolution) + Check 10
+> (cone verify) resolve NET-ABSENT for the EMITTER gates too (e.g. a comb_net_force cone's MB-flop /
+> P&R-renamed leaves) — not only the re_studier's entries. Running it before the emitters (as it used
+> to) left those leaves unresolved and they leaked to FM.
 
-**MANDATORY: Run eco_expand_chains.py after verifier to inject any missing D-input gate chains:**
+**MANDATORY: Run eco_expand_chains.py after re_studier to inject any missing D-input gate chains:**
 ```bash
 cd <BASE_DIR>
 python3 script/eco_scripts/eco_expand_chains.py \
@@ -481,7 +474,7 @@ python3 script/eco_scripts/eco_expand_chains.py \
     --ref-dir  <REF_DIR> --jira <JIRA> \
     --output   data/<TAG>_eco_preeco_study.json
 ```
-eco_expand_chains runs AFTER verifier (not just after re_studier) because verifier may have added new entries that reference d_input chains not yet injected.
+eco_expand_chains runs after re_studier (it injects the d_input gate chains for the re_studier's DFF entries); the verifier runs LATER, after all the emitters (Pass 6f-B below), so it enriches these injected chains too.
 
 **MANDATORY: Run eco_emit_priority_force.py after expand_chains** (same as STUDY Step 3) — deterministically splices condition cone + per-bit force-mux (OR2 const-1 / INR2 const-0) + DFF-pin rewires for every `priority_force` change. No-op when none present. Runs BEFORE rewire_finalize so its DFF rewires get SI/SE consistency:
 ```bash
@@ -512,6 +505,22 @@ python3 script/eco_scripts/eco_emit_rewire_finalize.py \
     --study data/<TAG>_eco_preeco_study.json --ref-dir <REF_DIR> \
     --output data/<TAG>_eco_preeco_study.json
 ```
+
+**Pass 6f-B — Spawn eco_netlist_verifier (Deep Verify + Enrich Pass) — runs AFTER all emitters** with `config/eco_agents/eco_netlist_verifier.md` prepended. Pass:
+- `TAG`, `REF_DIR`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
+- `GAP15_CHECK_PATH=data/<TAG>_eco_and_term_port_check.json`
+- `SPEC_SOURCES` (same mapping — verifier uses it for per-stage net resolution in Check 2)
+- Task: re-enrich ALL entries in `eco_preeco_study.json` (re_studier + emitter gates: priority_force, comb_net_force, rewire_finalize) with per-stage nets / NET-ABSENT resolution (Check 2), gap checks, cone verification (Check 10).
+
+Wait for eco_netlist_verifier to complete.
+
+**CHECKPOINT 6f-B (verify verifier output before the validator):**
+```bash
+ls <BASE_DIR>/data/<TAG>_eco_step3_netlist_verify.rpt
+ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_verify.rpt
+```
+If verifier RPT missing → verifier failed. Re-spawn Pass 6f-B.
+**Study JSON additive check after verifier:** For every `revised_change` entry in the analysis JSON, verify its `cell_name`/`instance_name` still exists in `eco_preeco_study.json` for the matching stage. If any is missing → a prior pass deleted a required entry → re-spawn Pass 6f-A with an explicit `PRESERVE_ENTRIES` list.
 
 **MANDATORY: Re-validate study JSON post-expand_chains** — same contract enforcement as ORCHESTRATOR Step 3. Catches malformed chain output (Check 16 `[CHAIN_INJECTION_SCHEMA]`) AND Mode J chain-leaf polarity flips (Check 38 `[HIGH/38-CHAIN-LEAF-POLARITY-MISMATCH]`) before Step 4 of the next round:
 ```bash

@@ -270,32 +270,22 @@ Read the output JSON and **pass it explicitly to the eco_netlist_studier sub-age
 - Task: For each impl cell in FM output, find instantiation in PreEco netlist, extract port connections, confirm old_net on expected pin
 - Output: `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` (schema defined in `eco_netlist_studier.md`)
 
-**CHECKPOINT 3a (MANDATORY — verify before spawning verifier):**
+**CHECKPOINT 3a (MANDATORY — verify studier output before running the emitters):**
 ```bash
 ls -la <BASE_DIR>/data/<TAG>_eco_preeco_study.json
 python3 -c "import json; d=json.load(open('data/<TAG>_eco_preeco_study.json')); assert any(d.get(s) for s in ['Synthesize','PrePlace','Route']), 'all stages empty'"
 ls <BASE_DIR>/data/<TAG>_eco_step3_collect.rpt
 ```
-If any check fails — eco_netlist_studier failed. Do NOT spawn verifier. Re-spawn eco_netlist_studier first.
+If any check fails — eco_netlist_studier failed. Do NOT run the emitters. Re-spawn eco_netlist_studier first.
 
-**MANDATORY Step 3b — Spawn eco_netlist_verifier (Deep Verify + Enrich Pass):**
-
-> **Sequential contract:** eco_netlist_studier MUST complete and write `eco_preeco_study.json` before eco_netlist_verifier is spawned. They run sequentially — verifier reads the JSON studier produced. Never spawn both in parallel.
-
-**Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_netlist_verifier.md` prepended. Pass:
-- `REF_DIR`, `TAG`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
-- `GAP15_CHECK_PATH=data/<TAG>_eco_and_term_port_check.json`
-- `SPEC_SOURCES` (same mapping passed to eco_netlist_studier — verifier uses it for per-stage net resolution in Check 2 and cone verification in Check 10)
-- Task: Enrich every entry in `eco_preeco_study.json` — 14 checks covering GAP-15, per-stage nets, port boundary, consumer cascade, CTS, cone verification, missing entry detection
-
-Wait for eco_netlist_verifier to complete.
-
-**CHECKPOINT 3b (MANDATORY — verify both verifier outputs before continuing):**
-```bash
-ls <BASE_DIR>/data/<TAG>_eco_step3_netlist_verify.rpt
-ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_verify.rpt
-```
-If either missing — verifier failed. Re-spawn before continuing to eco_expand_chains.py. Do NOT proceed to Step 4 without a passing verifier.
+> **ORDERING (why the verifier now runs LAST, after the emitters):** the deterministic emitters
+> (eq_decode, priority_force, eco_cone_rebuild, uniquify, rewire_finalize) SPLICE new gates/rewires
+> into the study. If the verifier ran right after the studier (as it used to), it would enrich only
+> the studier's entries and NEVER see the emitter gates — so the emitters' NET-ABSENT leaves (e.g. a
+> comb_net_force cone's MB-flop / P&R-renamed leaves) would go unresolved and leak to FM. Running the
+> verifier AFTER the emitters lets its Check 2 (per-stage net resolution) + Check 10 (cone verify)
+> resolve EVERY entry, including the emitter gates. The emitters do their own first-pass resolution
+> (rename map + flat heuristic); the verifier is the authoritative clean-up of the stragglers.
 
 **MANDATORY post-Step 3: Run eco_expand_chains.py to inject missing D-input gate chains:**
 
@@ -373,6 +363,25 @@ python3 script/eco_scripts/eco_emit_rewire_finalize.py \
     --output  data/<TAG>_eco_preeco_study.json
 ```
 For every D/CP rewire on a pre-existing DFF this (a) fills `cell_name_per_stage`+`pin_per_stage` when the flop was P&R-merged in a later stage (e.g. `postcas_reg`→`<big>_reg_0_`/`D2`) and (b) emits per-module `SI/SE=1'b0` rewires so FM scan cones match. This makes Check 64 / REWIRE-CELL-ABSENT pass without the catch-and-fix loop. Verify stdout shows `ECO_SCRIPT_LAUNCHED: eco_emit_rewire_finalize.py`.
+
+**MANDATORY Step 3b — Spawn eco_netlist_verifier (Deep Verify + Enrich Pass) — runs AFTER all emitters:**
+
+> **Sequential contract:** ALL emitter scripts above (expand_chains → eq_decode → priority_force → eco_cone_rebuild → uniquify → rewire_finalize) MUST complete and write `eco_preeco_study.json` before eco_netlist_verifier is spawned. The verifier reads the FULL study (studier + emitter gates) and resolves per-stage nets / NET-ABSENT for EVERY entry — including the emitter gates. Never spawn in parallel with the emitters.
+
+**Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_netlist_verifier.md` prepended. Pass:
+- `REF_DIR`, `TAG`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
+- `GAP15_CHECK_PATH=data/<TAG>_eco_and_term_port_check.json`
+- `SPEC_SOURCES` (same mapping passed to eco_netlist_studier — verifier uses it for per-stage net resolution in Check 2 and cone verification in Check 10)
+- Task: Enrich every entry in `eco_preeco_study.json` (studier + emitter gates) — 14 checks covering GAP-15, per-stage nets, port boundary, consumer cascade, CTS, cone verification, missing entry detection. Check 2 resolves NET-ABSENT leaves (rename map → bare name → structural driver trace → flat/bracket → eco_resolve_synth_internal) for the emitter cones too.
+
+Wait for eco_netlist_verifier to complete.
+
+**CHECKPOINT 3b (MANDATORY — verify both verifier outputs before the validator):**
+```bash
+ls <BASE_DIR>/data/<TAG>_eco_step3_netlist_verify.rpt
+ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_verify.rpt
+```
+If either missing — verifier failed. Re-spawn before running the Step 3 validator. Do NOT proceed to Step 4 without a passing verifier.
 
 **MANDATORY post-Step 3: Run eco_validate_step3.py in a CATCH-AND-FIX LOOP** (validator is expensive — run it ONLY inside the loop, not separately). Each pass ALWAYS writes a per-iteration debug file `data/<TAG>_eco_validate_step3_iter$i.json`; the canonical `data/<TAG>_eco_validate_step3.json` is written ONLY when a pass succeeds and is REMOVED on failure — so it exists **iff the latest run passed** and always contains a PASSING result. The fixer therefore reads the FAILING issues from the per-iteration file, not the canonical:
 
