@@ -119,6 +119,7 @@ def main():
             if c.get('change_type') == 'new_port' and c.get('declaration_type') == 'input':
                 new_port_of[fb] = {'port_name': c.get('new_token'),
                                    'declaration_type': 'input',
+                                   'bus_width': c.get('bus_width'),
                                    'context_line': c.get('context_line')}
     if not fam_bases:
         marker = ("ECO_SCRIPT_LAUNCHED: eco_emit_uniquify.py\n"
@@ -154,6 +155,23 @@ def main():
                     copy_mod[int(cm.group(1))] = m
             if not copy_mod:
                 continue
+            # C3: normalize every family entry's module_name to the netlist ground
+            # truth for THIS stage. The studier emits the Synthesize module name in
+            # ALL stages, but P&R re-uniquifies the array with a `_0` suffix at Route
+            # (umcrecrcqentry_39 -> umcrecrcqentry_39_0). An entry carrying the wrong
+            # per-stage module name lands on no module at Route -> undriven at FM.
+            for e in entries:
+                mn = e.get('module_name')
+                if not isinstance(mn, str):
+                    continue
+                cm = crE.match(mn)
+                if cm:
+                    idx = int(cm.group(1))
+                    if idx in copy_mod and copy_mod[idx] != mn:
+                        e['module_name'] = copy_mod[idx]
+            # canon_mod was detected before normalization; realign it to the netlist
+            # ground-truth _0 module for this stage so canon_gates/rews match.
+            canon_mod = copy_mod.get(0, canon_mod)
             # canonical unit entries (gates + D/CP rewires) on the _0 module
             canon_gates = [e for e in entries if e.get('change_type') == 'new_logic_gate'
                            and e.get('module_name') == canon_mod]
@@ -216,21 +234,50 @@ def main():
                     nr['uniquify_copy'] = i
                     entries.append(nr); n_clone += 1
 
-            # per-copy port_declaration (all copies incl _0) — replaces the base-name one
+            # per-copy port_declaration (all copies incl _0). UPSERT, do not blindly add:
+            # the studier already emits one correct entry per copy (schema `signal_name`
+            # + `bus_width`). Keying a dedup on `port_name` alone missed those and
+            # appended 40 wrong-schema duplicates (applier reads `signal_name`, so they
+            # were dead weight bloating the study). Instead: for each copy override any
+            # existing entry in place to the applier schema, collapse duplicates, and
+            # add ONLY where a copy has none.
             npd = new_port_of.get(fb)
             if npd:
-                have = {(e.get('module_name'), e.get('port_name'))
-                        for e in entries if e.get('change_type') == 'port_declaration'}
-                for i, modname in sorted(copy_mod.items()):
-                    if (modname, npd['port_name']) in have:
+                pname = npd['port_name']
+                bw = npd.get('bus_width')
+                by_mod = {}   # module_name -> existing port_declaration entries for this port
+                for e in entries:
+                    if e.get('change_type') != 'port_declaration':
                         continue
-                    entries.append({
-                        'change_type': 'port_declaration', 'module_name': modname,
-                        'port_name': npd['port_name'], 'declaration_type': 'input',
-                        'context_line': npd.get('context_line'),
-                        'source': 'eco_emit_uniquify', 'uniquify_copy': i,
-                    })
-                    n_portdecl += 1
+                    if (e.get('signal_name') or e.get('port_name')) != pname:
+                        continue
+                    by_mod.setdefault(e.get('module_name'), []).append(e)
+                drop = set()
+                for i, modname in sorted(copy_mod.items()):
+                    ex = by_mod.get(modname) or []
+                    if ex:
+                        keep = ex[0]                       # override the first in place
+                        keep['signal_name'] = pname
+                        keep.pop('port_name', None)
+                        keep['declaration_type'] = 'input'
+                        if bw is not None and not keep.get('bus_width'):
+                            keep['bus_width'] = bw
+                        for extra in ex[1:]:               # collapse duplicates
+                            drop.add(id(extra))
+                    else:
+                        pd = {
+                            'change_type': 'port_declaration', 'module_name': modname,
+                            'signal_name': pname, 'declaration_type': 'input',
+                            'context_line': npd.get('context_line'),
+                            'source': 'eco_emit_uniquify', 'uniquify_copy': i,
+                        }
+                        if bw is not None:
+                            pd['bus_width'] = bw
+                        entries.append(pd)
+                        n_portdecl += 1
+                if drop:
+                    study[st] = [e for e in entries if id(e) not in drop]
+                    entries = study[st]
 
             # per-instance port_connection — the parent instantiates the array N times
             # (RCQ_ENTRIES_<i>__<child>); the ECO must connect the new port on EVERY
