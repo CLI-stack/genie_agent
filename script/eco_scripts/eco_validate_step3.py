@@ -1139,6 +1139,30 @@ def main():
                 if net.startswith('n_eco_') and net not in driven:
                     issues.append(f"CRITICAL: {e.get('instance_name','?')}.{pin}={net} in {stage} — undriven ECO net (no entry's Z/ZN/Q drives it)")
 
+    # ── 9a. GATE-NO-OUTPUT-PIN (root cause of many Check-9 'undriven' symptoms) ────
+    # A new_logic_gate MUST carry its output pin (Z/ZN/Q/...) in port_connections. The
+    # applier resolves the gate's output via output_pin_key(port_connections); if no
+    # output pin is present it stamps the cell with an UNCONNECTED output, so the gate's
+    # output net is undriven at FM. This is exactly how LLM-hand-built gates (e.g. the
+    # intent-C `|reg_dualdcqenmode` OR/NOR gates) fail: they put A1/A2 but omit Z, and
+    # the only symptom Check 9 sees is the CONSUMER reading an undriven net. Flag the
+    # PRODUCER here with an actionable root-cause message. Output-pin presence is
+    # structural, so check the base port_connections once (not per stage).
+    _GATE_OUT_PINS = ('ZN', 'Z', 'Q', 'QN', 'CO', 'S')
+    for e in study.get('Synthesize', []):
+        if e.get('change_type') != 'new_logic_gate':
+            continue
+        pcs = e.get('port_connections') or {}
+        if isinstance(pcs, dict) and pcs and not any(p in pcs for p in _GATE_OUT_PINS):
+            inst = e.get('instance_name') or e.get('output_net') or '?'
+            issues.append(
+                f"CRITICAL/GATE-NO-OUTPUT-PIN: new_logic_gate {inst!r} has no output pin "
+                f"({'/'.join(_GATE_OUT_PINS)}) in port_connections={list(pcs)} "
+                f"(output_net={e.get('output_net')!r}). The applier wires the gate output "
+                f"via port_connections; without an output pin the output net is left "
+                f"UNCONNECTED -> undriven at FM. Emit the output pin explicitly, e.g. "
+                f"'Z': {e.get('output_net')!r}.")
+
     # ── 9b. NET-ABSENT: every REAL-net input leaf must exist in the stage netlist ─
     # Check 9 only catches undriven n_eco_ nets. A real-net leaf (e.g. dsp_condsok[10],
     # WckSyncCtr0[0]) that the verifier did NOT resolve is neither an ECO net nor a
