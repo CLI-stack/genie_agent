@@ -626,9 +626,16 @@ assert grep_count(eco_wire_name, synth_lines) == 0, f"{eco_wire_name} already ex
 
 ## Check 10 — Cone Verification (Every rewire Entry)
 > **SKIP IF** no `rewire` entries exist (including auto-added by Checks 7/8/9).
-> **DONE WHEN** every rewire entry has `in_backward_cone` decided (max 8 hops with cycle detection); forward-trace fallback verified when backward miss; stage fallback (GAP-5) applied for stages without FM results.
+> **EXEMPT: driver-side net-force rewires.** A rewire with `driver_side: true` (or `net_force: true`)
+> — e.g. a `comb_net_force` output-pin rename `recdsp_c0mop[b] → ..._orig` — does NOT feed a target
+> DFF's D-pin; it renames a COMBINATIONAL driver's OUTPUT so a mux can re-drive the net for all fanout.
+> The "is `old_net` in the backward cone of a target DFF" test is meaningless for it. Such an entry is
+> structurally valid iff its combinational driver exists in each stage (already grounded by the emitter
+> and resolved by Check 2). **Do NOT run backward-cone/forward-trace on `driver_side`/`net_force`
+> rewires and do NOT flag them CONE_MISS** — mark `in_backward_cone: n/a (driver-side net-force)`.
+> **DONE WHEN** every NON-driver-side rewire entry has `in_backward_cone` decided (max 8 hops with cycle detection); forward-trace fallback verified when backward miss; stage fallback (GAP-5) applied for stages without FM results.
 
-For every `rewire` entry, run backward cone then forward trace to confirm the cell is in the target DFF's cone.
+For every `rewire` entry that is NOT a driver-side net-force, run backward cone then forward trace to confirm the cell is in the target DFF's cone.
 
 **Backward cone (max 8 hops) — with cycle detection:**
 ```python
