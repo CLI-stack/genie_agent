@@ -202,6 +202,23 @@ PLAN_FILE    = <tile_dir>/.optimizer_plan.json
 **The parent session (main Claude) only spawns ONE agent and waits.**
 It does not loop, re-spawn, or poll.
 
+**AFTER THE AGENT COMPLETES — MANDATORY:**
+Print the agent's COMPLETE output verbatim to the terminal. Every line. No exceptions.
+
+Do NOT:
+- Write a summary of what the agent found
+- Write "The analysis is complete. Key findings: ..."
+- Write "Here are the highlights from the report..."
+- Paraphrase or condense any part of the output
+- Add commentary before or after the output
+
+Do ONLY this:
+```
+<agent output printed here, exactly as returned, in full>
+```
+
+The agent's output IS the response. Copy it completely. Nothing more, nothing less.
+
 ---
 
 ## Step 1: READ — Understand the Current State
