@@ -778,18 +778,39 @@ if {[sizeof_collection $<name>_cells] > 0} {
 }
 ```
 
-**How to find bound coordinates from DEF:**
+**How to derive bound coordinates from DEF — 4 steps:**
+
 ```bash
 # Step 1: get DEF path
 grep "FLOORPLAN_DEF" <TILE_DIR>/override.params
+# e.g. FLOORPLAN_DEF = /proj/.../PreInsertRep.def.gz
 
-# Step 2: find SRAM/macro locations that the target hierarchy communicates with
+# Step 2: find where the failing hierarchy's std cells currently sit
+# Use the hierarchy pattern from Step 3a (e.g. *ARB/DCQARB*)
+# DEF COMPONENTS section lists every placed cell with its X Y coordinates
+zcat <def_path>.gz | grep -E "^\- .*<hierarchy_keyword>" | head -40
+# Each line format: - <instance_name> <cell_type> + PLACED ( <X> <Y> ) <orient> ;
+# Extract X and Y values → find min_X, max_X, min_Y, max_Y of the hierarchy
+
+# Step 3: find SRAM/macro locations that this hierarchy communicates with
+# (anchor the bound near these so wire to SRAM is minimized)
 zcat <def_path>.gz | grep -E "PLACED|FIXED" \
-  | grep -iv "FILLCAP\|FILL\|DCAP" | head -40
+  | grep -iv "FILLCAP\|FILL\|DCAP\|WELLTAP\|ENDCAP" \
+  | grep -v "^\-.*[A-Z][0-9]\{6\}" \
+  | head -40
+# Find macros whose names match the module's known data sources (SRAMs, keys, etc.)
 
-# Step 3: anchor the bound so the target hierarchy is near those macros
-# Bound coordinates: enclose the actual macro location + margin for std cells
+# Step 4: compute bound coordinates
+# - Start from actual std cell bounding box (Step 2): (min_X, min_Y)-(max_X, max_Y)
+# - Expand by 20-30% margin on each side so cells have room to move closer
+# - Anchor one edge near the communicating SRAM from Step 3
+# - Verify density: (cell_count / bound_area) < 400 cells/um²
 ```
+
+**If DEF is not available or too large to parse:**
+Use a conservative fallback — cover 25–30% of the die area centered on the module's
+approximate location. This is better than no bound (cells remain scattered) and
+carries no convergence risk due to low density.
 
 **Density MUST be checked before writing any bound:**
 ```
