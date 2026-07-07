@@ -60,7 +60,7 @@ report shows — do not assume any prior knowledge of the design hierarchy.
 
 TILE_DIR     = <resolved_tile_dir>
 MODE         = <FULL | ANALYZE_ONLY | APPLY>
-PLAN_FILE    = <tile_dir>/tune/FxSynthesize/.optimizer_plan.json
+PLAN_FILE    = <tile_dir>/.optimizer_plan.json
 
 Follow Steps 1, 2, 3 exactly as written. Return the full report.
 
@@ -980,7 +980,7 @@ No new decisions are made here — Step 3 is the plan, Step 4 executes it.
 
 If `MODE=APPLY`, skip Steps 1–3 entirely and read the saved plan:
 ```bash
-cat <TILE_DIR>/tune/FxSynthesize/.optimizer_plan.json
+cat <TILE_DIR>/.optimizer_plan.json
 ```
 If the plan file does not exist → print error and STOP:
 `"No saved plan found. Run --analyze-only first to generate a plan."`
@@ -1070,7 +1070,7 @@ All changes match the Step 3 proposal exactly.
 Regardless of mode (ANALYZE_ONLY, FULL, or APPLY), Step 3 always saves a plan
 file so that `--apply` can execute it later without re-running analysis.
 
-Save to: `<TILE_DIR>/tune/FxSynthesize/.optimizer_plan.json`
+Save to: `<TILE_DIR>/.optimizer_plan.json`
 
 Content:
 ```json
