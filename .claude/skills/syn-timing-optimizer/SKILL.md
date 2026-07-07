@@ -31,8 +31,87 @@ one shot — collapsing what typically takes multiple iterative runs into a sing
 ```
 
 `--apply` reads the saved plan file from the previous `--analyze-only` run
-(`<tile_dir>/tune/FxSynthesize/.optimizer_plan.json`) and executes Step 4
-directly — no re-analysis needed.
+(`<tile_dir>/.optimizer_plan.json`) and executes Step 4 directly — no
+re-analysis needed.
+
+---
+
+## --list Mode
+
+When the user runs `/syn-timing-optimizer --list` (no tile directory),
+print this help page immediately — do NOT spawn a subagent:
+
+```
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  /syn-timing-optimizer — Synthesis Timing Optimizer                         ║
+║  One-shot FxSynthesize timing fix for any tile                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+USAGE
+  /syn-timing-optimizer <tile_run_dir> [option]
+
+OPTIONS
+
+  (no option)        Full run — Steps 1→2→3→4
+                     Reads QoR, diagnoses root causes, proposes plan,
+                     writes tune files immediately.
+
+  --analyze-only     Safe mode — Steps 1→2→3 only, NO file writes
+                     Shows full diagnosis and proposed changes.
+                     Saves plan to <tile_dir>/.optimizer_plan.json
+                     for later use with --apply.
+
+  --apply            Apply mode — Step 4 only
+                     Reads saved plan from <tile_dir>/.optimizer_plan.json
+                     and writes tune files — no re-analysis.
+                     Use after reviewing --analyze-only output.
+
+  --list             Show this help page.
+
+STEPS
+  Step 1  READ      Parse all QoR passes, endpoint hierarchies, effective weights
+  Step 2  DIAGNOSE  Run 7 root cause checks (A–G)
+  Step 3  SUGGEST   Propose all tune file changes + flag RTL action items
+                    Saves .optimizer_plan.json
+  Step 4  GENERATE  Write tune files exactly as proposed in Step 3
+
+ROOT CAUSE CHECKS
+  [A]  Phantom clock paths     — cross-mode impossible paths dominating WNS/TNS
+  [B]  Weight starvation       — Cost = W × NVP × |WNS| < 5% of dominant group
+  [C]  Override conflicts      — same group in both tune files, wrong weight wins
+  [D]  Architecture limits     — LOL > 28, synthesis cannot close — RTL needed
+  [E]  Wire-dominated paths    — LOL < 15 but large WNS, needs create_bound
+  [F]  Missing groups          — hierarchy in top-20 endpoints but no named group
+  [G]  I2R catch-all split     — SYN_I2R hiding multiple distinct sub-paths
+
+TYPICAL WORKFLOWS
+
+  Quick fix (trusted):
+    /syn-timing-optimizer /proj/.../tiles/my_tile
+
+  Review before applying:
+    /syn-timing-optimizer /proj/.../tiles/my_tile --analyze-only
+    → read the plan
+    /syn-timing-optimizer /proj/.../tiles/my_tile --apply
+
+  After applying, check results:
+    /syn-timing --comparison <baseline_dir> <my_tile>
+
+PLAN FILE
+  Location : <tile_dir>/.optimizer_plan.json
+  Created  : after every --analyze-only or full run (Step 3)
+  Used by  : --apply to execute Step 4 without re-analysis
+
+WHAT GETS WRITTEN (Step 4)
+  tune/FxSynthesize/FxSynthesize.group_paths.tcl
+  tune/FxSynthesize/FxSynthesize.r2r_optimization.tcl
+  tune/FxSynthesize/FxSynthesize.pre_opt.tcl   (tunesource line added if missing)
+  override.params                               (DDRSS_FEINT_NUM_COMPILES = 5)
+
+REQUIREMENTS
+  <tile_dir>/rpts/FxSynthesize/FxSynthesize.pass_*.proc_qor.rpt.gz  (≥1 pass)
+  <tile_dir>/tune/FxSynthesize/  (may be empty — skill creates what is missing)
+```
 
 Requirements:
 - `rpts/FxSynthesize/FxSynthesize.pass_*.proc_qor.rpt.gz`  (at least one pass)
