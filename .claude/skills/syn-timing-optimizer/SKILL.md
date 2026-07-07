@@ -738,74 +738,113 @@ Groups with many NVP: use wider range to capture near-violating paths too.
 
 #### Section 7: Fix E — Placement Bounds (wire-dominated, bound-fixable groups only)
 
-First — ALWAYS set the congestion safety net before any bound:
+**Pre-work — derive coordinates BEFORE writing TCL:**
+
+Do this work in Bash (outside the tune file), then embed the results as constants.
+
+```bash
+# ── A. Get DEF path ──────────────────────────────────────────────────────────
+grep "FLOORPLAN_DEF" <TILE_DIR>/override.params
+# e.g. FLOORPLAN_DEF = /proj/.../PreInsertRep.def.gz
+
+# ── B. Get DEF unit scale (DBU per micron) ───────────────────────────────────
+# DEF coordinates are in database units, NOT microns. Must convert.
+zcat <def_path>.gz | grep "UNITS DISTANCE"
+# Output: UNITS DISTANCE MICRONS 2000 ;  → scale = 2000 DBU/um
+# All X Y values in DEF must be divided by scale to get microns.
+
+# ── C. Find std cell bounding box of failing hierarchy ───────────────────────
+# DEF COMPONENTS line format:
+#   - <inst_name> <cell_type> + PLACED ( <X_dbu> <Y_dbu> ) <orient> ;
+# Grep for instances whose name matches the hierarchy keyword:
+zcat <def_path>.gz | grep "^\- .*<hierarchy_keyword>" \
+  | grep -oE "\( [0-9]+ [0-9]+ \)" \
+  | tr -d '()' \
+  | awk '{if(NR==1){minx=$1;miny=$2;maxx=$1;maxy=$2}
+          if($1<minx)minx=$1; if($1>maxx)maxx=$1;
+          if($2<miny)miny=$2; if($2>maxy)maxy=$2}
+         END{print "minX="minx/SCALE " maxX="maxx/SCALE " minY="miny/SCALE " maxY="maxy/SCALE}' \
+  SCALE=<dbu_per_um>
+# → gives cell bounding box in microns: minX, maxX, minY, maxY
+
+# ── D. Count cells (for density check) ───────────────────────────────────────
+zcat <def_path>.gz | grep -c "^\- .*<hierarchy_keyword>"
+# → num_cells
+
+# ── E. Find nearby macro (SRAM) positions ────────────────────────────────────
+zcat <def_path>.gz | grep -E "^\- .*(SRAM|KEY|MAC|RAM)" \
+  | grep "FIXED\|PLACED" \
+  | grep -oE "\( [0-9]+ [0-9]+ \)" | tr -d '()' \
+  | awk '{print $1/SCALE, $2/SCALE}' SCALE=<dbu_per_um> | head -10
+# → macro positions in microns
+
+# ── F. Compute bound coordinates ─────────────────────────────────────────────
+# Start from cell bounding box, expand 25% on each side:
+#   x1 = minX - 0.25*(maxX-minX)   [but clamp to 0]
+#   y1 = minY - 0.25*(maxY-minY)   [but clamp to 0]
+#   x2 = maxX + 0.25*(maxX-minX)
+#   y2 = maxY + 0.25*(maxY-minY)
+# Then anchor one edge near the communicating SRAM from Step E.
+#
+# Density check:
+#   bound_width  = x2 - x1
+#   bound_height = y2 - y1
+#   bound_area   = bound_width × bound_height  (um²)
+#   density      = num_cells / bound_area
+#   MUST be < 400 cells/um². If > 400: double the expansion margin.
+```
+
+**ALWAYS set the congestion safety net first:**
 ```tcl
-# Safety net: if bounds create local congestion overflow, FC recovers gracefully
-# rather than running indefinitely trying to force placement.
 set_app_options -name compile.flow.enable_auto_feasibility_recovery -value true
 ```
 
-For each wire-dominated, bound-fixable group:
+**TCL template for each bound:**
 
 ```tcl
 # === Placement bound: <group_name> ===
-# Why: wire-dominated path — LOL=<N>, CritLen=<X>ps (<pct>% of period).
-# The logic is fast enough; cells are physically scattered causing long wires.
-# Soft bound encourages FC to co-locate <module> cells, reducing wire delay.
+# Trigger: CritLen=<X>ps (<pct>% of period=<period>ps), LOL=<N>, WNS=<wns>ps
 #
-# Sizing:
-#   Estimated cell area : ~<cell_area> um²  (from report_area for <module>)
-#   Target utilization  : 40–65% for dense groups; 10–20% for congestion-sensitive
-#   Bound area          : cell_area / target_util = <bound_area> um²
-#   Density check       : <num_cells> / <bound_area> = <density> cells/um²
-#   HARD LIMIT          : density MUST be < 400 cells/um²
-#   SAFE TARGET         : ~200 cells/um²
+# DEF analysis:
+#   Scale: <dbu>  DBU/um
+#   Cell bbox (from DEF COMPONENTS): (<minX>,<minY>)–(<maxX>,<maxY>) um
+#   Cell count: <num_cells>
+#   Nearby macro: <macro_name> at (<mx>,<my>) um
 #
-# Coordinates: derived from DEF macro positions (see Step CB below).
-#   Bound anchored near <macro_name> at (<mx>, <my>) in the floorplan.
-#   (<x1>,<y1>) → (<x2>,<y2>)  =  <width> × <height>  =  <area> um²
-#
+# Bound sizing:
+#   bbox expanded 25%: (<x1>,<y1>)–(<x2>,<y2>) um
+#   Bound area: <W>×<H> = <area> um²
+#   Density: <num_cells>/<area> = <density> cells/um²  (<400 ✓)
+
+# Simple include — one hierarchy, no exclusions:
 set <name>_cells [get_cells -quiet -hier -filter \
     "full_name =~ *<hierarchy_pattern>*"]
+
+# Include with exclusions — e.g. ARB minus its sub-hierarchies:
+# set <name>_cells [get_cells -quiet -hier -filter \
+#     "full_name =~ *<parent>/* && \
+#      full_name !~ *<parent>/<sub1>* && \
+#      full_name !~ *<parent>/<sub2>*"]
+
 if {[sizeof_collection $<name>_cells] > 0} {
     create_bound -name <name>_bound \
         -boundary [list [list <x1> <y1>] [list <x2> <y2>]] \
         -type soft \
         $<name>_cells
-    puts "  Bound <name>_bound: (<x1>,<y1>)–(<x2>,<y2>) | [sizeof_collection $<name>_cells] cells"
+    puts "  Bound <name>_bound: (<x1>,<y1>)–(<x2>,<y2>) um"
+    puts "  Cells: [sizeof_collection $<name>_cells]  Density: <density> cells/um²"
 } else {
-    puts "  WARNING: No cells found for <name>_bound — verify hierarchy filter"
+    puts "  WARNING: <name>_bound — no cells matched filter: *<hierarchy_pattern>*"
+    puts "  Check hierarchy name in sort_slack.endpts output"
 }
 ```
 
-**How to derive bound coordinates from DEF — 4 steps:**
-
-```bash
-# Step 1: get DEF path
-grep "FLOORPLAN_DEF" <TILE_DIR>/override.params
-# e.g. FLOORPLAN_DEF = /proj/.../PreInsertRep.def.gz
-
-# Step 2: find where the failing hierarchy's std cells currently sit
-# Use the hierarchy pattern from Step 3a (e.g. *ARB/DCQARB*)
-# DEF COMPONENTS section lists every placed cell with its X Y coordinates
-zcat <def_path>.gz | grep -E "^\- .*<hierarchy_keyword>" | head -40
-# Each line format: - <instance_name> <cell_type> + PLACED ( <X> <Y> ) <orient> ;
-# Extract X and Y values → find min_X, max_X, min_Y, max_Y of the hierarchy
-
-# Step 3: find SRAM/macro locations that this hierarchy communicates with
-# (anchor the bound near these so wire to SRAM is minimized)
-zcat <def_path>.gz | grep -E "PLACED|FIXED" \
-  | grep -iv "FILLCAP\|FILL\|DCAP\|WELLTAP\|ENDCAP" \
-  | grep -v "^\-.*[A-Z][0-9]\{6\}" \
-  | head -40
-# Find macros whose names match the module's known data sources (SRAMs, keys, etc.)
-
-# Step 4: compute bound coordinates
-# - Start from actual std cell bounding box (Step 2): (min_X, min_Y)-(max_X, max_Y)
-# - Expand by 20-30% margin on each side so cells have room to move closer
-# - Anchor one edge near the communicating SRAM from Step 3
-# - Verify density: (cell_count / bound_area) < 400 cells/um²
-```
+**Key rules:**
+- `get_cells -hier` is REQUIRED — without it, only top-level cells are returned
+- Filter `full_name =~ *pattern*` is case-sensitive — match exactly as shown in sort_slack.endpts
+- Always `-type soft` — hard bounds cause non-convergence
+- For a group that excludes sub-hierarchies: use `&&` with `!~` filters as shown above
+- DBU → micron conversion MUST be done — coordinates in DBU will place bounds in wrong location
 
 **If DEF is not available or too large to parse:**
 Use a conservative fallback — cover 25–30% of the die area centered on the module's
