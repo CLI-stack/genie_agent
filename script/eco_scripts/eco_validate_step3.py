@@ -18,8 +18,102 @@ Exit: 0 = PASS (all complete), 1 = FAIL (issues found)
 """
 
 import argparse, gzip, json, os, re, subprocess, sys
+import shutil, tempfile, atexit
 from pathlib import Path
 from eco_validate_io import write_result
+
+# ── PERF: decompress each PreEco .v.gz ONCE, run plain grep/cat thereafter ─────
+# The dominant cost of this validator is repeated gzip decompression: many checks
+# loop over hundreds of study entries and shell out to `zgrep`/`zcat`, each of
+# which re-decompresses a 34-55 MB netlist. `_fastcmd()` rewrites such a shell
+# command to run plain `grep`/`cat` on a once-decompressed temp copy — IDENTICAL
+# regex semantics (same grep binary, same pattern), just no per-call decompress.
+# Functionality is preserved exactly; only wall-clock changes.
+_PLAIN_NL_CACHE = {}          # gz_path -> decompressed temp file path
+_PLAIN_NL_TEMPS = []          # temp files to clean up at exit
+_GZ_TOKEN_RE = re.compile(r'''[^\s'"]*\.v\.gz(?:\.bak_\d+)?''')
+
+def _plain_netlist(gz):
+    """Decompress a .v.gz (optionally a .bak_<n> variant) ONCE to a temp plain file;
+    return its path. Falls back to the original gz path on any error."""
+    if not gz or '.v.gz' not in gz:
+        return gz
+    if gz in _PLAIN_NL_CACHE:
+        return _PLAIN_NL_CACHE[gz]
+    out = gz
+    try:
+        if os.path.isfile(gz):
+            fd, path = tempfile.mkstemp(suffix='.v', prefix='eco_s3nl_')
+            with os.fdopen(fd, 'wb') as w, gzip.open(gz, 'rb') as r:
+                shutil.copyfileobj(r, w, length=1 << 20)
+            out = path
+            _PLAIN_NL_TEMPS.append(path)
+    except Exception:
+        out = gz
+    _PLAIN_NL_CACHE[gz] = out
+    return out
+
+_NL_TEXT = {}                 # plain_path -> full text (one read)
+_NL_WORDS = {}                # plain_path -> set of \w+ tokens (one build)
+_PLAIN_ID_RE = re.compile(r'^[A-Za-z_]\w*$')
+# Simple existence query: `zgrep -c[w] "PATTERN" <gz>` (the hot per-entry shape).
+_SIMPLE_COUNT_RE = re.compile(r'^zgrep -c(w?) "([^"]+)" (\S+\.v\.gz(?:\.bak_\d+)?)$')
+
+def _nl_text(plain):
+    if plain not in _NL_TEXT:
+        t = ''
+        try:
+            with open(plain, 'r', errors='replace') as f:
+                t = f.read()
+        except Exception:
+            t = ''
+        _NL_TEXT[plain] = t
+    return _NL_TEXT[plain]
+
+def _nl_words(plain):
+    if plain not in _NL_WORDS:
+        _NL_WORDS[plain] = set(re.findall(r'[A-Za-z_]\w*', _nl_text(plain)))
+    return _NL_WORDS[plain]
+
+def _fastcmd(cmd):
+    """Rewrite a shell cmd using zgrep/zcat on PreEco .v.gz into grep/cat on a
+    once-decompressed plain temp file (exact same results, far less wall-clock).
+    For the hot `zgrep -c[w] "PLAIN_ID" <gz>` existence shape, answer entirely
+    in-memory (O(1) word-set / substring lookup) and return `echo <0|1>` — the
+    callers use the result only as ==0/>0, so 0/1 is result-equivalent. Only PLAIN
+    identifiers (no regex metachars) take this path; -cw uses word-set membership
+    (== grep `\\bW\\b`), -c uses substring presence (== grep substring match).
+    Anything else falls back to plain grep/cat with identical semantics."""
+    if not isinstance(cmd, str):
+        return cmd
+    m = _SIMPLE_COUNT_RE.match(cmd)
+    if m and _PLAIN_ID_RE.match(m.group(2)):
+        word_flag, pat, gz = (m.group(1) == 'w'), m.group(2), m.group(3)
+        plain = _plain_netlist(gz)
+        if plain != gz:
+            present = (pat in _nl_words(plain)) if word_flag else (pat in _nl_text(plain))
+            return f'echo {1 if present else 0}'
+    paths = sorted(set(_GZ_TOKEN_RE.findall(cmd)), key=len, reverse=True)
+    if not paths:
+        return cmd
+    new, subbed = cmd, False
+    for p in paths:
+        plain = _plain_netlist(p)
+        if plain != p:
+            new = new.replace(p, plain); subbed = True
+    if subbed:
+        new = re.sub(r'\bzgrep\b', 'grep', new)
+        new = re.sub(r'\bzcat\b', 'cat', new)
+    return new
+
+def _cleanup_plain_netlists():
+    for p in _PLAIN_NL_TEMPS:
+        try:
+            if os.path.isfile(p):
+                os.unlink(p)
+        except Exception:
+            pass
+atexit.register(_cleanup_plain_netlists)
 try:
     from eco_rtl_config import RtlConfig
     from eco_extract_pf_condition import extract_condition, resolve_rtl, extract_added_branch_condition
@@ -299,7 +393,7 @@ def main():
             try:
                 import subprocess as _sp_unc2
                 r2 = _sp_unc2.run(
-                    f'zgrep "SYNOPSYS_UNCONNECTED" {gz}',
+                    _fastcmd(f'zgrep "SYNOPSYS_UNCONNECTED" {gz}'),
                     shell=True, capture_output=True, text=True, timeout=30)
                 unc_text = r2.stdout
             except Exception:
@@ -1433,7 +1527,7 @@ def main():
                 try:
                     import subprocess as _sp25b
                     _r25b = _sp25b.run(
-                        f'zgrep -cE "\\.CP\\s*\\(\\s*{_re.escape(pp_cp_cs)}\\s*\\)" {_pp_gz}',
+                        _fastcmd(f'zgrep -cE "\\.CP\\s*\\(\\s*{_re.escape(pp_cp_cs)}\\s*\\)" {_pp_gz}'),
                         shell=True, capture_output=True, text=True, timeout=15)
                     if int(_r25b.stdout.strip() or '0') > 0:
                         _pp_cp_ok = True  # raw clock IS a valid PrePlace CP — skip 25b
@@ -1617,7 +1711,7 @@ def main():
                        f"awk '/^module\\s+\\S*{re.escape(sib.replace('ddrss_umccmd_t_',''))}/,"
                        f"/^endmodule/' | "
                        f"grep -c '\\b{re.escape(consumer)}\\b'")
-                r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+                r = subprocess.run(_fastcmd(cmd), shell=True, capture_output=True, text=True, timeout=30)
                 count = int(r.stdout.strip() or '0')
             except Exception:
                 count = -1
@@ -1665,7 +1759,7 @@ def main():
                 seen_wire_check.add(key)
                 try:
                     r = subprocess.run(
-                        f"zgrep -c '\\b{re.escape(w)}\\b' '{netlist}'",
+                        _fastcmd(f"zgrep -c '\\b{re.escape(w)}\\b' '{netlist}'"),
                         shell=True, capture_output=True, text=True, timeout=30)
                     count = int(r.stdout.strip() or '0')
                 except Exception:
@@ -2249,7 +2343,7 @@ def main():
             cmd = (f"zcat {gz} | awk '/^module {re.escape(host_mod)}\\b/,/^endmodule/' "
                    f"| grep -cE '\\.CP\\(\\s*{re.escape(dff_clock)}\\b'")
         try:
-            r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
+            r = subprocess.run(_fastcmd(cmd), shell=True, capture_output=True, text=True, timeout=60)
             n = int((r.stdout or '0').strip() or '0')
         except Exception:
             n = None
@@ -2400,7 +2494,7 @@ def main():
             if key not in _checked_ct:
                 try:
                     r = subprocess.run(
-                        f'zgrep -c "{ct}" {gz}',
+                        _fastcmd(f'zgrep -c "{ct}" {gz}'),
                         shell=True, capture_output=True, text=True, timeout=30
                     )
                     _checked_ct[key] = int(r.stdout.strip()) if r.stdout.strip().isdigit() else 0
@@ -2429,7 +2523,7 @@ def main():
                     gz = os.path.join(args.ref_dir, 'data', 'PreEco', f'{stage}.v.gz')
                     if not os.path.exists(gz): continue
                     try:
-                        r = subprocess.run(f'zgrep -c "{base}" {gz}',
+                        r = subprocess.run(_fastcmd(f'zgrep -c "{base}" {gz}'),
                             shell=True, capture_output=True, text=True, timeout=30)
                         cnt = int(r.stdout.strip()) if r.stdout.strip().isdigit() else 0
                         if cnt == 0:
@@ -2706,7 +2800,7 @@ def main():
                 f"zcat {gz} | awk '/^module {re.escape(host_module)}[ \\t(]/,/^endmodule/'; "
                 f"zcat {gz} | awk '/^module {re.escape(host_module)}_0[ \\t(]/,/^endmodule/'"
             )
-            txt = subprocess.run(cmd, shell=True, capture_output=True,
+            txt = subprocess.run(_fastcmd(cmd), shell=True, capture_output=True,
                                  text=True, timeout=120).stdout
         except Exception:
             _MODULE_INDEX_CACHE[key] = (None, None); return _MODULE_INDEX_CACHE[key]
@@ -2923,7 +3017,7 @@ def main():
             if _pre_synth_gz2 and os.path.exists(_pre_synth_gz2):
                 try:
                     r = _sp2.run(
-                        f'zgrep -cE "\\.({"{"}ZN|Z|Q{"}"})\\s*\\(\\s*{sig}\\s*\\)" {_pre_synth_gz2}',
+                        _fastcmd(f'zgrep -cE "\\.({"{"}ZN|Z|Q{"}"})\\s*\\(\\s*{sig}\\s*\\)" {_pre_synth_gz2}'),
                         shell=True, capture_output=True, text=True, timeout=30)
                     has_preeco_driver = int(r.stdout.strip() or 0) > 0
                 except Exception:
@@ -2957,7 +3051,7 @@ def main():
             has_preeco_driver = False
             if _pre_synth_gz and os.path.exists(_pre_synth_gz):
                 try:
-                    r = _sp.run(f'zgrep -cE "\\.({"{"}ZN|Z|Q{"}"})\\s*\\({" "}{sig}{" "}\\)" {_pre_synth_gz}',
+                    r = _sp.run(_fastcmd(f'zgrep -cE "\\.({"{"}ZN|Z|Q{"}"})\\s*\\({" "}{sig}{" "}\\)" {_pre_synth_gz}'),
                                 shell=True, capture_output=True, text=True, timeout=30)
                     has_preeco_driver = int(r.stdout.strip() or 0) > 0
                 except Exception:
@@ -2991,7 +3085,7 @@ def main():
                 continue
             try:
                 import subprocess as _sp4
-                r = _sp4.run(f'zgrep -cw "{cell_for_stage}" {gz}',
+                r = _sp4.run(_fastcmd(f'zgrep -cw "{cell_for_stage}" {gz}'),
                              shell=True, capture_output=True, text=True, timeout=30)
                 cnt = int(r.stdout.strip() or 0)
                 if cnt == 0:
@@ -3052,6 +3146,10 @@ def main():
             ifnp = e.get('input_from_new_port', '')  # new ECO port — doesn't exist in PreEco
             for pin, net in pc_for_stage.items():
                 if not isinstance(net, str): continue
+                # metadata annotations stored ALONGSIDE real pins in the per-stage dict —
+                # NOT pin→net entries. Their VALUE (e.g. net_source='real_rtl_name') is a
+                # label, never a net, so checking it yields a bogus 0-occurrence flag.
+                if pin in ('net_source', 'instance_confirmed', 'source', 'origin', 'note', 'comment'): continue
                 if pin in ('ZN', 'Z', 'Q', 'CO', 'Y', 'S'): continue
                 if any(net.startswith(p) for p in _skip_net_prefixes): continue
                 if any(net.endswith(s) for s in _skip_net_suffixes): continue
@@ -3064,7 +3162,7 @@ def main():
                 base = net.split('[')[0]
                 try:
                     import subprocess as _sp3
-                    r = _sp3.run(f'zgrep -cw "{base}" {gz}',
+                    r = _sp3.run(_fastcmd(f'zgrep -cw "{base}" {gz}'),
                                  shell=True, capture_output=True, text=True, timeout=30)
                     cnt = int(r.stdout.strip() or 0)
                     if cnt == 0:
@@ -3134,7 +3232,7 @@ def main():
                 # Both exist in Synth but different → likely polarity swap
                 if _gz_s and os.path.exists(_gz_s) and isinstance(_actual, str):
                     try:
-                        _r = _sp3.run(f'zgrep -cw "{_expected}" {_gz_s}',
+                        _r = _sp3.run(_fastcmd(f'zgrep -cw "{_expected}" {_gz_s}'),
                                       shell=True, capture_output=True, text=True, timeout=15)
                         if int(_r.stdout.strip() or 0) > 0:
                             issues.append(
@@ -4468,7 +4566,7 @@ def main():
             _tgt = _c.get('target_register', '?')
             try:
                 _r = subprocess.run(
-                    f'zgrep -E "clk_gate_{re.escape(_tgt)}_reg" {_preeco_syn_gz}',
+                    _fastcmd(f'zgrep -E "clk_gate_{re.escape(_tgt)}_reg" {_preeco_syn_gz}'),
                     shell=True, capture_output=True, text=True, timeout=20)
                 if _r.returncode == 0 and _r.stdout.strip():
                     for _line in _r.stdout.strip().splitlines():
@@ -4915,7 +5013,7 @@ def main():
                             _gz61 = Path(args.ref_dir) / 'data' / 'PreEco' / f'{_stage}.v.gz'
                             if _gz61.is_file():
                                 _r61 = _sp61.run(
-                                    f"zcat {_gz61} | grep -c '\\.Q[0-9]*\\s*(\\s*{re.escape(_net)}\\s*)'",
+                                    _fastcmd(f"zcat {_gz61} | grep -c '\\.Q[0-9]*\\s*(\\s*{re.escape(_net)}\\s*)'"),
                                     shell=True, capture_output=True, text=True, timeout=30)
                                 _is_dff_q_61 = int(_r61.stdout.strip() or 0) > 0
                         except Exception:
@@ -5305,7 +5403,7 @@ def main():
         _btext = ''
         if _gzb.is_file():
             try:
-                _btext = _sp_br.run(f'zcat {_gzb}', shell=True, capture_output=True,
+                _btext = _sp_br.run(_fastcmd(f'zcat {_gzb}'), shell=True, capture_output=True,
                                     text=True, timeout=120).stdout
             except Exception:
                 _btext = ''
