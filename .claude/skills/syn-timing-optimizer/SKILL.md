@@ -10,16 +10,21 @@ one shot — collapsing what typically takes multiple iterative runs into a sing
 
 ## Usage
 ```
-/syn-timing-optimizer <tile_run_dir>
-/syn-timing-optimizer <tile_run_dir> --analyze-only    # Steps 1+2 only, no writes
+/syn-timing-optimizer <tile_run_dir>                   # full run  — Steps 1→2→3→4
+/syn-timing-optimizer <tile_run_dir> --analyze-only    # safe mode — Steps 1→2→3 only
 ```
+
+| Mode | Steps | File writes? |
+|------|-------|-------------|
+| Full run | 1 READ → 2 DIAGNOSE → 3 SUGGEST → 4 GENERATE | Yes — tune files written in Step 4 |
+| `--analyze-only` | 1 READ → 2 DIAGNOSE → 3 SUGGEST | No writes — shows full plan only |
 
 Requirements:
 - `rpts/FxSynthesize/FxSynthesize.pass_*.proc_qor.rpt.gz`  (at least one pass)
-- `tune/FxSynthesize/`  (may be empty — skill creates what is missing)
+- `tune/FxSynthesize/`  (may be empty — skill creates what is missing in Step 4)
 
 The skill works regardless of what tune files already exist.
-If `r2r_optimization.tcl` does not exist, it is created from scratch.
+If `r2r_optimization.tcl` does not exist, it is created from scratch in Step 4.
 
 ---
 
@@ -401,9 +406,14 @@ Priority for Step 3 (highest impact first):
 
 ---
 
-## Step 3: GENERATE — Build Tune Files From Scratch
+## Step 3: SUGGEST — Propose All Changes + Flag RTL Issues
 
-**Skip if `ANALYZE_ONLY=true`.**
+**Runs in BOTH modes.** No files are written in this step.
+Step 3 shows the complete plan — exactly what Step 4 will do — so you can
+review and confirm before any changes are made.
+
+Also flags groups that require RTL attention (synthesis cannot fix them alone).
+This is a pointer only — no RTL files are read, no code is generated.
 
 ---
 
@@ -857,169 +867,172 @@ Do NOT change any other override.params values.
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  STEP 3: GENERATED FILES                                                    ║
+║  STEP 3: SUGGESTION PLAN                                                    ║
+║  Mode: <ANALYZE-ONLY — review only, no writes / FULL RUN — Step 4 will write>║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+--- Proposed Tune File Changes ---
+
+  Fix   Check   Finding                          Proposed Action
+  ────────────────────────────────────────────────────────────────────────────
+  1     [A]     <group> phantom, NVP=<N>         Split into <N> per-mode groups
+  2     [F]     <module> in top-20, no group     Add <design>_<module>_r2r group
+  3     [G]     SYN_I2R spans <N> modules        Split into <N> sub-groups
+  4     [B]     <group> cost=<pct>% of max       Raise weight <old> → <new>
+  5     [C]     <group> W mismatch               Correct effective W to <val>
+  6     [D]     <group> LOL=<N>                  Add arch-limit comment only
+  7     [E]     <group> wire-dominated           Add bound (<x1>,<y1>)–(<x2>,<y2>)
+  ────────────────────────────────────────────────────────────────────────────
+
+--- Proposed Tune File Diff Preview ---
+
+  group_paths.tcl:
+    + group_path -name <design>_<module>_r2r -weight <W> -critical_range <CR> ...
+    + group_path -name SYN_I2R_<sub> -weight <W> ...
+    - group_path -name <conflicted_group> -weight <old_W>   ← removed from group_paths
+    + group_path -name <conflicted_group> -weight <new_W>   ← correct value in r2r_opt
+
+  r2r_optimization.tcl:
+    + group_path -name <group>_<MODE_A> -weight <W> ...     ← phantom split
+    + group_path -name <group>_<MODE_B> -weight <W> ...
+    + group_path -name <starved_group> -weight <new_W> ...  ← starvation fix
+    + create_bound -name <name>_bound ...                   ← wire-dominated bound
+    + set_app_options -name compile.flow.high_effort_timing -value 1
+    + set_app_options -name opt.timing.effort -value high
+    ... (all compile settings from Section 8)
+
+  pre_opt.tcl:
+    + tunesource tune/$TARGET_NAME/$TARGET_NAME.r2r_optimization.tcl   ← if missing
+
+  override.params:
+    DDRSS_FEINT_NUM_COMPILES  <current> → 5   [needs update / already correct]
+
+--- Expected WNS Improvement ---
+
+  Fix [A] phantom split :  potentially large  (eliminates cross-mode noise)
+  Fix [B] starvation    :  ~+<N> ps per starved group raised
+  Fix [C] override bug  :  ~+<N> ps per conflict corrected
+  Fix [E] bounds        :  ~+<N> ps for wire-dominated groups
+  Fix [D] arch limits   :  0 ps — RTL change required (see below)
+  Total estimated       :  ~+<N> ps WNS improvement from synthesis fixes
+
+--- RTL Action Items (synthesis cannot fix these) ---
+
+  Group               LOL    WNS (ps)   Why synthesis cannot fix        RTL Action Needed
+  ──────────────────────────────────────────────────────────────────────────────────────────────
+  <group>             <N>    <val>      LOL > 28 — logic depth = period  Pipeline insertion
+  <group>             <N>    <val>      Port-limited wire (I/O fixed)    Pipeline flop near port
+  <group>             <N>    <val>      High fanout startpoint           Register duplication in RTL
+  <group>             <N>    <val>      Clock gate enable depth > 15     Register the enable signal
+  ──────────────────────────────────────────────────────────────────────────────────────────────
+
+  Note: RTL action items are pointers only — no RTL files read, no code generated.
+  Bring these to your RTL design team with the group name and endpoint hierarchy
+  from sort_slack.endpts as context.
+
+--- Next Steps ---
+
+  If --analyze-only:
+    Review the proposed changes above.
+    When ready to apply: re-run without --analyze-only to execute Step 4.
+
+  If full run:
+    Step 4 will now write the tune files exactly as proposed above.
+    After Step 4 completes:
+      1. Run FxSynthesize:
+           /agent run supra regression for <tile> target FxSynthesize at <TILE_DIR>
+      2. Compare result vs baseline:
+           /syn-timing --comparison <baseline_dir> <new_run_dir>
+      3. Escalate RTL action items to design team (table above)
+      4. If violations remain, re-run this skill to recalibrate
+```
+
+---
+
+---
+
+## Step 4: GENERATE — Write Tune Files
+
+**Full run only. Skip if `ANALYZE_ONLY=true`.**
+
+Write the exact changes proposed in Step 3 to the actual tune files.
+No new decisions are made here — Step 3 is the plan, Step 4 executes it.
+
+---
+
+### 4a. Determine What to Create vs Update
+
+| File | Exists? | Action |
+|------|---------|--------|
+| `pre_opt.tcl` | YES | Add tunesource for r2r_opt if not already present |
+| `group_paths.tcl` | YES | Add missing groups. Fix Check C conflicts. |
+| `group_paths.tcl` | NO | Create with base generic groups |
+| `r2r_optimization.tcl` | YES | Append targeted fixes from Step 3 plan |
+| `r2r_optimization.tcl` | NO | Create from scratch with all Step 3 content |
+
+**If `r2r_optimization.tcl` does not exist, add tunesource in `pre_opt.tcl`:**
+```
+tunesource tune/$TARGET_NAME/$TARGET_NAME.group_paths.tcl
+tunesource tune/$TARGET_NAME/$TARGET_NAME.r2r_optimization.tcl   ← ADD THIS
+```
+
+---
+
+### 4b. Write group_paths.tcl
+
+Base generic groups if file does not exist:
+```tcl
+group_path -name SYN_I2O -critical_range 200 -weight 0.001
+group_path -name SYN_R2O -critical_range 200 -weight 1
+group_path -name SYN_R2R -critical_range 200 -weight 5
+group_path -name SYN_I2R -critical_range 200 -weight 3
+```
+Then add all named groups discovered in Step 3 (Check F, Check G).
+
+---
+
+### 4c. Write r2r_optimization.tcl
+
+Write sections in this order — exactly as planned in Step 3:
+
+1. **Header** — baseline WNS, target, root causes found
+2. **Fix A** — phantom clock splits (if found)
+3. **Fix F** — new named groups for missing hierarchies
+4. **Fix G** — I2R sub-group splits
+5. **Fix B+C** — corrected weights with starvation formula applied
+6. **Fix D** — architecture limit comment blocks (no tune change)
+7. **Fix E** — `create_bound` blocks for wire-dominated groups
+8. **Compile settings** — effort knobs from Section 8 (apply only those whose condition was met)
+9. **Closing print** — summary puts statements
+
+---
+
+### 4d. Update override.params
+
+If `DDRSS_FEINT_NUM_COMPILES` is not set to 5, update it:
+```
+DDRSS_FEINT_NUM_COMPILES = 5
+```
+Do NOT change any other override.params values.
+
+---
+
+### Step 4 Output
+
+```
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  STEP 4: GENERATE — FILES WRITTEN                                           ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
 Files written to: <TILE_DIR>/tune/FxSynthesize/
 
-  group_paths.tcl           <N> lines  [CREATED / UPDATED — <M> changes]
-  r2r_optimization.tcl      <N> lines  [CREATED / UPDATED — <M> changes]
-  pre_opt.tcl               [tunesource added / already present]
+  group_paths.tcl          <N> lines  [CREATED / UPDATED]
+  r2r_optimization.tcl     <N> lines  [CREATED / UPDATED]
+  pre_opt.tcl              [tunesource added / already present]
 
-Changes Applied:
+override.params: DDRSS_FEINT_NUM_COMPILES → 5  [UPDATED / already correct]
 
-  Fix   Check   Finding                          Action
-  ────────────────────────────────────────────────────────────────────────────
-  1     [A]     <group> phantom, NVP=<N>         Split into <N> per-mode groups
-  2     [F]     <module> in top-20, no group     Added <design>_<module>_r2r
-  3     [G]     SYN_I2R spans <N> modules        Split into <N> sub-groups
-  4     [B]     <group> cost=<pct>% of max       Weight <old> → <new>
-  5     [C]     <group> W mismatch               Corrected effective W to <val>
-  6     [D]     <group> LOL=<N>                  Arch-limit comment, RTL action
-  7     [E]     <group> wire-dominated           Bound (<x1>,<y1>)–(<x2>,<y2>)
-  ────────────────────────────────────────────────────────────────────────────
-
-override.params:
-  DDRSS_FEINT_NUM_COMPILES  <current> → 5   [UPDATED / already correct]
-
-Next steps:
-  1. Review generated tune files
-  2. Run FxSynthesize:
-       /agent run supra regression for <tile> target FxSynthesize at <TILE_DIR>
-  3. Compare result vs baseline:
-       /syn-timing --comparison <baseline_dir> <new_run_dir>
-  4. Review RTL fix suggestions from Step 4 — escalate to RTL team as needed
-  5. If violations remain, re-run this skill — starvation formula will
-     recalibrate weights to the new violation distribution automatically
-```
-
----
-
----
-
-## Step 4: RTL Fix Analysis
-
-**Run this step after Step 3. It reads the actual RTL source files and suggests
-changes that synthesis alone cannot make — pipeline insertion, register duplication,
-enable pipelining. These are escalations to the RTL design team, not tune file changes.**
-
-**Skip if `ANALYZE_ONLY=true`.**
-
----
-
-### 4a. Find RTL Source Files
-
-```bash
-# The VF file lists all RTL source paths used in this run
-cat <TILE_DIR>/data/GetRTL.source.vf | grep -E "\.v$|\.sv$"
-```
-
-Each line is a full absolute path to the published RTL file. Use these paths
-directly — do NOT use local copies under `data/GetRTL/`.
-
-To find which file corresponds to a failing endpoint hierarchy, match the
-module name from the path trace to a filename in the VF list:
-```bash
-# Example: endpoint is in module "MyModule" → look for rtl_*mymodule*.v
-grep -i "<module_name>" <TILE_DIR>/data/GetRTL.source.vf
-```
-
----
-
-### 4b. Analyse Top 3 Worst Groups
-
-For each of the 3 groups with the worst WNS:
-
-1. Take the endpoint signal and module from the sort_slack.endpts table
-2. Find the RTL file from the VF list using the module name
-3. Read the RTL file — search for the endpoint signal name
-4. Examine the combinational cone feeding that register: count levels, check fanout,
-   identify the always block and the logic driving the violating register
-
----
-
-### 4c. Apply Fix Decision Logic
-
-For each group, apply exactly ONE decision:
-
-**Decision 1 — Pipeline Insertion (LOL > 25)**
-The combinational cone is too deep for one clock cycle. A register stage must
-be inserted in RTL to break it into two shorter paths.
-- Find the midpoint of the combinational cone (after ~half the logic levels)
-- Show the exact always block where a new `reg` and assignment should be added
-- Flag latency impact: pipeline insertion adds +1 cycle latency
-
-**Decision 2 — Register Duplication (same startpoint ≥3 times in top paths)**
-One register fans out to too many endpoints, creating long wires and timing
-pressure on all of them. Duplicating it in RTL gives each copy a smaller fanout.
-- Find the `reg` declaration of the high-fanout startpoint
-- Show how to split the declaration into N copies driving separate subsets
-
-**Decision 3 — Enable Pipelining (clock gate enable LOL > 15)**
-The enable signal for a clock gate has too much logic and arrives too late.
-Registering the enable one cycle earlier gives it a full clock budget.
-- Find the enable signal and its always block
-- Show how to add a pipeline register for the enable, one cycle ahead
-
-**Decision 4 — Multibit Exclusion (MB4/MB8 in launch FF cell name)**
-This is a synthesis fix, not an RTL change — include it here as a cross-reference.
-Exclude the identified register hierarchy from multibit banking (see Section 8e).
-No RTL change required.
-
-**No clear fix:**
-If the failing path is in glue logic, external IP, or a module not in the VF list:
-note it and skip — do not guess.
-
----
-
-### 4d. RTL Fix Output Format
-
-```
-╔══════════════════════════════════════════════════════════════════════════════╗
-║  STEP 4: RTL FIX ANALYSIS                                                   ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  [1]  <GROUP>   WNS: <val>ps   LOL: <N>   Fix type: <Pipeline/Dup/Enable>  │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-  Finding
-  ─────────────────────────────────────────────────────────────────────────────
-  Signal      : <endpoint signal name from sort_slack.endpts>
-  Module      : <module name>
-  RTL File    : <full absolute path from GetRTL.source.vf>
-  Logic Depth : <N> levels  →  <fix type>
-  Fanout      : <N>  (if relevant)
-
-  Suggested Fix
-  ─────────────────────────────────────────────────────────────────────────────
-  Type : <Pipeline Insertion | Register Duplication | Enable Pipelining | Multibit Exclusion>
-  Risk : <Latency change: +1 cycle | No functional change>
-
-  // Before  (line ~<N>):
-  <exact RTL lines from the source file>
-
-  // After (suggested change):
-  <modified RTL with the fix — exact syntax, not a sketch>
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  [2]  <GROUP>  ...                                                           │
-└─────────────────────────────────────────────────────────────────────────────┘
-  ... (same structure)
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  [3]  <GROUP>  ...                                                           │
-└─────────────────────────────────────────────────────────────────────────────┘
-  ... (same structure)
-
-RTL Fix Summary:
-
-  Group          Fix Type              Risk               Action Owner
-  ──────────────────────────────────────────────────────────────────────────────
-  <group>        Pipeline Insertion    +1 cycle latency   RTL design team
-  <group>        Register Duplication  No functional chg  RTL design team
-  <group>        Multibit Exclusion    No functional chg  Tune file (Section 8e)
-  ──────────────────────────────────────────────────────────────────────────────
+All changes match the Step 3 proposal exactly.
 ```
 
 ---
