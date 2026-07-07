@@ -280,6 +280,51 @@ def _compare_fold_completeness(study, rtl_diff, ref_dir):
     return issues
 
 
+# Required INPUT pins per (confidently-known) gate function. Compound cells (AOI/OAI/
+# AO/OA/MUX/etc.) are intentionally omitted — their pin sets vary and we must not
+# false-flag them. Prefix match: fn.startswith(key).
+_REQ_INPUTS = {
+    'OR2': ('A1', 'A2'), 'AND2': ('A1', 'A2'), 'AN2': ('A1', 'A2'),
+    'NOR2': ('A1', 'A2'), 'NR2': ('A1', 'A2'), 'NAND2': ('A1', 'A2'), 'ND2': ('A1', 'A2'),
+    'XOR2': ('A1', 'A2'), 'XNOR2': ('A1', 'A2'),
+    'INR2': ('A1', 'B1'), 'IND2': ('A1', 'B1'),
+    'OR3': ('A1', 'A2', 'A3'), 'AND3': ('A1', 'A2', 'A3'), 'AN3': ('A1', 'A2', 'A3'),
+    'NOR3': ('A1', 'A2', 'A3'), 'NR3': ('A1', 'A2', 'A3'), 'ND3': ('A1', 'A2', 'A3'),
+    'INV': ('I',), 'BUF': ('I',),
+}
+
+
+def _gate_input_completeness(study):
+    """Every new_logic_gate must have ALL required input pins present in the pc used for
+    EACH of the 3 stages (port_connections_per_stage[stage], falling back to
+    port_connections). Catches the silent-drop failure mode where a per-stage pc omits an
+    input (e.g. an OR2 combine gate whose A1 was deleted in PrePlace/Route because FM
+    resolved the old net to a sink-pin) — the applier then emits a FLOATING pin and FM
+    fails only at the PP/Route cone. The pre-existing pin check ran on Synthesize ONLY and
+    only flagged INVALID present pins, never a MISSING required input, so this slipped."""
+    issues = []
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_gate', 'new_logic'):
+                continue
+            fn = (e.get('gate_function') or '').upper()
+            req = next((v for k, v in _REQ_INPUTS.items() if fn.startswith(k)), None)
+            if not req:
+                continue  # compound/unknown cell — don't risk a false flag
+            pc = (e.get('port_connections_per_stage', {}) or {}).get(stage) \
+                or e.get('port_connections', {}) or {}
+            missing = [p for p in req if p not in pc]
+            if missing:
+                issues.append(
+                    f"CRITICAL/GATE-INPUT-MISSING: {stage} new_logic_gate "
+                    f"{e.get('instance_name','?')!r} ({fn}) is missing required input pin(s) "
+                    f"{missing} in its {stage} port_connections {sorted(pc.keys())}. The applier "
+                    f"emits this gate from the per-stage pc, so the pin FLOATS in {stage} -> "
+                    f"wrong function / FM cone mismatch. Resolve the pin to its real per-stage "
+                    f"net (do NOT drop it).")
+    return issues
+
+
 def _pf_modbody(ref_dir, module):
     gz = os.path.join(ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
     want = re.sub(r'_\d+$', '', re.sub(r'^ddrss_\w+?_t_', '', str(module or '')))
@@ -6068,6 +6113,12 @@ def main():
         issues.extend(_compare_fold_completeness(study, rtl_diff, args.ref_dir))
     except Exception as _e:
         print(f"[compare-fold-check skipped] {_e}", file=sys.stderr)
+
+    # ── every new_logic_gate has all required input pins in ALL 3 stages ──────
+    try:
+        issues.extend(_gate_input_completeness(study))
+    except Exception as _e:
+        print(f"[gate-input-completeness-check skipped] {_e}", file=sys.stderr)
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
