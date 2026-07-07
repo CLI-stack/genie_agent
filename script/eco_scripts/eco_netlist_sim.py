@@ -49,20 +49,37 @@ def _normalize_tt(tt):
     return out or None
 
 
-def _module_body(gz_path, module):
-    """Return the text of `module`'s body from a (possibly gz) netlist file."""
+_MOD_INDEX_CACHE = {}   # gz_path -> {module_name: body_text}
+
+
+def _build_module_index(gz_path):
+    """Decompress the file ONCE and split it into per-module body texts. Cached, so
+    repeated _module_body calls on the same file (e.g. 40 uniquified copies) do not
+    re-decompress a large gz each time."""
     op = gzip.open if gz_path.endswith('.gz') else open
-    body, grab = [], False
+    idx = {}
+    cur_name, cur = None, []
     with op(gz_path, 'rt', errors='replace') as f:
         for ln in f:
             m = re.match(r'^\s*module\s+(\S+)', ln)
             if m:
-                grab = (m.group(1) == module)
-            if grab:
-                body.append(ln)
+                cur_name, cur = m.group(1), [ln]
+                continue
+            if cur_name is not None:
+                cur.append(ln)
                 if ln.lstrip().startswith('endmodule'):
-                    break
-    return ''.join(body)
+                    idx[cur_name] = ''.join(cur)
+                    cur_name, cur = None, []
+    _MOD_INDEX_CACHE[gz_path] = idx
+    return idx
+
+
+def _module_body(gz_path, module):
+    """Return the text of `module`'s body from a (possibly gz) netlist file (cached)."""
+    idx = _MOD_INDEX_CACHE.get(gz_path)
+    if idx is None:
+        idx = _build_module_index(gz_path)
+    return idx.get(module, '')
 
 
 def _strip_comments(txt):
