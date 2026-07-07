@@ -159,17 +159,39 @@ Agent(
 DO NOT SPAWN ANY FURTHER SUBAGENTS. Execute all steps directly using
 Bash, Read, and Write tools. You are the final executor — not an orchestrator.
 
+## CRITICAL OUTPUT RULES — READ BEFORE DOING ANYTHING ELSE
+
+1. PRINT EACH STEP AS YOU COMPLETE IT — do not accumulate output and print at the end.
+   After finishing Step 1, print the full Step 1 report immediately.
+   After finishing Step 2, print the full Step 2 report immediately.
+   After finishing Step 3, print the full Step 3 report immediately.
+
+2. NEVER SUMMARIZE. Never write "N groups found" without showing all N groups.
+   Never write "see below for details" and then not show them.
+   Never write "abbreviated for brevity" or "key findings only".
+
+3. PRINT EVERY TABLE IN FULL — all rows, all columns.
+   If a table has 19 groups, print all 19 rows. If there are 13 starved groups,
+   show all 13 in the cost table. Never truncate a table.
+
+4. PRINT COMPLETE TCL — every group_path line, every create_bound block,
+   every set_app_options line. Show exact syntax, not placeholders.
+
+5. DO NOT reference the plan JSON file in your output.
+   The user reads the terminal — the plan JSON is a machine artifact only.
+   Everything the user needs must appear in your printed output.
+
+6. If you feel the output is getting long — KEEP GOING. Length is correct here.
+   A short response means you summarized something. That is wrong.
+
+---
+
 You are a synthesis timing optimizer. Analyze a tile's FxSynthesize QoR,
-diagnose all timing root causes, and generate complete tune files that fix
-every fixable violation in one pass. Work entirely from what the timing
-report shows — do not assume any prior knowledge of the design hierarchy.
+diagnose all timing root causes, and generate complete tune files.
 
 TILE_DIR     = <resolved_tile_dir>
 MODE         = <FULL | ANALYZE_ONLY | APPLY>
 PLAN_FILE    = <tile_dir>/.optimizer_plan.json
-
-Execute Steps 1, 2, 3 (and 4 if MODE=FULL or APPLY) directly using
-Bash and file tools. Return the full report as your final text output.
 
 === FULL INSTRUCTIONS BELOW ===
 <paste the full Step 1, 2, 3, 4 content here>
@@ -264,6 +286,7 @@ grep -E "DDRSS_FEINT_NUM_COMPILES|max_multibit_size|FLOORPLAN_DEF" \
 
 ### Step 1 Output
 
+**Print this immediately after completing Step 1 — do not wait.**
 Print every field in full. No truncation of groups or passes.
 
 ```
@@ -504,6 +527,7 @@ Each sub-group gets its own weight based on its WNS severity.
 
 ### Step 2 Output
 
+**Print this immediately after completing Step 2 — do not wait.**
 Print every table in full. No rows omitted. No "N more not shown".
 
 ```
@@ -1109,6 +1133,7 @@ Do NOT change any other override.params values.
 
 ### Step 3 Output
 
+**Print this immediately after completing Step 3 — do not wait.**
 Print every proposed change in full. Show complete TCL for every new line.
 Never use "..." to abbreviate. Never reference the plan JSON.
 
@@ -1314,6 +1339,9 @@ Do NOT change any other override.params values.
 ---
 
 ### Step 4 Output
+
+**Print this immediately after completing Step 4 — do not wait.**
+Show every line written to every file. No abbreviation.
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════════╗
