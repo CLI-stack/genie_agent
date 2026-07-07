@@ -539,7 +539,13 @@ def main():
                 key = f'{scope}/{base}' if scope else base
                 entry = _rmap.get(key, {})
                 if isinstance(entry, dict):
-                    rmap_vals = {s: entry.get(s, bare) for s in ('Synthesize', 'PrePlace', 'Route')}
+                    # Use actual_wire_<stage> (the REAL per-stage NET) when present. The plain
+                    # <stage> field is FM's equivalence-POINT, which is often a SINK-PIN ref
+                    # (e.g. 'postcas_reg/D') even when the net name is stage-stable — using it
+                    # here false-flagged a correct bare net and triggered a bad "fix" that
+                    # DROPPED the pin. actual_wire_<stage> reflects the true net name.
+                    rmap_vals = {s: (entry.get('actual_wire_' + s) or entry.get(s, bare))
+                                 for s in ('Synthesize', 'PrePlace', 'Route')}
                     if len(set(rmap_vals.values())) > 1:
                         issues.append(
                             f"HIGH: gate '{inst}' pin={pin!r} uses bare '{bare}' for ALL stages "
