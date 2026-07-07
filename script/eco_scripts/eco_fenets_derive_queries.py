@@ -433,6 +433,38 @@ def derive(rtl_diff, tile='', ref_dir=None):
                         'source':   f'changes[{idx}].comb_net_force_cone_leaf',
                     })
 
+        # Cat 11: compare_fold leaf nets. eco_emit_compare_fold self-derives the fold; its
+        # LEAF nets (the two compare operands + the stage-stable separating-literal field
+        # bit) must be resolved per-stage across ALL uniquified copies so P&R renames land
+        # in the map. The reduction-OR fold bits are a NEW port (absent in PreEco) → skipped
+        # like other eco_new_signals. The mismatch net itself is found per-stage by the
+        # builder from the netlist, so it is NOT queried here.
+        if ct == 'compare_fold' and ref_dir:
+            try:
+                from eco_emit_compare_fold import derive_nets as _cf_nets
+                leaves, _ = _cf_nets(ref_dir, c.get('module_name') or '',
+                                     c.get('context_line', ''),
+                                     c.get('fold_signal') or c.get('new_token'),
+                                     c.get('compare_signal') or c.get('target_register'))
+            except Exception:
+                leaves = []
+            cf_scopes = [scope]
+            cf_insts = c.get('instances') or []
+            if len(cf_insts) > 1:
+                parent = '/'.join(scope.split('/')[:-1]) if '/' in scope else ''
+                for inst in cf_insts[1:]:
+                    cf_scopes.append(f"{parent}/{inst}" if parent else inst)
+            for sc in cf_scopes:
+                for leaf in leaves:
+                    if re.sub(r'\[.*$', '', leaf) in eco_new_signals:
+                        continue
+                    out.append({
+                        'net_path': _abs_path(tile, sc, leaf),
+                        'signal':   leaf,
+                        'category': 1,
+                        'source':   f'changes[{idx}].compare_fold_leaf',
+                    })
+
     # Deduplicate by net_path (preserve first source)
     seen, unique = set(), []
     for q in out:
