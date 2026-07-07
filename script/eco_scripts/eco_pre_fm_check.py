@@ -23,9 +23,33 @@ Writes:
     <BASE_DIR>/data/<TAG>_eco_step5_pre_fm_check_round<N>_marker.txt
 """
 
-import argparse, json, os, re, subprocess, sys
+import argparse, gzip, json, os, re, subprocess, sys
 from pathlib import Path
 from eco_validate_io import write_result
+
+
+# ── Decompress-once cache ──────────────────────────────────────────────────────
+# Every check below re-decompressed the same 34-55 MB PostEco stage netlist via
+# `subprocess.run(['zcat', gz])` / `zcat | grep` / `zcat | awk`. With ~15+ checks ×
+# 3 stages that is dozens of full decompressions. `_zcat()` decompresses each file
+# ONCE and memoizes the text; all callers reuse it. Falls back to `zcat` if gzip fails.
+_ZCAT_CACHE = {}
+
+def _zcat(gz_path):
+    """Full decompressed text of a (.gz) netlist, cached per path."""
+    t = _ZCAT_CACHE.get(gz_path)
+    if t is None:
+        try:
+            with gzip.open(gz_path, 'rt', errors='replace') as f:
+                t = f.read()
+        except Exception:
+            try:
+                t = subprocess.run(['zcat', gz_path], capture_output=True, text=True,
+                                   timeout=300).stdout
+            except Exception:
+                t = ''
+        _ZCAT_CACHE[gz_path] = t
+    return t
 
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -54,12 +78,9 @@ def load_json(path):
 
 
 def zgrep_count(pattern, gz_path):
+    # grep -c counts MATCHING LINES (not occurrences); mirror that on cached text.
     try:
-        r = subprocess.run(
-            f'zcat {gz_path} | grep -c {re.escape(pattern)}',
-            shell=True, capture_output=True, text=True, timeout=120
-        )
-        return int(r.stdout.strip()) if r.stdout.strip().isdigit() else 0
+        return sum(1 for ln in _zcat(gz_path).splitlines() if pattern in ln)
     except Exception:
         return 0
 
@@ -290,18 +311,13 @@ def check_cells_in_netlist(applied, ref_dir, study_path=None):
         def _body_of(mod):
             if mod in mod_body_cache:
                 return mod_body_cache[mod]
+            text = _zcat(gz)
             for cand in (mod, mod + '_0', mod + '_1'):
-                try:
-                    r = subprocess.run(
-                        f"zcat {gz} | awk '/^module {re.escape(cand)}\\b/,/^endmodule/'",
-                        shell=True, capture_output=True, text=True, timeout=120
-                    )
-                    body = r.stdout or ''
-                    if body:
-                        mod_body_cache[mod] = body
-                        return body
-                except Exception:
-                    pass
+                m = re.search(r'^module\s+' + re.escape(cand) + r'\b.*?^endmodule',
+                              text, re.S | re.M)
+                if m:
+                    mod_body_cache[mod] = m.group(0)
+                    return m.group(0)
             mod_body_cache[mod] = ''
             return ''
 
@@ -326,12 +342,8 @@ def check_cells_in_netlist(applied, ref_dir, study_path=None):
                 # Not in host module — check if it landed in some OTHER module
                 # (catches the "wrong module" silent-misroute case)
                 try:
-                    r2 = subprocess.run(
-                        f"zcat {gz} | grep -cF ' {inst} ('",
-                        shell=True, capture_output=True, text=True, timeout=120
-                    )
-                    elsewhere = (int(r2.stdout.strip())
-                                 if r2.stdout.strip().isdigit() else 0)
+                    _needle = f' {inst} ('
+                    elsewhere = sum(1 for ln in _zcat(gz).splitlines() if _needle in ln)
                 except Exception:
                     elsewhere = 0
                 if elsewhere > 0:
@@ -352,12 +364,8 @@ def check_cells_in_netlist(applied, ref_dir, study_path=None):
                 # Legacy global-grep fallback when study_path unavailable or
                 # entry has no host mapping.
                 try:
-                    r = subprocess.run(
-                        f'zcat {gz} | grep -cF " {inst} ("',
-                        shell=True, capture_output=True, text=True, timeout=120
-                    )
-                    count = (int(r.stdout.strip())
-                             if r.stdout.strip().isdigit() else 0)
+                    _needle = f' {inst} ('
+                    count = sum(1 for ln in _zcat(gz).splitlines() if _needle in ln)
                     if count == 0:
                         failures.append(
                             f'[GHOST_INSERT] {stage}: {inst} marked INSERTED '
@@ -392,7 +400,7 @@ def check_port_edits_in_netlist(ref_dir, applied):
         if not os.path.exists(gz):
             continue
         try:
-            raw = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+            raw = _zcat(gz)
         except Exception:
             continue
         text = strip_verilog_comments(raw)  # Option A: comments don't count
@@ -454,7 +462,7 @@ def check_semantic_verify(study_path, ref_dir):
         if not os.path.exists(gz):
             continue
         try:
-            raw = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=300).stdout
+            raw = _zcat(gz)
         except Exception as e:
             failures.append(f'[SEMANTIC] {stage} netlist read err: {e}')
             continue
@@ -510,7 +518,7 @@ def check_rewires_in_netlist(ref_dir, applied):
         if not os.path.exists(gz):
             continue
         try:
-            raw = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+            raw = _zcat(gz)
         except Exception:
             continue
         text = strip_verilog_comments(raw)  # Option A: comments don't count
@@ -556,7 +564,7 @@ def check_bus_concat_intact(ref_dir, applied):
         if not bus_entries:
             continue
         try:
-            raw = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+            raw = _zcat(gz)
         except Exception:
             continue
         text = strip_verilog_comments(raw)
@@ -596,7 +604,7 @@ def check_undriven_eco_nets(ref_dir):
         if not os.path.exists(gz):
             continue
         try:
-            text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+            text = _zcat(gz)
         except Exception:
             continue
         text = strip_verilog_comments(text)  # Option A: comments don't count
@@ -652,7 +660,7 @@ def check_eco_input_drivers(study_path, ref_dir):
         if not os.path.exists(gz):
             continue
         try:
-            text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+            text = _zcat(gz)
         except Exception:
             continue
         # Cache per-module driven sets — built lazily on first lookup.
@@ -733,8 +741,7 @@ def check_input_net_strict_driver(study_path, ref_dir):
         if not os.path.exists(gz):
             continue
         try:
-            text = subprocess.run(['zcat', gz], capture_output=True, text=True,
-                                  timeout=240).stdout
+            text = _zcat(gz)
         except Exception:
             continue
         text = strip_verilog_comments(text)
@@ -855,15 +862,14 @@ def check_input_net_strict_driver(study_path, ref_dir):
                     # driving this bus-bit net (covers numbered Q pins Q1-Q8 and
                     # cases where the driver is deep in a large module body).
                     try:
-                        _vesc = re.escape(val.strip()).replace(r'\[', r'\[').replace(r'\]', r'\]')
+                        _vesc = re.escape(val.strip())
                         _fesc = re.escape(flat_val.strip())
-                        _r = subprocess.run(
-                            f'zgrep -cE "\\.(Z|ZN|ZN1|Q[1-9]?|QN|CO|S)\\s*\\(\\s*({_vesc}|{_fesc})\\s*\\)" {gz}',
-                            shell=True, capture_output=True, text=True, timeout=15)
-                        if int(_r.stdout.strip() or '0') > 0:
-                            continue  # zgrep found a numbered Q-pin driver — not undriven
+                        _pat = re.compile(r'\.(?:Z|ZN|ZN1|Q[1-9]?|QN|CO|S)\s*\(\s*(?:'
+                                          + _vesc + '|' + _fesc + r')\s*\)')
+                        if _pat.search(_zcat(gz)):
+                            continue  # found a numbered Q-pin driver — not undriven
                     except Exception:
-                        pass  # zgrep timeout or error → fall through to base check
+                        pass  # error → fall through to base check
                 # Final fallback: zgrep PostEco for any standard output pin
                 # driving the base net — catches CTS buffer outputs and nets
                 # driven outside the immediate module body scope.
@@ -871,13 +877,12 @@ def check_input_net_strict_driver(study_path, ref_dir):
                 if _base_confirmed_undriven:
                     try:
                         _besc = re.escape(base)
-                        _r2 = subprocess.run(
-                            f'zgrep -cE "\\.(Z|ZN|ZN1|Q[1-9]?|QN|CO|S)\\s*\\(\\s*{_besc}\\s*\\)" {gz}',
-                            shell=True, capture_output=True, text=True, timeout=15)
-                        if int(_r2.stdout.strip() or '0') > 0:
-                            _base_confirmed_undriven = False  # driver found via zgrep
+                        _pat2 = re.compile(r'\.(?:Z|ZN|ZN1|Q[1-9]?|QN|CO|S)\s*\(\s*'
+                                           + _besc + r'\s*\)')
+                        if _pat2.search(_zcat(gz)):
+                            _base_confirmed_undriven = False  # driver found
                     except Exception:
-                        pass  # timeout or error → keep as undriven
+                        pass  # error → keep as undriven
                 if _base_confirmed_undriven:
                     failures.append(
                         f'[INPUT_NET_STRICT_UNDRIVEN] {stage}: {inst}.{pin}={val!r} '
@@ -904,7 +909,7 @@ def check_duplicate_ports(ref_dir):
         if not os.path.exists(gz):
             continue
         try:
-            text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+            text = _zcat(gz)
         except Exception:
             continue
         text = strip_verilog_comments(text)
@@ -1022,7 +1027,7 @@ def check_missing_output_port_decls(applied, ref_dir):
         if not os.path.exists(gz):
             continue
         try:
-            text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+            text = _zcat(gz)
         except Exception:
             continue
         text = strip_verilog_comments(text)
@@ -1065,8 +1070,7 @@ def check_port_conn_target_exists(study_path, ref_dir):
         if not os.path.exists(gz):
             continue
         try:
-            text = subprocess.run(['zcat', gz], capture_output=True,
-                                  text=True, timeout=240).stdout
+            text = _zcat(gz)
         except Exception:
             continue
         text = strip_verilog_comments(text)
@@ -1132,7 +1136,7 @@ def check_mode_s_stitching(study_path, ref_dir):
         if not os.path.exists(gz):
             continue
         try:
-            text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+            text = _zcat(gz)
         except Exception:
             continue
         text = strip_verilog_comments(text)
@@ -1257,7 +1261,7 @@ def check_duplicate_wire_decls(ref_dir):
         if not os.path.exists(gz):
             continue
         try:
-            text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+            text = _zcat(gz)
         except Exception:
             continue
         text = strip_verilog_comments(text)
@@ -1377,7 +1381,7 @@ def check_cross_module_bridge_connectivity(study_path, ref_dir):
             body_cache[key] = ''
             return ''
         try:
-            text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+            text = _zcat(gz)
         except Exception:
             body_cache[key] = ''
             return ''
@@ -1406,7 +1410,7 @@ def check_cross_module_bridge_connectivity(study_path, ref_dir):
             gz = os.path.join(ref_dir, 'data', 'PostEco', f'{stage}.v.gz')
             if os.path.exists(gz):
                 try:
-                    full_text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+                    full_text = _zcat(gz)
                     full_text = strip_verilog_comments(full_text)
                 except Exception:
                     full_text = ''
@@ -1542,8 +1546,7 @@ def check_eco_cell_type_in_library(study_path, ref_dir):
             if not os.path.exists(gz):
                 continue
             try:
-                cnt = int(subprocess.run(['zgrep', '-c', ct, gz],
-                                         capture_output=True, text=True, timeout=120).stdout.strip() or '0')
+                cnt = zgrep_count(ct, gz)          # cached _zcat; ct is a literal cell name
             except Exception:
                 cnt = 0
             if cnt == 0:
@@ -1589,7 +1592,7 @@ def check_invalid_wire_decl_syntax(ref_dir):
         if not os.path.exists(gz):
             continue
         try:
-            text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+            text = _zcat(gz)
         except Exception:
             continue
         cur_mod = None
@@ -1855,12 +1858,9 @@ def main():
         if not os.path.exists(gz):
             continue
         try:
-            import subprocess as _sp3b
-            r = _sp3b.run(f'zcat {gz} | grep -nE "^(ECO_PERL_DONE|ECO_DONE|ECO_END|PERL_DONE|ECO_SCRIPT_DONE)"',
-                          shell=True, capture_output=True, text=True, timeout=60)
-            if r.stdout.strip():
-                for line in r.stdout.strip().splitlines():
-                    fails.append(f'[NON_VERILOG_MARKER] {stage}: {line.strip()} — '
+            for i, line in enumerate(_zcat(gz).splitlines(), 1):
+                if _marker_re.match(line):
+                    fails.append(f'[NON_VERILOG_MARKER] {stage}: {i}:{line.strip()} — '
                                  f'non-Verilog marker in PostEco (no // prefix). '
                                  f'Causes SVR-4 / FM-599 ABORT. '
                                  f'Remove line or prefix with //.')
@@ -1879,12 +1879,10 @@ def main():
         if not os.path.exists(gz):
             continue
         try:
-            import subprocess as _sp
-            r = _sp.run(
-                f"zcat {gz} | grep -n \".A.*( 1'b[01] )\" ",
-                shell=True, capture_output=True, text=True, timeout=60
-            )
-            for line in (r.stdout or '').splitlines():
+            _const_re = re.compile(r"\.A.*\( 1'b[01] \)")
+            for i, line in enumerate(_zcat(gz).splitlines(), 1):
+                if not _const_re.search(line):
+                    continue
                 if 'eco_' not in line.lower():
                     continue  # only ECO-inserted cells
                 pin_m = re.search(r'\.([A-Z][A-Z0-9]*)\s*\(\s*1\'b[01]\s*\)', line)
@@ -1893,7 +1891,7 @@ def main():
                 pin = pin_m.group(1)
                 if pin in _DFF_CONST_PINS:
                     continue
-                lineno = line.split(':')[0]
+                lineno = i
                 fails.append(
                     f"[NO_CONSTANT_FUNCTIONAL_INPUTS] {stage}:{lineno} — "
                     f"ECO gate pin .{pin}(1'b0/1) constant on functional input. "
