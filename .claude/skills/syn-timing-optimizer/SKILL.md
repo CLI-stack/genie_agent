@@ -5,6 +5,26 @@ Given only a completed synthesis run and a tune directory, this skill reads the
 timing report, diagnoses all root causes, and generates complete tune files in
 one shot — collapsing what typically takes multiple iterative runs into a single pass.
 
+## Output Policy — ALWAYS SHOW FULL DETAIL
+
+**Never summarize. Never truncate. Always show the complete report.**
+
+Every output section must be printed in full regardless of how many groups,
+fixes, or changes exist. This means:
+
+- **Step 1:** Show ALL path groups for ALL passes — no "top N only" truncation
+- **Step 2:** Show the FULL cost table for ALL violating groups (not just starved ones),
+  full conflict table for ALL groups, full detail for EVERY check A–G
+- **Step 3:** Show the FULL proposed diff for EVERY file change — every line added,
+  changed, or removed. Show the FULL RTL action items table with all entries.
+  Show FULL proposed TCL for every new group_path and create_bound.
+- **Step 4:** Show FULL list of every line written to every file.
+
+Do NOT write "N additional groups not shown", "see plan JSON for details",
+"abbreviated for brevity", or any similar truncation phrase.
+The plan JSON is a machine artifact — the printed report is the primary output
+the user reads. It must be complete and self-contained.
+
 ## Trigger
 `/syn-timing-optimizer`
 
@@ -231,6 +251,9 @@ grep -E "DDRSS_FEINT_NUM_COMPILES|max_multibit_size|FLOORPLAN_DEF" \
 ```
 
 ### Step 1 Output
+
+Print every field in full. No truncation of groups or passes.
+
 ```
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  STEP 1: READ                                                               ║
@@ -239,32 +262,43 @@ grep -E "DDRSS_FEINT_NUM_COMPILES|max_multibit_size|FLOORPLAN_DEF" \
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
 Existing tune files:
-  pre_opt.tcl            : YES
+  pre_opt.tcl            : YES / NO
   group_paths.tcl        : YES / NO
   r2r_optimization.tcl   : YES / NO  ← will CREATE if NO
   post_opt.tcl           : YES / NO
 
---- Primary Pass (P<N>) Timing by Path Group ---
+--- ALL Path Groups — Primary Pass (P<N>) ---
+(show every group including non-violating; sorted worst WNS first)
 
-  Path Group                  WNS (ps)    TNS (ps)    NVP    LOL   W(eff)
-  ─────────────────────────────────────────────────────────────────────────
-  <name>                      <val>       <val>       <val>  <val>  <val>
-  ...  (sorted worst WNS first; violating groups only)
+  Path Group                  WNS (ps)    TNS (ps)      NVP    LOL   W(eff)   CritLen (ps)   CritLen%
+  ──────────────────────────────────────────────────────────────────────────────────────────────────────
+  <name>                      <val>       <val>         <val>  <val>  <val>    <val>          <pct>%
+  ...  (ALL groups — do not skip clean or non-violating groups)
 
---- Pass-over-Pass WNS Progression ---
+--- Pass-over-Pass WNS Progression — ALL Groups ---
+(show all groups across all available passes)
 
-  Path Group                  P1          P2          P3      ...
-  ──────────────────────────────────────────────────────────────
-  <name>                      <val>       <val>       <val>   ...
+  Path Group                  P1 WNS      P2 WNS      P3 WNS      P4 WNS      P5 WNS
+  ──────────────────────────────────────────────────────────────────────────────────────
+  <name>                      <val>       <val>       <val>       <val>       <val>
+  ...  (ALL groups; blank for passes that don't exist)
 
---- Top 10 Worst Endpoint Hierarchies ---
+--- ALL Endpoint Hierarchies (sort_slack.endpts — top 20) ---
 
-  Rank  Path Group          Endpoint (last 3 levels)             Slack (ps)
-  ──────────────────────────────────────────────────────────────────────────
-  #1    <group>             <module>/<sub>/<signal>               <val>
-  ...
+  Rank  Path Group              Endpoint (full last 3 levels)                Slack (ps)   LOL
+  ──────────────────────────────────────────────────────────────────────────────────────────────
+  #1    <group>                 <module>/<sub>/<signal>                       <val>        <val>
+  ...  (all 20 rows)
+
+--- Effective Weight Map (ALL groups) ---
+
+  Group                    group_paths.tcl W   r2r_opt.tcl W   Effective W   Conflict?
+  ──────────────────────────────────────────────────────────────────────────────────────
+  <name>                   <val>               <val>           <val>         YES/NO
+  ...  (every group that appears in any tune file)
 
 Compile passes currently: <N>    (target: 5)
+DEF path: <full path from override.params>   [EXISTS / MISSING]
 ```
 
 ---
@@ -458,56 +492,80 @@ Each sub-group gets its own weight based on its WNS severity.
 
 ### Step 2 Output
 
+Print every table in full. No rows omitted. No "N more not shown".
+
 ```
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  STEP 2: DIAGNOSIS                                                          ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
-[A] Phantom Clocks      : <FOUND ⚠ / CLEAN ✓>
-[B] Weight Starvation   : <N groups starved ⚠ / CLEAN ✓>
-[C] Override Conflicts  : <N conflicts ⚠ / CLEAN ✓>
-[D] Architecture Limits : <N groups — RTL only / CLEAN ✓>
-[E] Wire-Dominated      : <N groups ⚠ (M bound-fixable, K port-limited) / CLEAN ✓>
-[F] Missing Groups      : <N hierarchies with no named group ⚠ / CLEAN ✓>
-[G] I2R Catch-All       : <SPLIT NEEDED ⚠ — N sub-groups / CLEAN ✓>
+[A] Phantom Clocks      : <FOUND ⚠ — detail below / CLEAN ✓>
+[B] Weight Starvation   : <N groups starved ⚠ — full table below / CLEAN ✓>
+[C] Override Conflicts  : <N conflicts ⚠ — full table below / CLEAN ✓>
+[D] Architecture Limits : <N groups — full table below / CLEAN ✓>
+[E] Wire-Dominated      : <N groups — full table below / CLEAN ✓>
+[F] Missing Groups      : <N hierarchies — full table below / CLEAN ✓>
+[G] I2R Catch-All       : <SPLIT NEEDED ⚠ — detail below / CLEAN ✓>
 
---- Cost Analysis (Check B) ---
+--- Check A: Phantom Clock Detail ---
+<if FOUND: group name, NVP, TNS, which modes are mixed, why they are exclusive>
+<if CLEAN: "No phantom clock groups detected.">
 
-  Path Group          W(eff)  NVP    WNS (ps)   Cost      Cost %   Starved?  New W
-  ──────────────────────────────────────────────────────────────────────────────────
-  <dominant>          <W>     <N>    <val>       <cost>    100%     —         —
-  <group>             <W>     <N>    <val>       <cost>    <pct>%   —         —
-  <starved group>     <W>     <N>    <val>       <cost>    <pct>%   YES ⚠     <new_W>
+--- Check B: Full Cost Analysis — ALL Violating Groups ---
+(show every violating group — do not skip any)
+
+  Path Group              W(eff)   NVP      WNS (ps)    Cost          Cost %    Starved?   New W
+  ────────────────────────────────────────────────────────────────────────────────────────────────
+  <dominant group>        <W>      <N>      <val>       <cost>        100.0%    —          —
+  <group>                 <W>      <N>      <val>       <cost>        <pct>%    —          —
+  <starved group>         <W>      <N>      <val>       <cost>        <pct>%    YES ⚠      <new_W>
+  ...  (ALL groups with WNS < 0, sorted by cost descending)
+
+  Max cost group : <name>  cost=<val>
+  5% threshold   : <val>
+  Starved groups : <N> (cost below threshold)
+
+--- Check C: Override Conflicts — ALL Groups in Both Files ---
+(show every group that appears in any tune file)
+
+  Group                   group_paths.tcl W   r2r_opt.tcl W   Effective W   Conflict?
+  ──────────────────────────────────────────────────────────────────────────────────────
+  <group>                 <val>               <val>           <val>         YES ⚠
+  <group>                 <val>               —               <val>         OK
+  ...  (every group — no omissions)
+
+--- Check D: Architecture Limits — ALL Flagged Groups ---
+
+  Group                   LOL    WNS (ps)   Gate Time (ps)   Period %   Action
+  ────────────────────────────────────────────────────────────────────────────────
+  <group>                 <N>    <val>      <N × 9.5>        <pct>%     RTL pipeline
   ...
 
---- Override Conflicts (Check C) ---
+--- Check E: Wire-Dominated — ALL Flagged Groups ---
+(show all groups matching either trigger — CritLen > 95% of Period OR LOL < 15)
 
-  Group          group_paths W   r2r_opt W   Effective   Conflict?
-  ─────────────────────────────────────────────────────────────────
-  <group>        <W1>            <W2>        <W2>        YES ⚠
+  Group                   LOL    WNS (ps)   CritLen (ps)   CritLen %   Trigger    Fixable?
+  ──────────────────────────────────────────────────────────────────────────────────────────
+  <group>                 <N>    <val>      <val>          <pct>%      T1/T2      BOUND / PORT-LIMITED
+  ...
 
---- Architecture Limits (Check D) ---
+--- Check F: Missing Groups — ALL Unrepresented Hierarchies ---
 
-  Group          LOL    WNS (ps)   Gate Time (ps)   % of Period   Action
-  ──────────────────────────────────────────────────────────────────────────
-  <group>        <N>    <val>      <N × 9.5>        <pct>%        RTL pipeline
+  Module (from sort_slack.endpts top 20)   Ranks     NVP estimate   Named group exists?
+  ──────────────────────────────────────────────────────────────────────────────────────
+  <module>/<sub>                           #N–#M     <est>          NO ⚠
+  ...
 
---- Wire-Dominated (Check E) ---
+--- Check G: I2R Split Detail ---
 
-  Group          LOL    WNS (ps)   CritLen (ps)   CritLen %   Fixable?
-  ──────────────────────────────────────────────────────────────────────────
-  <group>        <N>    <val>      <val>          <pct>%      BOUND / PORT-LIMITED
+  SYN_I2R endpoint modules found: <list all distinct modules>
+  SYN_I2R clock domains found   : <list all distinct clocks>
+  WNS improvement per pass       : P1=<val>  P2=<val>  P3=<val>  (stagnation: YES/NO)
+  Verdict: <SPLIT NEEDED — proposed sub-groups below / CLEAN>
 
---- Missing Groups (Check F) ---
-
-  Module (from sort_slack.endpts)   Appears at rank   Has named group?
-  ────────────────────────────────────────────────────────────────────────
-  <module>/<sub>                    #<N>–#<M>         NO ⚠
-
---- I2R Split (Check G) ---
-
-  SYN_I2R worst endpoints span: <N> distinct modules, <M> clock domains
-  Status: <SPLIT NEEDED / CLEAN>
+  Proposed sub-groups:
+    <name>  weight=<W>  from=<ports/cells>  to=<cells>
+    ...
 
 Priority for Step 3 (highest impact first):
   1. [A] Phantom fix — eliminates cross-mode noise, reveals real violations
@@ -1039,70 +1097,108 @@ Do NOT change any other override.params values.
 
 ### Step 3 Output
 
+Print every proposed change in full. Show complete TCL for every new line.
+Never use "..." to abbreviate. Never reference the plan JSON.
+
 ```
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  STEP 3: SUGGESTION PLAN                                                    ║
 ║  Mode: <ANALYZE-ONLY — review only, no writes / FULL RUN — Step 4 will write>║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
---- Proposed Tune File Changes ---
+--- Complete Fix List ---
 
-  Fix   Check   Finding                          Proposed Action
-  ────────────────────────────────────────────────────────────────────────────
-  1     [A]     <group> phantom, NVP=<N>         Split into <N> per-mode groups
-  2     [F]     <module> in top-20, no group     Add <design>_<module>_r2r group
-  3     [G]     SYN_I2R spans <N> modules        Split into <N> sub-groups
-  4     [B]     <group> cost=<pct>% of max       Raise weight <old> → <new>
-  5     [C]     <group> W mismatch               Correct effective W to <val>
-  6     [D]     <group> LOL=<N>                  Add arch-limit comment only
-  7     [E]     <group> wire-dominated           Add bound (<x1>,<y1>)–(<x2>,<y2>)
-  ────────────────────────────────────────────────────────────────────────────
+  Fix   Check   Group / Module           Finding                    Proposed Action
+  ──────────────────────────────────────────────────────────────────────────────────────
+  <N>   [<X>]   <group/module>           <specific finding>         <specific action>
+  ...  (every fix — no omissions)
 
---- Proposed Tune File Diff Preview ---
+--- Full Diff: tune/FxSynthesize/FxSynthesize.group_paths.tcl ---
+(show every line that will change — exact TCL syntax)
 
-  group_paths.tcl:
-    + group_path -name <design>_<module>_r2r -weight <W> -critical_range <CR> ...
-    + group_path -name SYN_I2R_<sub> -weight <W> ...
-    - group_path -name <conflicted_group> -weight <old_W>   ← removed from group_paths
-    + group_path -name <conflicted_group> -weight <new_W>   ← correct value in r2r_opt
+  - group_path -name <group> -weight <old_W> ...     ← REMOVE or CHANGE
+  + group_path -name <group> -weight <new_W> ...     ← REPLACEMENT
+  + group_path -name <new_group> -weight <W> -critical_range <CR> \
+        -from [<from_spec>] \
+        -to   [<to_spec>]                            ← NEW (Fix F/G)
+  ...  (every changed line)
 
-  r2r_optimization.tcl:
-    + group_path -name <group>_<MODE_A> -weight <W> ...     ← phantom split
-    + group_path -name <group>_<MODE_B> -weight <W> ...
-    + group_path -name <starved_group> -weight <new_W> ...  ← starvation fix
-    + create_bound -name <name>_bound ...                   ← wire-dominated bound
-    + set_app_options -name compile.flow.high_effort_timing -value 1
-    + set_app_options -name opt.timing.effort -value high
-    ... (all compile settings from Section 8)
+--- Full Diff: tune/FxSynthesize/FxSynthesize.r2r_optimization.tcl ---
+(show complete TCL for every section — no abbreviation)
 
-  pre_opt.tcl:
-    + tunesource tune/$TARGET_NAME/$TARGET_NAME.r2r_optimization.tcl   ← if missing
+  [Fix A — Phantom split]
+  + group_path -name <group>_<MODE_A> -critical_range <CR> -weight <W>
+  + group_path -name <group>_<MODE_B> -critical_range <CR> -weight <W>
 
-  override.params:
-    DDRSS_FEINT_NUM_COMPILES  <current> → 5   [needs update / already correct]
+  [Fix B+C — Weight corrections]
+  - group_path -name <group> ... -weight <old_W>    ← old conflicting line removed
+  + # [Fix-B/C] <reason>: cost was <pct>% of max / override conflict resolved
+  + group_path -name <group> -critical_range <CR> -weight <new_W> \
+        -to [get_cells -quiet -hier -filter "full_name =~ *<pattern>*"]
+  ... (every group that changes)
 
---- Expected WNS Improvement ---
+  [Fix E — Placement bounds]
+  + set_app_options -name compile.flow.enable_auto_feasibility_recovery -value true
+  +
+  + # === <group_name> bound ===
+  + # Trigger: CritLen=<val>ps (<pct>% of period=<period>ps), LOL=<N>, WNS=<val>ps
+  + # DEF: scale=<dbu>/um | cell bbox=(<minX>,<minY>)–(<maxX>,<maxY>)um | cells=<N>
+  + # Bound: (<x1>,<y1>)–(<x2>,<y2>)um | area=<W>×<H>=<area>um² | density=<d>cells/um²
+  + set <name>_cells [get_cells -quiet -hier -filter \
+  +     "full_name =~ *<pattern>*"]
+  + if {[sizeof_collection $<name>_cells] > 0} {
+  +     create_bound -name <name>_bound \
+  +         -boundary [list [list <x1> <y1>] [list <x2> <y2>]] \
+  +         -type soft \
+  +         $<name>_cells
+  +     puts "  Bound <name>_bound: (<x1>,<y1>)–(<x2>,<y2>) | [sizeof_collection $<name>_cells] cells"
+  + } else {
+  +     puts "  WARNING: no cells matched *<pattern>*"
+  + }
+  ... (every bound — full TCL, no abbreviation)
 
-  Fix [A] phantom split :  potentially large  (eliminates cross-mode noise)
-  Fix [B] starvation    :  ~+<N> ps per starved group raised
-  Fix [C] override bug  :  ~+<N> ps per conflict corrected
-  Fix [E] bounds        :  ~+<N> ps for wire-dominated groups
-  Fix [D] arch limits   :  0 ps — RTL change required (see below)
-  Total estimated       :  ~+<N> ps WNS improvement from synthesis fixes
+  [Section 8 — Compile settings]
+  + set_app_options -name compile.flow.high_effort_timing -value 1
+  + set_app_options -name opt.timing.effort -value high
+  ... (every setting that will be written)
 
---- RTL Action Items (synthesis cannot fix these) ---
+--- Full Diff: tune/FxSynthesize/FxSynthesize.pre_opt.tcl ---
 
-  Group               LOL    WNS (ps)   Why synthesis cannot fix        RTL Action Needed
-  ──────────────────────────────────────────────────────────────────────────────────────────────
-  <group>             <N>    <val>      LOL > 28 — logic depth = period  Pipeline insertion
-  <group>             <N>    <val>      Port-limited wire (I/O fixed)    Pipeline flop near port
-  <group>             <N>    <val>      High fanout startpoint           Register duplication in RTL
-  <group>             <N>    <val>      Clock gate enable depth > 15     Register the enable signal
-  ──────────────────────────────────────────────────────────────────────────────────────────────
+  <if tunesource missing>
+  + tunesource tune/$TARGET_NAME/$TARGET_NAME.r2r_optimization.tcl
+  <if already present>
+  (no change — already sourced at line <N>)
 
-  Note: RTL action items are pointers only — no RTL files read, no code generated.
-  Bring these to your RTL design team with the group name and endpoint hierarchy
-  from sort_slack.endpts as context.
+--- Full Diff: override.params ---
+
+  DDRSS_FEINT_NUM_COMPILES = <current>  →  5   [CHANGE / already correct]
+
+--- Expected WNS Improvement (per fix) ---
+
+  Fix   Check   Group              Estimated Gain     Basis
+  ──────────────────────────────────────────────────────────────────────────────
+  <N>   [A]     <group>            large              phantom elimination
+  <N>   [B]     <group>            ~+<N> ps           weight <old>→<new>, NVP=<N>
+  <N>   [C]     <group>            ~+<N> ps           effective W restored <old>→<new>
+  <N>   [E]     <group>            ~+<N> ps           bound reduces wire delay
+  <N>   [D]     <group>            0 ps               RTL action required
+  ──────────────────────────────────────────────────────────────────────────────
+  Total estimated synthesis gain:   ~+<N> ps WNS
+
+--- RTL Action Items (ALL — synthesis cannot fix these) ---
+(every group requiring RTL attention — no omissions)
+
+  Priority   Group               LOL    WNS (ps)   Reason                           RTL Action
+  ────────────────────────────────────────────────────────────────────────────────────────────────
+  P1         <group>             <N>    <val>      LOL=<N>, >28 threshold           Pipeline insertion
+  P2         <group>             <N>    <val>      Port-limited I/O wire            Pipeline flop near port
+  P2         <group>             <N>    <val>      Fanout=<N> on startpoint         Register duplication
+  P3         <group>             <N>    <val>      Clock gate enable depth=<N>      Register the enable
+  ...  (every RTL action item)
+
+  Endpoint context for RTL team:
+  <group>: worst endpoint = <full hierarchy from sort_slack.endpts>
+  ...  (one line per RTL action item)
 
 --- Next Steps ---
 
