@@ -20,6 +20,35 @@ import eco_cell_truth_tables as _ett
 _CLK_PINS = ('CP', 'CPN', 'CK', 'CKB', 'CLK')
 
 
+def _v2py(expr):
+    """Convert a Verilog cell function to a Python-evaluable boolean expression.
+    Handles the `sel ? a : b` ternary (e.g. MUX2 'S ? I1 : I0'); &, |, ~, ^ already
+    evaluate correctly on 0/1 ints. Idempotent for expressions without a ternary."""
+    if not isinstance(expr, str):
+        return expr
+    prev = None
+    while prev != expr and '?' in expr:
+        prev = expr
+        expr = re.sub(r'([\w~()&|\^ ]+?)\s*\?\s*([\w~()&|\^ ]+?)\s*:\s*([\w~()&|\^ ]+)',
+                      r'(\2 if (\1) else \3)', expr, count=1)
+    return expr
+
+
+def _normalize_tt(tt):
+    """Normalize a truth table to {output_pin: python_expr}. eco_cell_truth_tables
+    returns EITHER the simple form {'Z': '(A1|A2)'} OR a complex form
+    {'pins':{...}, 'function':'S ? I1 : I0', 'output_pin':'Z', ...}; handle both so no
+    combinational cell is silently skipped (a skipped cell becomes a false leaf and
+    corrupts the simulation)."""
+    if not isinstance(tt, dict) or not tt:
+        return None
+    if 'output_pin' in tt and 'function' in tt:
+        return {tt['output_pin']: _v2py(str(tt['function']))}
+    out = {k: _v2py(v) for k, v in tt.items()
+           if isinstance(v, str) and k not in ('function',)}
+    return out or None
+
+
 def _module_body(gz_path, module):
     """Return the text of `module`'s body from a (possibly gz) netlist file."""
     op = gzip.open if gz_path.endswith('.gz') else open
@@ -58,12 +87,26 @@ def parse_module(gz_path, module, ref_dir=None):
         cell, inst, pinstr = m.group(1), m.group(2), m.group(3)
         if cell in ('module', 'wire', 'input', 'output', 'inout', 'reg', 'assign', 'endmodule'):
             continue
-        tt = _ett.truth_table_of(cell, ref_dir=ref_dir)
+        tt = _normalize_tt(_ett.truth_table_of(cell, ref_dir=ref_dir))
         if not tt:
             continue  # unknown cell — cannot simulate; caller must treat as leaf
         pins = {p: _norm_net(n) for p, n in _PIN_RE.findall(pinstr)}
         if not pins:
             continue
+        # The library sometimes returns a truth table on the WRONG output pin for an
+        # inverting variant (e.g. MUX2N: family lookup drops the 'N', yields
+        # {'Z': (S&I1)|(~S&I0)}, but the instance drives ZN with the INVERTED value).
+        # Re-key the tt onto the instance's ACTUAL output pin, inverting on a Z<->ZN
+        # mismatch — otherwise the output net is never registered (false leaf).
+        _OUTP = ('ZN', 'Z', 'QN', 'Q', 'CON', 'CO', 'SN', 'S')
+        tt_pin = next(iter(tt))
+        if tt_pin not in pins:
+            inst_out = next((p for p in _OUTP if p in pins), None)
+            if inst_out:
+                expr = tt[tt_pin]
+                if {inst_out, tt_pin} == {'Z', 'ZN'} or {inst_out, tt_pin} == {'Q', 'QN'}:
+                    expr = f'(~({expr}))'
+                tt = {inst_out: expr}
         insts[inst] = {'cell': cell, 'pins': pins, 'tt': tt}
         is_seq = any(cp in pins for cp in _CLK_PINS)
         for out_pin in tt:                       # tt keys are the output pins
