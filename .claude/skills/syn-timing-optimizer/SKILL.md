@@ -80,7 +80,7 @@ ROOT CAUSE CHECKS
   [B]  Weight starvation       — Cost = W × NVP × |WNS| < 5% of dominant group
   [C]  Override conflicts      — same group in both tune files, wrong weight wins
   [D]  Architecture limits     — LOL > 28, synthesis cannot close — RTL needed
-  [E]  Wire-dominated paths    — LOL < 15 but large WNS, needs create_bound
+  [E]  Wire-dominated paths    — CritLen > 95% of Period OR LOL < 15 with large WNS; needs create_bound
   [F]  Missing groups          — hierarchy in top-20 endpoints but no named group
   [G]  I2R catch-all split     — SYN_I2R hiding multiple distinct sub-paths
 
@@ -367,26 +367,45 @@ architectural constraint and the required RTL action.
 ### Check E: Wire-Dominated Paths
 
 **What it is:**
-Low logic level count but large timing violation and long critical path length.
-The gates are fast enough; the problem is that communicating cells are placed
-far apart on the die, creating long wires that consume most of the clock period.
+The critical path length is at or beyond the clock period, meaning wire delay
+is consuming a significant portion of the timing budget — regardless of how many
+logic levels exist. Cells that communicate are physically scattered across the die.
 
-**How to detect:** `LOL < 15` AND `WNS < -50 ps` AND `CritLen_ps > 0.80 × Period_ps`
+**How to detect — TWO triggers (either one is sufficient to flag the group):**
 
-**Two sub-cases:**
+*Trigger 1 — CritLen exceeds period (primary trigger):*
+`CritLen_ps > Period_ps × 0.95` AND `WNS < -30 ps`
 
-*Register-to-register wire:* Cells in the same module are physically scattered.
-Fix: `create_bound` to co-locate them.
+This is the strongest signal. If the critical path length already reaches 95%
+of the clock period, wire delay is clearly a major contributor. This fires
+regardless of LOL — even LOL=20–28 groups can be wire-dominated.
 
-*I/O port wire:* The path starts or ends at a fixed I/O port that cannot be moved.
-The wire length is determined by the port location in the floorplan — a bound
-cannot fix this. Requires RTL pipelining to insert a register closer to the port.
+*Trigger 2 — Very low LOL with large WNS:*
+`LOL < 15` AND `WNS < -50 ps`
 
-Distinguish by reading the critical path trace (Step 1f): if startpoint is a
-primary input port → port-limited. If startpoint is a register → wire-dominated
-and a bound can help.
+Very few gates but large violation — the gates are fast so wire must dominate.
 
-**Verdict [E]:** List groups with LOL, WNS, CritLen. Mark each as bound-fixable or port-limited.
+**IMPORTANT: Do NOT skip Check E because LOL is high.**
+A path with LOL=25 and CritLen=1.20×Period is wire-dominated. The high LOL
+does not mean wire is irrelevant — it means BOTH logic AND wire are contributing.
+A bound reduces wire delay and gives the optimizer a chance to fix remaining logic
+violations. Always evaluate CritLen vs Period first.
+
+**Two sub-cases (determine AFTER triggering):**
+
+*Register-to-register:* Both startpoint and endpoint are registers.
+Fix: `create_bound` — co-locate the communicating cells. This IS fixable.
+
+*I/O port path:* Startpoint is a primary input port or endpoint is a primary
+output port (fixed floorplan location). Wire length determined by port placement.
+A bound cannot help — port is fixed. Mark as port-limited, escalate to RTL team.
+
+**How to distinguish:** read worst-path trace (Step 1f).
+`Startpoint:` contains `/` hierarchy → register. No `/` (or named as port) → I/O port.
+
+**Verdict [E]:** List ALL groups matching either trigger. Mark each:
+- `BOUND` — register-to-register, `create_bound` will reduce wire delay
+- `PORT-LIMITED` — I/O port involved, flag for RTL team, no bound added
 
 ---
 
