@@ -12,12 +12,27 @@ one shot — collapsing what typically takes multiple iterative runs into a sing
 ```
 /syn-timing-optimizer <tile_run_dir>                   # full run  — Steps 1→2→3→4
 /syn-timing-optimizer <tile_run_dir> --analyze-only    # safe mode — Steps 1→2→3 only
+/syn-timing-optimizer <tile_run_dir> --apply           # apply saved plan — Step 4 only
 ```
 
-| Mode | Steps | File writes? |
-|------|-------|-------------|
-| Full run | 1 READ → 2 DIAGNOSE → 3 SUGGEST → 4 GENERATE | Yes — tune files written in Step 4 |
-| `--analyze-only` | 1 READ → 2 DIAGNOSE → 3 SUGGEST | No writes — shows full plan only |
+| Mode | Steps | File writes? | When to use |
+|------|-------|-------------|-------------|
+| Full run | 1→2→3→4 | Yes | First time on a new tile, or when you trust the process |
+| `--analyze-only` | 1→2→3 | No | Review the plan before committing |
+| `--apply` | 4 only | Yes | After reviewing `--analyze-only` output and deciding to proceed |
+
+### Typical workflow with review step
+```
+# Step A — review first
+/syn-timing-optimizer /proj/.../tiles/my_tile --analyze-only
+
+# Step B — after reading the plan, if happy:
+/syn-timing-optimizer /proj/.../tiles/my_tile --apply
+```
+
+`--apply` reads the saved plan file from the previous `--analyze-only` run
+(`<tile_dir>/tune/FxSynthesize/.optimizer_plan.json`) and executes Step 4
+directly — no re-analysis needed.
 
 Requirements:
 - `rpts/FxSynthesize/FxSynthesize.pass_*.proc_qor.rpt.gz`  (at least one pass)
@@ -44,7 +59,8 @@ every fixable violation in one pass. Work entirely from what the timing
 report shows — do not assume any prior knowledge of the design hierarchy.
 
 TILE_DIR     = <resolved_tile_dir>
-ANALYZE_ONLY = <true | false>
+MODE         = <FULL | ANALYZE_ONLY | APPLY>
+PLAN_FILE    = <tile_dir>/tune/FxSynthesize/.optimizer_plan.json
 
 Follow Steps 1, 2, 3 exactly as written. Return the full report.
 
@@ -932,11 +948,13 @@ Do NOT change any other override.params values.
 
 --- Next Steps ---
 
-  If --analyze-only:
+  If ANALYZE_ONLY:
     Review the proposed changes above.
-    When ready to apply: re-run without --analyze-only to execute Step 4.
+    When ready to apply, run:
+      /syn-timing-optimizer <TILE_DIR> --apply
+    (reads the saved plan file — no re-analysis needed)
 
-  If full run:
+  If FULL or APPLY:
     Step 4 will now write the tune files exactly as proposed above.
     After Step 4 completes:
       1. Run FxSynthesize:
@@ -953,10 +971,22 @@ Do NOT change any other override.params values.
 
 ## Step 4: GENERATE — Write Tune Files
 
-**Full run only. Skip if `ANALYZE_ONLY=true`.**
+**Runs in FULL and APPLY modes. Skipped in ANALYZE_ONLY.**
 
 Write the exact changes proposed in Step 3 to the actual tune files.
 No new decisions are made here — Step 3 is the plan, Step 4 executes it.
+
+### APPLY mode — read plan from file
+
+If `MODE=APPLY`, skip Steps 1–3 entirely and read the saved plan:
+```bash
+cat <TILE_DIR>/tune/FxSynthesize/.optimizer_plan.json
+```
+If the plan file does not exist → print error and STOP:
+`"No saved plan found. Run --analyze-only first to generate a plan."`
+
+Verify the plan file's `tile_dir` matches the current `TILE_DIR`.
+Then proceed directly to 4a using the plan data.
 
 ---
 
@@ -1034,6 +1064,45 @@ override.params: DDRSS_FEINT_NUM_COMPILES → 5  [UPDATED / already correct]
 
 All changes match the Step 3 proposal exactly.
 ```
+
+### After Step 3 — Always Save Plan File
+
+Regardless of mode (ANALYZE_ONLY, FULL, or APPLY), Step 3 always saves a plan
+file so that `--apply` can execute it later without re-running analysis.
+
+Save to: `<TILE_DIR>/tune/FxSynthesize/.optimizer_plan.json`
+
+Content:
+```json
+{
+  "tile_dir": "<TILE_DIR>",
+  "tile_type": "<design_type>",
+  "baseline_wns_ps": <val>,
+  "baseline_tns_ps": <val>,
+  "period_ps": <val>,
+  "primary_pass": <N>,
+  "fixes": [
+    {"check": "A", "group": "<name>", "action": "split", "modes": ["<MODE_A>", "<MODE_B>"], "weights": [1, <W>]},
+    {"check": "F", "module": "<pattern>", "action": "add_group", "name": "<group_name>", "weight": <W>, "critical_range": <CR>},
+    {"check": "G", "action": "split_i2r", "sub_groups": [{"name": "<name>", "pattern": "<pat>", "weight": <W>}]},
+    {"check": "B", "group": "<name>", "old_weight": <W1>, "new_weight": <W2>},
+    {"check": "C", "group": "<name>", "intended_weight": <W>},
+    {"check": "D", "group": "<name>", "lol": <N>, "comment": "<arch limit message>"},
+    {"check": "E", "group": "<name>", "bound_name": "<name>_bound", "x1": <v>, "y1": <v>, "x2": <v>, "y2": <v>, "cell_filter": "<pattern>"}
+  ],
+  "compile_settings": {
+    "num_compiles": 5,
+    "high_effort_timing": true,
+    "max_multibit_size": <N>,
+    "restructuring_mode": "area_timing"
+  },
+  "rtl_action_items": [
+    {"group": "<name>", "lol": <N>, "wns_ps": <val>, "reason": "<why synthesis cannot fix>", "action": "<Pipeline insertion|Register duplication|Enable pipelining>"}
+  ]
+}
+```
+
+If the plan file already exists (from a previous `--analyze-only` run), overwrite it.
 
 ---
 
