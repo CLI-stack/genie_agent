@@ -427,7 +427,14 @@ def _synth_setup(ref_dir, module, jira='eco'):
     def mk(t):
         seq[0] += 1
         return f'n_eco_{jira}_cr_{t}_{seq[0]}'
-    synth = _Synth(cfg, wm, rtl_text, innl, mk, module)
+    # Use the FULL netlist module name (from the netlist body's `module` line) for every
+    # emitted entry — the studier / eq_decode / uniquify all use the full name (e.g.
+    # 'ddrss_umcdat_t_umcrecdsp'), while the rtl_diff carries the short name ('umcrecdsp').
+    # Emitting the short name breaks the verifier's exact-match module lookup (CONE_MISS)
+    # and the applier's module resolution.
+    mm = re.match(r'\s*module\s+(\S+)', nlbody or '')
+    full_module = mm.group(1) if mm else module
+    synth = _Synth(cfg, wm, rtl_text, innl, mk, full_module)
     return synth, mk, rtl_text, old_text, wm
 
 
@@ -561,7 +568,9 @@ def emit_comb_net_force_batch(ref_dir, module, signals, jira='eco', rename_map=N
         if r is None:
             continue
         summ[signal] = r['summary']
-        rw, e = _emit_signal_muxes(synth, mk, r, module, signal, dmaps)
+        # synth.module is the FULL netlist name (resolved in _synth_setup) — use it for the
+        # rewires so they match the studier/other emitters + netlist.
+        rw, e = _emit_signal_muxes(synth, mk, r, synth.module, signal, dmaps)
         rewires.extend(rw); errs.extend(e)
     if errs:
         return {'gates': synth.gates, 'rewires': [], 'errors': errs, 'summary': summ}
