@@ -465,6 +465,26 @@ A bound cannot help — port is fixed. Mark as port-limited, escalate to RTL tea
 - `BOUND` — register-to-register, `create_bound` will reduce wire delay
 - `PORT-LIMITED` — I/O port involved, flag for RTL team, no bound added
 
+**MANDATORY — every BOUND group MUST produce a Fix E entry in Step 3.**
+Check E diagnosis is not complete until each BOUND group has a corresponding
+`create_bound` fix with actual coordinates in the fixes list and proposed_changes.
+Do NOT leave Check E as diagnosis-only. If DEF is missing, generate the fix
+with estimated coordinates AND flag the DEF warning — but still produce the fix.
+
+**DEF missing handling:**
+If the DEF file from `override.params` does not exist:
+1. Estimate bound coordinates from sort_slack.endpts endpoint hierarchy names
+   (use the module's position relative to known tile landmarks as a fallback)
+2. Mark every such bound as `"coords_source": "ESTIMATED — verify against DEF before apply"`
+3. Add a WARNING block at the top of Step 3 output:
+   ```
+   ⚠ WARNING: FLOORPLAN_DEF not accessible: <path>
+   All create_bound coordinates are ESTIMATES derived from path trace data.
+   Verify against actual DEF before running --apply.
+   Valid DEF found at: <suggest nearest valid DEF if known>
+   ```
+4. Still generate all Fix E entries — do not skip bounds because DEF is missing
+
 ---
 
 ### Check F: Unrepresented Hierarchies (Missing Groups)
@@ -819,6 +839,27 @@ Groups with many NVP: use wider range to capture near-violating paths too.
 ---
 
 #### Section 7: Fix E — Placement Bounds (wire-dominated, bound-fixable groups only)
+
+**This section is MANDATORY for every group flagged BOUND in Check E.**
+Every BOUND group from Check E MUST produce a `create_bound` entry here.
+Do NOT skip this section because DEF is missing or coordinates are uncertain.
+Estimated coordinates with a warning are better than no bound at all.
+
+**For each BOUND group, add a fix entry to the plan:**
+```json
+{
+  "fix_id": "FE-<N>",
+  "check": "E",
+  "group": "<group_name>",
+  "action": "create_bound",
+  "bound_name": "<group_lower>_bound",
+  "cell_filter": "full_name =~ *<hierarchy>*",
+  "coordinates_um": {"x1": <v>, "y1": <v>, "x2": <v>, "y2": <v>},
+  "coords_source": "DEF-derived / ESTIMATED",
+  "density_cells_per_um2": <val>,
+  "warning": "<only if estimated>"
+}
+```
 
 **Pre-work — derive coordinates BEFORE writing TCL:**
 
@@ -1264,7 +1305,29 @@ If the plan file does not exist → print error and STOP:
 `"No saved plan found. Run --analyze-only first to generate a plan."`
 
 Verify the plan file's `tile_dir` matches the current `TILE_DIR`.
-Then proceed directly to 4a using the plan data.
+
+**DEF gate — check before applying any bounds:**
+
+If the plan contains any Fix E entries (`"check": "E"`) with
+`"coords_source": "ESTIMATED"`:
+
+1. Check whether the DEF file in `override.params` is now accessible:
+   ```bash
+   ls -lh $(grep FLOORPLAN_DEF <TILE_DIR>/override.params | awk '{print $NF}')
+   ```
+2. If DEF is NOW accessible → re-derive coordinates from DEF before writing bounds.
+   Replace the estimated coordinates with DEF-derived ones and mark as `DEF-derived`.
+3. If DEF is STILL missing → print a clear warning before proceeding:
+   ```
+   ⚠ WARNING: Applying bounds with ESTIMATED coordinates.
+   DEF file not accessible: <path>
+   Bounds will be written but may need adjustment after verifying against actual DEF.
+   To use DEF-derived coordinates: update FLOORPLAN_DEF in override.params and re-run --apply.
+   Proceeding with estimated coordinates...
+   ```
+   Then continue — do NOT block apply. Estimated bounds are better than no bounds.
+
+Then proceed to 4a using the plan data.
 
 ---
 
