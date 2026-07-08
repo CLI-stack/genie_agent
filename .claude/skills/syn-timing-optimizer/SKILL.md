@@ -47,7 +47,7 @@ WRITES (Step 4)
   tune/FxSynthesize/FxSynthesize.group_paths.tcl
   tune/FxSynthesize/FxSynthesize.r2r_optimization.tcl
   tune/FxSynthesize/FxSynthesize.pre_opt.tcl  (tunesource added if missing)
-  override.params  (DDRSS_FEINT_NUM_COMPILES = 5)
+  override.params  (<compile_passes_param> = 5)
 
 REQUIREMENTS
   rpts/FxSynthesize/FxSynthesize.pass_*.proc_qor.rpt.gz  (≥1 pass)
@@ -121,7 +121,8 @@ Rule: `r2r_optimization.tcl` sourced AFTER `group_paths.tcl` → r2r_opt weight 
 
 ### 1g. Read override.params
 ```bash
-grep -E "DDRSS_FEINT_NUM_COMPILES|max_multibit_size|FLOORPLAN_DEF" <TILE_DIR>/override.params
+grep -iE "num_compiles|compile.*passes|max_compile" <TILE_DIR>/override.params
+grep -E "max_multibit_size|FLOORPLAN_DEF" <TILE_DIR>/override.params
 ```
 
 ### Step 1 Output — ALL groups, ALL passes, full tables
@@ -189,15 +190,15 @@ Read the worst-path trace (FuncTT0p9v) for each flagged group:
 - If `Startpoint:` has hierarchy levels (`/`) → register → **BOUND**
 - If `Startpoint:` is a bare port name (no `/`) → I/O port → **PORT-LIMITED**
 
-Common PORT-LIMITED groups (startpoint is always an I/O port):
-- `io_to_io`, `io_to_flop`, `SYN_I2R` when endpoints all come from primary input ports
+Common PORT-LIMITED group types (startpoint is always an I/O port):
+- Any group named `io_to_*`, `*_to_io`, or where the path trace shows a primary port as startpoint
 
 PORT-LIMITED groups: add to RTL action items only. Do NOT generate a create_bound.
 
 **Step E-2: One Fix E entry per BOUND group (never merge multiple groups)**
 
 Each BOUND group gets its OWN separate fix entry. Never combine multiple groups
-into one entry (e.g. `umc_ARB_r2r_to+umc_ARB_internal_r2r` is WRONG).
+into one entry (e.g. `<module_A>_r2r+<module_B>_r2r` is WRONG).
 If two groups share a similar hierarchy, give each its own bound with its own filter.
 
 **Step E-3: Populate coordinates for EVERY BOUND group**
@@ -216,23 +217,25 @@ zcat <def>.gz | grep "^\- .*<hier_keyword>" \
 # expand bbox 25%, verify density < 400 cells/um²
 ```
 
-**DEF missing → estimate using quadrant table (400 × 600 um default die):**
-```
-ARB/DCQARB*        → center      x1=133, y1=200, x2=267, y2=400
-ARB/DCQARB1*       → center-high x1=133, y1=220, x2=280, y2=440
-ARB/PGT*           → right       x1=267, y1=200, x2=400, y2=400
-ARB internal       → lower       x1=0,   y1=0,   x2=267, y2=200
-ARB/RH*            → upper-left  x1=0,   y1=370, x2=210, y2=600
-FEI*               → left        x1=0,   y1=0,   x2=133, y2=440
-ADDR*              → bottom      x1=0,   y1=0,   x2=267, y2=200
-SPAZ*              → right-bot   x1=267, y1=0,   x2=400, y2=200
-clock_gating_default→ center     x1=100, y1=150, x2=300, y2=450
-SYN_R2R            → use top endpoint module from sort_slack.endpts,
-                     map that module to its quadrant above
-TIM*               → lower-right x1=200, y1=0,   x2=400, y2=200
-CMD*               → center-left x1=0,   y1=150, x2=240, y2=490
-```
-Expand by 20% margin. Mark `coords_source="ESTIMATED"`.
+**DEF missing → estimate from endpoint position in die:**
+
+1. Read `DIEAREA` from DEF if accessible → get die width × height.
+   If DEF completely unavailable, use a conservative estimate (e.g. 400 × 600 um).
+
+2. From sort_slack.endpts, find the top endpoint for the group.
+   The endpoint hierarchy tells you WHICH MODULE contains the failing cells.
+
+3. Divide the die into a 3×3 grid. Assign the module to a grid cell based on
+   its position relative to other modules you know from the endpoint hierarchy:
+   - Modules that fan out widely → typically center or upper region
+   - I/O-heavy modules (data in/out) → typically near die edges
+   - Sub-modules of a parent → near the parent's estimated position
+
+4. Compute x1/y1/x2/y2 from the assigned grid cell. Expand by 20% margin.
+   Mark `coords_source="ESTIMATED"`.
+
+The goal is a reasonable starting point — a bound that is 30% off is still far
+better than no bound. Coordinates can be refined after DEF becomes accessible.
 
 **Step E-4: Cell filter — precise hierarchy from sort_slack.endpts**
 
@@ -240,12 +243,12 @@ Take top-ranked endpoint for the group from sort_slack.endpts.
 Strip the signal name and last register instance → that prefix is the filter.
 
 ```
-Example: ARB/DCQARB/ArbSafeRegPc_d1/q_reg[3]
-  → prefix = ARB/DCQARB
-  → filter = "full_name =~ *ARB/DCQARB*"
+Example: <ModuleA>/<SubModule>/<InstanceName>/q_reg[N]
+  → prefix = <ModuleA>/<SubModule>
+  → filter = "full_name =~ *<ModuleA>/<SubModule>*"
 
-clock_gating_default: read worst CG path trace → use clock-gater cell hierarchy
-  → filter = "full_name =~ *<module_from_cg_trace>/clk_gate*"
+For clock gating groups: read worst path trace → use clock-gater cell hierarchy
+  → filter = "full_name =~ *<module_from_path_trace>/clk_gate*"
 ```
 
 **GENERAL RULE — residual/internal groups:**
@@ -268,7 +271,7 @@ If the group is named `<module>_internal` or represents residual cells after
 sub-hierarchies are split off, always use exclusion filters for every known
 sub-hierarchy that has its own dedicated bound.
 
-Never use bare `*`. Never use broad `*ARB/*` when a specific sub-hierarchy is the target.
+Never use bare `*`. Never use a broad parent-level wildcard when a specific sub-hierarchy is the target.
 
 **PORT-LIMITED groups — add to diagnoses, no Fix E entry:**
 Groups where startpoint is an I/O port (`io_to_io`, `io_to_flop`, `SYN_I2R` I/O paths)
@@ -479,7 +482,7 @@ set_app_options -name compile.timing.buffer_replication            -value true
   + tunesource ... r2r_optimization.tcl  (if missing)
 
 --- Full Diff: override.params ---
-  DDRSS_FEINT_NUM_COMPILES = <cur> → 5
+  <compile_passes_param> = <cur> → 5
 
 --- Expected WNS Gain per Fix ---
   Fix  Check  Group  Gain(ps)  Basis
@@ -539,7 +542,7 @@ ls -lh $(grep FLOORPLAN_DEF <TILE_DIR>/override.params | awk '{print $NF}')
 1. `pre_opt.tcl` — add tunesource if missing
 2. `group_paths.tcl` — base groups + Check F/G groups
 3. `r2r_optimization.tcl` — sections 1–9 as planned in Step 3
-4. `override.params` — DDRSS_FEINT_NUM_COMPILES = 5
+4. `override.params` — <compile_passes_param> = 5
 
 ### Step 4 Output
 ```
@@ -549,7 +552,7 @@ ls -lh $(grep FLOORPLAN_DEF <TILE_DIR>/override.params | awk '{print $NF}')
   group_paths.tcl        <N> lines  [CREATED/UPDATED]
   r2r_optimization.tcl   <N> lines  [CREATED/UPDATED]
   pre_opt.tcl            [tunesource added/already present]
-  override.params        DDRSS_FEINT_NUM_COMPILES → 5 [UPDATED/OK]
+  override.params        <compile_passes_param> → 5 [UPDATED/OK]
 All changes match Step 3 proposal exactly.
 ```
 
