@@ -238,18 +238,43 @@ Expand by 20% margin. Mark `coords_source="ESTIMATED"`.
 
 Take top-ranked endpoint for the group from sort_slack.endpts.
 Strip the signal name and last register instance → that prefix is the filter.
+
 ```
 Example: ARB/DCQARB/ArbSafeRegPc_d1/q_reg[3]
   → prefix = ARB/DCQARB
   → filter = "full_name =~ *ARB/DCQARB*"
 
-ARB internal (ARB minus sub-hierarchies):
-  → filter = "full_name =~ *ARB/* && full_name !~ *ARB/DCQARB* && full_name !~ *ARB/PGT*"
-
 clock_gating_default: read worst CG path trace → use clock-gater cell hierarchy
   → filter = "full_name =~ *<module_from_cg_trace>/clk_gate*"
 ```
+
+**SPECIAL CASE — ARB internal (`umc_ARB_internal_r2r`):**
+This group covers the residual ARB logic that is NOT part of DCQARB, PGT, or RH.
+Never use bare `*ARB/*` — it will capture ALL ARB sub-hierarchies including DCQARB
+(which already has its own bound), causing the optimizer to double-bound DCQARB cells
+and create a density spike.
+
+Mandatory exclusion filter for ARB internal:
+```
+"full_name =~ *ARB/* && full_name !~ *ARB/DCQARB* && full_name !~ *ARB/DCQARB1* && full_name !~ *ARB/PGT* && full_name !~ *ARB/RH*"
+```
+
+**GENERAL RULE for any group that is a parent hierarchy:**
+If the group is named `<module>_internal` or represents residual cells after
+sub-hierarchies are split off, always use exclusion filters for every known
+sub-hierarchy that has its own dedicated bound.
+
 Never use bare `*`. Never use broad `*ARB/*` when a specific sub-hierarchy is the target.
+
+**PORT-LIMITED groups — add to diagnoses, no Fix E entry:**
+Groups where startpoint is an I/O port (`io_to_io`, `io_to_flop`, `SYN_I2R` I/O paths)
+must be recorded in `diagnoses.E_wire_dominated.flagged` as PORT-LIMITED and added
+to RTL action items. They must NOT appear in the Fix E list.
+```json
+{"group":"io_to_io","trigger":"T1","CritLen_ps":363.91,"pct_period":123.3,
+ "type":"PORT-LIMITED","reason":"startpoint is primary I/O port — bound cannot help",
+ "rtl_action":"Register at tile boundary to reduce wire to port"}
+```
 
 **Plan entry — ALL fields required, one entry per BOUND group:**
 ```json
