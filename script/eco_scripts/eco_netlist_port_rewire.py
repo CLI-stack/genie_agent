@@ -725,6 +725,32 @@ def apply_port_connection(lines, entry, gz_path=None, stage='Synthesize'):
 
 # ── Pass 4: rewire ────────────────────────────────────────────────────────────
 
+def _find_module_range(lines, mod_name):
+    """(start, end) line indices of module `mod_name` (exact, then P&R _0 suffix, then
+    tile-prefixed variant). Returns (None, None) if not found."""
+    if not mod_name:
+        return None, None
+    pats = [rf'^\s*module\s+{re.escape(mod_name)}\b',
+            rf'^\s*module\s+{re.escape(mod_name)}_0\b',
+            rf'^\s*module\s+\S*_{re.escape(mod_name)}\b(?!_\d)',
+            rf'^\s*module\s+\S*_{re.escape(mod_name)}_0\b']
+    start = None
+    for p in pats:
+        rx = re.compile(p)
+        start = next((i for i, l in enumerate(lines) if rx.match(l)), None)
+        if start is not None:
+            break
+    if start is None:
+        return None, None
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        if re.match(r'^\s*endmodule\b', lines[j]):
+            end = j + 1; break
+        if re.match(r'^\s*module\s+', lines[j]):
+            end = j; break
+    return start, end
+
+
 def apply_rewire(lines, entry, stage='Synthesize'):
     """Change pin connection in cell instance block. Returns (lines, status, reason)."""
     # Use per-stage cell name if available (handles P&R renamed cells).
@@ -776,12 +802,29 @@ def apply_rewire(lines, entry, stage='Synthesize'):
     if not pin_name:
         return lines, 'SKIPPED', 'missing pin_name'
 
-    # Find cell instance — try exact name first, then search for it
+    # MODULE SCOPING (uniquified-family collision fix): a uniquified generate array reuses
+    # the SAME instance name (e.g. ctmi_1182) in N modules. A whole-file "first match" search
+    # sends all N renames to copy 0 — the other copies' target nets stay double-driven /
+    # undriven (see compare_fold on tag 20260707090807). When the entry names a module,
+    # restrict the search to that module's line range; fall back to whole-file only if the
+    # cell isn't in the named module (so entries without module_name keep old behavior).
+    mod_name = ((entry.get('module_name_per_stage') or {}).get(stage)
+                or entry.get('module_name', ''))
+    m_lo, m_hi = _find_module_range(lines, mod_name)
+    scoped = m_lo is not None
+
+    # Find cell instance — module-scoped first (exact name), then whole-file fallback.
     cell_start = -1
-    for i, line in enumerate(lines):
-        if re.search(rf'\b{re.escape(cell_name)}\b', line):
-            cell_start = i
-            break
+    if scoped:
+        for i in range(m_lo, m_hi):
+            if re.search(rf'\b{re.escape(cell_name)}\b', lines[i]):
+                cell_start = i
+                break
+    if cell_start < 0:
+        for i, line in enumerate(lines):
+            if re.search(rf'\b{re.escape(cell_name)}\b', line):
+                cell_start = i
+                break
 
     # Per-stage cell rename fallback: tool-generated MUX instance names
     # (ctmi_*, phs_*, FxPrePlace_*) AND cell-type variants (MUX2D2 vs
@@ -822,8 +865,11 @@ def apply_rewire(lines, entry, stage='Synthesize'):
         cand_nets = [n for n in cand_nets if n]
         family_hits = []   # (line_no, instance_name) — preferred
         any_hits    = []   # (line_no, instance_name) — fallback
-        i = 0
-        while i < len(lines):
+        # Scope the pin/old_net match to the named module when known — uniquified copies
+        # share old_net (e.g. ctmn_917) across N modules, so an unscoped match collides.
+        i    = m_lo if scoped else 0
+        _hi  = m_hi if scoped else len(lines)
+        while i < _hi:
             m = re.match(r'^\s*([A-Z][A-Z0-9_]+)\s+(\w+)\s*\(', lines[i])
             if not m:
                 i += 1; continue
