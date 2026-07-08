@@ -232,156 +232,118 @@ echo "PHASE B: Resetting and launching ECO FM targets: $eco_targets" >> $out
 echo "#text end#" >> $out
 
 #------------------------------------------------------------------------------
-# RUN ECO FM TARGETS — with BOUNDED RE-SUBMIT of stuck/pending targets.
+# CLEANUP STALE RPTS FOR TARGETS BEING RUN (avoid confusion with prior rounds)
+# Only cleans rpts for targets in $eco_targets — skipped targets are untouched
+# so their PASS results remain readable for carry-forward and HTML reports.
+#------------------------------------------------------------------------------
+echo "Cleaning stale rpts for targets being re-run..." >> $out
+foreach tgt ($eco_targets)
+    set rpt_dir = "$tile_dir/rpts/$tgt"
+    if (-d "$rpt_dir") then
+        echo "  Removing all stale rpts: $rpt_dir" >> $out
+        rm -rf "$rpt_dir"
+    endif
+end
+echo "Stale rpt cleanup done." >> $out
+
+#-- submit each target ONCE (reset+run). Do NOT re-submit later: a job that is
+#-- legitimately queued in LSF just loses its queue slot on re-submit and waits
+#-- even LONGER, so a pending target is WAITED OUT, never kicked. --
+cd $tile_dir
+foreach tgt ($eco_targets)
+    echo "Resetting $tgt ..."
+    TileBuilderTerm -x "serascmd -find_jobs 'name=~${tgt} dir=~${tile_dir_name}' --action reset"
+    sleep 20
+    echo "Running $tgt ..."
+    TileBuilderTerm -x "serascmd -find_jobs 'name=~${tgt} dir=~${tile_dir_name}' --action run"
+end
+cd $source_dir
+
+#------------------------------------------------------------------------------
+# POLL UNTIL ALL TARGETS COMPLETE
 #
 # Timeout policy (this script is the authority; the agent poll is only a backstop):
 #   * runtime budget (max_elapsed, 12h) accrues ONLY while every unfinished target
 #     is actively RUNNING — it RESETS whenever any target is still pending/queued,
 #     so LSF queue-wait never burns the FM runtime budget.
-#   * a target that stays pending/queued for `resubmit_interval` (3h) is RE-SUBMITTED
-#     (reset+run) — but ONLY that target — up to `max_resubmits` (3) times. Completed
-#     targets are never touched (their rpts are preserved).
-#   * after re-submits are exhausted and target(s) still never ran, we STOP re-trying
-#     and fall through to extraction; those targets are reported NOT_RUN downstream.
-#     This is an FM-scheduling problem, NOT a netlist defect — it must NOT trigger a
-#     re-study round (the collector yields NOT_RUN/PARTIAL → APPLY_ORCHESTRATOR STOP).
-#   Worst case ~ (max_resubmits+1)*resubmit_interval pending + max_elapsed running,
-#   which stays under the agent's 24h poll backstop.
+#   * a pending/queued target is simply WAITED OUT (never re-submitted) up to
+#     max_pending_wait (12h) of cumulative queue time. If it still never starts,
+#     we give up: it is reported NOT_RUN downstream. This is an FM-scheduling
+#     problem, NOT a netlist defect — it must NOT trigger a re-study round
+#     (the collector yields NOT_RUN/PARTIAL -> APPLY_ORCHESTRATOR STOP).
+#   Worst case ~ max_pending_wait (12h) + max_elapsed (12h) = 24h, under the
+#   agent's 30h poll backstop.
 #------------------------------------------------------------------------------
-set tb_status_log     = "/tmp/tb_eco_fm_status_${tag}.log"
-set max_elapsed       = 43200
-set poll_interval     = 300
-set resubmit_interval = 10800
-set max_resubmits     = 3
-set resubmit_count    = 0
-set targets_to_run    = ($eco_targets)
-set fm_all_done       = 0
+echo "Monitoring ECO FM targets (runtime countdown accrues only while all RUNNING; a pending target is waited out, never re-submitted)..."
 
-while (1)
-    #-- clean stale rpts ONLY for the targets we are (re)submitting --
-    foreach tgt ($targets_to_run)
-        set rpt_dir = "$tile_dir/rpts/$tgt"
-        if (-d "$rpt_dir") then
-            echo "  Removing stale rpts: $rpt_dir" >> $out
-            rm -rf "$rpt_dir"
-        endif
-    end
+set tb_status_log    = "/tmp/tb_eco_fm_status_${tag}.log"
+set elapsed          = 0
+set max_elapsed      = 43200
+set pending_elapsed  = 0
+set max_pending_wait = 43200
+set poll_interval    = 300
+set all_done         = 0
 
-    #-- reset + run ONLY the targets we are (re)submitting --
+while ($all_done == 0)
+    sleep $poll_interval
+
     cd $tile_dir
-    foreach tgt ($targets_to_run)
-        echo "Resetting $tgt ..."
-        TileBuilderTerm -x "serascmd -find_jobs 'name=~${tgt} dir=~${tile_dir_name}' --action reset"
-        sleep 20
-        echo "Running $tgt ..."
-        TileBuilderTerm -x "serascmd -find_jobs 'name=~${tgt} dir=~${tile_dir_name}' --action run"
-    end
+    TileBuilderTerm -x "TileBuilderShow >& $tb_status_log"
     cd $source_dir
+    sleep 5
 
-    @ n_run = $#targets_to_run
-    if ($resubmit_count == 0) then
-        echo "Monitoring ECO FM targets (runtime countdown accrues only while all RUNNING; a target stuck pending ${resubmit_interval}s is re-submitted, max ${max_resubmits}x)..."
-    else
-        echo "Re-submitted ${n_run} pending target(s) (attempt ${resubmit_count}/${max_resubmits}): $targets_to_run" >> $out
-    endif
-
-    #-- POLL: elapsed = all-running budget; pending_elapsed = continuous-pending timer --
-    set elapsed         = 0
-    set pending_elapsed = 0
-    set poll_result     = ""
-
-    while ("$poll_result" == "")
-        sleep $poll_interval
-
-        cd $tile_dir
-        TileBuilderTerm -x "TileBuilderShow >& $tb_status_log"
-        cd $source_dir
-        sleep 5
-
-        set done_count    = 0
-        set running_count = 0
-        set total_count   = 0
-        foreach tgt ($eco_targets)
-            @ total_count++
-            set tgt_status = "UNKNOWN"
-            if (-f "$tb_status_log" && -s "$tb_status_log") then
-                set tgt_status = `grep "$tgt" $tb_status_log | awk '{print $NF}'`
-                if ("$tgt_status" == "") set tgt_status = "UNKNOWN"
-            endif
-
-            # Terminal (finished — never re-submit): PASSED/WARNING/FAILED/DONE/ABORTED
-            if ("$tgt_status" == "PASSED" || "$tgt_status" == "WARNING" || \
-                "$tgt_status" == "FAILED" || "$tgt_status" == "DONE"   || \
-                "$tgt_status" == "ABORTED") then
-                @ done_count++
-            else if ("$tgt_status" == "RUNNING") then
-                @ running_count++
-            endif
-        end
-
-        # Pending = not finished AND not RUNNING (NOTRUN, PENDING, WAITING, HOLD,
-        # BLOCKED, QUEUED, UNKNOWN, ...). i.e. still waiting in the LSF queue.
-        @ pending_count = $total_count - $done_count - $running_count
-
-        if ($done_count == $total_count) then
-            echo "All ${total_count} ECO FM targets complete"
-            set poll_result = "done"
-        else if ($pending_count > 0) then
-            # queued — do NOT burn the runtime budget; time the continuous-pending wait.
-            set elapsed = 0
-            @ pending_elapsed += $poll_interval
-            echo "ECO FM: ${done_count} done, ${running_count} running, ${pending_count} pending — runtime RESET (pending ${pending_elapsed}s / ${resubmit_interval}s before re-submit)"
-            if ($pending_elapsed >= $resubmit_interval) set poll_result = "pending"
-        else
-            # all remaining targets actively RUNNING — accrue the runtime budget.
-            @ elapsed += $poll_interval
-            echo "ECO FM: ${done_count}/${total_count} complete, ${running_count} running (runtime ${elapsed}s / ${max_elapsed}s)"
-            if ($elapsed >= $max_elapsed) set poll_result = "runtime_timeout"
-        endif
-    end
-
-    #-- act on poll result --
-    if ("$poll_result" == "done") then
-        set fm_all_done = 1
-        break
-    else if ("$poll_result" == "runtime_timeout") then
-        # targets were genuinely RUNNING but exceeded 12h — a real long/hung FM run,
-        # not a queue-wait. Do not re-submit (would throw away progress); fail out.
-        echo "ERROR: ECO FM timeout after 12 hours of all-running — only ${done_count}/${total_count} targets complete" >> $out
-        rm -f $tb_status_log
-        set run_status = "failed"
-        source $source_dir/script/rtg_oss_feint/finishing_task.csh
-        exit 1
-    endif
-
-    #-- poll_result == pending: collect the still-pending targets (exclude terminal + running) --
-    set fm_incomplete = ()
+    set done_count    = 0
+    set running_count = 0
+    set total_count   = 0
     foreach tgt ($eco_targets)
+        @ total_count++
         set tgt_status = "UNKNOWN"
         if (-f "$tb_status_log" && -s "$tb_status_log") then
             set tgt_status = `grep "$tgt" $tb_status_log | awk '{print $NF}'`
             if ("$tgt_status" == "") set tgt_status = "UNKNOWN"
         endif
-        if ("$tgt_status" != "PASSED" && "$tgt_status" != "WARNING" && \
-            "$tgt_status" != "FAILED" && "$tgt_status" != "DONE"   && \
-            "$tgt_status" != "ABORTED" && "$tgt_status" != "RUNNING") then
-            set fm_incomplete = ($fm_incomplete $tgt)
+
+        # Terminal (finished): PASSED/WARNING/FAILED/DONE/ABORTED
+        if ("$tgt_status" == "PASSED" || "$tgt_status" == "WARNING" || \
+            "$tgt_status" == "FAILED" || "$tgt_status" == "DONE"   || \
+            "$tgt_status" == "ABORTED") then
+            @ done_count++
+        else if ("$tgt_status" == "RUNNING") then
+            @ running_count++
         endif
     end
-    @ n_pend = $#fm_incomplete
 
-    if ($n_pend == 0) then
-        # defensive: nothing actually re-submittable (e.g. only ABORTED left) — stop.
-        break
+    # Pending = not finished AND not RUNNING (NOTRUN, PENDING, WAITING, HOLD,
+    # BLOCKED, QUEUED, UNKNOWN, ...). i.e. still waiting in the LSF queue.
+    @ pending_count = $total_count - $done_count - $running_count
+
+    if ($done_count == $total_count) then
+        echo "All ${total_count} ECO FM targets complete after ${elapsed}s of all-running time"
+        set all_done = 1
+    else if ($pending_count > 0) then
+        # Queued — do NOT burn the runtime budget and do NOT re-submit (re-queuing a
+        # waiting job only makes it wait longer). Reset the runtime countdown; just
+        # accrue a bounded pending wait so a job stuck in the queue forever bails out.
+        set elapsed = 0
+        @ pending_elapsed += $poll_interval
+        echo "ECO FM: ${done_count} done, ${running_count} running, ${pending_count} pending — runtime RESET, waiting out queue (${pending_elapsed}s / ${max_pending_wait}s)"
+        if ($pending_elapsed >= $max_pending_wait) then
+            echo "ERROR: ECO FM target(s) stuck pending in queue >12h — ${done_count}/${total_count} complete, ${pending_count} never started running" >> $out
+            echo "  (reported NOT_RUN downstream; FM-scheduling issue, NOT escalated to a re-study round)" >> $out
+            set all_done = 1
+        endif
+    else
+        # All remaining targets are actively RUNNING — accrue the runtime budget.
+        @ elapsed += $poll_interval
+        echo "ECO FM: ${done_count}/${total_count} complete, ${running_count} running (runtime ${elapsed}s / ${max_elapsed}s)"
+        if ($elapsed >= $max_elapsed) then
+            echo "ERROR: ECO FM timeout after 12 hours of all-running — only ${done_count}/${total_count} targets complete" >> $out
+            rm -f $tb_status_log
+            set run_status = "failed"
+            source $source_dir/script/rtg_oss_feint/finishing_task.csh
+            exit 1
+        endif
     endif
-    if ($resubmit_count >= $max_resubmits) then
-        echo "ERROR: ECO FM target(s) still pending after ${max_resubmits} re-submits — giving up on: $fm_incomplete" >> $out
-        echo "  (reported NOT_RUN downstream; FM-scheduling issue, NOT escalated to a re-study round)" >> $out
-        break
-    endif
-    @ resubmit_count++
-    set targets_to_run = ($fm_incomplete)
-    # loop back: re-submit ONLY the still-pending target(s)
 end
 
 rm -f $tb_status_log
