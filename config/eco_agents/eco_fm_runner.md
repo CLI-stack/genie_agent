@@ -160,16 +160,17 @@ FM is complete when **either** signal fires first:
 - **Signal 1 — Spec sentinel:** `data/<eco_fm_tag>_spec` contains `"OVERALL ECO FM RESULT:"`.
 - **Signal 2 — rpt.gz:** Every target in `ECO_TARGETS` has `<REF_DIR>/rpts/<target>/runtime.rpt.gz` with a non-empty `Overall` column (any value including `"error"` means FM completed for that target).
 
-**Parameters:** `MAX_POLLS = 288`, `POLL_INTERVAL = 300s` (24 hours max). This is a
+**Parameters:** `MAX_POLLS = 360`, `POLL_INTERVAL = 300s` (30 hours max). This is a
 catastrophic-hang backstop only — `post_eco_formality.csh` owns the real timeout policy
 (its FM runtime countdown accrues only while all targets are RUNNING and resets on any
-pending/queued target, and it writes the spec sentinel on every exit including its own
-timeout). The agent cap must stay ABOVE the launcher's worst case so it never preempts a
-legitimately long queue-wait; 24h covers it.
+pending/queued target; it re-submits a stuck-pending target every 3h up to 3x, then gives
+up NOT_RUN; and it writes the spec sentinel on every exit including its own timeout). The
+agent cap must stay ABOVE the launcher's worst case (~12h pending re-submit budget + 12h
+runtime = 24h) so it never preempts a legitimately long queue-wait; 30h leaves headroom.
 
 **All-aborted stall detection:** If ALL targets have `"error"` in their `Overall` column for 2 consecutive polls → treat as done (all aborted).
 
-**On timeout (288 polls exhausted):**
+**On timeout (360 polls exhausted):**
 - Run `eco_fm_status_collector.py` (STEP E) — it handles partially-complete runs correctly: targets without `runtime.rpt.gz` get `verdict: NOT_RUN`. The aggregated top-level verdict will be `ABORT_*`, `FAIL`, `NOT_RUN`, or `PARTIAL` depending on which targets completed.
 - Never guess results. Run the script, copy outputs to `AI_ECO_FLOW_DIR`, exit 0.
 
@@ -303,7 +304,7 @@ After `eco_fm_status_collector.py` has produced `eco_fm_verify.json`, write the 
 | `eco_fm_tag` | string | 14 digits | genie_cli task tag for FM job |
 | `skipped` | bool | `true` if guard check found no changes | FM was not run |
 | `timeout` | bool | `true` if polling exhausted MAX_POLLS | |
-| `timeout_polls` | int | 0 or 288 | Polls completed before timeout |
+| `timeout_polls` | int | 0 or 360 | Polls completed before timeout |
 
 ---
 
