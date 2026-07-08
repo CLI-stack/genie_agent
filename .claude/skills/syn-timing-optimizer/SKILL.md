@@ -178,31 +178,31 @@ r2r_opt.tcl weight wins silently. Compare effective_weight vs group_paths.tcl we
 **Verdict:** list of arch-limited groups
 
 ### Check E: Wire-Dominated Paths
+
 **Two triggers (either sufficient):**
 - T1: `CritLen_ps > Period_ps × 0.95` AND `WNS < -30 ps` — fires regardless of LOL
 - T2: `LOL < 15` AND `WNS < -50 ps`
 
-**Sub-cases:**
-- BOUND: both endpoints are registers → `create_bound` fixes this
-- PORT-LIMITED: startpoint is I/O port (no hierarchy `/`) → RTL fix only
+**Step E-1: Classify each flagged group as BOUND or PORT-LIMITED**
 
-**MANDATORY:** Every BOUND group MUST produce a Fix E entry with coordinates.
-Never leave coordinates empty. If DEF missing, use estimation formula below.
+Read the worst-path trace (FuncTT0p9v) for each flagged group:
+- If `Startpoint:` has hierarchy levels (`/`) → register → **BOUND**
+- If `Startpoint:` is a bare port name (no `/`) → I/O port → **PORT-LIMITED**
 
-**DEF missing → estimate coordinates:**
-```
-Default die: 400 × 600 um  (UMC tile safe default)
-Module → quadrant mapping:
-  ARB/DCQARB* → center     x:133–267, y:200–400
-  ARB/PGT*    → right      x:267–400, y:200–400
-  ARB internal→ lower      x:0–267,   y:0–200
-  FEI*        → left       x:0–133,   y:0–400
-  ADDR*       → bottom     x:0–267,   y:0–200
-  SPAZ*       → right-bot  x:267–400, y:0–200
-  clk_gating  → center     x:100–300, y:150–450
-  SYN_R2R     → top module from sort_slack.endpts endpoint prefix
-Expand quadrant by 20% margin. Mark coords_source="ESTIMATED".
-```
+Common PORT-LIMITED groups (startpoint is always an I/O port):
+- `io_to_io`, `io_to_flop`, `SYN_I2R` when endpoints all come from primary input ports
+
+PORT-LIMITED groups: add to RTL action items only. Do NOT generate a create_bound.
+
+**Step E-2: One Fix E entry per BOUND group (never merge multiple groups)**
+
+Each BOUND group gets its OWN separate fix entry. Never combine multiple groups
+into one entry (e.g. `umc_ARB_r2r_to+umc_ARB_internal_r2r` is WRONG).
+If two groups share a similar hierarchy, give each its own bound with its own filter.
+
+**Step E-3: Populate coordinates for EVERY BOUND group**
+
+Coordinates must NEVER be left empty. Compute actual numbers.
 
 **DEF available → derive from COMPONENTS:**
 ```bash
@@ -213,25 +213,58 @@ zcat <def>.gz | grep "^\- .*<hier_keyword>" \
          {if($1<minx)minx=$1; if($1>maxx)maxx=$1;
           if($2<miny)miny=$2; if($2>maxy)maxy=$2}
          END{print minx/S,miny/S,maxx/S,maxy/S}' S=<scale>
-# expand 25%, check density < 400 cells/um²
+# expand bbox 25%, verify density < 400 cells/um²
 ```
 
-**Cell filter rules:**
-- Use top endpoint from sort_slack.endpts as hierarchy prefix
-- Specific: `"full_name =~ *ARB/DCQARB*"` NOT broad `"full_name =~ *ARB/*"`
-- With exclusions: `"full_name =~ *ARB/* && full_name !~ *ARB/DCQARB*"`
-- Never use bare `*`
+**DEF missing → estimate using quadrant table (400 × 600 um default die):**
+```
+ARB/DCQARB*        → center      x1=133, y1=200, x2=267, y2=400
+ARB/DCQARB1*       → center-high x1=133, y1=220, x2=280, y2=440
+ARB/PGT*           → right       x1=267, y1=200, x2=400, y2=400
+ARB internal       → lower       x1=0,   y1=0,   x2=267, y2=200
+ARB/RH*            → upper-left  x1=0,   y1=370, x2=210, y2=600
+FEI*               → left        x1=0,   y1=0,   x2=133, y2=440
+ADDR*              → bottom      x1=0,   y1=0,   x2=267, y2=200
+SPAZ*              → right-bot   x1=267, y1=0,   x2=400, y2=200
+clock_gating_default→ center     x1=100, y1=150, x2=300, y2=450
+SYN_R2R            → use top endpoint module from sort_slack.endpts,
+                     map that module to its quadrant above
+TIM*               → lower-right x1=200, y1=0,   x2=400, y2=200
+CMD*               → center-left x1=0,   y1=150, x2=240, y2=490
+```
+Expand by 20% margin. Mark `coords_source="ESTIMATED"`.
 
-**Plan entry (all fields required):**
+**Step E-4: Cell filter — precise hierarchy from sort_slack.endpts**
+
+Take top-ranked endpoint for the group from sort_slack.endpts.
+Strip the signal name and last register instance → that prefix is the filter.
+```
+Example: ARB/DCQARB/ArbSafeRegPc_d1/q_reg[3]
+  → prefix = ARB/DCQARB
+  → filter = "full_name =~ *ARB/DCQARB*"
+
+ARB internal (ARB minus sub-hierarchies):
+  → filter = "full_name =~ *ARB/* && full_name !~ *ARB/DCQARB* && full_name !~ *ARB/PGT*"
+
+clock_gating_default: read worst CG path trace → use clock-gater cell hierarchy
+  → filter = "full_name =~ *<module_from_cg_trace>/clk_gate*"
+```
+Never use bare `*`. Never use broad `*ARB/*` when a specific sub-hierarchy is the target.
+
+**Plan entry — ALL fields required, one entry per BOUND group:**
 ```json
 {"fix_id":"FE-N","check":"E","group":"<name>","action":"create_bound",
- "bound_name":"<name>_bound","cell_filter":"full_name =~ *<precise>*",
- "cell_filter_exclusions":[],"coordinates_um":{"x1":N,"y1":N,"x2":N,"y2":N},
- "coords_source":"DEF-derived|ESTIMATED","estimated_cell_count":N,
- "bound_area_um2":N,"density_cells_per_um2":N}
+ "bound_name":"<name>_bound",
+ "cell_filter":"full_name =~ *<precise_hierarchy>*",
+ "cell_filter_exclusions":["full_name !~ *<sub>*"],
+ "coordinates_um":{"x1":<num>,"y1":<num>,"x2":<num>,"y2":<num>},
+ "coords_source":"DEF-derived|ESTIMATED",
+ "density_cells_per_um2":<num>,
+ "warning":"ESTIMATED — verify against DEF"}
 ```
 
-**Verdict:** ALL flagged groups with LOL, WNS, CritLen, trigger, BOUND/PORT-LIMITED
+**Verdict:** ALL flagged groups listed with BOUND or PORT-LIMITED classification.
+Diagnoses section must be populated: `diagnoses.E_wire_dominated.flagged = [...]`
 
 ### Check F: Missing Groups
 **Detect:** module in top-20 endpoints but no `group_path -to [get_cells *module*]` exists.
