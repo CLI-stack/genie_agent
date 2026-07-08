@@ -456,6 +456,37 @@ Verify stdout contains `ECO_SCRIPT_LAUNCHED: eco_lol_impact.py`. This measures t
 after the ECO — with an estimated added delay. FINAL_ORCHESTRATOR renders it in the report's
 "Levels of Logic (LOL) Impact" slot. Do not fail the flow on its result; it is visibility only.
 
+**MANDATORY post-validator — Run eco_functional_precheck.py (LOCAL functional gate):**
+
+After the Step 3 validator passes, run the local functional precheck. The step-3 validator checks
+the study's *structural* completeness; this checks that the emitted logic actually **computes the
+intended function** — a second, independent oracle (`eco_netlist_sim` gate simulation vs the intended
+RTL function) that catches a *logically wrong* study entry before the slow FM run. It is fail-closed:
+any change it cannot check soundly is SKIP (FM-only), so only a real functional mismatch FAILs.
+
+```bash
+cd <BASE_DIR>
+python3 script/eco_scripts/eco_functional_precheck.py \
+    --study    data/<TAG>_eco_preeco_study.json \
+    --rtl-diff data/<TAG>_eco_rtl_diff.json \
+    --ref-dir  <REF_DIR> \
+    --jira     <JIRA> \
+    --output   data/<TAG>_eco_functional_precheck.json
+cp data/<TAG>_eco_functional_precheck.json <AI_ECO_FLOW_DIR>/ 2>/dev/null || true
+```
+
+Verify stdout contains `ECO_SCRIPT_LAUNCHED: eco_functional_precheck.py`. It always writes
+`data/<TAG>_eco_functional_precheck.json` with a `passed` bool (`passed=false` on any FAIL).
+
+**HARD GATE — treat a functional FAIL exactly like a Step-3 validator failure:**
+- If `passed: false` → do **NOT** emit `APPLY_PHASE_READY`. Read the failing entries from the JSON
+  `results[]` (each `status: "FAIL"` names the change + the DUT-vs-REF mismatch), then **re-enter the
+  Step-3 fix protocol above** (deterministic fixer / manual batch loop / re-study) to correct the
+  offending study entry, re-run the Step-3 validator, and re-run this precheck. Loop until
+  `passed: true`. A functionally-wrong study must never reach APPLY.
+- The main session **also** enforces this at APPLY spawn time (it refuses to spawn APPLY unless this
+  JSON exists with `passed: true`), so a missing or failing precheck is a hard backstop either way.
+
 **Generate Step 3 RPT from JSON (ORCHESTRATOR responsibility):**
 
 ```bash

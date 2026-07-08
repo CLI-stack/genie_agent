@@ -219,6 +219,11 @@ def main():
     ap.add_argument('--ref-dir', required=True)
     ap.add_argument('--jira', required=True)
     ap.add_argument('--n', type=int, default=2000, help='random vectors for comb_net_force')
+    ap.add_argument('--output', default=None,
+                    help='write canonical result JSON here (with a `passed` bool) + a '
+                         '<output>_marker.txt sidecar. Consumed by the APPLY spawn-gate: '
+                         'the file is written on every run — passed=false on any FAIL — so an '
+                         'ABSENT file or passed!=true both block APPLY (fail-closed).')
     args = ap.parse_args()
     study = json.loads(open(args.study).read())
     rtl_diff = json.loads(open(args.rtl_diff).read())
@@ -253,6 +258,24 @@ def main():
     print(f"\n  summary: PASS={npass} FAIL={nfail} SKIP={nskip} "
           f"-> {'FAIL' if nfail else 'OK (no functional mismatch found)'}")
     print("  NOTE: SKIP = not soundly checkable locally (FM remains authoritative).")
+
+    if args.output:
+        passed = (nfail == 0)
+        out = {
+            'passed': passed,
+            'summary': {'pass': npass, 'fail': nfail, 'skip': nskip},
+            'results': [{'idx': idx, 'change_type': ct, 'target': tgt,
+                         'status': status, 'detail': detail}
+                        for idx, ct, tgt, status, detail in results],
+        }
+        with open(args.output, 'w') as f:
+            json.dump(out, f, indent=2)
+        marker = (f"ECO_SCRIPT_LAUNCHED: eco_functional_precheck.py\n"
+                  f"  passed: {passed}  (PASS={npass} FAIL={nfail} SKIP={nskip})\n"
+                  f"  output: {args.output}")
+        with open(os.path.splitext(args.output)[0] + '_marker.txt', 'w') as f:
+            f.write(marker + '\n')
+        print(f"  wrote {args.output} (passed={passed})")
     return 1 if nfail else 0
 
 

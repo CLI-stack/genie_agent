@@ -423,6 +423,8 @@ When detected:
 
 **MANDATORY SPAWN-LEVEL GATE — BEFORE spawning APPLY:** check `<BASE_DIR>/data/<TAG>_eco_validate_step3.json`. This canonical file is written ONLY when Step 3 passes (it is REMOVED on failure), so **its ABSENCE means Step 3 did not pass**. If the file is **absent OR** `passed != true`, REFUSE to spawn APPLY regardless of what the STUDY orchestrator wrote in `phase_a_status` — say `"STUDY did not pass Step 3 validator. Refusing to spawn APPLY. Re-spawn STUDY to fix issues (failing issues are in the newest data/<TAG>_eco_validate_step3_iter*.json)."` and STOP. Test existence FIRST — do NOT bare-`open()` the file (it may not exist). The agent CANNOT override this gate; the validator JSON is the single source of truth.
 
+**MANDATORY SPAWN-LEVEL GATE #2 — functional precheck (structural gate #1 is NOT enough):** ALSO check `<BASE_DIR>/data/<TAG>_eco_functional_precheck.json`. The step-3 validator only proves the study is *structurally* complete; this second file proves the emitted logic *computes the intended function* (independent netlist-sim oracle). It is written on every precheck run with a `passed` bool (`passed=false` on any functional mismatch). If the file is **absent OR** `passed != true`, REFUSE to spawn APPLY — say `"STUDY passed structural validation but the functional precheck did NOT pass (or was not run). Refusing to spawn APPLY. Re-spawn STUDY to fix the wrong study entry (failing changes are in data/<TAG>_eco_functional_precheck.json results[] with status FAIL)."` and STOP. Test existence FIRST — do NOT bare-`open()`. Both gates must pass to spawn APPLY; the agent CANNOT override either.
+
 1. Spawn APPLY agent (background):
    ```
    task_id = Agent(
