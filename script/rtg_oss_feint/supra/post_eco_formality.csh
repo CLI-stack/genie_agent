@@ -238,7 +238,7 @@ echo "#text end#" >> $out
 #   * runtime budget (max_elapsed, 12h) accrues ONLY while every unfinished target
 #     is actively RUNNING — it RESETS whenever any target is still pending/queued,
 #     so LSF queue-wait never burns the FM runtime budget.
-#   * a target that stays pending/queued for `resubmit_interval` (1h) is RE-SUBMITTED
+#   * a target that stays pending/queued for `resubmit_interval` (3h) is RE-SUBMITTED
 #     (reset+run) — but ONLY that target — up to `max_resubmits` (3) times. Completed
 #     targets are never touched (their rpts are preserved).
 #   * after re-submits are exhausted and target(s) still never ran, we STOP re-trying
@@ -251,7 +251,7 @@ echo "#text end#" >> $out
 set tb_status_log     = "/tmp/tb_eco_fm_status_${tag}.log"
 set max_elapsed       = 43200
 set poll_interval     = 300
-set resubmit_interval = 3600
+set resubmit_interval = 10800
 set max_resubmits     = 3
 set resubmit_count    = 0
 set targets_to_run    = ($eco_targets)
