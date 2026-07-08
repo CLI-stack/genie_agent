@@ -659,7 +659,19 @@ def emit_comb_net_force_batch(ref_dir, module, signals, jira='eco', rename_map=N
             if isinstance(pcs.get(st), dict):
                 pcs[st] = {p: _resolve(v, st) for p, v in pcs[st].items()}
         g['port_connections_per_stage'] = pcs
-        g.setdefault('instance_name', g['output_net'])
+        if not g.get('instance_name'):
+            # Default the instance name from the output net — BUT only when that net is a
+            # FRESH eco net. A real TARGET net makes an invalid/colliding instance name:
+            #   * bracketed bus-bit (recdsp_c0mop[0]) is INVALID Verilog → applier skips it;
+            #   * a bare real net (recdsp_c0vld) collides with the existing wire → applier
+            #     skips/mis-handles it.
+            # Either way the target net ends up UNDRIVEN. Derive a distinct valid name for
+            # the re-drive gate; the gate still OUTPUTS the target net (output_net unchanged).
+            _on = str(g['output_net'])
+            if _on.startswith(('n_eco_', 'eco_')):
+                g['instance_name'] = _on
+            else:
+                g['instance_name'] = 'eco_cr_redrive_' + re.sub(r'\W+', '_', _on).strip('_')
     for rw in rewires:
         ops = {st: _resolve(rw['old_net'], st) for st in STAGES}
         rw['old_net_per_stage'] = ops
