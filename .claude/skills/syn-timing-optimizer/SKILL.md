@@ -250,14 +250,16 @@ clock_gating_default: read worst CG path trace → use clock-gater cell hierarch
 
 **SPECIAL CASE — ARB internal (`umc_ARB_internal_r2r`):**
 This group covers the residual ARB logic that is NOT part of DCQARB, PGT, or RH.
-Never use bare `*ARB/*` — it will capture ALL ARB sub-hierarchies including DCQARB
-(which already has its own bound), causing the optimizer to double-bound DCQARB cells
-and create a density spike.
 
-Mandatory exclusion filter for ARB internal:
+THE FILTER `full_name =~ *ARB/*` IS WRONG AND FORBIDDEN FOR THIS GROUP.
+It captures DCQARB, PGT, and RH cells which already have their own bounds,
+causing density spikes in the overlap regions.
+
+The ONLY correct filter for umc_ARB_internal_r2r is:
 ```
-"full_name =~ *ARB/* && full_name !~ *ARB/DCQARB* && full_name !~ *ARB/DCQARB1* && full_name !~ *ARB/PGT* && full_name !~ *ARB/RH*"
+full_name =~ *ARB/* && full_name !~ *ARB/DCQARB* && full_name !~ *ARB/DCQARB1* && full_name !~ *ARB/PGT* && full_name !~ *ARB/RH*
 ```
+Write this exact string. Do not shorten it. Do not drop any exclusion clause.
 
 **GENERAL RULE for any group that is a parent hierarchy:**
 If the group is named `<module>_internal` or represents residual cells after
@@ -275,6 +277,13 @@ to RTL action items. They must NOT appear in the Fix E list.
  "type":"PORT-LIMITED","reason":"startpoint is primary I/O port — bound cannot help",
  "rtl_action":"Register at tile boundary to reduce wire to port"}
 ```
+
+**Before saving any Fix E entry — run this self-check:**
+1. Is `cell_filter` a bare `*` or just `*ARB/*`? → WRONG, add specific hierarchy
+2. Is the group `umc_ARB_internal_r2r` and filter does NOT contain `!~ *ARB/DCQARB*`? → WRONG, add all exclusions
+3. Do two different groups share identical `cell_filter`? → likely wrong, check sort_slack endpoints again
+4. For `SYN_R2R`: verify the top endpoint is actually in SYN_R2R group, not another group's endpoint
+5. Is `diagnoses.E_wire_dominated.flagged` populated with ALL flagged groups (BOUND + PORT-LIMITED)? → REQUIRED
 
 **Plan entry — ALL fields required, one entry per BOUND group:**
 ```json
