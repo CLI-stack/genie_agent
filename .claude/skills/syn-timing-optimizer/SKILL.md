@@ -248,18 +248,20 @@ clock_gating_default: read worst CG path trace → use clock-gater cell hierarch
   → filter = "full_name =~ *<module_from_cg_trace>/clk_gate*"
 ```
 
-**SPECIAL CASE — ARB internal (`umc_ARB_internal_r2r`):**
-This group covers the residual ARB logic that is NOT part of DCQARB, PGT, or RH.
+**GENERAL RULE — residual/internal groups:**
+When a path group targets the RESIDUAL cells of a parent hierarchy
+(i.e. the parent minus its sub-hierarchies that already have dedicated bounds),
+the filter MUST use exclusion clauses for every sub-hierarchy that has its own bound.
 
-THE FILTER `full_name =~ *ARB/*` IS WRONG AND FORBIDDEN FOR THIS GROUP.
-It captures DCQARB, PGT, and RH cells which already have their own bounds,
-causing density spikes in the overlap regions.
+Example pattern:
+```
+full_name =~ *<parent>/* && full_name !~ *<parent>/<sub1>* && full_name !~ *<parent>/<sub2>* ...
+```
+Using just `full_name =~ *<parent>/*` is WRONG — it captures sub-hierarchy cells
+that already belong to other bounds, causing density spikes in the overlap.
 
-The ONLY correct filter for umc_ARB_internal_r2r is:
-```
-full_name =~ *ARB/* && full_name !~ *ARB/DCQARB* && full_name !~ *ARB/DCQARB1* && full_name !~ *ARB/PGT* && full_name !~ *ARB/RH*
-```
-Write this exact string. Do not shorten it. Do not drop any exclusion clause.
+Before writing the filter: list all BOUND groups whose hierarchy is a child of
+this group's parent. Add `&& full_name !~ *<child>*` for each one.
 
 **GENERAL RULE for any group that is a parent hierarchy:**
 If the group is named `<module>_internal` or represents residual cells after
@@ -279,11 +281,11 @@ to RTL action items. They must NOT appear in the Fix E list.
 ```
 
 **Before saving any Fix E entry — run this self-check:**
-1. Is `cell_filter` a bare `*` or just `*ARB/*`? → WRONG, add specific hierarchy
-2. Is the group `umc_ARB_internal_r2r` and filter does NOT contain `!~ *ARB/DCQARB*`? → WRONG, add all exclusions
-3. Do two different groups share identical `cell_filter`? → likely wrong, check sort_slack endpoints again
-4. For `SYN_R2R`: verify the top endpoint is actually in SYN_R2R group, not another group's endpoint
-5. Is `diagnoses.E_wire_dominated.flagged` populated with ALL flagged groups (BOUND + PORT-LIMITED)? → REQUIRED
+1. Is `cell_filter` empty or a single bare wildcard matching everything? → WRONG, derive specific hierarchy from sort_slack.endpts
+2. Does the group represent residual cells (parent minus sub-hierarchies)? → filter MUST contain exclusion clauses for every sub-hierarchy that has its own bound
+3. Do two different groups share an identical `cell_filter`? → re-check sort_slack endpoints for each group independently
+4. Is `cell_filter` derived from the correct group's endpoints, not another group's? → verify group name matches endpoint path group column in sort_slack.endpts
+5. Is `diagnoses.E_wire_dominated.flagged` populated with ALL flagged groups (both BOUND and PORT-LIMITED)? → REQUIRED
 
 **Plan entry — ALL fields required, one entry per BOUND group:**
 ```json
