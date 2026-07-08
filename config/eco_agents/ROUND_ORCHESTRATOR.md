@@ -19,12 +19,15 @@
 5. **Fixer state must be incremented and saved** before spawning the next round agent.
 6. **Never skip a step** — context pressure is NOT a valid reason to skip any step or checkpoint.
 7. **Validator `passed: false` is a HARD GATE — applier / pre-FM / FM MUST NOT spawn.**
-   Three validator JSONs in this round MUST be checked for `passed: true` before proceeding downstream:
-   - `<TAG>_eco_validate_step3_round<N>.json` — gates Step 4 (applier)
+   Four validator JSONs in this round MUST be checked for `passed: true` before proceeding downstream:
+   - `<TAG>_eco_validate_step3_round<N>.json`        — structural gate for Step 4 (applier)
+   - `<TAG>_eco_functional_precheck_round<N>.json`   — functional gate for Step 4 (applier); the
+     re-studied logic must still compute the intended function (netlist-sim oracle), not just be
+     structurally complete. BOTH the step3 AND the functional JSON must pass before the applier spawns.
    - `<TAG>_eco_validate_step4_round<N>.json` — gates Step 5 (pre-FM checker)
    - `<TAG>_eco_pre_fm_check_round<N>.json`   — gates Step 6 (FM submission)
 
-   If ANY shows `passed: false`, the gated step MUST NOT run. The orchestrator must re-spawn the producing agent (re_studier / applier / pre_fm_checker) with the validator's issues as hint. **step3 has NO retry cap — loop until `passed: true` (never STOP on a failing study); on a stall, escalate the tactic (see the step3 batch loop below).** step4 keeps a 2-retry cap (→ `APPLIER_VALIDATOR_UNFIXABLE`); pre-FM uses Step 5 self-heal.
+   If ANY shows `passed: false`, the gated step MUST NOT run. The orchestrator must re-spawn the producing agent (re_studier / applier / pre_fm_checker) with the validator's issues as hint. **step3 AND the functional precheck have NO retry cap — loop until `passed: true` (never STOP on a functionally-wrong or structurally-incomplete study); on a stall, escalate the tactic (see the step3 batch loop below).** step4 keeps a 2-retry cap (→ `APPLIER_VALIDATOR_UNFIXABLE`); pre-FM uses Step 5 self-heal.
 
    **Anti-pattern this rule blocks:** orchestrator reading `passed: false`, logging it, then proceeding to the next step anyway. That is FORBIDDEN. The validator's role is to PREVENT bad state from reaching FM — bypassing it wastes a 30-90 min FM round on a known-bad design.
 
@@ -607,6 +610,47 @@ if NEXT_ROUND > max_rounds:
 # Always continue to eco_applier — even if revised_changes are all manual_only.
 # eco_applier handles already_applied entries gracefully.
 # eco_fm_analyzer will try progressive strategies each round until max_rounds.
+```
+
+**MANDATORY: Functional precheck of the re-studied study — HARD GATE before Step 4 (applier).**
+
+The step-3 re-validation above proves the round's study is *structurally* complete; this proves the
+re-studied / re-emitted logic still **computes the intended function** (independent netlist-sim oracle
+vs the intended RTL). A round edits the study (re_studier + emitters + expand_chains), so it can
+introduce a *functional* regression that the structural validator cannot see — this catches it before
+the applier writes it into PostEco and before the slow FM run. Fail-closed: any change it cannot check
+soundly is SKIP (FM-only); only a real functional mismatch FAILs.
+
+```bash
+python3 script/eco_scripts/eco_functional_precheck.py \
+    --study    data/<TAG>_eco_preeco_study.json \
+    --rtl-diff data/<TAG>_eco_rtl_diff.json \
+    --ref-dir  <REF_DIR> \
+    --jira     <JIRA> \
+    --output   data/<TAG>_eco_functional_precheck_round<NEXT_ROUND>.json
+cp data/<TAG>_eco_functional_precheck_round<NEXT_ROUND>.json <AI_ECO_FLOW_DIR>/ 2>/dev/null || true
+```
+
+**`passed: false` is a HARD GATE — applier MUST NOT spawn.** Treat it exactly like the step-3
+re-validation failure above: it always writes the JSON with a `passed` bool (`passed=false` on any
+FAIL). Loop until `passed: true` — NO retry cap, never STOP the round on a functionally-wrong study.
+
+```python
+import os, json
+def _load_fp():
+    p = f"data/{TAG}_eco_functional_precheck_round{NEXT_ROUND}.json"
+    return json.load(open(p)) if os.path.exists(p) else {"passed": False, "results": []}
+fp = _load_fp()
+while not fp.get('passed', False):
+    # Read the failing changes: [r for r in fp['results'] if r['status']=='FAIL'] — each names
+    # the change + the DUT-vs-REF mismatch. This is a WRONG study entry, not a structural gap:
+    # re-enter Pass 6f (eco_netlist_re_studier) with those failing changes as the consolidated
+    # hint (same BATCH-fix protocol as the step-3 loop above), re-run expand_chains + verifier +
+    # eco_validate_step3, THEN re-run this precheck. Keep escalating tactic on a stall; never STOP.
+    re_spawn eco_netlist_re_studier with the FAIL results as hint ; re-run step3 re-validation
+    re-run eco_functional_precheck.py → fp = _load_fp()
+
+# Only reach here if passed=true (both structural AND functional) → proceed to applier
 ```
 
 ---
