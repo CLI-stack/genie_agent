@@ -13,6 +13,9 @@ Two independent engines are compared, per change:
   REF = the intended function (from the change's schema / the ECO'd RTL via _Interp)
 
 Supported checks (sound + local):
+  * new_logic_dff / new_logic   → the emitted D-input cone computes the DFF's
+    d_input_expected_function (a self-contained boolean expr) over all leaf combos
+    (exhaustive, or 4000 random if >16 leaves). Early validation for a NEW DFF.
   * and_term + equality_decode  → the emitted comparator computes (signal == CONST)
     over ALL 2^width signal values (exhaustive).
   * compare_fold                → the emitted fold computes M & ~(R & S) (the emitter's
@@ -88,6 +91,77 @@ def check_eq_decode(idx, c, study, ref_dir, jira):
     return ('PASS', f'comparator {match_net} == ({sig}=={cb}) over all {1<<width} values')
 
 
+def _eval_expr(node, env):
+    """Tiny boolean evaluator for a d_input_expected_function AST (single-bit domain)."""
+    t = node[0]
+    if t == 'num':
+        return (node[2] or 0) & 1
+    if t == 'id':
+        return env.get(node[1], 0) & 1
+    if t == 'bit':
+        base = node[1][1] if node[1][0] == 'id' else str(node[1])
+        idx = node[2][2] if (isinstance(node[2], tuple) and node[2][0] == 'num') else 0
+        return env.get(f'{base}[{idx}]', env.get(base, 0)) & 1
+    if t == 'un':
+        a = _eval_expr(node[2], env)
+        return (1 - a) if node[1] in ('~', '!') else a
+    if t == 'red':                      # reduction: |bus / &bus over 1-bit here
+        a = _eval_expr(node[2], env)
+        return a & 1
+    if t == 'bin':
+        a, b, op = _eval_expr(node[2], env), _eval_expr(node[3], env), node[1]
+        return {'&': a & b, '|': a | b, '^': a ^ b, '&&': int(a and b), '||': int(a or b),
+                '==': int(a == b), '!=': int(a != b)}.get(op, 0)
+    if t == 'tern':
+        return _eval_expr(node[2], env) if _eval_expr(node[1], env) else _eval_expr(node[3], env)
+    return 0
+
+
+def check_new_dff(idx, c, study, ref_dir):
+    """Verify the emitted D-input cone computes d_input_expected_function. This is the
+    early validation for a NEW DFF: the D expression is a self-contained boolean function
+    of its leaves (no shared priority-mux don't-cares), so it is soundly checkable."""
+    try:
+        from eco_rtl_synth import parse_expr
+    except Exception as e:
+        return ('SKIP', f'cannot import parse_expr: {e}')
+    expr = c.get('d_input_expected_function')
+    d_net = c.get('d_input_net')
+    if not expr or not d_net:
+        return ('SKIP', 'no d_input_expected_function / d_input_net (structural DFF only)')
+    try:
+        ast = parse_expr(expr)
+    except Exception as e:
+        return ('SKIP', f'cannot parse expected function {expr!r}: {e}')
+    gates = [e for e in study.get('Synthesize', []) if e.get('change_type') == 'new_logic_gate']
+    insts, drivers = _study_insts_drivers(gates, 'Synthesize', ref_dir)
+    if d_net not in drivers:
+        return ('SKIP', f'D net {d_net} not driven by any emitted gate')
+    order, leaves = ns.cone_of(d_net, insts, drivers)
+    leaves = sorted(l for l in leaves if not ns._is_const(l))
+    if len(leaves) > 16:
+        import random
+        rng = random.Random(1)
+        combos = [tuple(rng.randint(0, 1) for _ in leaves) for _ in range(4000)]
+        mode = f'{len(combos)} random vectors ({len(leaves)} leaves)'
+    else:
+        combos = list(itertools.product((0, 1), repeat=len(leaves)))
+        mode = f'all {len(combos)} combos ({len(leaves)} leaves)'
+    for vec in combos:
+        env = dict(zip(leaves, vec))
+        # bit-addressable alias for base names too
+        for lf, v in list(env.items()):
+            m = re.match(r'^(.*)\[(\d+)\]$', lf)
+            if m:
+                env.setdefault(m.group(1), v)
+        dut = ns.simulate(order, insts, env).get(d_net, 0) & 1
+        ref = _eval_expr(ast, env) & 1
+        if dut != ref:
+            shown = {l: env[l] for l in leaves}
+            return ('FAIL', f'D-cone {d_net} != ({expr}) at {shown}: DUT={dut} REF={ref}')
+    return ('PASS', f'D-cone {d_net} == ({expr}) over {mode}')
+
+
 def check_compare_fold(idx, c, ref_dir, jira):
     try:
         import eco_emit_compare_fold as cf
@@ -152,7 +226,10 @@ def main():
     results = []
     for idx, c in enumerate(rtl_diff.get('changes', [])):
         ct = c.get('change_type')
-        if ct == 'and_term' and c.get('equality_decode'):
+        if ct in ('new_logic_dff', 'new_logic'):
+            status, detail = check_new_dff(idx, c, study, args.ref_dir)
+            tgt = f"{ct} {c.get('dff_output_net') or c.get('d_input_net')}"
+        elif ct == 'and_term' and c.get('equality_decode'):
             status, detail = check_eq_decode(idx, c, study, args.ref_dir, args.jira)
             tgt = f"and_term/eq_decode {c.get('equality_decode',{}).get('signal')}"
         elif ct == 'compare_fold':
