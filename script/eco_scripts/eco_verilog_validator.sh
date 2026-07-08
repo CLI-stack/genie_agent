@@ -2,13 +2,22 @@
 # eco_verilog_validator.sh — Run Verilog validator for Step 5 Check 8.
 # Replaces agent reasoning with deterministic script invocation.
 #
-# Checks ONLY for errors that cause FM to abort (FM-599):
-#   SVR4_bare_paren  — bare ')' without ';' in module port list
-#   SVR9_dup_wire    — duplicate explicit wire declaration
+# Checks that cause FM to abort (FM-599):
+#   SVR4_bare_paren  — bare ')' without ';' in module port list  (syntax)
+#   SVR9_dup_wire    — duplicate explicit wire declaration       (syntax)
+#   DRIVER_COUNT     — an ECO output net that is UNDRIVEN (0 drivers) or
+#                      MULTIPLY-DRIVEN (>=2 drivers) in the APPLIED PostEco.
+#                      Such a netlist parses cleanly (so the syntax checks pass)
+#                      but aborts FM (SVR-9) or is silently wrong. This reuses
+#                      eco_validate_step4's exact driver-count logic on the applied
+#                      netlist so step5 can never green-light a netlist step4 fails.
+#                      (Real on tag 20260707090807: recdsp_c0mop[*] undriven,
+#                      ctmn_917 x40 double-driven — both passed the old syntax-only gate.)
 #
-# F2_implicit_wire_conflict errors are pre-existing in all P&R netlists and
-# do NOT cause FM abort — FM handles them internally. They are reported as
-# warnings but never cause FAIL.
+# F2_implicit_wire_conflict is NOT a FAIL signal: as implemented it flags every net
+# that is both `wire`-declared AND used in a port connection — which is normal for
+# correctly-applied ECO nets and pre-existing base nets alike — so it is over-broad.
+# The sound ECO-net-aware SVR-9 signal is DRIVER_COUNT above. F2 count is informational.
 #
 # Usage:
 #   bash script/eco_verilog_validator.sh \
@@ -165,6 +174,63 @@ if grep -q "SVR4_bare_paren" "${TMP_LOG}" 2>/dev/null; then
     [ -z "$ROUTE"  ] && ROUTE="FAIL"
 fi
 
+# ── ECO net GROUND-TRUTH gate: undriven / multiply-driven output nets ─────────
+# The SVR4/SVR9 checks above catch FM PARSE aborts, but a study can emit a netlist
+# that parses cleanly yet is functionally broken: an ECO output net with ZERO drivers
+# (re-drive/gate did not land) or >=2 drivers (driver-rename did not land → original +
+# new driver both drive it) parses fine but aborts FM (SVR-9). Reuse eco_validate_step4's
+# exact driver-count logic on the APPLIED PostEco. Writes stage_fail + errors to GATE_JSON.
+GATE_JSON="/tmp/eco_driver_gate_${TAG}_${ROUND}.json"
+python3 - "$BASE_DIR" "$REF_DIR" "$STUDY_JSON" "$GATE_JSON" <<'PYEOF'
+import json, os, sys
+base_dir, ref_dir, study_json, gate_json = sys.argv[1:5]
+sys.path.insert(0, os.path.join(base_dir, 'script', 'eco_scripts'))
+STAGES = ('Synthesize', 'PrePlace', 'Route')
+def _dump(d): json.dump(d, open(gate_json, 'w'))
+try:
+    import eco_validate_step4 as v4
+except Exception as e:
+    _dump({'stage_fail': {}, 'errors': ['gate import failed: %s' % e]}); sys.exit(0)
+try:
+    study = json.load(open(study_json))
+except Exception as e:
+    _dump({'stage_fail': {}, 'errors': ['gate cannot read study: %s' % e]}); sys.exit(0)
+stage_fail = {s: [] for s in STAGES}
+errors, seen = [], set()
+for stage in STAGES:
+    for e in study.get(stage, []):
+        if e.get('change_type') not in ('new_logic_gate', 'new_logic'):
+            continue
+        on = (e.get('output_net') or (e.get('port_connections') or {}).get('Z')
+              or (e.get('port_connections') or {}).get('ZN'))
+        mod = (e.get('module_name_per_stage') or {}).get(stage) or e.get('module_name')
+        if not on or not mod:
+            continue
+        body = v4._module_body(ref_dir, stage, mod)
+        if not body:
+            continue                       # module resolution handled by step4; skip here
+        nd = v4._driver_count(on, body)
+        if nd != 1:
+            kind = 'UNDRIVEN' if nd == 0 else 'MULTIPLY-DRIVEN(%d)' % nd
+            msg = ('[DRIVER_COUNT] %s net %r in %s is %s (gate %s); expected exactly 1 driver '
+                   '-- FM abort.' % (stage, on, mod, kind, e.get('instance_name', '?')))
+            if msg in seen:
+                continue
+            seen.add(msg)
+            stage_fail[stage].append(msg); errors.append(msg)
+_dump({'stage_fail': stage_fail, 'errors': errors})
+PYEOF
+
+# Fold gate verdicts into per-stage results (a stage with an undriven/multiply-driven
+# ECO net becomes FAIL even if its syntax was clean).
+gate_stage_verdict() {
+    python3 -c "import json,sys; d=json.load(open('${GATE_JSON}')); \
+print('FAIL' if d.get('stage_fail',{}).get(sys.argv[1]) else 'PASS')" "$1" 2>/dev/null
+}
+[ "$(gate_stage_verdict Synthesize)" = "FAIL" ] && SYNTH="FAIL"
+[ "$(gate_stage_verdict PrePlace)"   = "FAIL" ] && PPLACE="FAIL"
+[ "$(gate_stage_verdict Route)"      = "FAIL" ] && ROUTE="FAIL"
+
 # ── Collect FM-aborting error lines for JSON ──────────────────────────────────
 ERRORS_JSON=$(grep -E "SVR4_bare_paren|SVR9_dup_wire|F1_dup_wire|SVR4_double_comma|\
 SVR4_trailing_comma|SVR4_missing_cell_type|SVR4_missing_comma|SVR4_dup_port|\
@@ -173,8 +239,23 @@ SVR4_empty_connection|SVR14_scalar_indexed" "${TMP_LOG}" 2>/dev/null \
     | python3 -c "import sys,json; print(json.dumps([l.rstrip() for l in sys.stdin]))")
 [ -z "$ERRORS_JSON" ] && ERRORS_JSON="[]"
 
-# Count pre-existing F2 warnings (informational only)
-F2_COUNT=$(grep -c "F2_implicit_wire_conflict" "${TMP_LOG}" 2>/dev/null || echo 0)
+# Merge ECO driver-count gate errors into the reported error list
+ERRORS_JSON=$(python3 -c "
+import json, sys
+base = json.loads(sys.argv[1])
+try:    gate = json.load(open(sys.argv[2])).get('errors', [])
+except Exception: gate = []
+print(json.dumps((base + gate)[:40]))
+" "$ERRORS_JSON" "$GATE_JSON")
+
+# Count driver-count gate errors (undriven / multiply-driven ECO nets)
+DRV_COUNT=$(python3 -c "import json; print(len(json.load(open('${GATE_JSON}')).get('errors',[])))" 2>/dev/null || echo 0)
+
+# Count pre-existing F2 warnings (informational only).
+# NOTE: `grep -c` already prints "0" on no-match (and exits 1), so a `|| echo 0`
+# would append a SECOND "0" → "0\n0" and break the int() below. Guard empty only.
+F2_COUNT=$(grep -c "F2_implicit_wire_conflict" "${TMP_LOG}" 2>/dev/null)
+[ -z "$F2_COUNT" ] && F2_COUNT=0
 
 # ── Write output JSON ─────────────────────────────────────────────────────────
 python3 -c "
@@ -184,21 +265,23 @@ result = {
     'PrePlace':   sys.argv[2],
     'Route':      sys.argv[3],
     'errors':     json.loads(sys.argv[4]),
+    'driver_count_errors': int(sys.argv[6]),
     'f2_preexisting_count': int(sys.argv[5])
 }
 print(json.dumps(result, indent=2))
-" "${SYNTH}" "${PPLACE}" "${ROUTE}" "${ERRORS_JSON}" "${F2_COUNT}" > "${OUT_JSON}"
+" "${SYNTH}" "${PPLACE}" "${ROUTE}" "${ERRORS_JSON}" "${F2_COUNT}" "${DRV_COUNT}" > "${OUT_JSON}"
 
 # ── Write launch marker ───────────────────────────────────────────────────────
 MARKER="ECO_SCRIPT_LAUNCHED: eco_verilog_validator.sh
   Synthesize: ${SYNTH}
   PrePlace:   ${PPLACE}
   Route:      ${ROUTE}
-  f2_preexisting: ${F2_COUNT} (informational — pre-existing in base netlist, FM handles them)
+  driver_count_errors: ${DRV_COUNT} (undriven / multiply-driven ECO nets — FM abort)
+  f2_preexisting: ${F2_COUNT} (informational — over-broad check, FM handles them)
   output:     ${OUT_JSON}"
 echo "${MARKER}"
 echo "${MARKER}" > "${OUT_JSON%.json}_marker.txt"
 
-rm -f "${TMP_LOG}"
+rm -f "${TMP_LOG}" "${GATE_JSON}"
 
 [ "$SYNTH" = "PASS" ] && [ "$PPLACE" = "PASS" ] && [ "$ROUTE" = "PASS" ] && exit 0 || exit 1
