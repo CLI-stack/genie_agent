@@ -87,6 +87,37 @@ def _posteco_text(ref_dir, stage):
     return _NL_TEXT[key]
 
 
+_MOD_BODY = {}
+_OUT_PINS_DRV = ('ZN', 'Z', 'ZN1', 'QN', 'Q', 'CON', 'CO', 'SN', 'S', 'Q1', 'Q2', 'Q3',
+                 'Q4', 'Q5', 'Q6', 'Q7', 'Q8')
+
+def _module_body(ref_dir, stage, module):
+    """Body text of `module` in the applied netlist (cached). Handles exact / P&R _0 /
+    tile-prefixed variants."""
+    key = (ref_dir, stage, module)
+    if key in _MOD_BODY:
+        return _MOD_BODY[key]
+    txt = _posteco_text(ref_dir, stage)
+    body = ''
+    for pat in (rf'^module\s+{re.escape(module)}\b',
+                rf'^module\s+{re.escape(module)}_0\b',
+                rf'^module\s+\S*_{re.escape(module)}\b(?!_\d)',
+                rf'^module\s+\S*_{re.escape(module)}_0\b'):
+        m = re.search(pat + r'.*?^endmodule', txt, re.S | re.M)
+        if m:
+            body = m.group(0); break
+    _MOD_BODY[key] = body
+    return body
+
+
+def _driver_count(net, body):
+    """How many gate OUTPUT pins drive `net` within a module body."""
+    if not net or not body:
+        return 0
+    alt = '|'.join(_OUT_PINS_DRV)
+    return len(re.findall(r'\.\s*(?:' + alt + r')\s*\(\s*' + re.escape(net) + r'\s*\)', body))
+
+
 def _in_netlist(token, ref_dir, stage):
     """Word-boundary presence of `token` in the applied netlist — fast C-level substring
     find + boundary verify (regex \\b over a ~215 MB text per token is far too slow)."""
@@ -243,6 +274,39 @@ def main():
         if really_missing:
             issues.append(f"HIGH: {stage} study entries not found in applied JSON AND absent from "
                           f"applied netlist: {really_missing[:5]} — eco_applier skipped them silently")
+
+    # ── 5b. Every emitted gate output net is driven EXACTLY ONCE in its module ──
+    # Netlist ground truth. Catches BOTH failure modes the status-based checks missed:
+    #   * 0 drivers  → the gate did not land (e.g. re-drive gate with an invalid
+    #     bracketed/colliding instance name) → target net UNDRIVEN;
+    #   * >=2 drivers → a driver-rename that did not land, so the original driver AND
+    #     the new gate both drive the net → MULTIPLY-DRIVEN (SVR-9, FM abort).
+    # Both were real on tag 20260707090807 (recdsp_c0mop[*] undriven; ctmn_917 x40
+    # double-driven in PP/Route) yet slipped past the status checks.
+    drv_issues = []
+    for stage in ['Synthesize', 'PrePlace', 'Route']:
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_gate', 'new_logic'):
+                continue
+            on = e.get('output_net') or (e.get('port_connections') or {}).get('Z') \
+                or (e.get('port_connections') or {}).get('ZN')
+            mod = (e.get('module_name_per_stage') or {}).get(stage) or e.get('module_name')
+            if not on or not mod:
+                continue
+            body = _module_body(args.ref_dir, stage, mod)
+            if not body:
+                continue  # module resolution handled elsewhere; skip here
+            nd = _driver_count(on, body)
+            if nd != 1:
+                kind = 'UNDRIVEN' if nd == 0 else f'MULTIPLY-DRIVEN({nd})'
+                drv_issues.append(f"CRITICAL: {stage} net {on!r} in {mod} is {kind} "
+                                  f"(gate {e.get('instance_name','?')}); expected exactly 1 driver "
+                                  f"— FM abort. Gate did not land / driver-rename did not land.")
+    # dedup + cap
+    seen_d = set()
+    for m in drv_issues:
+        if m not in seen_d:
+            seen_d.add(m); issues.append(m)
 
     # ── 6. Backup files exist for stages with changes ────────────────────────
     for stage in ['Synthesize', 'PrePlace', 'Route']:
