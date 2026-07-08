@@ -375,6 +375,12 @@ set_multibit_options -slack_threshold 0
 
 # If same startpoint ≥3 times in sort_slack.endpts:
 set_app_options -name compile.timing.buffer_replication            -value true
+
+# If clock transition in path trace > 50 ps:
+# set_clock_transition <T> [get_clocks -quiet *<clock_name>*]
+
+# If timing appears more pessimistic than LOL count suggests:
+# set_app_options -name time.enable_cond_default_arcs -value true
 ```
 
 ### Step 3 Output
