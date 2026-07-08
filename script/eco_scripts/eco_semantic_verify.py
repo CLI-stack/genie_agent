@@ -297,7 +297,11 @@ def verify_rewire(entry, view, stage):
     instance in PP/Route. When the named cell isn't present in this stage,
     fall back to checking that SOMEWHERE in the netlist a cell has
     .<pin>(<new_net>) — that proves the rewire landed on the renamed cell.
-    Mirrors the applier's per-stage cell-discovery fallback."""
+    Mirrors the applier's per-stage cell-discovery fallback.
+
+    When module_name is available in the entry, use module-scoped lookup
+    to avoid false positives from same instance name appearing in multiple
+    modules (e.g. ctmi_1182 in 40+ umcrecrcqentry modules AND IntestEdt)."""
     # Use per-stage cell name if available
     per_stage = (entry.get('per_stage_cell') or entry.get('per_stage_cell_name')
                  or entry.get('cell_name_per_stage')
@@ -308,9 +312,40 @@ def verify_rewire(entry, view, stage):
     new_net = (entry.get('per_stage_new_net', {}) or {}).get(stage, '') or entry.get('new_net', '')
     if not cell or not pin or not new_net:
         return None
+
+    # Module-scoped lookup: prefer searching within the specific module body
+    # when module_name is available. Prevents false positives when same
+    # instance name appears in multiple modules.
+    module_name = (entry.get('module_name_per_stage', {}) or {}).get(stage, '') \
+                  or entry.get('module_name', '')
+    if module_name:
+        mod_info = view.find_module(module_name)
+        if mod_info is not None:
+            # mod_info = (start, end, header_text, body_text)
+            body_text = mod_info[3]
+            inst_m = re.search(rf'\b{re.escape(cell)}\s*\(', body_text)
+            if inst_m:
+                block = body_text[inst_m.start():inst_m.start() + 200000]
+                pin_m = re.search(rf'\.\s*{re.escape(pin)}\s*\(\s*([^)]+)\)', block)
+                if pin_m:
+                    actual = pin_m.group(1).strip()
+                    if actual == new_net.strip():
+                        return None
+                    return f'{cell}.{pin} = {actual!r} but expected {new_net.strip()!r}'
+                # Pin not found in module-scoped block — fall through to global
+            # Instance not in module body — try global fallback below
+
     actual = view.get_pin_connection(cell, pin)
     if actual is not None:
         if actual.strip() == new_net.strip():
+            return None
+        # Only report error if no module-scoped resolution succeeded
+        if not module_name:
+            return f'{cell}.{pin} = {actual.strip()!r} but expected {new_net.strip()!r}'
+        # Module-scoped lookup found no instance in the target module;
+        # global lookup found a different module's instance — check net-level fallback
+        pat = rf'\.\s*{re.escape(pin)}\s*\(\s*{re.escape(new_net)}\s*\)'
+        if re.search(pat, view.text):
             return None
         return f'{cell}.{pin} = {actual.strip()!r} but expected {new_net.strip()!r}'
     # Cell not present at named instance — check if rewire landed on a
