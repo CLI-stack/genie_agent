@@ -841,11 +841,81 @@ Groups with many NVP: use wider range to capture near-violating paths too.
 #### Section 7: Fix E — Placement Bounds (wire-dominated, bound-fixable groups only)
 
 **This section is MANDATORY for every group flagged BOUND in Check E.**
-Every BOUND group from Check E MUST produce a `create_bound` entry here.
-Do NOT skip this section because DEF is missing or coordinates are uncertain.
-Estimated coordinates with a warning are better than no bound at all.
 
-**For each BOUND group, add a fix entry to the plan:**
+### Rule 1 — ALL BOUND groups must have a Fix E entry
+
+Count the BOUND groups from Check E diagnosis. The number of Fix E entries
+in the plan MUST equal that count. If any BOUND group has no fix entry, add it.
+Do not stop early. Do not skip groups because DEF is missing.
+
+### Rule 2 — Every fix entry MUST have actual coordinates
+
+Coordinates must NEVER be left empty or as a note saying "estimated coords needed".
+Always compute and embed actual numbers, even if approximate.
+
+**If DEF is accessible:** use the DEF-derived procedure (Steps A–F below).
+
+**If DEF is missing — use this estimation formula:**
+
+```
+Die dimensions: read from DIEAREA line in DEF if accessible,
+                otherwise use 400 × 600 um as a safe default for UMC tiles.
+
+For each BOUND group:
+  1. Get endpoint hierarchy from sort_slack.endpts (top rank for this group)
+     e.g. "ARB/DCQARB/ArbSafeReg" → module = "ARB/DCQARB"
+
+  2. Estimate module location based on hierarchy depth:
+     - Top-level modules (1 level): spread across full die
+     - Sub-modules (2+ levels): sub-region of parent
+
+  3. Assign a tile quadrant from the endpoint hierarchy position:
+     Use a 3×3 grid of the die (each cell = die_width/3 × die_height/3):
+     Quadrant assignment based on module name patterns:
+       ARB/DCQARB*  → center    (x: 1/3–2/3, y: 1/3–2/3)
+       ARB/PGT*     → right     (x: 2/3–1,   y: 1/3–2/3)
+       ARB internal → lower     (x: 0–2/3,   y: 0–1/3)
+       FEI*         → left      (x: 0–1/3,   y: 0–2/3)
+       ADDR*        → bottom    (x: 0–2/3,   y: 0–1/3)
+       SPAZ*        → right     (x: 2/3–1,   y: 0–1/3)
+       clock_gating → center    (x: 1/4–3/4, y: 1/4–3/4)
+       SYN_R2R      → full die  (x: 0–1,     y: 0–1)
+
+  4. Compute coordinates in microns:
+     x1 = quadrant_x_start × die_width
+     y1 = quadrant_y_start × die_height
+     x2 = quadrant_x_end   × die_width
+     y2 = quadrant_y_end   × die_height
+
+  5. Always add a 20% margin by expanding outward from center.
+
+  6. Mark coords_source = "ESTIMATED" in the plan entry.
+```
+
+### Rule 3 — Every fix entry MUST have a precise, scoped cell filter
+
+The `cell_filter` must target the specific hierarchy of the failing group.
+Never use broad filters like `*ARB/*` for a group that should target only `ARB/DCQARB`.
+Never use `*` (matches everything — useless as a bound).
+
+**How to derive the correct cell filter:**
+
+1. Take the group's top-ranked endpoint from sort_slack.endpts:
+   e.g. endpoint = `ARB/DCQARB/ArbSafeRegPc_d1/q_reg[3]`
+   → hierarchy prefix = `ARB/DCQARB`
+   → filter = `"full_name =~ *ARB/DCQARB*"`
+
+2. For groups with sub-hierarchy exclusions (e.g. ARB internal = ARB minus DCQARB/PGT):
+   → filter = `"full_name =~ *ARB/* && full_name !~ *ARB/DCQARB* && full_name !~ *ARB/PGT*"`
+
+3. For clock_gating_default — target the clock-gate cell hierarchy from the path trace:
+   → filter = `"full_name =~ *<module_from_worst_cg_path>*"`
+
+4. For SYN_R2R (catch-all group) — use the top-ranked endpoint module specifically:
+   → filter = `"full_name =~ *<specific_module_from_sort_slack>*"`
+   Do NOT bound the entire design for SYN_R2R.
+
+**For each BOUND group, add a fix entry to the plan with ALL fields populated:**
 ```json
 {
   "fix_id": "FE-<N>",
@@ -853,11 +923,14 @@ Estimated coordinates with a warning are better than no bound at all.
   "group": "<group_name>",
   "action": "create_bound",
   "bound_name": "<group_lower>_bound",
-  "cell_filter": "full_name =~ *<hierarchy>*",
-  "coordinates_um": {"x1": <v>, "y1": <v>, "x2": <v>, "y2": <v>},
-  "coords_source": "DEF-derived / ESTIMATED",
-  "density_cells_per_um2": <val>,
-  "warning": "<only if estimated>"
+  "cell_filter": "full_name =~ *<precise_hierarchy>*",
+  "cell_filter_exclusions": ["full_name !~ *<sub1>*"],
+  "coordinates_um": {"x1": <num>, "y1": <num>, "x2": <num>, "y2": <num>},
+  "coords_source": "DEF-derived | ESTIMATED",
+  "estimated_cell_count": <N>,
+  "bound_area_um2": <num>,
+  "density_cells_per_um2": <num>,
+  "warning": "ESTIMATED — verify against DEF before --apply"
 }
 ```
 
