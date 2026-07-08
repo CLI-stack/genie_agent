@@ -261,25 +261,27 @@ cd $source_dir
 #------------------------------------------------------------------------------
 # POLL UNTIL ALL SPECIFIED TARGETS COMPLETE (12 hour timeout, 5 min intervals)
 #------------------------------------------------------------------------------
-echo "Monitoring ECO FM targets (max 12 hours, checking every 5 min)..."
+echo "Monitoring ECO FM targets (runtime countdown accrues ONLY while all targets are RUNNING; it resets whenever any target is still pending/queued in LSF)..."
 
-set tb_status_log = "/tmp/tb_eco_fm_status_${tag}.log"
-set elapsed       = 0
-set max_elapsed   = 43200
-set poll_interval = 300
-set all_done      = 0
+set tb_status_log    = "/tmp/tb_eco_fm_status_${tag}.log"
+set elapsed          = 0
+set max_elapsed      = 43200
+set pending_elapsed  = 0
+set max_pending_wait = 43200
+set poll_interval    = 300
+set all_done         = 0
 
 while ($all_done == 0)
     sleep $poll_interval
-    @ elapsed += $poll_interval
 
     cd $tile_dir
     TileBuilderTerm -x "TileBuilderShow >& $tb_status_log"
     cd $source_dir
     sleep 5
 
-    set done_count  = 0
-    set total_count = 0
+    set done_count    = 0
+    set running_count = 0
+    set total_count   = 0
     foreach tgt ($eco_targets)
         @ total_count++
         set tgt_status = "UNKNOWN"
@@ -291,20 +293,43 @@ while ($all_done == 0)
         if ("$tgt_status" == "PASSED" || "$tgt_status" == "WARNING" || \
             "$tgt_status" == "FAILED" || "$tgt_status" == "DONE") then
             @ done_count++
+        else if ("$tgt_status" == "RUNNING") then
+            @ running_count++
         endif
     end
 
-    echo "ECO FM: ${done_count}/${total_count} targets complete (${elapsed}s elapsed)"
+    # Pending = not finished AND not RUNNING (NOTRUN, PENDING, WAITING, HOLD,
+    # BLOCKED, QUEUED, UNKNOWN, ...). i.e. still waiting in the LSF queue.
+    @ pending_count = $total_count - $done_count - $running_count
 
     if ($done_count == $total_count) then
-        echo "All ${total_count} ECO FM targets complete after ${elapsed}s"
+        echo "All ${total_count} ECO FM targets complete after ${elapsed}s of all-running time"
         set all_done = 1
-    else if ($elapsed >= $max_elapsed) then
-        echo "ERROR: ECO FM timeout after 12 hours — only ${done_count}/${total_count} targets complete" >> $out
-        rm -f $tb_status_log
-        set run_status = "failed"
-        source $source_dir/script/rtg_oss_feint/finishing_task.csh
-        exit 1
+    else if ($pending_count > 0) then
+        # Jobs are still queued — do NOT burn the runtime budget on LSF wait.
+        # Reset the runtime countdown to 0; accrue a separate, bounded pending wait
+        # so a job that is stuck in the queue forever still eventually bails out.
+        set elapsed = 0
+        @ pending_elapsed += $poll_interval
+        echo "ECO FM: ${done_count} done, ${running_count} running, ${pending_count} pending — runtime countdown RESET to 0 (pending wait ${pending_elapsed}s / ${max_pending_wait}s)"
+        if ($pending_elapsed >= $max_pending_wait) then
+            echo "ERROR: ECO FM targets stuck pending in queue >12h — ${done_count}/${total_count} complete, ${pending_count} never started running" >> $out
+            rm -f $tb_status_log
+            set run_status = "failed"
+            source $source_dir/script/rtg_oss_feint/finishing_task.csh
+            exit 1
+        endif
+    else
+        # All remaining targets are actively RUNNING — accrue the runtime budget.
+        @ elapsed += $poll_interval
+        echo "ECO FM: ${done_count}/${total_count} complete, ${running_count} running (runtime ${elapsed}s / ${max_elapsed}s)"
+        if ($elapsed >= $max_elapsed) then
+            echo "ERROR: ECO FM timeout after 12 hours of all-running — only ${done_count}/${total_count} targets complete" >> $out
+            rm -f $tb_status_log
+            set run_status = "failed"
+            source $source_dir/script/rtg_oss_feint/finishing_task.csh
+            exit 1
+        endif
     endif
 end
 
