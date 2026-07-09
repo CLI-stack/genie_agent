@@ -440,9 +440,15 @@ def _synth_setup(ref_dir, module, jira='eco'):
 
 def _region_of(synth, rtl_text, old_text, signal, wm):
     """Build `signal`'s changed-region logic INTO the given (possibly shared) synth. Returns
-    {'region_bits', 'width', 'old_region_values'} or None (no delta). Uses the SURGICAL
-    model: the caller detects the region via `orig == old_region_values`; here we build only
-    the LOCAL (prefix-stripped) subtree fold — no priority prefix rebuild."""
+    {'region_bits', 'width', 'sel', 'old_region_values'} or None (no delta).
+
+    SURGICAL model:  new_S = (region active) ? fold(subtree, default) : S_old_driver .
+    The region selector `sel` is the region's PATH GUARD — the `prefix` path condition that
+    encloses every changed entry (e.g. branch3 & dsp_cmd_mop==MRR), lowered from RTL. It is
+    NOT `orig == old_value`: that comparison is unsound because a signal takes its old region
+    value outside the region too (e.g. a 1-bit valid that is 1 for many commands), which
+    aliases the selector to `orig` and collapses the mux to `orig & region` — silently
+    corrupting the signal outside the changed region."""
     nt = parse_always(rtl_text, signal)
     ot = parse_always(old_text, signal)
     delta = compute_delta(ot, nt)
@@ -453,6 +459,9 @@ def _region_of(synth, rtl_text, old_text, signal, wm):
         if _starts_with(c, delta['prefix']) and v not in old_region_values:
             old_region_values.append(v)
     try:
+        # Region selector = the path guard enclosing the change (empty prefix -> "1'b1",
+        # i.e. full-cone rebuild). Sound and independent of the signal's old value.
+        sel = synth._path_scalar(delta['prefix'])
         width = wm.get(signal)
         if not width:
             vals = [v for _, v in delta['subtree']] + ([delta['default']] if delta['default'] else [])
@@ -476,8 +485,8 @@ def _region_of(synth, rtl_text, old_text, signal, wm):
             region_bits[b] = synth._reduce(terms, 'or') if terms else "1'b0"
     except Exception as e:
         raise _CErr(f"delta lowering failed for {signal}: {e}")
-    return {'region_bits': region_bits, 'width': width, 'old_region_values': old_region_values,
-            'summary': delta['summary']}
+    return {'region_bits': region_bits, 'width': width, 'sel': sel,
+            'old_region_values': old_region_values, 'summary': delta['summary']}
 
 
 def lower_delta(ref_dir, module, signal, jira='eco'):
@@ -519,14 +528,12 @@ def _emit_signal_muxes(synth, mk, r, module, signal, dmaps):
         drv_ps[b] = (cps, pps)
     if errs:
         return [], errs
-    if not old_vals:
-        return [], [f"{signal}: no OLD region value — cannot build the orig-based region detector."]
-    # SURGICAL selector: sel = OR over old region values v of (orig == v).
-    sel = "1'b0"
-    for v in old_vals:
-        vast = parse_expr(v)
-        eq_terms = [synth._xnor(orig_bit[b], synth.bit(vast, b)) for b in range(width) if b in orig_bit]
-        sel = synth._or(sel, synth._reduce(eq_terms, 'and'))
+    # SURGICAL selector = the region's path guard (from _region_of). Sound region detection:
+    # it is the actual RTL branch condition enclosing the change, NOT `orig == old_value`
+    # (which aliases and corrupts the signal outside the region — see _region_of docstring).
+    sel = r.get('sel')
+    if sel is None:
+        return [], [f"{signal}: region selector missing — cannot build the region mux (fail-closed)."]
     nsel = synth._inv(sel)
     # pass 2: per-bit force-mux net[b] = sel ? region[b] : net_orig[b] + driver rewire
     for b in range(width):
@@ -545,7 +552,7 @@ def _emit_signal_muxes(synth, mk, r, module, signal, dmaps):
             'change_type': 'rewire', 'instance_name': cps['Synthesize'],
             'cell_name': cps['Synthesize'], 'cell_name_per_stage': cps,
             'module_name': module, 'pin': pps['Synthesize'], 'pin_per_stage': pps,
-            'old_net': net, 'new_net': net_orig,
+            'old_net': net, 'new_net': net_orig, 'region_sel': sel,
             'confirmed': True, 'force_reapply': True, 'source': 'eco_cone_rebuild',
             'net_force': True, 'driver_side': True,
             'notes': f"comb net-force (surgical): redirect combinational driver of {net} through "

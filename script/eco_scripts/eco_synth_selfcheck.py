@@ -353,6 +353,43 @@ def eval_ordered(order, env):
     return val
 
 
+_SEL_OUT_PINS = ('Z', 'ZN', 'Q', 'QN', 'CO', 'CON', 'S', 'SN', 'SO', 'OUT')
+
+
+def _selector_independent_of_orig(gates, rewires):
+    """Independent structural gate on the emitted force-mux: the region SELECTOR must not be
+    a function of the signal's own OLD driver (net_orig). Inspects only the emitted gate
+    graph (not the shared RTL lowering), so it catches a selector that aliases to the signal
+    — the exact defect that makes the mux collapse to `orig & region`. Returns True if every
+    signal's selector is independent of its net_orig, False otherwise (fail-closed)."""
+    drv = {g['output_net']: g for g in gates}
+
+    def fanin(net):
+        seen, stack = set(), [net]
+        while stack:
+            nn = stack.pop()
+            if nn in seen:
+                continue
+            seen.add(nn)
+            g = drv.get(nn)
+            if not g:
+                continue
+            for k, v in g['port_connections'].items():
+                if k in _SEL_OUT_PINS or not isinstance(v, str):
+                    continue
+                stack.append(v)
+        return seen
+
+    for rw in rewires:
+        sel = rw.get('region_sel')
+        orig = rw.get('new_net')
+        if not sel or not orig:
+            continue
+        if orig in fanin(sel):
+            return False
+    return True
+
+
 def run(ref_dir, module, signal, n=5000, seed=1):
     base = re.sub(r'^ddrss_\w+?_t_', '', module)
     new_rtl = open(resolve_rtl(ref_dir=ref_dir, module=base, subdir='SynRtl'), errors='replace').read()
@@ -402,6 +439,18 @@ def run(ref_dir, module, signal, n=5000, seed=1):
     orig_leaf = {}
     for rw in out['rewires']:
         orig_leaf[_bit_of(rw)] = rw['new_net']
+
+    # ── INDEPENDENT structural gate: region selector must NOT depend on the signal's own
+    # old driver (net_orig). A sound region selector is the RTL path guard (a function of
+    # control inputs); if it instead aliases to net_orig (e.g. sel = (orig==old_value)),
+    # the force-mux degenerates to `orig & region` and silently corrupts the signal OUTSIDE
+    # the changed region — a class of bug the random-vector RTL self-check cannot see
+    # because it grounds a consistent input space. This check is independent of the shared
+    # RTL lowering: it inspects only the emitted gate graph. Fail-closed.
+    if not _selector_independent_of_orig(gates, out['rewires']):
+        print(f"{signal}: FAIL — region selector depends on net_orig (aliased selector); "
+              f"force-mux would corrupt logic outside the changed region.")
+        return False
 
     # leaf base signals the cone reads (strip [i]); net_orig names are computed, not random
     allnets = {g['output_net'] for g in gates}
