@@ -461,12 +461,19 @@ def _region_of(synth, rtl_text, old_text, signal, wm):
         # branch selectors computed once (hoisted); _path_scalar is memoized so a guard
         # shared with another signal is not rebuilt.
         branch_asts = [(synth._path_scalar(cond), parse_expr(val)) for cond, val in delta['subtree']]
+        # BALANCED priority lowering: the subtree folds last-wins (highest priority last),
+        # so reverse to highest-first, build one-hot masks ONCE (bit-independent) and per bit
+        # OR the masked values. Depth ~log2(N) instead of the nested-mux else-chain ~2N.
+        hp = list(reversed(branch_asts))
+        sels = [bsel for bsel, _ in hp]
+        actives, none = synth._priority_masks(sels)
         region_bits = {}
         for b in range(width):
-            cur = synth.bit(dflt_ast, b) if dflt_ast is not None else "1'b0"
-            for bsel, vast in branch_asts:
-                cur = synth._mux(bsel, synth.bit(vast, b), cur)
-            region_bits[b] = cur
+            terms = [synth._and(actives[k], synth.bit(vast, b))
+                     for k, (_, vast) in enumerate(hp)]
+            if dflt_ast is not None:
+                terms.append(synth._and(none, synth.bit(dflt_ast, b)))
+            region_bits[b] = synth._reduce(terms, 'or') if terms else "1'b0"
     except Exception as e:
         raise _CErr(f"delta lowering failed for {signal}: {e}")
     return {'region_bits': region_bits, 'width': width, 'old_region_values': old_region_values,
@@ -547,12 +554,12 @@ def _emit_signal_muxes(synth, mk, r, module, signal, dmaps):
     return rewires, errs
 
 
-def emit_comb_net_force(ref_dir, module, signal, jira='eco', rename_map=None):
+def emit_comb_net_force(ref_dir, module, signal, jira='eco', rename_map=None, tech_map=True):
     """Single-signal comb net-force ECO (wrapper around the batch emitter)."""
-    return emit_comb_net_force_batch(ref_dir, module, [signal], jira, rename_map)
+    return emit_comb_net_force_batch(ref_dir, module, [signal], jira, rename_map, tech_map=tech_map)
 
 
-def emit_comb_net_force_batch(ref_dir, module, signals, jira='eco', rename_map=None):
+def emit_comb_net_force_batch(ref_dir, module, signals, jira='eco', rename_map=None, tech_map=True):
     """Emit comb net-force for one OR MORE signals in the SAME module through a SHARED synth,
     so common logic (e.g. the WCK-sync guard on recdsp_c0mop AND recdsp_c0vld) is built once
     (synth _sig_cache/_path_cache dedup). Each signal: net[b] = (orig==old_region) ? region
@@ -576,6 +583,17 @@ def emit_comb_net_force_batch(ref_dir, module, signals, jira='eco', rename_map=N
     if errs:
         return {'gates': synth.gates, 'rewires': [], 'errors': errs, 'summary': summ}
     gates = synth.gates
+    # Depth-reducing compound-cell tech mapping (fail-closed): fold the primitive AND2/OR2/INV
+    # cone into library compound + wide cells (AOI/OAI/AO/OA/INR2 + OR3/4, AND3/4, NOR/NAND) so
+    # the emitted logic depth (LOL) matches synthesis/human QoR instead of a deep primitive tree.
+    # Returns the ORIGINAL gates unchanged if no compound cells resolve or the map isn't provably
+    # equivalent, so it can only make correct logic shallower — never emit wrong logic.
+    if tech_map:
+        try:
+            import eco_tech_map
+            gates = eco_tech_map.tech_map_gates(gates, ref_dir, synth.module, jira)
+        except Exception as _tm_e:
+            print(f"  [tech_map] skipped ({type(_tm_e).__name__}: {_tm_e}); using primitive gates")
     # give every cone/mux gate a per-stage view, then resolve leaf nets per stage
     # (fenets rename map authoritative, then flat-name heuristic; internal n_eco_ names
     # are absent from both and pass through unchanged).

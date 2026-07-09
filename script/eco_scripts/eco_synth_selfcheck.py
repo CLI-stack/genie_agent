@@ -387,7 +387,10 @@ def run(ref_dir, module, signal, n=5000, seed=1):
             r = (nm != signal and (innl(nm) or is_reg(nm))); _grounds_c[nm] = r
         return r
 
-    out = emit_comb_net_force(ref_dir, module, signal, jira='chk')
+    # tech_map=False: this check validates the PRIMITIVE cone vs RTL with a primitive-only
+    # evaluator. Compound-cell mapping is verified separately (fail-closed) inside tech_map
+    # (mapped == primitive), so primitive==RTL + mapped==primitive => mapped==RTL.
+    out = emit_comb_net_force(ref_dir, module, signal, jira='chk', tech_map=False)
     if out['errors']:
         print("EMIT ERRORS:", out['errors']); return False
     gates = out['gates']

@@ -421,6 +421,25 @@ class _Synth:
                        self._or(a, b) if op == 'or' else self._xor(a, b))
         return cur[0]
 
+    def _priority_masks(self, sels):
+        """Given scalar branch selects in HIGHEST->LOWEST priority order, return
+        (actives, none) where actives[k] = sels[k] & ~(sels[0]|...|sels[k-1]) (a one-hot
+        'the k-th branch wins' mask) and none = ~(sels[0]|...|sels[N-1]).
+
+        This is the balanced equivalent of a nested priority mux
+        `cur = mux(sel, val, cur)`: instead of threading a value through N muxes (critical
+        path ~2N, the else-chain), the winner is selected as OR_k(actives[k] & val_k) with a
+        BALANCED or-reduction (critical path ~log2(N)). AND/OR associativity makes this an
+        exact rewrite of the priority semantics; the exhaustive synth self-check guards it.
+        Masks are bit-independent (sels are scalar), so callers compute them ONCE and reuse
+        across all bits to avoid O(N^2 * width) gate blow-up."""
+        actives = []
+        for k, s in enumerate(sels):
+            actives.append(s if k == 0
+                           else self._and(s, self._inv(self._reduce(sels[:k], 'or'))))
+        none = self._inv(self._reduce(sels, 'or')) if sels else "1'b1"
+        return actives, none
+
     def _xor(self, a, b):
         # a ^ b = (a & ~b) | (~a & b) — built from AND/OR/INV (no XOR cell needed)
         return self._or(self._and(a, self._inv(b)), self._and(self._inv(a), b))
@@ -529,18 +548,27 @@ class _Synth:
             return self._concat_bit([node[2]] * node[1], i)
         raise _SErr(f"cannot lower node {t}")
 
+    def _flatten_assoc(self, node, op):
+        """Flatten a left/right-nested chain of the SAME associative op into a flat operand
+        list, e.g. ((a & b) & c) & d -> [a, b, c, d]. Lets the caller build a BALANCED tree
+        via _reduce (depth ~log2(N)) instead of following the parse tree's left-linear
+        nesting (depth ~N). & | ^ && || are associative + commutative so this is exact."""
+        if node[0] == 'bin' and node[1] == op:
+            return self._flatten_assoc(node[2], op) + self._flatten_assoc(node[3], op)
+        return [node]
+
     def _bin_bit(self, node, i):
         op, a, b = node[1], node[2], node[3]
-        if op == '&':
-            return self._and(self.bit(a, i), self.bit(b, i))
-        if op == '|':
-            return self._or(self.bit(a, i), self.bit(b, i))
-        if op == '^':
-            return self._xor(self.bit(a, i), self.bit(b, i))
-        if op in ('&&',):
-            return self._and(self.scalar(a), self.scalar(b))
-        if op in ('||',):
-            return self._or(self.scalar(a), self.scalar(b))
+        if op in ('&', '|', '^'):
+            # flatten the full same-op chain and reduce as a BALANCED tree (log depth)
+            ops = self._flatten_assoc(node, op)
+            bits = [self.bit(o, i) for o in ops]
+            rop = 'and' if op == '&' else 'or' if op == '|' else 'xor'
+            return self._reduce(bits, rop)
+        if op in ('&&', '||'):
+            ops = self._flatten_assoc(node, op)
+            bits = [self.scalar(o) for o in ops]
+            return self._reduce(bits, 'and' if op == '&&' else 'or')
         if op in ('==', '!='):
             return self._eq(a, b, op == '!=')
         if op in ('<', '>', '<=', '>='):
@@ -711,13 +739,19 @@ class _Synth:
             if has_always:
                 dflt_ast = parse_expr(tree['default']) if tree.get('default') is not None else None
                 branch_asts = [(cond, parse_expr(val)) for cond, val in tree['assigns']]
+                # BALANCED priority lowering: assigns are last-wins (highest priority last),
+                # so reverse to highest-first, build one-hot masks ONCE (bit-independent),
+                # then per bit OR the masked values. Depth ~log2(N) vs nested-mux ~2N.
+                hp = list(reversed(branch_asts))
+                sels = [self._path_scalar(cond) for cond, _ in hp]
+                actives, none = self._priority_masks(sels)
                 bits = {}
                 for i in range(w):
-                    cur = self.bit(dflt_ast, i) if dflt_ast is not None else "1'b0"
-                    for cond, vast in branch_asts:
-                        sel = self._path_scalar(cond)
-                        cur = self._mux(sel, self.bit(vast, i), cur)
-                    bits[i] = cur
+                    terms = [self._and(actives[k], self.bit(vast, i))
+                             for k, (_, vast) in enumerate(hp)]
+                    if dflt_ast is not None:
+                        terms.append(self._and(none, self.bit(dflt_ast, i)))
+                    bits[i] = self._reduce(terms, 'or') if terms else "1'b0"
             else:
                 # continuous assignment (`assign`/`wire name = expr;`)
                 rhs = self._cont_assign_rhs(name)
