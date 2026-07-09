@@ -16,7 +16,14 @@ FAIL-CLOSED by construction:
 On ANY mismatch or unresolved cell the pass returns the ORIGINAL primitive gates unchanged, so it
 can only ever make already-correct logic shallower — never emit wrong logic.
 
-Entry point:  tech_map_gates(gates, ref_dir, module, jira='eco') -> list[gate_dict]
+Entry point:  tech_map_gates(gates, ref_dir, module, jira='eco', protected_nets=None)
+                  -> list[gate_dict]
+  `protected_nets`: nets referenced OUTSIDE `gates` (rewire old/new nets, exposed signals).
+  They are never folded away. Callers (any emitter) MUST pass every net their rewires /
+  study entries reference so tech mapping can be adopted safely across emitters.
+
+Library/JIRA-agnostic: cell names are discovered from the module's own netlist and validated
+against the truth-table library; nothing is tied to a foundry, tile, or a specific JIRA.
 """
 import re
 import itertools
@@ -61,8 +68,12 @@ def _resolve_compound_cells(ref_dir, module):
         prefixes = _FAM_PATS.get(fam, [fam])       # canonical fam -> library short-form(s)
         cands = []
         for pre in prefixes:
-            for c in re.findall(r'\b(' + pre + r'D\d[A-Za-z0-9]*BWP\w+)\b', body):
-                if ett.family_of(c) == pre:        # exact family (not a longer relative)
+            # Library-agnostic: match a standard-cell token '<prefix>D<drive><suffix>' (no
+            # foundry name hardcoded) and KEEP it only if (a) its family is exactly `pre` and
+            # (b) the truth-table library actually defines it — so we never fold to a cell whose
+            # function we cannot verify.
+            for c in set(re.findall(r'\b(' + pre + r'D\d\w*)\b', body)):
+                if ett.family_of(c) == pre and ett.truth_table_of(c, ref_dir=ref_dir):
                     cands.append(c)
         if cands:
             out[fam] = sorted(cands, key=lambda c: ('SPG' in c, c.endswith('LL'), len(c)))[0]
@@ -97,15 +108,19 @@ def _index(gates):
     return by_out, cons
 
 
-def _absorb(net, fn, by_out, cons):
-    """Return the gate driving `net` iff it is an ECO `fn` gate consumed ONLY here (fanout 1)."""
+def _absorb(net, fn, by_out, cons, protected):
+    """Return the gate driving `net` iff it is an ECO `fn` gate consumed ONLY here (fanout 1)
+    AND `net` is not `protected` (referenced outside `gates`, e.g. by a rewire) — folding it
+    away would delete a net the caller still references."""
+    if net in protected:
+        return None
     g = by_out.get(net)
     if g and g.get('gate_function') == fn and len(cons.get(net, [])) == 1:
         return g
     return None
 
 
-def _flatten_same(root, by_out, cons, limit=4):
+def _flatten_same(root, by_out, cons, protected, limit=4):
     """Flat operand list of a same-op OR2/AND2 tree rooted at `root`, absorbing fanout-1 same-op
     children, capped at `limit` operands. Returns (operands, absorbed_gates including root)."""
     fn = root.get('gate_function')
@@ -113,7 +128,7 @@ def _flatten_same(root, by_out, cons, limit=4):
     queue = list(_in_nets(root))
     while queue:
         n = queue.pop(0)
-        g = _absorb(n, fn, by_out, cons)
+        g = _absorb(n, fn, by_out, cons, protected)
         if g and (len(operands) + len(queue) + 2) <= limit:   # absorbing net n -> its 2 inputs
             absorbed.append(g)
             queue.extend(_in_nets(g))
@@ -188,7 +203,7 @@ def _primary_outputs(gates):
 
 
 # ── fold matching ──────────────────────────────────────────────────────────────────
-def _match_fold(g, by_out, cons, cells):
+def _match_fold(g, by_out, cons, cells, protected):
     """If root gate `g` (AND2/OR2) can absorb neighbour(s) into an available compound cell,
     return (new_gate, subset, out_net); else None. subset = gates to remove (root + absorbed)."""
     fn = g.get('gate_function')
@@ -200,8 +215,11 @@ def _match_fold(g, by_out, cons, cells):
         return None
     x, y = ins
     # inverting variant: root's SOLE consumer is an INV -> fold it in, drive the INV's output.
+    # Only allowed when `o` is NOT protected: the inverting fold DELETES `o` (root's net), so a
+    # protected/exposed `o` must keep its own driver (use a non-inverting fold instead).
     c_o = cons.get(o, [])
-    inv_g = c_o[0] if (len(c_o) == 1 and c_o[0].get('gate_function') == 'INV') else None
+    inv_g = (c_o[0] if (o not in protected and len(c_o) == 1
+                        and c_o[0].get('gate_function') == 'INV') else None)
     inv_out = inv_g['output_net'] if inv_g else None
 
     def have(fam):
@@ -210,13 +228,13 @@ def _match_fold(g, by_out, cons, cells):
     if fn == 'AND2':
         # INR2: a & ~b  (absorb an INV feeding an input). Non-inverting overall (out = o).
         for a_net, b_net in ((x, y), (y, x)):
-            ig = _absorb(b_net, 'INV', by_out, cons)
+            ig = _absorb(b_net, 'INV', by_out, cons, protected)
             if ig and have('INR2'):
                 bsrc = _in_nets(ig)[0]
                 gate = _mk(cells, 'INR2', {'A1': a_net, 'B1': bsrc}, o, g['module_name'])
                 return gate, [g, ig], o
         # OA22 / OAI22: (p|q)&(r|s)
-        or0, or1 = _absorb(x, 'OR2', by_out, cons), _absorb(y, 'OR2', by_out, cons)
+        or0, or1 = _absorb(x, 'OR2', by_out, cons, protected), _absorb(y, 'OR2', by_out, cons, protected)
         if or0 and or1:
             fam = 'OAI22' if inv_g else 'OA22'
             if have(fam):
@@ -227,7 +245,7 @@ def _match_fold(g, by_out, cons, cells):
                 return gate, sub, out
         # OA21 / OAI21: (p|q)&c
         for or_net, c_net in ((x, y), (y, x)):
-            org = _absorb(or_net, 'OR2', by_out, cons)
+            org = _absorb(or_net, 'OR2', by_out, cons, protected)
             if org:
                 fam = 'OAI21' if inv_g else 'OA21'
                 if have(fam):
@@ -239,7 +257,7 @@ def _match_fold(g, by_out, cons, cells):
 
     if fn == 'OR2':
         # AO22 / AOI22: (p&q)|(r&s)
-        an0, an1 = _absorb(x, 'AND2', by_out, cons), _absorb(y, 'AND2', by_out, cons)
+        an0, an1 = _absorb(x, 'AND2', by_out, cons, protected), _absorb(y, 'AND2', by_out, cons, protected)
         if an0 and an1:
             fam = 'AOI22' if inv_g else 'AO22'
             if have(fam):
@@ -251,8 +269,8 @@ def _match_fold(g, by_out, cons, cells):
         # AOI211 (inverting only): ~((p&q)|r|s)
         if inv_g and have('AOI211'):
             for and_net, or_net in ((x, y), (y, x)):
-                ang = _absorb(and_net, 'AND2', by_out, cons)
-                org = _absorb(or_net, 'OR2', by_out, cons)
+                ang = _absorb(and_net, 'AND2', by_out, cons, protected)
+                org = _absorb(or_net, 'OR2', by_out, cons, protected)
                 if ang and org:
                     p, q = _in_nets(ang); r, s = _in_nets(org)
                     gate = _mk(cells, 'AOI211', {'A1': p, 'A2': q, 'B': r, 'C': s},
@@ -260,7 +278,7 @@ def _match_fold(g, by_out, cons, cells):
                     return gate, [g, ang, org, inv_g], inv_out
         # AO21 / AOI21: (p&q)|c
         for and_net, c_net in ((x, y), (y, x)):
-            ang = _absorb(and_net, 'AND2', by_out, cons)
+            ang = _absorb(and_net, 'AND2', by_out, cons, protected)
             if ang:
                 fam = 'AOI21' if inv_g else 'AO21'
                 if have(fam):
@@ -271,7 +289,7 @@ def _match_fold(g, by_out, cons, cells):
                     return gate, sub, out
 
     # ---- wide same-op fold (collapse an OR2/AND2 reduction tree; tried AFTER compounds) ----
-    operands, absorbed = _flatten_same(g, by_out, cons, limit=4)
+    operands, absorbed = _flatten_same(g, by_out, cons, protected, limit=4)
     n = len(operands)
     if fn == 'OR2':
         wide = {3: 'OR3', 4: 'OR4'}; invf = {2: 'NOR2', 3: 'NOR3', 4: 'NOR4'}
@@ -289,15 +307,17 @@ def _match_fold(g, by_out, cons, cells):
 
 
 # ── entry point ────────────────────────────────────────────────────────────────────
-def tech_map_gates(gates, ref_dir, module, jira='eco'):
+def tech_map_gates(gates, ref_dir, module, jira='eco', protected_nets=None):
     """Fold primitive AND2/OR2/INV clusters in `gates` into library compound cells to reduce
-    logic depth. Fail-closed: returns the ORIGINAL `gates` unchanged if no compound cells are
-    available or if the mapped network is not provably equivalent."""
+    logic depth. `protected_nets` = nets referenced outside `gates` (rewire/exposed) that must
+    never be folded away. Fail-closed: returns the ORIGINAL `gates` unchanged if no compound
+    cells are available or if the mapped network is not provably equivalent."""
     if not gates:
         return gates
     cells = _resolve_compound_cells(ref_dir, module)
     if not cells:
         return gates
+    protected = set(protected_nets or ())
     orig = [dict(g) for g in gates]
     work = [dict(g) for g in gates]
 
@@ -307,7 +327,7 @@ def tech_map_gates(gates, ref_dir, module, jira='eco'):
         guard += 1
         by_out, cons = _index(work)
         for g in list(work):
-            m = _match_fold(g, by_out, cons, cells)
+            m = _match_fold(g, by_out, cons, cells, protected)   # protected nets never absorbed
             if not m:
                 continue
             new_gate, subset, out_net = m
@@ -320,8 +340,11 @@ def tech_map_gates(gates, ref_dir, module, jira='eco'):
             changed = True
             break   # re-index after each applied fold
 
-    # whole-network hard guard: every primary output must be unchanged
-    for o in _primary_outputs(orig):
+    # whole-network hard guard: every exposed net (true primary outputs + any protected net that
+    # is a gate output) must compute the same function after mapping.
+    byo_orig, _ = _index(orig)
+    check = set(_primary_outputs(orig)) | {p for p in protected if p in byo_orig}
+    for o in check:
         if not _equiv_at(orig, work, o, ref_dir):
             return gates   # FAIL-CLOSED — revert to primitives
     return work

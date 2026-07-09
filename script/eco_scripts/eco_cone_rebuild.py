@@ -591,7 +591,12 @@ def emit_comb_net_force_batch(ref_dir, module, signals, jira='eco', rename_map=N
     if tech_map:
         try:
             import eco_tech_map
-            gates = eco_tech_map.tech_map_gates(gates, ref_dir, synth.module, jira)
+            _prot = set()
+            for _rw in rewires:            # never fold away a net a rewire still references
+                for _k in ('old_net', 'new_net'):
+                    if _rw.get(_k):
+                        _prot.add(_rw[_k])
+            gates = eco_tech_map.tech_map_gates(gates, ref_dir, synth.module, jira, protected_nets=_prot)
         except Exception as _tm_e:
             print(f"  [tech_map] skipped ({type(_tm_e).__name__}: {_tm_e}); using primitive gates")
     # give every cone/mux gate a per-stage view, then resolve leaf nets per stage
