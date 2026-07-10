@@ -325,6 +325,73 @@ The human-review `<TAG>_eco_step2_fenets.rpt` is unchanged — keep writing it i
 
 ---
 
+## STEP D-CHAIN — Per-stage chaining for comb_net_force selector conditions (RUN ONLY IF comb_net_force changes exist)
+
+**Why this step exists.** The initial FM run (STEP B) resolves each `comb_net_force` SELECTOR branch-condition (e.g. `dsp_cmd_valid`, `dsp_cnt_end` — folded counter comparisons) ONLY in **Synthesize**: their RTL name lives in the SynRtl reference. The PrePlace/Route boundary targets reference the **previous stage's netlist**, where synthesis already folded the RTL name away → FM-036. So after STEP D-MAP the rename_map has a **Synthesize** value for each selector condition but PP/Route are echo/FM-036. If left unresolved, Step 3 REBUILDS the condition from the raw counters (hundreds of bloat gates that reference synthesis-deleted nets → NET-ABSENT at apply). `eco_fenets_chain.py` fixes PP then Route by **chaining**: it queries the *previous stage's* resolved net against the current stage's boundary target, with a **survival shortcut** (if the previous net name still exists in this stage's netlist, reuse it — no FM query).
+
+**Skip this step entirely if the rtl_diff has no `comb_net_force` changes.** (Grep: `grep -q comb_net_force data/<TAG>_eco_rtl_diff.json`.)
+
+Run the two stages **in order** (PrePlace uses Synthesize nets; Route uses the PrePlace nets just resolved). For each stage do emit-nets → (FM if needed) → merge:
+
+**D-CHAIN.1 — PrePlace emit-nets** (writes survivors into the map, prints nets still needing FM):
+```bash
+cd <BASE_DIR>
+python3 script/eco_scripts/eco_fenets_chain.py \
+    --mode emit-nets --stage PrePlace \
+    --rename-map data/<TAG>_eco_fenets_rename_map.json \
+    --rtl-diff   data/<TAG>_eco_rtl_diff.json \
+    --ref-dir    <REF_DIR> \
+    --output     data/<TAG>_eco_fenets_rename_map.json \
+    > data/<TAG>_chain_PrePlace_queries.txt
+```
+- The printed lines (stdout, captured to the `.txt`) are the scope-relative nets to query. **Empty file → every condition survived → skip D-CHAIN.2/.3 for PrePlace, go to Route.**
+
+**D-CHAIN.2 — PrePlace FM (BLOCKING, only if the query file is non-empty):**
+```bash
+python3 script/genie_cli.py \
+  -i "find equivalent nets at <REF_DIR> for <TILE> netName:<comma-joined lines from data/<TAG>_chain_PrePlace_queries.txt>" \
+  --execute --xterm
+```
+Poll every 5 minutes (same pattern as STEP B2) on the **PrePlace** target only:
+`<REF_DIR>/rpts/FmEqvPreEcoPrePlaceVsPreEcoSynthesize/find_equivalent_nets_<chain_tag>.txt`.
+When complete, write the raw rpt:
+```bash
+{
+  echo "TARGET: FmEqvPreEcoPrePlaceVsPreEcoSynthesize"
+  cat <REF_DIR>/rpts/FmEqvPreEcoPrePlaceVsPreEcoSynthesize/find_equivalent_nets_<chain_tag>.txt
+} > data/<chain_tag>_find_equivalent_nets_raw_chain_PrePlace.rpt
+cp data/<chain_tag>_find_equivalent_nets_raw_chain_PrePlace.rpt <AI_ECO_FLOW_DIR>/
+```
+
+**D-CHAIN.3 — PrePlace merge** (parse FM, pick same-phase `+` net-form equivalent, merge per-stage):
+```bash
+python3 script/eco_scripts/eco_fenets_chain.py \
+    --mode merge --stage PrePlace \
+    --rename-map data/<TAG>_eco_fenets_rename_map.json \
+    --rtl-diff   data/<TAG>_eco_rtl_diff.json \
+    --ref-dir    <REF_DIR> \
+    --raw-rpt    data/<chain_tag>_find_equivalent_nets_raw_chain_PrePlace.rpt \
+    --output     data/<TAG>_eco_fenets_rename_map.json
+```
+Exit 1 (`CHAIN PrePlace: UNRESOLVED`) → a condition had no `+` equivalent → escalate (do not silently proceed).
+
+**D-CHAIN.4-.6 — Route** (identical to .1/.2/.3 but `--stage Route`, PrePlace-target → **Route** target `FmEqvPreEcoRouteVsPreEcoPrePlace`, and file suffix `_chain_Route`). The emit-nets for Route reads the **PrePlace** values just merged and chains them forward:
+```bash
+python3 script/eco_scripts/eco_fenets_chain.py --mode emit-nets --stage Route \
+    --rename-map data/<TAG>_eco_fenets_rename_map.json --rtl-diff data/<TAG>_eco_rtl_diff.json \
+    --ref-dir <REF_DIR> --output data/<TAG>_eco_fenets_rename_map.json \
+    > data/<TAG>_chain_Route_queries.txt
+# → FM on FmEqvPreEcoRouteVsPreEcoPrePlace with those nets (if non-empty) →
+python3 script/eco_scripts/eco_fenets_chain.py --mode merge --stage Route \
+    --rename-map data/<TAG>_eco_fenets_rename_map.json --rtl-diff data/<TAG>_eco_rtl_diff.json \
+    --ref-dir <REF_DIR> --raw-rpt data/<chain_tag2>_find_equivalent_nets_raw_chain_Route.rpt \
+    --output data/<TAG>_eco_fenets_rename_map.json
+```
+
+**After D-CHAIN, the rename_map has all three stages resolved for every selector condition.** The Step 2 validator (STEP F) gate **C10** hard-fails if any comb_net_force selector condition is still unresolved in Synthesize/PrePlace/Route — so this step is what makes STEP F pass for comb_net_force ECOs.
+
+---
+
 ## STEP D — Build SPEC_SOURCES mapping
 
 After all initial + retry runs complete, determine which spec file resolved each stage:

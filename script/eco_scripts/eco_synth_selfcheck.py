@@ -390,11 +390,21 @@ def _selector_independent_of_orig(gates, rewires):
     return True
 
 
-def run(ref_dir, module, signal, n=5000, seed=1):
+def run(ref_dir, module, signal, n=5000, seed=1, rename_map=None):
     base = re.sub(r'^ddrss_\w+?_t_', '', module)
     new_rtl = open(resolve_rtl(ref_dir=ref_dir, module=base, subdir='SynRtl'), errors='replace').read()
     old_rtl = open(resolve_rtl(ref_dir=ref_dir, module=base, subdir='PreEco/SynRtl'), errors='replace').read()
     cfg = RtlConfig(ref_dir)
+    # Signals FM proved equivalent to a netlist net (rename map): the emit grounds them as
+    # leaves, so the reference MUST ground them too (feed the same free value) — else it would
+    # re-derive them and false-fail. The binding itself is FM-verified; this check validates
+    # the logic ABOVE the binding, treating bound signals as abstract inputs.
+    bindable = set()
+    for _k in (rename_map or {}):
+        if _k == '_metadata':
+            continue
+        _leaf = _k.rsplit('/', 1)[-1]
+        bindable.add(_leaf); bindable.add(re.sub(r'\[\d+\]$', '', _leaf))
     macros = {k: cfg.value(k) for k in cfg.defs if cfg.value(k) is not None}
     wm_new = build_width_map(new_rtl, macros)
     wm_old = build_width_map(old_rtl, macros)
@@ -421,13 +431,13 @@ def run(ref_dir, module, signal, n=5000, seed=1):
     def grounds(nm):
         r = _grounds_c.get(nm)
         if r is None:
-            r = (nm != signal and (innl(nm) or is_reg(nm))); _grounds_c[nm] = r
+            r = (nm != signal and (innl(nm) or is_reg(nm) or nm in bindable)); _grounds_c[nm] = r
         return r
 
     # tech_map=False: this check validates the PRIMITIVE cone vs RTL with a primitive-only
     # evaluator. Compound-cell mapping is verified separately (fail-closed) inside tech_map
     # (mapped == primitive), so primitive==RTL + mapped==primitive => mapped==RTL.
-    out = emit_comb_net_force(ref_dir, module, signal, jira='chk', tech_map=False)
+    out = emit_comb_net_force(ref_dir, module, signal, jira='chk', tech_map=False, rename_map=rename_map)
     if out['errors']:
         print("EMIT ERRORS:", out['errors']); return False
     gates = out['gates']

@@ -404,7 +404,102 @@ except Exception:
     _Synth = parse_expr = build_width_map = None
 
 
-def _synth_setup(ref_dir, module, jira='eco'):
+def _const_bits(v):
+    """Parse a constant port value into {bit: 0/1}. Scalar 1'bX -> {0:val}; a concat
+    {msb,...,lsb} of 1'bX -> per-bit (leftmost = highest bit). Returns None if any element
+    is not a constant (so a partially-driven port is not mis-folded)."""
+    v = v.strip()
+    ms = re.fullmatch(r"1'b([01])", v)
+    if ms:
+        return {0: int(ms.group(1))}
+    if v.startswith('{') and v.endswith('}'):
+        elems = [e.strip() for e in v[1:-1].split(',') if e.strip()]
+        vals = []
+        for e in elems:
+            em = re.fullmatch(r"1'b([01])", e)
+            if not em:
+                return None
+            vals.append(int(em.group(1)))
+        n = len(vals)
+        return {n - 1 - j: vals[j] for j in range(n)}
+    return None
+
+
+def _parent_const_ports(ref_dir, module, stage='Synthesize'):
+    """{port_bare: {bit: 0/1}} for ports of `module`'s instance that the PARENT ties to a
+    constant. Synthesis constant-propagates these into the module and drops the now-dead
+    logic; a cone re-derived from RTL must fold them too or it references nets synthesis
+    removed (the 9666 dsp_postnopdly_cnt / reg_rec_postnopdly NET-ABSENT class). Reads the
+    PreEco <stage> netlist and parses the (unique) instantiation of `module`."""
+    import os as _os, gzip as _gz
+    gz = _os.path.join(ref_dir, 'data', 'PreEco', f'{stage}.v.gz')
+    if not _os.path.isfile(gz):
+        return {}
+    try:
+        txt = _gz.open(gz, 'rt', errors='replace').read()
+    except Exception:
+        return {}
+    key = _mod_key(module) if _mod_key else module
+    for m in re.finditer(r'\b(\w+)\s+(\w+)\s*\(', txt):
+        if (_mod_key(m.group(1)) if _mod_key else m.group(1)) != key:
+            continue
+        start = m.end() - 1
+        depth, i = 0, start
+        while i < len(txt):
+            c = txt[i]
+            if c == '(':
+                depth += 1
+            elif c == ')':
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        inst = txt[start:i + 1]
+        out = {}
+        for port, val in re.findall(r'\.(\w+)\s*\(\s*([^()]*?)\s*\)', inst):
+            bits = _const_bits(val)
+            if bits:
+                out[port] = bits
+        return out
+    return {}
+
+
+_PRUNE_OUT_PINS = ('Z', 'ZN', 'Q', 'QN', 'CO', 'CON', 'S', 'SN', 'SO', 'OUT')
+
+
+def _prune_to_cone(gates, roots):
+    """Keep only gates in the fan-in cone of `roots` (the real output nets). Removes dead
+    gates left over when _Synth's eager emit builds a subtree that a later constant-fold
+    discards — those danglers still reference synthesis-removed nets and fail step3."""
+    drv = {g['output_net']: g for g in gates}
+    keep, stack = set(), list(roots)
+    while stack:
+        n = stack.pop()
+        g = drv.get(n)
+        if not g or g['output_net'] in keep:
+            continue
+        keep.add(g['output_net'])
+        for pin, v in g['port_connections'].items():
+            if pin in _PRUNE_OUT_PINS or not isinstance(v, str):
+                continue
+            stack.append(v)
+    return [g for g in gates if g['output_net'] in keep]
+
+
+def _bindable_from_rename_map(rename_map):
+    """Bare signal names (base + optional [bit]) that FM proved equivalent to a netlist net
+    (step2 rename map keys). _Synth grounds these as leaves instead of re-deriving them."""
+    out = set()
+    for k in (rename_map or {}):
+        if k == '_metadata':
+            continue
+        leaf = k.rsplit('/', 1)[-1]
+        out.add(leaf)
+        out.add(re.sub(r'\[\d+\]$', '', leaf))   # base name too
+    return out
+
+
+def _synth_setup(ref_dir, module, jira='eco', rename_map=None):
     """Build a shared _Synth (+ mk, rtl texts, width map) for a module. Multiple signals in
     the same module reuse ONE synth so its _sig_cache/_path_cache dedup the shared logic
     (e.g. the WCK-sync guard on both recdsp_c0mop and recdsp_c0vld is built once)."""
@@ -434,8 +529,70 @@ def _synth_setup(ref_dir, module, jira='eco'):
     # and the applier's module resolution.
     mm = re.match(r'\s*module\s+(\S+)', nlbody or '')
     full_module = mm.group(1) if mm else module
-    synth = _Synth(cfg, wm, rtl_text, innl, mk, full_module)
+    const_ports = _parent_const_ports(ref_dir, full_module)
+    bindable = _bindable_from_rename_map(rename_map)
+    synth = _Synth(cfg, wm, rtl_text, innl, mk, full_module,
+                   const_ports=const_ports, bindable=bindable)
     return synth, mk, rtl_text, old_text, wm
+
+
+_VERILOG_KW = {'begin', 'end', 'if', 'else', 'case', 'casex', 'casez', 'endcase', 'default',
+               'for', 'while', 'or', 'and', 'not', 'posedge', 'negedge'}
+
+
+def selector_folded_conditions(change, ref_dir, jira='chk'):
+    """The signals in a comb_net_force change's REGION SELECTOR (the delta-prefix path guard)
+    that the step-3 emitter would RE-DERIVE because they are folded out of the netlist and do
+    NOT constant-fold away. These are exactly the signals step-2 must resolve via FM
+    (find_equivalent_nets) so the emitter can BIND the selector to existing netlist nets
+    instead of rebuilding it (the 9666 dsp_cmd_valid / dsp_cnt_end case).
+
+    DETERMINISTIC and SHARED: both the step-2 query deriver (emits these to FM) and the
+    step-2 validator (fails if they were not resolved) call this, so they cannot drift.
+    Uses the SAME synth (const-port folding, in_netlist, is_reg) the emitter uses, so a
+    signal that constant-folds is correctly excluded (no binding needed)."""
+    if change.get('change_type') != 'comb_net_force':
+        return []
+    signal = change.get('signal') or change.get('new_token') or change.get('target')
+    module = change.get('module_name') or ''
+    if not (signal and module and _Synth and RtlConfig):
+        return []
+    try:
+        synth, mk, rtl_text, old_text, wm = _synth_setup(ref_dir, module, jira)
+        nt = parse_always(rtl_text, signal)
+        ot = parse_always(old_text, signal)
+        delta = compute_delta(ot, nt)
+    except Exception:
+        return []
+    if not delta:
+        return []
+    cfg = synth.cfg
+    _SKIP = re.compile(r'_eq_[A-Z0-9_]+$|_orig$|_inv\d*$')
+    out, seen = [], set()
+    for expr, _sense in (delta.get('prefix') or []):
+        for m in re.finditer(r'[A-Za-z_]\w*', expr):
+            nm = m.group(0)
+            if nm in seen:
+                continue
+            seen.add(nm)
+            if nm in _VERILOG_KW or _SKIP.search(nm):
+                continue
+            if cfg and nm in cfg.defs:              # macro / opcode constant
+                continue
+            if synth.in_netlist(nm):                # already a netlist net -> grounds directly
+                continue
+            if synth._is_reg(nm):                   # flop -> grounds as leaf
+                continue
+            # Lower it with const-folding: keep ONLY if it re-derives to REAL logic (a signal
+            # that folds to a constant, or isn't buildable, needs no FM binding).
+            try:
+                v = synth.scalar(parse_expr(nm))
+            except Exception:
+                continue
+            if v in ("1'b0", "1'b1"):
+                continue
+            out.append(nm)
+    return out
 
 
 def _region_of(synth, rtl_text, old_text, signal, wm):
@@ -575,7 +732,7 @@ def emit_comb_net_force_batch(ref_dir, module, signals, jira='eco', rename_map=N
     from eco_emit_priority_force import (_driver_map, _stage_net_tokens, _stage_net,
                                          _map_stage_net, _pcstage, STAGES,
                                          _module_netlist_body)
-    synth, mk, rtl_text, old_text, wm = _synth_setup(ref_dir, module, jira)
+    synth, mk, rtl_text, old_text, wm = _synth_setup(ref_dir, module, jira, rename_map=rename_map)
     dmaps = {st: _driver_map(ref_dir, module, st) for st in STAGES}
     rewires, errs, summ = [], [], {}
     for signal in signals:
@@ -590,6 +747,13 @@ def emit_comb_net_force_batch(ref_dir, module, signals, jira='eco', rename_map=N
     if errs:
         return {'gates': synth.gates, 'rewires': [], 'errors': errs, 'summary': summ}
     gates = synth.gates
+    # PRUNE dead gates: _Synth emits gates eagerly, then _and/_or/_inv fold constants and
+    # discard subtrees (e.g. reg_dcascramen=0 => the postnopdly compare is dropped). The
+    # discarded gates linger in synth.gates — dangling, and still referencing nets synthesis
+    # removed. Keep ONLY the fan-in cone of the real outputs (the rewire targets); this
+    # eliminates the DANGLING-CONE gates and the last NET-ABSENT refs (they live only in
+    # dead gates once the guard folds).
+    gates = _prune_to_cone(gates, {rw['old_net'] for rw in rewires})
     # Depth-reducing compound-cell tech mapping (fail-closed): fold the primitive AND2/OR2/INV
     # cone into library compound + wide cells (AOI/OAI/AO/OA/INR2 + OR3/4, AND3/4, NOR/NAND) so
     # the emitted logic depth (LOL) matches synthesis/human QoR instead of a deep primitive tree.

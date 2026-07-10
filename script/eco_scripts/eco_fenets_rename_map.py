@@ -42,6 +42,10 @@ try:
     from eco_cone_rebuild import cone_leaves as _cnf_cone_leaves
 except Exception:
     _cnf_cone_leaves = None
+try:
+    from eco_cone_rebuild import selector_folded_conditions as _cnf_sel_conds
+except Exception:
+    _cnf_sel_conds = None
 
 # ── Raw FM rpt parser ────────────────────────────────────────────────────────
 
@@ -155,6 +159,17 @@ def derive_queries(rtl_diff, ref_dir=None):
                     queries.append({'net_path': f'{scope}/{leaf}'.strip('/'),
                                     'signal': leaf,
                                     'source': f'changes[{idx}].comb_net_force_cone_leaf'})
+
+        # Cat 4d: comb_net_force SELECTOR branch-conditions (mirror eco_fenets_derive_queries
+        # Cat 4d). These folded conditions (e.g. dsp_cmd_valid, dsp_cnt_end) resolve ONLY in
+        # Synthesize (RTL name lives in SynRtl); PP/Route echo/FM-036 here and are fixed by the
+        # per-stage chaining pass (eco_fenets_chain.py). Emitting the key so the Synthesize seed
+        # exists for that chain.
+        if ct == 'comb_net_force' and ref_dir and _cnf_sel_conds:
+            for cond in _cnf_sel_conds(c, ref_dir):
+                queries.append({'net_path': f'{scope}/{cond}'.strip('/'),
+                                'signal': cond,
+                                'source': f'changes[{idx}].comb_net_force_selector_cond'})
 
         # Cat 1: wire_swap / and_term tokens
         if ct in ('wire_swap', 'and_term'):

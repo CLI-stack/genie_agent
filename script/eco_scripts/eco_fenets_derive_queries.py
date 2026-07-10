@@ -41,10 +41,10 @@ try:
     from eco_extract_pf_condition import extract_added_branch_condition, resolve_rtl
     from eco_emit_priority_force import (synthesize_condition, _PErr, _OUT_PINS_DRV,
                                          _module_netlist_body)
-    from eco_cone_rebuild import cone_leaves
+    from eco_cone_rebuild import cone_leaves, selector_folded_conditions
 except Exception:
     RtlConfig = extract_added_branch_condition = resolve_rtl = None
-    synthesize_condition = _module_netlist_body = cone_leaves = None
+    synthesize_condition = _module_netlist_body = cone_leaves = selector_folded_conditions = None
     _PErr = Exception
     _OUT_PINS_DRV = ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO')
 
@@ -431,6 +431,24 @@ def derive(rtl_diff, tile='', ref_dir=None):
                         'signal':   leaf,
                         'category': 4,
                         'source':   f'changes[{idx}].comb_net_force_cone_leaf',
+                    })
+
+        # Cat 4d: comb_net_force SELECTOR branch-conditions. The region selector (delta-prefix
+        # path guard) references folded combinational wires (e.g. dsp_cmd_valid, dsp_cnt_end =
+        # counter comparisons) that synthesis deleted from the netlist. If not resolved, step-3
+        # REBUILDS them from the counters (591-gate bloat) and references synthesis-removed nets
+        # (NET-ABSENT at apply). Query them so FM finds the existing netlist net to BIND to;
+        # step-3's _Synth grounds bound signals as leaves instead of re-deriving. selector_folded_
+        # conditions() excludes signals that constant-fold or are already in the netlist.
+        if ct == 'comb_net_force' and ref_dir and selector_folded_conditions:
+            sig = c.get('signal') or c.get('new_token') or c.get('target')
+            if sig:
+                for cond in selector_folded_conditions(c, ref_dir):
+                    out.append({
+                        'net_path': _abs_path(tile, scope, cond),
+                        'signal':   cond,
+                        'category': 4,
+                        'source':   f'changes[{idx}].comb_net_force_selector_cond',
                     })
 
         # Cat 11: compare_fold leaf nets. eco_emit_compare_fold self-derives the fold; its

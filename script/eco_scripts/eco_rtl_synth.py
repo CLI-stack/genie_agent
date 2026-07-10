@@ -356,7 +356,8 @@ _DEF_CELLS = {'INV': 'INVD1BWP136P5M156H3P48CPDLVT', 'AND2': 'AN2D1BWP136P5M156H
 
 
 class _Synth:
-    def __init__(self, cfg, wm, rtl_text, in_netlist, mk, module, cells=None):
+    def __init__(self, cfg, wm, rtl_text, in_netlist, mk, module, cells=None, const_ports=None,
+                 bindable=None):
         self.cfg = cfg
         self.wm = wm
         self.rtl = rtl_text
@@ -364,6 +365,17 @@ class _Synth:
         self.mk = mk
         self.module = module
         self.cells = cells or _DEF_CELLS
+        # Ports the PARENT ties to a constant ({port_bare: {bit: 0/1}}). Synthesis
+        # constant-propagates these into the module and eliminates the dead logic; a
+        # re-derived cone must fold them too, else it references nets synthesis removed
+        # (e.g. reg_dcascramen=0 => postnopdly_cnt_ok=1 => dsp_postnopdly_cnt dropped).
+        self.const_ports = const_ports or {}
+        # Signals that FM proved equivalent to an existing netlist net (from the step2
+        # rename map). Ground these as LEAVES instead of re-deriving their (folded)
+        # combinational cone — the per-stage resolution then maps the leaf to the real
+        # netlist net. This is what keeps the selector small: e.g. the branch guard's
+        # `dsp_cnt_end` (a counter comparison) is reused, not rebuilt from the counters.
+        self.bindable = bindable or set()
         self.macros = {k: cfg.value(k) for k in cfg.defs if cfg.value(k) is not None} if cfg else {}
         self.gates = []
         self._sig_cache = {}      # signal name -> {bit: net} (rebuilt comb signals)
@@ -627,8 +639,19 @@ class _Synth:
     # ── signal bit: ground at netlist net, else recursively rebuild ──
     def _sig_bit(self, name, i):
         name = name.lstrip('`')
+        # A port the parent ties to a constant: fold it (matches synthesis constant
+        # propagation). MUST come before grounding, else a constant-eliminated fanin
+        # (e.g. dsp_postnopdly_cnt via reg_dcascramen=0) is kept and references a net
+        # synthesis removed.
+        cp = self.const_ports.get(name)
+        if cp is not None and i in cp:
+            return "1'b1" if cp[i] else "1'b0"
         w = self.wm.get(name)
         netname = name if (w in (1, None)) else f'{name}[{i}]'
+        # FM-verified reusable net: ground as a leaf instead of re-deriving the folded
+        # cone. Per-stage resolution maps this leaf to the equivalent netlist net.
+        if name in self.bindable or netname in self.bindable:
+            return netname
         # ground if present in the netlist (register Q, port, surviving comb net)
         if self.in_netlist(name):
             return netname

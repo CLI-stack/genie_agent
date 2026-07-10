@@ -509,6 +509,52 @@ def main():
                     f"resolve old_token in EACH instance scope (find each copy's own net in the "
                     f"netlist), so all N copies get a per-stage rename_map entry.")
 
+    # C10 — comb_net_force SELECTOR-CONDITION completeness (final step2->step3 gate).
+    # The region selector references folded combinational wires (delta-prefix branch
+    # conditions, e.g. dsp_cmd_valid/dsp_cnt_end = counter comparisons) that synthesis
+    # deleted from the netlist. Step 3 MUST bind these to existing netlist nets (via FM) or
+    # it rebuilds them (591-gate bloat) AND references synthesis-removed nets (NET-ABSENT at
+    # apply). FAIL if any such condition was not resolved per-stage in the rename_map, so a
+    # missing Cat-4d query or an FM no-equivalent is caught HERE, not at step3/apply. Uses the
+    # SAME helper the deriver uses (single source of truth) so the two cannot drift.
+    if args.ref_dir and args.rtl_diff and Path(args.rtl_diff).is_file() and args.rename_map and Path(args.rename_map).is_file():
+        try:
+            from eco_cone_rebuild import selector_folded_conditions as _sfc
+        except Exception:
+            _sfc = None
+        if _sfc:
+            _rtl_c10 = _load_json(args.rtl_diff) or {}
+            _rmap_c10 = _load_json(args.rename_map) or {}
+            def _c10_unres(v, sig):
+                return (not v) or v == sig or 'FM-036' in str(v) or 'FALLBACK' in str(v)
+            for idx, c in enumerate(_rtl_c10.get('changes', [])):
+                if c.get('change_type') != 'comb_net_force':
+                    continue
+                scope = c.get('scope') or c.get('instance_scope') or ''
+                try:
+                    conds = _sfc(c, args.ref_dir)
+                except Exception:
+                    conds = []
+                for cond in conds:
+                    key = f"{scope}/{cond}" if scope else cond
+                    entry = _rmap_c10.get(key)
+                    if not isinstance(entry, dict):
+                        issues.append(
+                            f"C10: change[{idx}] comb_net_force {c.get('signal')!r} selector "
+                            f"condition {cond!r} NOT queried/resolved (missing rename_map key "
+                            f"{key!r}). Step 3 would REBUILD it (591-gate bloat + NET-ABSENT at "
+                            f"apply). FIX: Step 2 must emit a Cat-4d find_equivalent_nets query "
+                            f"for {cond!r} and resolve it per-stage (chain Synth net -> PP -> Route).")
+                        continue
+                    for st in ('Synthesize', 'PrePlace', 'Route'):
+                        v = entry.get(st, '')
+                        if _c10_unres(v, cond):
+                            issues.append(
+                                f"C10: change[{idx}] comb_net_force {c.get('signal')!r} selector "
+                                f"condition {cond!r} UNRESOLVED in {st} (rename_map[{key!r}][{st}]="
+                                f"{v!r}). Step 3 would re-derive it in {st} -> NET-ABSENT at apply. "
+                                f"FIX: chain the Synth net through the {st} FM target.")
+
     out = {
         'queries':            args.queries,
         'queries_raw':        args.queries_raw,
