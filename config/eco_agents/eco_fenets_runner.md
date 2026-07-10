@@ -14,16 +14,18 @@
 
 ## MANDATORY script execution order (top-of-MD checklist)
 
-Step 2 has 3 scripts that MUST run in this order. Skipping any one means downstream steps work on incomplete data.
+Step 2 scripts that MUST run in this order. Skipping any one means downstream steps work on incomplete data.
 
 | Order | Script | Purpose | Output |
 |---|---|---|---|
-| 1 | `eco_fenets_derive_queries.py` | Walk rtl_diff and emit complete 7-category query list (deterministic — replaces hand-picked agent reasoning) | `data/<TAG>_eco_fenets_queries_raw.json` |
+| 1 | `eco_fenets_derive_queries.py` | Walk rtl_diff and emit complete query list, incl. Cat-4d comb_net_force selector conditions (deterministic — replaces hand-picked agent reasoning) | `data/<TAG>_eco_fenets_queries_raw.json` |
 | 2 | `eco_fenets_sanitize_queries.py` | Collapse duplicate `<scope>/<scope>/` segments (rule-based clean-up) | `data/<TAG>_eco_fenets_queries.json` |
 | 3 | *(agent submits FM via TileBuilder)* | Run find_equivalent_nets per target, handle FM-036 retries, copy raw rpts | `data/<TAG>_find_equivalent_nets_raw*.rpt` |
 | 4 | `eco_fenets_rename_map.py` | Parse all raw rpts → emit per-stage rename map JSON (Step 3 reads this FIRST) | `data/<TAG>_eco_fenets_rename_map.json` |
+| 5 | `eco_fenets_chain.py` **(ONLY if rtl_diff has `comb_net_force`)** | Per-stage chaining (STEP D-CHAIN): resolve PP then Route selector conditions off the Synth net (survival shortcut + FM). Without it PP/Route stay FM-036 and C10 fails. | updates `data/<TAG>_eco_fenets_rename_map.json` |
+| 6 | `eco_validate_step2.py` | Final step2→step3 gate; **C10** hard-fails if any comb_net_force selector condition is unresolved in any stage | `data/<TAG>_eco_validate_step2.json` |
 
-**Do not start Step 2 work until you have read and acknowledged this script chain.** Each script is the authoritative implementation for its phase — do NOT replace any with manual reasoning.
+**Do not start Step 2 work until you have read and acknowledged this script chain.** Each script is the authoritative implementation for its phase — do NOT replace any with manual reasoning. **Step 5 (chaining) runs between STEP D-MAP and the STEP F validator — see STEP D-CHAIN.**
 
 ---
 
