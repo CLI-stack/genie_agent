@@ -74,11 +74,17 @@ ABSTRACT_GATE_FUNCTIONS = {
 }
 
 # ── Engine: regex to extract cell family from a full cell-type string ────────
-# Family = cell-name prefix before drive strength suffix.
+# Family = cell-name prefix before the drive-strength token `D<n>[P<n>][markers]BWP`.
 # Example: AN2D1BWP136P5M156H3P48CPDLVT → AN2
-# The drive-strength `D\d+` is REQUIRED in the pattern to stop greedy [A-Z]+ from
-# consuming letters AFTER the family (e.g. `INV` in INVD1BWP, not `INVD`).
-_FAMILY_RE = re.compile(r"^([A-Z]+\d*)D\d+[A-Z0-9]*$")
+# The base name may embed digits AND marking suffixes (EQ2A, BA1M2, LP2233, …):
+#   FCICONEQ2AD0P5BWP…      → FCICONEQ2A
+#   AOI22BA1M2EQ2AD1BWP…    → AOI22BA1M2EQ2A
+#   MB3SRLSDFQLP2233EQ2AD1AMDBWP… → MB3SRLSDFQLP2233EQ2A
+# The old `([A-Z]+\d*)` form returned None on any marked cell (a digit inside the
+# marking broke it) → those cells were unresolvable → the sim treated real gates
+# as leaves (68/119 families in umcrecdsp were lost). Anchor on the `BWP` library
+# marker (with optional AMD/other alpha marking before it) instead.
+_FAMILY_RE = re.compile(r"^(.+?)D\d+(?:P\d+)?[A-Z]*BWP")
 
 def family_of(cell_type):
     """Extract the cell family prefix from a full cell_type string. Returns

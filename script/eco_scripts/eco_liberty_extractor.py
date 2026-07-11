@@ -91,7 +91,10 @@ def liberty_to_python(fn):
 
 # ── Family extraction (cell name → family prefix) ──────────────────────────
 
-_FAM_RE = re.compile(r'^([A-Z]+\d*)D\d+[A-Z0-9]*$')
+# Must match eco_cell_truth_tables._FAMILY_RE exactly (same keys on both sides).
+# Family = prefix before drive `D<n>[P<n>][markers]BWP`; handles marked cells
+# (FCICONEQ2A, AOI22BA1M2EQ2A, …) that the old `([A-Z]+\d*)` form dropped.
+_FAM_RE = re.compile(r'^(.+?)D\d+(?:P\d+)?[A-Z]*BWP')
 
 def family_of(cell_name):
     """Extract family prefix. AN2D1BWP... → AN2. None if unrecognized."""
@@ -119,9 +122,18 @@ def select_lib_files(lib_dir):
     if not lib_dir.exists():
         return []
 
-    # Group all candidate libs by gate-width prefix, keep the largest per group
-    # Gate-width pattern: mh117, mh156, mh273, mh117l, etc.
-    buckets = {}   # width_key → (size, path)
+    # Cell FAMILIES are split across VT/marking VARIANTS: 'base*' holds the
+    # standard cells, 'amdconfidential*' holds AMD-proprietary cells (e.g. OAI12,
+    # OA112, OAOI211), 'pm*'/'basecstm*' hold others. Picking only the single
+    # largest file per gate-width (old behavior) SILENTLY DROPPED every family
+    # that lives only in a non-largest variant — e.g. 68/119 families used in
+    # umcrecdsp were missing, so the ECO precheck simulator could not resolve real
+    # netlist cones (only the emitter's own primitive gates). Fix: keep the
+    # largest file per (gate-width, variant-class) so every variant's cell set is
+    # parsed and unioned. VTs (lvt/svt/ulvt/…) within a variant-class share the
+    # same cell set, so one VT per class suffices.
+    _VT_RE = re.compile(r'(ulvtll|ulvt|lvtll|lvt|svt|elvt)$')
+    buckets = {}   # (width, variant_class) → (size, path)
     for gz in lib_dir.glob('*.lib.gz'):
         name = gz.name.lower()
         if 'tt0p9v100c' not in name:
@@ -134,15 +146,18 @@ def select_lib_files(lib_dir):
         if not wm:
             continue
         width = wm.group(1)         # 'h117', 'h156', 'h273', etc.
-        if width not in buckets or sz > buckets[width][0]:
-            buckets[width] = (sz, gz)
+        # variant-class = token after 'cpd' with the trailing VT suffix stripped
+        vm = re.search(r'cpd([a-z0-9]+?)\.tt0p9v100c', name)
+        vclass = _VT_RE.sub('', vm.group(1)) if vm else 'x'
+        key = (width, vclass)
+        if key not in buckets or sz > buckets[key][0]:
+            buckets[key] = (sz, gz)
 
     # ECO combinational chains use M117 and M156 gate widths.
     # M273/M429/M1092 are high-drive buffers/clock cells not used in ECO logic.
-    # Parsing them is slow (300-500 MB each) with no benefit for truth-table checks.
     ECO_WIDTHS = {'h117', 'h156'}
     selected = sorted(
-        [p for w, (_, p) in buckets.items() if w in ECO_WIDTHS],
+        [p for (w, _v), (_, p) in buckets.items() if w in ECO_WIDTHS],
         key=lambda p: p.name
     )
     # Fallback: if ECO_WIDTHS not found, return all buckets (handles future tiles)
