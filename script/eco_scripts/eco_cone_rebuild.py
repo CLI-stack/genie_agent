@@ -912,6 +912,73 @@ def _find_dff_by_dnet(body, dnet, reg):
     return best
 
 
+_CG_CELL_RE = re.compile(r'(ICG|CKLNQ|CKOR|CKAN|CTG|CKGATE|CGL|CKLHQ)', re.I)
+
+
+def _reg_clockgate(ref_dir, module, reg):
+    """If register `reg`'s flop CP is driven by a clock-gate cell, return per-stage
+    {stage: (cg_cell_inst, E_pin, E_net)} (read from the PreEco netlist of each stage — the
+    clean base the study is applied to); else None. Handles Route MB re-banking (each stage
+    parsed independently)."""
+    from eco_emit_priority_force import STAGES, _module_netlist_body
+    out = {}
+    for st in STAGES:
+        body = _module_netlist_body(ref_dir, module, st) or ''
+        # find reg's flop (first bit) → CP net
+        fm = re.search(r'\S*' + re.escape(reg) + r'_reg\S*\s*\(([^;]*)\)\s*;', body)
+        if not fm:
+            return None
+        cp = re.search(r'\.CP\s*\(\s*([^)]*?)\s*\)', fm.group(1))
+        if not cp:
+            return None
+        cpnet = cp.group(1)
+        # cell whose Q drives cpnet
+        cg = re.search(r'([A-Za-z0-9_]+)\s+(\S+)\s*\(([^;]*\.Q\s*\(\s*' + re.escape(cpnet) + r'\s*\)[^;]*)\)\s*;', body)
+        if not cg or not _CG_CELL_RE.search(cg.group(1)):
+            return None
+        e = re.search(r'\.E\s*\(\s*([^)]*?)\s*\)', cg.group(3))
+        if not e:
+            return None
+        out[st] = (cg.group(2), 'E', e.group(1))
+    return out
+
+
+def _flop_dpins_per_bit(ref_dir, module, reg, width):
+    """Per bit b, per stage: (flop_cell_inst, D_pin, D_net) — the register's own flop .D pin,
+    read from each stage's PreEco netlist (handles single-bit flops and MB banks incl. Route
+    re-banking). Returns {b: {stage: (cell, pin, dnet)}} or None if any bit/stage unresolved."""
+    from eco_emit_priority_force import STAGES, _module_netlist_body
+    bodies = {st: (_module_netlist_body(ref_dir, module, st) or '') for st in STAGES}
+    res = {}
+    for b in range(width):
+        cons = f'{reg}_reg_{b}_' if width > 1 else f'{reg}_reg'
+        res[b] = {}
+        for st in STAGES:
+            body = bodies[st]
+            found = None
+            for m in re.finditer(r'([A-Za-z0-9_]+)\s+(\S*' + re.escape(cons) + r'\S*)\s*\(([^;]*)\)\s*;', body):
+                inst, conns = m.group(2), m.group(3)
+                if 'clk_gate' in inst:
+                    continue
+                parts = inst.split('_MB_')
+                if len(parts) == 1:
+                    pin = 'D'
+                else:
+                    idx = next((j for j, p in enumerate(parts)
+                                if re.search(r'(^|/)' + re.escape(reg) + r'_reg_' + str(b) + r'_$', p)), None)
+                    if idx is None:
+                        continue
+                    pin = f'D{idx + 1}'
+                dm = re.search(r'\.' + re.escape(pin) + r'\s*\(\s*([^)]*?)\s*\)', conns)
+                if dm:
+                    found = (inst, pin, dm.group(1))
+                    break
+            if not found:
+                return None
+            res[b][st] = found
+    return res
+
+
 def emit_reg_guard_delta_batch(ref_dir, module, changes, jira='eco', rename_map=None, tech_map=True):
     """Emit register guard-change (Intent-A) ECOs for one or more registers in the SAME module
     through a SHARED synth. Each change dict needs {target_register, old_token} (branch_assigns is
@@ -943,6 +1010,58 @@ def emit_reg_guard_delta_batch(ref_dir, module, changes, jira='eco', rename_map=
         width = r['width']
         sel = r['sel']
         nsel = synth._inv(sel)
+        # ── CLOCK-GATED register (e.g. a counter) — needs BOTH .D re-drive AND E widen ──
+        # For a simple flop `old_token` is the .D net; for a clock-gated flop it is the clock-gate
+        # E net. The old flow OR'd the new term into E ONLY (enable) and left the .D data-select
+        # untouched → on the new region the flop enabled but loaded the WRONG value (JIRA-9666
+        # WckSyncCtr0: enabled on ==MRR but loaded decrement instead of rdwcksyncclks). Correct fix:
+        # surgical per-bit .D re-drive (D=sel?region:orig, using the flop's own clean .D nets) PLUS
+        # widen E = old_E | region_sel so the flop actually clocks in the changed region.
+        cg = _reg_clockgate(ref_dir, module, reg)
+        if cg:
+            dbits = _flop_dpins_per_bit(ref_dir, module, reg, width)
+            if not dbits:
+                errs.append(f"reg_guard_delta {reg}: clock-gated but per-bit .D pins unresolved.")
+                continue
+            bad = False
+            for b in range(width):
+                region = r['region_bits'].get(b, "1'b0")
+                inst0, pin0, oldD = dbits[b]['Synthesize']
+                t_reg = synth._and(sel, region); t_old = synth._and(nsel, oldD)
+                if t_reg == "1'b0" and t_old == "1'b0":
+                    errs.append(f"reg_guard_delta {reg}[{b}]: D folds to constant 0 both legs — refusing.")
+                    bad = True; break
+                new_net = mk(f'{reg}_{b}_dnew')
+                synth._g(synth.cells['OR2'], 'OR2', {'A1': t_reg, 'A2': t_old, 'Z': new_net})
+                roots.add(new_net)
+                cps = {st: dbits[b][st][0] for st in dbits[b]}
+                pps = {st: dbits[b][st][1] for st in dbits[b]}
+                rewires.append({
+                    'change_type': 'rewire', 'instance_name': inst0, 'cell_name': inst0,
+                    'cell_name_per_stage': cps, 'module_name': synth.module, 'pin': pin0,
+                    'pin_per_stage': pps, 'old_net': oldD, 'new_net': new_net, 'region_sel': sel,
+                    'confirmed': True, 'force_reapply': True, 'source': 'eco_cone_rebuild',
+                    'reg_guard_delta': True, 'dff_pin_rewire': True,
+                    'notes': f"reg guard-change (clock-gated, surgical .D): {reg}[{b}] "
+                             f"D = region_sel ? region : orig-.D.",
+                })
+            if bad:
+                continue
+            # widen the clock-gate enable so the flop clocks in the changed region
+            new_E = synth._or(old_tok, sel)      # old_tok = clean E net (e.g. N294)
+            roots.add(new_E)
+            ecps = {st: cg[st][0] for st in cg}; epps = {st: cg[st][1] for st in cg}
+            rewires.append({
+                'change_type': 'rewire', 'instance_name': ecps['Synthesize'], 'cell_name': ecps['Synthesize'],
+                'cell_name_per_stage': ecps, 'module_name': synth.module, 'pin': epps['Synthesize'],
+                'pin_per_stage': epps, 'old_net': old_tok, 'new_net': new_E, 'region_sel': sel,
+                'confirmed': True, 'force_reapply': True, 'source': 'eco_cone_rebuild',
+                'reg_guard_delta': True, 'clock_gate_enable_widen': True,
+                'notes': f"reg guard-change (clock-gated): widen {reg} clock-gate E = {old_tok} | region_sel "
+                         f"so the flop clocks in the new region (paired with the per-bit .D re-drive).",
+            })
+            continue
+        # ── SIMPLE (non-clock-gated) flop path ──
         cellps, pinps, oldps = _reg_dpin_per_stage(ref_dir, module, reg, old_tok, rename_map)
         is_bus = width > 1
         for b in range(width):
@@ -980,7 +1099,7 @@ def emit_reg_guard_delta_into_study(rtl_diff, study, jira, ref_dir, rename_map=N
     import collections
     changes = [c for c in rtl_diff.get('changes', [])
                if c.get('change_type') == 'and_term' and c.get('target_register')
-               and c.get('branch_assigns') is not None]
+               and (c.get('branch_assigns') is not None or c.get('branch_loads') is not None)]
     if not changes:
         return 0, []
     by_mod = collections.OrderedDict()

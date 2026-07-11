@@ -507,17 +507,22 @@ def signals_in_module(text, module_name):
 
 
 _CONST_LIT_RE = re.compile(r"^\d*'[bB][01]+$")
+_ANY_CONST_RE = re.compile(r"^\d*'[bBhHdDoO][0-9a-fA-FxXzZ_]+$")   # binary/hex/dec/oct literal
 
 
-def _reg_const_guard_delta(ref_dir, module, reg):
-    """DETERMINISTIC detector (Intent-A): return the constant a REGISTER guard-change assigns, or
-    None. Diffs the register's PreEco-vs-new next-state priority tree (eco_cone_rebuild.parse_always
-    /compute_delta); if the changed region assigns a bare constant (`1'b0`/`1'b1`), returns it. Used
-    to REQUIRE `branch_assigns` on such an and_term so the deterministic reg_guard_delta builder
-    (OR for set / AND-NOT for clear) is used instead of a hand-built OR2 (JIRA-9666 postcas bug).
-    Best-effort: any parse failure returns None (never a false hard-fail)."""
+def _reg_guard_delta_kind(ref_dir, module, reg):
+    """DETERMINISTIC detector (Intent-A): does REGISTER `reg` have a next-state guard-delta between
+    PreEco and new RTL, and of what kind? Diffs the register's priority tree (parse_always/compute_delta
+    — STRING level, so it never hits the synth's expr-parser limits). Returns:
+      ('const', "<literal>")  — the changed branch assigns a CONSTANT (postcas class)  -> needs branch_assigns
+      ('data',  None)         — the changed branch assigns a DATA expression (WckSyncCtr0/counter class,
+                                e.g. reg <= rdwcksyncclks) -> needs branch_loads + the clock-gate builder path
+      (None, None)            — no next-state delta (a plain combinational term-fold; not a reg guard-change)
+    Either kind MUST be routed to the deterministic eco_cone_rebuild reg_guard_delta builder, never a
+    hand-built single-net OR (JIRA-9666: postcas OR-into-clear-D, WckSyncCtr0 OR-into-E-only).
+    Best-effort: parse failure returns (None, None) (never a false hard-fail)."""
     if not (ref_dir and module and reg):
-        return None
+        return (None, None)
     try:
         import eco_cone_rebuild as _ecr
         from eco_extract_pf_condition import resolve_rtl
@@ -525,20 +530,29 @@ def _reg_const_guard_delta(ref_dir, module, reg):
         new_rtl = resolve_rtl(ref_dir=ref_dir, module=base, subdir='SynRtl')
         old_rtl = resolve_rtl(ref_dir=ref_dir, module=base, subdir='PreEco/SynRtl')
         if not (new_rtl and old_rtl):
-            return None
-        nt = _ecr.parse_always(open(new_rtl, errors='replace').read(), reg)
+            return (None, None)
+        new_txt = open(new_rtl, errors='replace').read()
+        # Only a REGISTER (nonblocking <= assignment) is a reg guard-change; a combinational
+        # signal (blocking =, e.g. recdsp_c0mop) is Intent-B comb_net_force, not this class.
+        if not re.search(r'\b' + re.escape(reg) + r'\s*(?:\[[^\]]*\])?\s*<=', new_txt):
+            return (None, None)
+        nt = _ecr.parse_always(new_txt, reg)
         ot = _ecr.parse_always(open(old_rtl, errors='replace').read(), reg)
         d = _ecr.compute_delta(ot, nt)
         if not d:
-            return None
-        for _cond, v in (d.get('subtree') or []):
-            vs = str(v).strip()
+            return (None, None)
+        vals = [str(v).strip() for _c, v in (d.get('subtree') or [])]
+        if d.get('default') is not None:
+            vals.append(str(d.get('default')).strip())
+        for vs in vals:                       # prefer a plain binary constant (postcas set/clear)
             if _CONST_LIT_RE.match(vs):
-                return vs
-        dv = str(d.get('default') or '').strip()
-        return dv if _CONST_LIT_RE.match(dv) else None
+                return ('const', vs)
+        for vs in vals:                       # any other constant literal (hex/dec) still a const force
+            if _ANY_CONST_RE.match(vs):
+                return ('const', vs)
+        return ('data', None)                 # delta exists but loads a data expression
     except Exception:
-        return None
+        return (None, None)
 
 
 def _detect_compare_fold_signature(context_line, new_token):
@@ -2909,35 +2923,45 @@ def main():
                     f"assignment_evidence={ev!r} — a BARE CONSTANT RHS pins the signal to a value, "
                     f"which is a priority_force (force sig=CONST under <cond>), NOT a term fold. "
                     f"Reclassify as change_type=priority_force with forced_signals[].bits[].")
-            # ── Intent-A register guard-change: branch_assigns enforcement (HARD-FAIL) ──
-            # A guard broaden/tighten on a REGISTER branch that assigns a CONSTANT must carry
-            # `branch_assigns` and be built by the deterministic eco_cone_rebuild reg_guard_delta
-            # pass (OR for set / AND-NOT for clear) — NOT a hand OR2 into D (JIRA-9666 postcas bug).
-            treg, ba = c.get('target_register'), c.get('branch_assigns')
-            if ba is not None:
-                if not _CONST_LIT_RE.match(str(ba).strip()):
+            # ── Intent-A register guard-change: branch_assigns / branch_loads enforcement (HARD-FAIL) ──
+            # A guard broaden/tighten on a REGISTER branch must be built by the deterministic
+            # eco_cone_rebuild reg_guard_delta pass (correct-by-construction), NEVER a hand-built
+            # single-net OR: a CONSTANT-assign branch needs `branch_assigns` (OR for set / AND-NOT for
+            # clear — JIRA-9666 postcas); a DATA-LOAD on a clock-gated counter needs `branch_loads` (re-
+            # drive per-bit .D AND widen the clock-gate E — JIRA-9666 WckSyncCtr0, where the old flow
+            # OR'd only the E-pin and loaded the wrong value).
+            treg = c.get('target_register')
+            ba, bl = c.get('branch_assigns'), c.get('branch_loads')
+            if ba is not None or bl is not None:
+                if ba is not None and not _ANY_CONST_RE.match(str(ba).strip()):
                     reg_guard_issues.append(
                         f"changes[{idx}] and_term branch_assigns={ba!r} is not a constant literal "
-                        f"(expected e.g. \"1'b0\" / \"1'b1\").")
+                        f"(expected e.g. \"1'b0\" / \"1'b1\" / \"8'h7f\"). A data load must use branch_loads.")
                 if not treg:
                     reg_guard_issues.append(
-                        f"changes[{idx}] and_term has branch_assigns={ba!r} but no target_register — "
-                        f"the reg_guard_delta builder needs the register whose .D it re-drives.")
+                        f"changes[{idx}] and_term has branch_assigns/branch_loads but no target_register — "
+                        f"the reg_guard_delta builder needs the register whose next-state it re-drives.")
                 if c.get('and_term_gate_chain_design'):
                     reg_guard_issues.append(
-                        f"changes[{idx}] and_term is a register guard-change (branch_assigns={ba!r}) but "
-                        f"ALSO carries and_term_gate_chain_design — do NOT hand-model the combine gate; "
-                        f"the deterministic eco_cone_rebuild reg_guard_delta pass owns it. Remove the chain.")
+                        f"changes[{idx}] and_term is a register guard-change but ALSO carries "
+                        f"and_term_gate_chain_design — do NOT hand-model the combine; the deterministic "
+                        f"eco_cone_rebuild reg_guard_delta pass owns it. Remove the chain.")
             elif treg:
-                konst = _reg_const_guard_delta(args.ref_dir, c.get('module_name'), treg)
-                if konst is not None:
+                kind, val = _reg_guard_delta_kind(args.ref_dir, c.get('module_name'), treg)
+                if kind == 'const':
                     reg_guard_issues.append(
-                        f"changes[{idx}] and_term guard-change on register {treg!r} whose changed branch "
-                        f"assigns constant {konst!r}, but `branch_assigns` is MISSING. Set "
-                        f"branch_assigns={konst!r} (and drop any and_term_gate_chain_design) so "
-                        f"eco_cone_rebuild reg_guard_delta builds the combine correct-by-construction "
-                        f"(OR for set / AND-NOT for clear). A hand-built OR2 into a clear-branch D corrupts "
-                        f"the register (JIRA-9666 postcas cascade → 762 FM failing points).")
+                        f"changes[{idx}] and_term guard-change on register {treg!r} assigns constant {val!r}, "
+                        f"but `branch_assigns` is MISSING. Set branch_assigns={val!r} (drop any "
+                        f"and_term_gate_chain_design) so eco_cone_rebuild reg_guard_delta builds it "
+                        f"correct-by-construction (OR for set / AND-NOT for clear). A hand OR2 into a "
+                        f"clear-branch D corrupts the register (JIRA-9666 postcas → 762 FM failing points).")
+                elif kind == 'data':
+                    reg_guard_issues.append(
+                        f"changes[{idx}] and_term guard-change on register {treg!r} LOADS a data expression "
+                        f"(counter/clock-gate class), but `branch_loads` is MISSING. Set branch_loads=<expr> "
+                        f"so eco_cone_rebuild reg_guard_delta re-drives the per-bit .D AND widens the "
+                        f"clock-gate E. OR-ing only the E-pin (old flow) enables the update but loads the "
+                        f"WRONG value (JIRA-9666 WckSyncCtr0: loaded decrement instead of rdwcksyncclks).")
     # comb_net_force schema: a combinational net re-driven under a new region (selector ?
     # new : original). The deterministic builder (eco_cone_rebuild.emit_comb_net_force)
     # derives the delta/region/gates from RTL+netlist given ONLY {module_name, signal}, so

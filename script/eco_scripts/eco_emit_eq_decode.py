@@ -164,7 +164,8 @@ def emit(rtl_diff, study, jira, ground_body_of, ref_dir=None, rename_map=None):
         # it rebuilds the whole D-cone region (incl. its own equality comparator) and re-drives
         # .D correct-by-construction. There is NO studier-built combine gate for these, so skip
         # here — otherwise the combine lookup below would (wrongly) error.
-        if c.get('target_register') and c.get('branch_assigns') is not None:
+        if c.get('target_register') and (c.get('branch_assigns') is not None
+                                         or c.get('branch_loads') is not None):
             continue
         ed = c.get('equality_decode')
         if not isinstance(ed, dict):

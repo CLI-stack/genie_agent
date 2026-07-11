@@ -5932,7 +5932,7 @@ def main():
     # the RTL golden next-state. Either miss is the JIRA-9666 postcas class → hard-fail.
     _rg_changes = [c for c in rtl_diff.get('changes', [])
                    if c.get('change_type') == 'and_term' and c.get('target_register')
-                   and c.get('branch_assigns') is not None]
+                   and (c.get('branch_assigns') is not None or c.get('branch_loads') is not None)]
     if _rg_changes:
         _rg_rewires = [e for e in _syn3
                        if isinstance(e, dict) and e.get('reg_guard_delta')]
