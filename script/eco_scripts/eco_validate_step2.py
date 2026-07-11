@@ -71,6 +71,8 @@ def main():
 
     cat8 = [q for q in queries if q.get('category') == 8 and q.get('mode_s_anchor')]
     issues = []
+    warnings = []   # non-blocking advisories (e.g. reg_guard guard-leaf not FM-bindable -> heavier
+                    # but CORRECT rebuild; unlike comb_net_force C10 these must NOT fail the gate)
 
     raw_text = _load_raw_rpts(args.raw_rpts) if args.raw_rpts else ''
 
@@ -555,6 +557,51 @@ def main():
                                 f"{v!r}). Step 3 would re-derive it in {st} -> NET-ABSENT at apply. "
                                 f"FIX: chain the Synth net through the {st} FM target.")
 
+    # C10b — reg_guard_delta (Intent-A and_term on a register) GUARD-LEAF binding (ADVISORY, NOT a
+    # gate). The clock-gate builder re-derives the load guard from RTL; a guard signal synthesis
+    # folded out (e.g. 9666 WckSyncCtr0 `recdsp_c0cs`, an internal combinational reg) is BOUND via
+    # FM when possible (lighter) or REBUILT from its real flop/port leaves when not. Unlike C10
+    # (comb_net_force -> unbound = NET-ABSENT = BROKEN), an unbound reg_guard leaf still produces a
+    # CORRECT build (grounds on existing flops; just more gates). So this is a WARNING only — a
+    # HARD-FAIL would permanently BLOCK any clock-gate ECO whose guard touches a dissolved internal
+    # reg (which find_equivalent_nets cannot anchor at all — FM-036 in every stage/scope; that is a
+    # Conformal structural-reuse capability, not a name-based FM one). Same shared helper as the
+    # deriver (Cat 4e) / chain so they cannot drift.
+    if args.ref_dir and args.rtl_diff and Path(args.rtl_diff).is_file() and args.rename_map and Path(args.rename_map).is_file():
+        try:
+            from eco_cone_rebuild import reg_guard_folded_conditions as _rgfc
+        except Exception:
+            _rgfc = None
+        if _rgfc:
+            _rtl_c10b = _load_json(args.rtl_diff) or {}
+            _rmap_c10b = _load_json(args.rename_map) or {}
+            def _c10b_unres(v, sig):
+                return (not v) or v == sig or 'FM-036' in str(v) or 'FALLBACK' in str(v)
+            for idx, c in enumerate(_rtl_c10b.get('changes', [])):
+                if c.get('change_type') != 'and_term' or not c.get('target_register'):
+                    continue
+                scope = c.get('scope') or c.get('instance_scope') or ''
+                try:
+                    conds = _rgfc(c, args.ref_dir)
+                except Exception:
+                    conds = []
+                for cond in conds:
+                    key = f"{scope}/{cond}" if scope else cond
+                    entry = _rmap_c10b.get(key)
+                    unres_stages = []
+                    if not isinstance(entry, dict):
+                        unres_stages = ['Synthesize', 'PrePlace', 'Route']
+                    else:
+                        unres_stages = [st for st in ('Synthesize', 'PrePlace', 'Route')
+                                        if _c10b_unres(entry.get(st, ''), cond)]
+                    if unres_stages:
+                        warnings.append(
+                            f"C10b (advisory): change[{idx}] reg_guard_delta {c.get('target_register')!r} "
+                            f"guard leaf {cond!r} not FM-bound in {unres_stages} — Step 3 will REBUILD it "
+                            f"from real flop/port leaves (CORRECT, no NET-ABSENT; just heavier). If it is "
+                            f"FM-anchorable (a port/flop, not a dissolved combinational reg), add a Cat-4e "
+                            f"query + chain to slim it. Non-blocking.")
+
     out = {
         'queries':            args.queries,
         'queries_raw':        args.queries_raw,
@@ -562,16 +609,19 @@ def main():
         'anchor_count':       len(anchor_role_map),
         'issue_count':        len(issues),
         'issues':             issues,
+        'warnings':           warnings,
         'overall_pass':       not issues,
     }
     write_result(args.output, out, not issues, getattr(args, 'iter', None))
 
     print('ECO_SCRIPT_LAUNCHED: eco_validate_step2.py')
     print(f'  queries:    {args.queries}')
-    print(f'  cat8:       {len(cat8)}  issues: {len(issues)}')
+    print(f'  cat8:       {len(cat8)}  issues: {len(issues)}  warnings: {len(warnings)}')
     print(f'  overall:    {"PASS" if not issues else "FAIL"}')
     for iss in issues:
         print(f'    - {iss}')
+    for w in warnings:
+        print(f'    ~ {w}')
     return 0 if not issues else 1
 
 

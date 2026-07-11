@@ -44,6 +44,7 @@ Load `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json`. **Build `nets_to_query` from scr
 | 5 | `port_promotion` change | `<scope>/<promoted_signal>` | Confirms the existing reg's net is accessible at parent scope |
 | 6 | `wire_swap` / `port_connection` referencing `UNCONNECTED_*` | `<submodule_inst>/<port_name>[<bit>]` | **Mode I detection**: if FM returns "no equivalent / undriven" → child internal port not driven (flag for Mode I wire-up at Step 3) |
 | 7 | `new_port` with hierarchical hookup | parent-scope wires the new port connects to | Confirms hookup path |
+| 4e | `and_term` with `target_register` (reg-guard-delta) | every folded-out guard leaf from `reg_guard_folded_conditions()` (e.g. `recdsp_c0cs`) | Bind the clock-gate load guard to its FM-equivalent net so Step 3 does NOT rebuild it (~150-gate saving). Chained to PP/Route in STEP D-CHAIN. |
 
 **Skip rules:**
 - `new_logic` target register itself (its output net doesn't exist in PreEco — query its dependencies instead)
@@ -327,11 +328,11 @@ The human-review `<TAG>_eco_step2_fenets.rpt` is unchanged — keep writing it i
 
 ---
 
-## STEP D-CHAIN — Per-stage chaining for comb_net_force selector conditions (RUN ONLY IF comb_net_force changes exist)
+## STEP D-CHAIN — Per-stage chaining for comb_net_force selector conditions AND reg_guard_delta guard leaves (RUN IF EITHER exists)
 
-**Why this step exists.** The initial FM run (STEP B) resolves each `comb_net_force` SELECTOR branch-condition (e.g. `dsp_cmd_valid`, `dsp_cnt_end` — folded counter comparisons) ONLY in **Synthesize**: their RTL name lives in the SynRtl reference. The PrePlace/Route boundary targets reference the **previous stage's netlist**, where synthesis already folded the RTL name away → FM-036. So after STEP D-MAP the rename_map has a **Synthesize** value for each selector condition but PP/Route are echo/FM-036. If left unresolved, Step 3 REBUILDS the condition from the raw counters (hundreds of bloat gates that reference synthesis-deleted nets → NET-ABSENT at apply). `eco_fenets_chain.py` fixes PP then Route by **chaining**: it queries the *previous stage's* resolved net against the current stage's boundary target, with a **survival shortcut** (if the previous net name still exists in this stage's netlist, reuse it — no FM query).
+**Why this step exists.** The initial FM run (STEP B) resolves each folded-out selector/guard condition — `comb_net_force` SELECTOR branch-conditions (e.g. `dsp_cmd_valid`, `dsp_cnt_end`) and `reg_guard_delta` (Intent-A `and_term` on a register) GUARD leaves (e.g. `recdsp_c0cs`, an internal combinational reg synthesis dissolved) — ONLY in **Synthesize**: their RTL name lives in the SynRtl reference. The PrePlace/Route boundary targets reference the **previous stage's netlist**, where synthesis already folded the RTL name away → FM-036 (both PP and Route return FM-036 on the bare RTL name — this is EXPECTED, not a failure). So after STEP D-MAP the rename_map has a **Synthesize** value for each condition but PP/Route are echo/FM-036. If left unresolved, Step 3 REBUILDS the condition (hundreds of bloat gates that reference synthesis-deleted nets → NET-ABSENT at apply; for reg_guard_delta the guard leaf alone is ~150 gates). `eco_fenets_chain.py` fixes PP then Route by **chaining**: it queries the *previous stage's* resolved net against the current stage's boundary target, with a **survival shortcut** (if the previous net name still exists in this stage's netlist, reuse it — no FM query). It handles BOTH change types via the shared `_conditions` (comb_net_force → `selector_folded_conditions`; and_term+target_register → `reg_guard_folded_conditions`).
 
-**Skip this step entirely if the rtl_diff has no `comb_net_force` changes.** (Grep: `grep -q comb_net_force data/<TAG>_eco_rtl_diff.json`.)
+**Skip this step entirely ONLY if the rtl_diff has NEITHER `comb_net_force` NOR a register-guard `and_term` change.** (Grep: `grep -qE 'comb_net_force|"target_register"' data/<TAG>_eco_rtl_diff.json`.)
 
 Run the two stages **in order** (PrePlace uses Synthesize nets; Route uses the PrePlace nets just resolved). For each stage do emit-nets → (FM if needed) → merge:
 

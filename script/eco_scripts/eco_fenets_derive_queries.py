@@ -41,10 +41,12 @@ try:
     from eco_extract_pf_condition import extract_added_branch_condition, resolve_rtl
     from eco_emit_priority_force import (synthesize_condition, _PErr, _OUT_PINS_DRV,
                                          _module_netlist_body)
-    from eco_cone_rebuild import cone_leaves, selector_folded_conditions
+    from eco_cone_rebuild import (cone_leaves, selector_folded_conditions,
+                                  reg_guard_folded_conditions, reg_guard_cone_leaves)
 except Exception:
     RtlConfig = extract_added_branch_condition = resolve_rtl = None
     synthesize_condition = _module_netlist_body = cone_leaves = selector_folded_conditions = None
+    reg_guard_folded_conditions = reg_guard_cone_leaves = None
     _PErr = Exception
     _OUT_PINS_DRV = ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO')
 
@@ -450,6 +452,37 @@ def derive(rtl_diff, tile='', ref_dir=None):
                         'category': 4,
                         'source':   f'changes[{idx}].comb_net_force_selector_cond',
                     })
+
+        # Cat 4e: reg_guard_delta (Intent-A and_term on a register) WIDENED-BRANCH guard leaves.
+        # The clock-gate builder (eco_cone_rebuild emit_reg_guard_delta_batch) re-derives the load
+        # guard from RTL; any guard signal synthesis folded out of the netlist (e.g. 9666
+        # WckSyncCtr0 `recdsp_c0cs`, an internal combinational reg) would be REBUILT (~150 gates)
+        # unless bound. Query them so FM finds the existing equivalent net; the builder's _Synth
+        # grounds bound signals as leaves. reg_guard_folded_conditions() excludes signals that
+        # constant-fold, are already in the netlist, or are true flops.
+        if ct == 'and_term' and c.get('target_register') and ref_dir and reg_guard_folded_conditions:
+            for cond in reg_guard_folded_conditions(c, ref_dir):
+                out.append({
+                    'net_path': _abs_path(tile, scope, cond),
+                    'signal':   cond,
+                    'category': 4,
+                    'source':   f'changes[{idx}].reg_guard_selector_cond',
+                })
+
+        # Cat 4f: reg_guard_delta BUILD cone leaves. The clock-gate builder rebuilds the load
+        # guard from RTL (a dissolved guard signal like `recdsp_c0cs` is rebuilt, not bound); that
+        # rebuild grounds on deeper leaves (e.g. `recdsp_c0cs = case(dsp_cmd_msc[7:0])` -> dsp_cmd_msc
+        # bits) that P&R may optimize away per stage (9666: dsp_cmd_msc[0]/[3] gone in PP/Route ->
+        # NET-ABSENT). Query EVERY cone leaf so fenets resolves each per-stage (then D-CHAIN carries
+        # Synth->PP->Route). Dedup drops the many that overlap comb_net_force cone leaves.
+        if ct == 'and_term' and c.get('target_register') and ref_dir and reg_guard_cone_leaves:
+            for leaf in reg_guard_cone_leaves(c, ref_dir):
+                out.append({
+                    'net_path': _abs_path(tile, scope, leaf),
+                    'signal':   leaf,
+                    'category': 4,
+                    'source':   f'changes[{idx}].reg_guard_cone_leaf',
+                })
 
         # Cat 11: compare_fold leaf nets. eco_emit_compare_fold self-derives the fold; its
         # LEAF nets (the two compare operands + the stage-stable separating-literal field

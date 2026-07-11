@@ -127,10 +127,37 @@ def main():
                 e['pin_per_stage'] = pps
                 n_cell += 1
 
+    # Per-stage cell/pin map for each rewired DFF, taken from its D-pin rewire (job #2 already filled
+    # cell_name_per_stage there). The SE/SI entries below REUSE it so that a DFF whose bank is renamed
+    # across stages (e.g. postcas_reg → split_act_..._MB_postcas_... in Route) gets the correct
+    # per-stage cell — otherwise the Route SE/SI rewire references the absent canonical name
+    # (CRITICAL/REWIRE-CELL-ABSENT). job #1 (below) never went through job #2, so it must inherit this.
+    dpin_cps = {}
+    for e in study.get('Synthesize', []):
+        if e.get('change_type') != 'rewire':
+            continue
+        pin = e.get('pin') or ''
+        if not (_DPIN.match(pin) or pin in ('CP', 'CK')):
+            continue
+        inst = e.get('instance_name') or e.get('cell_name') or ''
+        mod = e.get('module_name') or ''
+        if inst and e.get('cell_name_per_stage'):
+            dpin_cps[(inst, mod)] = e['cell_name_per_stage']
+
     # #1 SI/SE=1'b0 per (inst, module) — one entry per stage list per flop
+    # IDEMPOTENCY: dedup by the CANONICAL instance identity, not the possibly stage-renamed
+    # cell_name. A prior finalize leaves an SE/SI entry whose `cell_name` in the PP/Route lists is
+    # the stage-renamed MB name (e.g. split_act_..._MB_postcas_...), while `rewired` (and a fresh
+    # add) key on the canonical Synthesize name (postcas_reg). Keying `have` on cell_name would then
+    # MISS the existing entry and append a duplicate (with a Route-absent cell_name -> Check 52 dup +
+    # REWIRE-CELL-ABSENT). Extract the canonical name from cell_name_per_stage['Synthesize'] (falling
+    # back to instance_name / cell_name) so a re-run is a no-op.
+    def _canon_inst(x):
+        cps = x.get('cell_name_per_stage') or {}
+        return cps.get('Synthesize') or x.get('instance_name') or x.get('cell_name')
     for st in STAGES:
         entries = study.get(st, [])
-        have = {(x.get('cell_name') or x.get('instance_name'), x.get('module_name'), x.get('pin'))
+        have = {(_canon_inst(x), x.get('module_name'), x.get('pin'))
                 for x in entries if x.get('change_type') == 'rewire' and x.get('pin') in ('SI', 'SE')}
         for (inst, mod) in sorted(rewired):
             for pin in ('SI', 'SE'):
@@ -143,7 +170,8 @@ def main():
                     ops[s2] = pins.get(pin, "1'b0")
                 if all(v == "1'b0" for v in ops.values()):
                     continue
-                entries.append({
+                cps = dict(dpin_cps.get((inst, mod)) or {})   # per-stage bank cell (renamed in Route)
+                entry = {
                     'change_type': 'rewire', 'instance_name': inst, 'cell_name': inst,
                     'module_name': mod, 'pin': pin, 'old_net': ops[st],
                     'old_net_per_stage': ops, 'new_net': "1'b0",
@@ -151,7 +179,11 @@ def main():
                     'source': 'eco_emit_rewire_finalize',
                     'reason': "scan-pin isolation: rewired DFF holds SI/SE=1'b0 in all stages (Check 64).",
                     'notes': 'SI/SE consistency emitted by eco_emit_rewire_finalize.',
-                })
+                }
+                if cps:
+                    entry['cell_name_per_stage'] = cps
+                    entry['pin_per_stage'] = {s2: pin for s2 in STAGES}
+                entries.append(entry)
                 have.add((inst, mod, pin)); n_sise += 1
 
     open(args.output, 'w').write(json.dumps(study, indent=2))

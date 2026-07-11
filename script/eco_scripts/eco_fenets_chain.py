@@ -30,10 +30,10 @@ import argparse, json, re, sys
 from pathlib import Path
 
 try:
-    from eco_cone_rebuild import selector_folded_conditions
+    from eco_cone_rebuild import selector_folded_conditions, reg_guard_cone_leaves
     from eco_emit_priority_force import _module_netlist_body
 except Exception:
-    selector_folded_conditions = _module_netlist_body = None
+    selector_folded_conditions = reg_guard_cone_leaves = _module_netlist_body = None
 
 PREV = {'PrePlace': 'Synthesize', 'Route': 'PrePlace'}
 
@@ -46,17 +46,22 @@ def _load(p):
 
 
 def _conditions(rtl_diff, ref_dir):
-    """[(scope, signal, module_name), ...] selector conditions across all comb_net_force
-    changes. Uses the shared helper so it matches the deriver/validator exactly."""
+    """[(scope, signal, module_name), ...] folded-out guard/selector conditions across all
+    comb_net_force AND reg_guard_delta (Intent-A and_term on a register) changes. Uses the
+    shared helpers so it matches the deriver (Cat 4d/4e) and the step-2 validator exactly."""
     out = []
-    if not selector_folded_conditions:
-        return out
     for c in rtl_diff.get('changes', []):
-        if c.get('change_type') != 'comb_net_force':
-            continue
+        ct = c.get('change_type')
         scope = c.get('scope') or c.get('instance_scope') or ''
         mod = c.get('module_name') or ''
-        for sig in selector_folded_conditions(c, ref_dir):
+        sigs = []
+        if ct == 'comb_net_force' and selector_folded_conditions:
+            sigs = selector_folded_conditions(c, ref_dir)
+        elif ct == 'and_term' and c.get('target_register') and reg_guard_cone_leaves:
+            # chain the reg_guard BUILD cone leaves (queryable grounding nets, e.g. dsp_cmd_msc) —
+            # NOT the dissolved folded guard (recdsp_c0cs, which FM can't anchor; it gets rebuilt).
+            sigs = reg_guard_cone_leaves(c, ref_dir)
+        for sig in sigs:
             key = (scope, sig, mod)
             if key not in out:
                 out.append(key)

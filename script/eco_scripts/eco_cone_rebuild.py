@@ -595,6 +595,135 @@ def selector_folded_conditions(change, ref_dir, jira='chk'):
     return out
 
 
+def _rg_widened_branch(synth, rtl_text, old_text, reg, branch_target):
+    """Locate the widened branch of a register guard-change (Intent-A and_term). Returns
+    (load_cond, load_val) — the NEW-tree assign whose guard CHANGED vs old (not in the old key
+    set) and whose RHS base-name matches `branch_target` (branch_loads/branch_assigns) — or
+    (None, None). SHARED by the clock-gate builder, the step-2 query deriver, and the step-3
+    validator so all three agree on WHICH branch (and therefore which guard leaves) matter."""
+    nt = parse_always(rtl_text, reg)
+    ot = parse_always(old_text, reg)
+    _base = lambda s: re.sub(r'\s+', '', re.sub(r'\[[^\]]*\]', '', str(s)))
+    old_keys = {(_ncond(cc), _nval(vv)) for cc, vv in ot['assigns']}
+    for cond, val in nt['assigns']:
+        if (_ncond(cond), _nval(val)) in old_keys:
+            continue
+        if branch_target is None or _base(val) == _base(branch_target):
+            return cond, val
+    return None, None
+
+
+def reg_guard_folded_conditions(change, ref_dir, jira='chk'):
+    """The signals in a REGISTER guard-change (Intent-A `and_term` on `target_register`)
+    WIDENED-BRANCH guard that the step-3 reg_guard_delta builder would RE-DERIVE because they
+    are folded out of the netlist. These are exactly the signals step-2 must resolve via FM
+    (find_equivalent_nets) so the builder BINDS them to existing nets instead of rebuilding
+    (the 9666 WckSyncCtr0 `recdsp_c0cs` case — an internal combinational reg synthesis
+    dissolved; rebuilding it costs ~150 gates, binding it costs 0).
+
+    Mirrors selector_folded_conditions (comb_net_force) but keys on the reg-guard widened
+    branch. DETERMINISTIC and SHARED: both the step-2 deriver (emits these to FM) and the
+    step-2 validator (fails if unresolved) call this, so they cannot drift. Uses the SAME synth
+    (const-port folding, in_netlist, is_reg) the builder uses, so a signal that constant-folds
+    or is already a netlist net / true flop is correctly excluded (no binding needed)."""
+    if change.get('change_type') != 'and_term' or not change.get('target_register'):
+        return []
+    if change.get('branch_assigns') is None and change.get('branch_loads') is None:
+        return []
+    reg = change.get('target_register')
+    module = change.get('module_name') or ''
+    if not (reg and module and _Synth and RtlConfig):
+        return []
+    try:
+        synth, mk, rtl_text, old_text, wm = _synth_setup(ref_dir, module, jira)
+    except Exception:
+        return []
+    tgt = change.get('branch_loads') if change.get('branch_loads') is not None else change.get('branch_assigns')
+    try:
+        load_cond, _load_val = _rg_widened_branch(synth, rtl_text, old_text, reg, tgt)
+    except Exception:
+        return []
+    if load_cond is None:
+        return []
+    cfg = synth.cfg
+    _SKIP = re.compile(r'_eq_[A-Z0-9_]+$|_orig$|_inv\d*$')
+    out, seen = [], set()
+    for expr, _sense in load_cond:
+        for m in re.finditer(r'[A-Za-z_]\w*', expr):
+            nm = m.group(0)
+            if nm in seen:
+                continue
+            seen.add(nm)
+            if nm in _VERILOG_KW or _SKIP.search(nm):
+                continue
+            if cfg and nm in cfg.defs:              # macro / opcode constant
+                continue
+            if synth.in_netlist(nm):                # already a netlist net -> grounds directly
+                continue
+            if synth._is_reg(nm):                   # true flop -> grounds as leaf
+                continue
+            try:
+                v = synth.scalar(parse_expr(nm))
+            except Exception:
+                continue
+            if v in ("1'b0", "1'b1"):               # constant-folds -> no binding needed
+                continue
+            out.append(nm)
+    return out
+
+
+def reg_guard_cone_leaves(change, ref_dir, jira='q'):
+    """Real netlist-leaf names of a reg-guard-delta (Intent-A `and_term` on a register) clock-gate
+    build's GUARD + LOADED-VALUE cone — the nets fenets must resolve per-stage so the re-drive
+    applies in P&R (analog of comb_net_force's cone_leaves / priority_force's _pf_cone_leaves).
+
+    Why this exists: the clock-gate builder rebuilds the load guard from RTL (e.g. `recdsp_c0cs`
+    is a dissolved internal reg that FM cannot bind, so it is rebuilt), and that rebuild grounds on
+    deeper leaves — e.g. `recdsp_c0cs = case(dsp_cmd_msc[7:0])` pulls in `dsp_cmd_msc[*]`. Some of
+    those leaves (9666: `dsp_cmd_msc[0]`/`[3]`) are OPTIMIZED AWAY in PrePlace/Route, so without a
+    per-stage fenets binding the emitted cone is NET-ABSENT there. Querying every cone leaf (then
+    chaining Synth->PP->Route) resolves them. Returns sorted bare/bus-bit leaf names, or []."""
+    if change.get('change_type') != 'and_term' or not change.get('target_register'):
+        return []
+    if change.get('branch_assigns') is None and change.get('branch_loads') is None:
+        return []
+    reg = change.get('target_register')
+    module = change.get('module_name') or ''
+    if not (reg and module and _Synth and RtlConfig):
+        return []
+    try:
+        synth, mk, rtl_text, old_text, wm = _synth_setup(ref_dir, module, jira)
+        tgt = change.get('branch_loads') if change.get('branch_loads') is not None else change.get('branch_assigns')
+        load_cond, load_val = _rg_widened_branch(synth, rtl_text, old_text, reg, tgt)
+        if load_cond is None:
+            return []
+        width = wm.get(reg) or 1
+        roots = [synth._path_scalar(load_cond)]          # the load-guard cone
+        vast = parse_expr(load_val)
+        for b in range(width):                           # the loaded value bits (e.g. rdwcksyncclks[b])
+            roots.append(synth.bit(vast, b))
+    except Exception:
+        return []
+    driver = {g['output_net']: g for g in synth.gates}
+    leaves, seen = set(), set()
+    def _walk(net):
+        if not isinstance(net, str) or net in seen:
+            return
+        seen.add(net)
+        g = driver.get(net)
+        if not g:
+            if not net.startswith(('n_eco_', 'eco_')) and not re.match(r"^\d*'[bhdoBHDO]", net):
+                leaves.add(net)
+            return
+        for p, v in (g.get('port_connections') or {}).items():
+            if p in ('Z', 'ZN') or not isinstance(v, str):
+                continue
+            _walk(v)
+    for r in roots:
+        _walk(r)
+    return sorted(leaves)
+
+
 def _region_of(synth, rtl_text, old_text, signal, wm):
     """Build `signal`'s changed-region logic INTO the given (possibly shared) synth. Returns
     {'region_bits', 'width', 'sel', 'old_region_values'} or None (no delta).
@@ -696,7 +825,7 @@ def _emit_signal_muxes(synth, mk, r, module, signal, dmaps):
     for b in range(width):
         if b not in orig_bit:
             continue
-        region = r['region_bits'].get(b, "1'b0")
+        region = region_get(b)
         net, net_orig = _net(b), orig_bit[b]
         t_reg = synth._and(sel, region)
         t_old = synth._and(nsel, net_orig)
@@ -997,6 +1126,11 @@ def emit_reg_guard_delta_batch(ref_dir, module, changes, jira='eco', rename_map=
         if not reg or not old_tok:
             errs.append(f"reg_guard_delta: change missing target_register/old_token ({c.get('new_token')!r}).")
             continue
+        # Rebuild the register's next-state region from the RTL priority tree (correct-by-construction
+        # for constant-assign postcas AND data-load counters). _region_of now handles shift/subtract
+        # (added to the synth), so a clock-gated counter's full next-state (incl. the decrement) folds
+        # correctly. NOTE: a slimmer "surgical loaded-value only" region was tried but proved logically
+        # wrong (11/2500 mismatch) for the shallow-prefix counter delta, so the correct full fold is used.
         try:
             r = _region_of(synth, rtl_text, old_text, reg, wm)
         except Exception as e:
@@ -1009,25 +1143,53 @@ def emit_reg_guard_delta_batch(ref_dir, module, changes, jira='eco', rename_map=
         summ[reg] = r['summary']
         width = r['width']
         sel = r['sel']
+        region_get = (lambda b, _rb=r['region_bits']: _rb.get(b, "1'b0"))
         nsel = synth._inv(sel)
         # ── CLOCK-GATED register (e.g. a counter) — needs BOTH .D re-drive AND E widen ──
         # For a simple flop `old_token` is the .D net; for a clock-gated flop it is the clock-gate
         # E net. The old flow OR'd the new term into E ONLY (enable) and left the .D data-select
         # untouched → on the new region the flop enabled but loaded the WRONG value (JIRA-9666
-        # WckSyncCtr0: enabled on ==MRR but loaded decrement instead of rdwcksyncclks). Correct fix:
-        # surgical per-bit .D re-drive (D=sel?region:orig, using the flop's own clean .D nets) PLUS
-        # widen E = old_E | region_sel so the flop actually clocks in the changed region.
+        # WckSyncCtr0: enabled on ==MRR but loaded decrement instead of rdwcksyncclks).
+        #
+        # SLIM (physical-net hold-mux) fix — do NOT rebuild the whole region from RTL (the earlier
+        # full `region_bits` fold pulled in the counter's `cnt-1` ripple subtractor + `==7f` load +
+        # hold → ~270 gates, all of which already exist CORRECTLY in silicon). Instead reuse the
+        # flop's EXISTING physical .D driver net as the else-leg and only add the widened branch:
+        #       new_D[b] = load_active ? load_val[b] : orig-.D[b]
+        #       new_E    = old_E | load_active
+        # where load_active = _path_scalar(the widened branch's FULL path_cond) — the branch's own
+        # priority-correct active mask (path_cond already accumulates higher-priority else-negations,
+        # e.g. ~IReset & ~==7f), and load_val = its RHS (e.g. rdwcksyncclks; bit b is just a leaf).
+        # This is correct-by-construction: the else-leg IS the FM-passing silicon (already handles the
+        # OLD ==RD load + decrement + hold), and where the old narrower guard fired orig-.D already
+        # equals load_val, so widening the mux selector never regresses those vectors. (An earlier
+        # attempt using the priority-only branch GUARD without the higher-priority negations, or an
+        # RTL re-fold of the old state as the else-leg, mismatched 11/2500 — both avoided here.)
         cg = _reg_clockgate(ref_dir, module, reg)
         if cg:
             dbits = _flop_dpins_per_bit(ref_dir, module, reg, width)
             if not dbits:
                 errs.append(f"reg_guard_delta {reg}: clock-gated but per-bit .D pins unresolved.")
                 continue
+            # Locate the widened branch via the SHARED helper (same branch the step-2 deriver +
+            # step-3 validator key on — cannot drift).
+            tgt = c.get('branch_loads') if c.get('branch_loads') is not None else c.get('branch_assigns')
+            load_cond, load_val = _rg_widened_branch(synth, rtl_text, old_text, reg, tgt)
+            if load_cond is None:
+                errs.append(f"reg_guard_delta {reg}: clock-gated but no widened branch matching "
+                            f"branch_loads/branch_assigns={tgt!r} found in new RTL.")
+                continue
+            try:
+                load_active = synth._path_scalar(load_cond)    # full priority-correct active mask
+                val_ast = parse_expr(load_val)
+            except Exception as e:
+                errs.append(f"reg_guard_delta {reg}: widened-branch lowering failed: {e}")
+                continue
+            nload = synth._inv(load_active)
             bad = False
             for b in range(width):
-                region = r['region_bits'].get(b, "1'b0")
                 inst0, pin0, oldD = dbits[b]['Synthesize']
-                t_reg = synth._and(sel, region); t_old = synth._and(nsel, oldD)
+                t_reg = synth._and(load_active, synth.bit(val_ast, b)); t_old = synth._and(nload, oldD)
                 if t_reg == "1'b0" and t_old == "1'b0":
                     errs.append(f"reg_guard_delta {reg}[{b}]: D folds to constant 0 both legs — refusing.")
                     bad = True; break
@@ -1039,25 +1201,25 @@ def emit_reg_guard_delta_batch(ref_dir, module, changes, jira='eco', rename_map=
                 rewires.append({
                     'change_type': 'rewire', 'instance_name': inst0, 'cell_name': inst0,
                     'cell_name_per_stage': cps, 'module_name': synth.module, 'pin': pin0,
-                    'pin_per_stage': pps, 'old_net': oldD, 'new_net': new_net, 'region_sel': sel,
+                    'pin_per_stage': pps, 'old_net': oldD, 'new_net': new_net, 'region_sel': load_active,
                     'confirmed': True, 'force_reapply': True, 'source': 'eco_cone_rebuild',
                     'reg_guard_delta': True, 'dff_pin_rewire': True,
-                    'notes': f"reg guard-change (clock-gated, surgical .D): {reg}[{b}] "
-                             f"D = region_sel ? region : orig-.D.",
+                    'notes': f"reg guard-change (clock-gated, slim hold-mux): {reg}[{b}] "
+                             f"D = load_active ? load_val : orig-.D (else-leg = existing silicon).",
                 })
             if bad:
                 continue
             # widen the clock-gate enable so the flop clocks in the changed region
-            new_E = synth._or(old_tok, sel)      # old_tok = clean E net (e.g. N294)
+            new_E = synth._or(old_tok, load_active)   # old_tok = clean E net (e.g. N294)
             roots.add(new_E)
             ecps = {st: cg[st][0] for st in cg}; epps = {st: cg[st][1] for st in cg}
             rewires.append({
                 'change_type': 'rewire', 'instance_name': ecps['Synthesize'], 'cell_name': ecps['Synthesize'],
                 'cell_name_per_stage': ecps, 'module_name': synth.module, 'pin': epps['Synthesize'],
-                'pin_per_stage': epps, 'old_net': old_tok, 'new_net': new_E, 'region_sel': sel,
+                'pin_per_stage': epps, 'old_net': old_tok, 'new_net': new_E, 'region_sel': load_active,
                 'confirmed': True, 'force_reapply': True, 'source': 'eco_cone_rebuild',
                 'reg_guard_delta': True, 'clock_gate_enable_widen': True,
-                'notes': f"reg guard-change (clock-gated): widen {reg} clock-gate E = {old_tok} | region_sel "
+                'notes': f"reg guard-change (clock-gated): widen {reg} clock-gate E = {old_tok} | load_active "
                          f"so the flop clocks in the new region (paired with the per-bit .D re-drive).",
             })
             continue
@@ -1065,7 +1227,7 @@ def emit_reg_guard_delta_batch(ref_dir, module, changes, jira='eco', rename_map=
         cellps, pinps, oldps = _reg_dpin_per_stage(ref_dir, module, reg, old_tok, rename_map)
         is_bus = width > 1
         for b in range(width):
-            region = r['region_bits'].get(b, "1'b0")
+            region = region_get(b)
             old_leaf = (f'{old_tok}[{b}]' if is_bus else old_tok)
             t_reg = synth._and(sel, region)
             t_old = synth._and(nsel, old_leaf)

@@ -70,10 +70,65 @@ def _nl_text(plain):
         _NL_TEXT[plain] = t
     return _NL_TEXT[plain]
 
+
+_NL_MODMAP = {}                 # plain_path -> {module_name: (start_offset, end_offset)}
+_MODHEAD_RE = re.compile(r'(?m)^module\s+(\w+)\b')
+_ENDMOD_RE = re.compile(r'(?m)^endmodule\b')
+
+def _nl_module_map(plain):
+    """Build ONCE per stage netlist: {module_name -> (start,end) offsets into _nl_text}. Modules
+    don't nest, so a single forward scan of module-heads + endmodules indexes every module. Callers
+    slice the body on demand — O(1) lookup instead of an O(file) awk/regex scan PER module (the
+    ~40 uniquified umcrecrcqentry_* × 3-stage validator hotspot)."""
+    mp = _NL_MODMAP.get(plain)
+    if mp is not None:
+        return mp
+    mp = {}
+    full = _nl_text(plain)
+    ends = [m.start() for m in _ENDMOD_RE.finditer(full)]
+    import bisect
+    for hm in _MODHEAD_RE.finditer(full):
+        s = hm.start()
+        i = bisect.bisect_left(ends, hm.end())
+        if i < len(ends):
+            e = ends[i] + len('endmodule')
+            mp.setdefault(hm.group(1), (s, e))
+    _NL_MODMAP[plain] = mp
+    return mp
+
 def _nl_words(plain):
     if plain not in _NL_WORDS:
         _NL_WORDS[plain] = set(re.findall(r'[A-Za-z_]\w*', _nl_text(plain)))
     return _NL_WORDS[plain]
+
+
+_NL_WORDS_BR = {}             # plain_path -> set of bracket-inclusive net tokens (one build)
+_NL_WORDBR_RE = re.compile(r'[A-Za-z_][\w\[\]]*')
+
+def _nl_words_br(plain):
+    """Token set INCLUDING bracket-bit net forms (e.g. `WckSyncCtr0[5]`). Lets a whole-net
+    existence check use O(1) set membership for BOTH plain identifiers and bus-bit names,
+    instead of a `re.search(r'\\bnet\\b', <300MB text>)` per net (the Check-65 hotspot)."""
+    if plain not in _NL_WORDS_BR:
+        _NL_WORDS_BR[plain] = set(_NL_WORDBR_RE.findall(_nl_text(plain)))
+    return _NL_WORDS_BR[plain]
+
+
+_CELL_INST_COUNT = {}         # (cell, plain_path) -> #instantiations in the netlist
+def _cell_instance_count(cell, plain):
+    """How many times cell `cell` is INSTANTIATED (`<CellType> <cell> (`) in the netlist. Used to
+    tell an AMBIGUOUS multi-module tool cell (wrong-module apply risk) from a UNIQUE one (safe).
+    Cached."""
+    key = (cell, plain)
+    if key in _CELL_INST_COUNT:
+        return _CELL_INST_COUNT[key]
+    n = 0
+    try:
+        n = len(re.findall(r'\b' + re.escape(cell) + r'\s*\(', _nl_text(plain)))
+    except Exception:
+        n = 0
+    _CELL_INST_COUNT[key] = n
+    return n
 
 def _fastcmd(cmd):
     """Rewrite a shell cmd using zgrep/zcat on PreEco .v.gz into grep/cat on a
@@ -325,12 +380,19 @@ def _gate_input_completeness(study):
     return issues
 
 
-def _rg_surgical_mismatch(ref_dir, module, reg, N=4000):
+def _rg_surgical_mismatch(ref_dir, module, reg, N=2000, branch_target=None):
     """Intent-A backstop (RTL-signal space — NO netlist-leaf confound): return a short mismatch
-    string if the surgical re-drive the reg_guard_delta builder emits (`sel ? region : old_D`) does
-    NOT equal the RTL golden next-state (full new priority-tree fold) for register `reg`, else ''.
-    Brute-forces random RTL-input vectors. Best-effort: any build/parse error returns '' (never a
-    false hard-fail). This is the same oracle that proved the postcas fix (surgical==golden 0/20000)."""
+    string if the re-drive the reg_guard_delta builder emits does NOT equal the RTL golden
+    next-state for register `reg`, else ''. Brute-forces random RTL-input vectors. Best-effort:
+    any build/parse error returns '' (never a false hard-fail).
+
+    TWO models, matching the builder's two emission paths:
+      • SIMPLE flop (postcas class): `surg = sel ? region : old_D` vs golden next-state.
+      • CLOCK-GATED flop (WckSyncCtr0/counter class): the builder emits a slim hold-mux + E-widen,
+        so the check is the EFFECTIVE flop: eff = new_E?new_D:reg  vs  golden_eff = golden_E?golden:reg,
+        where new_D[b]=load_active?load_val[b]:old_D[b], new_E=old_E|load_active,
+        load_active = _path_scalar(the widened branch's full cond). (This is the cg_slim_chk oracle;
+        the simple-flop model would validate the WRONG function for a clock-gated reg.)"""
     try:
         import random
         import eco_cone_rebuild as _ecr
@@ -351,14 +413,36 @@ def _rg_surgical_mismatch(ref_dir, module, reg, N=4000):
                 if dflt is not None:
                     terms.append(synth._and(none, synth.bit(dflt, b)))
                 out[b] = synth._reduce(terms, 'or') if terms else "1'b0"
-            return out
-        golden = build_full(new_tree); old = build_full(old_tree)
-        r = _ecr._region_of(synth, rtl_text, old_text, reg, wm)
-        if r is None:
-            return ''
-        sel = r['sel']; nsel = synth._inv(sel)
-        surg = {b: synth._or(synth._and(sel, r['region_bits'].get(b, "1'b0")), synth._and(nsel, old[b]))
-                for b in range(width)}
+            return out, none
+        golden, none_new = build_full(new_tree); old, none_old = build_full(old_tree)
+        cg = None
+        try:
+            cg = _ecr._reg_clockgate(ref_dir, module, reg)
+        except Exception:
+            cg = None
+        if cg:
+            # ── CLOCK-GATED: effective-flop oracle (matches the slim hold-mux + E-widen build) ──
+            load_cond, load_val = _ecr._rg_widened_branch(synth, rtl_text, old_text, reg, branch_target)
+            if load_cond is None:
+                return ''
+            load_active = synth._path_scalar(load_cond); v_ast = _pexpr(load_val)
+            nload = synth._inv(load_active)
+            old_E = synth._inv(none_old); golden_E = synth._inv(none_new)
+            new_E = synth._or(old_E, load_active); n_newE = synth._inv(new_E); n_goldE = synth._inv(golden_E)
+            surg, gold_eff = {}, {}
+            for b in range(width):
+                new_D = synth._or(synth._and(load_active, synth.bit(v_ast, b)), synth._and(nload, old[b]))
+                surg[b]     = synth._or(synth._and(new_E, new_D),      synth._and(n_newE,  f'{reg}[{b}]'))
+                gold_eff[b] = synth._or(synth._and(golden_E, golden[b]), synth._and(n_goldE, f'{reg}[{b}]'))
+            golden = gold_eff        # compare eff vs golden_eff below (same downstream harness)
+        else:
+            # ── SIMPLE flop: sel ? region : old_D  vs  golden next-state ──
+            r = _ecr._region_of(synth, rtl_text, old_text, reg, wm)
+            if r is None:
+                return ''
+            sel = r['sel']; nsel = synth._inv(sel)
+            surg = {b: synth._or(synth._and(sel, r['region_bits'].get(b, "1'b0")), synth._and(nsel, old[b]))
+                    for b in range(width)}
         driver = {g['output_net']: g for g in synth.gates}
         def _leaves(net, acc):
             g = driver.get(net)
@@ -375,7 +459,8 @@ def _rg_surgical_mismatch(ref_dir, module, reg, N=4000):
             for b in d:
                 if isinstance(d[b], str):
                     _leaves(d[b], allleaves)
-        _leaves(sel, allleaves)
+        if not cg:
+            _leaves(sel, allleaves)     # simple-flop selector cone (clock-gate: load_active already in surg)
         leaflist = sorted(allleaves)
         def _ev(net, env, memo):
             if net in memo:
@@ -395,6 +480,8 @@ def _rg_surgical_mismatch(ref_dir, module, reg, N=4000):
         random.seed(3)
         for _ in range(N):
             env = {l: random.randint(0, 1) for l in leaflist}
+            if 'IReset' in env:
+                env['IReset'] = 0        # async reset handled by the flop reset pin, not the D-cone
             for b in range(width):
                 memo = {}
                 gv = _ev(golden[b], env, memo) if isinstance(golden[b], str) else golden[b]
@@ -2986,15 +3073,26 @@ def main():
         gz = Path(ref_dir) / 'data' / 'PreEco' / f'{stage}.v.gz'
         if not gz.is_file():
             _MODULE_INDEX_CACHE[key] = (None, None); return _MODULE_INDEX_CACHE[key]
+        # IN-MEMORY module extraction: decompress the stage netlist ONCE (cached temp via
+        # _plain_netlist) + read its text ONCE (cached via _nl_text), then slice the module body
+        # from memory with a bounded non-greedy regex. This replaces a per-module `awk` subprocess
+        # that re-scanned the whole 4.2M-line netlist each call — with ~40 uniquified modules
+        # (umcrecrcqentry_0..39) × 3 stages that was the ~1h validator hotspot. Output is identical
+        # (module <host> body [+ module <host>_0 body], comment-stripped below).
         try:
-            cmd = (
-                f"zcat {gz} | awk '/^module {re.escape(host_module)}[ \\t(]/,/^endmodule/'; "
-                f"zcat {gz} | awk '/^module {re.escape(host_module)}_0[ \\t(]/,/^endmodule/'"
-            )
-            txt = subprocess.run(_fastcmd(cmd), shell=True, capture_output=True,
-                                 text=True, timeout=120).stdout
+            plain = _plain_netlist(str(gz))
+            full = _nl_text(plain)
+            modmap = _nl_module_map(plain)          # one-pass index, cached per stage
         except Exception:
+            full = ''; modmap = {}
+        if not full:
             _MODULE_INDEX_CACHE[key] = (None, None); return _MODULE_INDEX_CACHE[key]
+        parts = []
+        for _mod in (host_module, f'{host_module}_0'):
+            span = modmap.get(_mod)
+            if span:
+                parts.append(full[span[0]:span[1]])
+        txt = '\n'.join(parts)
         if not txt:
             _MODULE_INDEX_CACHE[key] = (None, None); return _MODULE_INDEX_CACHE[key]
         # Strip comments
@@ -3187,6 +3285,17 @@ def main():
             par_vals = {stg: pv[0] for stg, pv in parities.items()}
             if len(set(par_vals.values())) > 1:
                 terms = {stg: pv[1] for stg, pv in parities.items()}
+                # Only a RELIABLE polarity mismatch when the parity walk reached the SAME terminal
+                # driver (cell type) in every stage — then a differing inverter count is a genuine
+                # extra inverter on a STABLE driver (the exact case this check targets: "P&R added an
+                # odd number of inverters"). If the terminals DIFFER across stages (e.g. Synth OA12 /
+                # PP OA21 / Route OAI21), P&R RESTRUCTURED the local driver, so the inverter-parity
+                # counts measure different chains and are NOT comparable — the net value is typically
+                # preserved (OA → INV+OAI double-inversion cancels). Skip to avoid a false positive;
+                # FM remains the authoritative polarity gate. (Intent preserved: still catch a real
+                # added-INV flip on a stable driver; no longer misfire on P&R driver restructures.)
+                if len(set(terms.values())) > 1:
+                    continue
                 issues.append(
                     f"HIGH/38-CHAIN-LEAF-POLARITY-MISMATCH: {ent_kind} {inst}.{pin} "
                     f"net per-stage = {per_stage_nets} but inverter-parity "
@@ -4896,25 +5005,48 @@ def main():
     # rewire on a tool-generated upstream cell in the same module is redundant
     # and likely targets the wrong module copy (xbar afifo vs WDB).
     _TOOL_CELL_RE = re.compile(r'^(ctmi_|phs_|copt_|aps_rename_)', re.I)
+    _s54_plain = None
+    if args.ref_dir:
+        _s54_gz = Path(args.ref_dir) / 'data' / 'PreEco' / 'Synthesize.v.gz'
+        if _s54_gz.is_file():
+            try:
+                _s54_plain = _plain_netlist(str(_s54_gz))
+            except Exception:
+                _s54_plain = None
     for stage in ('Synthesize',):
-        mb_dff_d_rewires = {
-            e.get('cell_name', '') for e in study.get(stage, [])
+        # Redundancy can ONLY exist within the SAME MODULE as a direct MB-DFF D-pin rewire (an
+        # upstream ctmi feeding that DFF's D-cone) — this check's own comment says "...in the same
+        # module is redundant". So key by module, not globally: a ctmi rewire in a DIFFERENT module
+        # (e.g. a compare_fold rewire in umcrecrcqentry_0 vs a reg_guard DFF in umcrecdsp) is a
+        # separate legitimate change and must NOT be cross-flagged. (Before this fix, ANY MB-DFF
+        # D-pin rewire — e.g. the WckSyncCtr0 reg_guard-delta — falsely flagged EVERY ctmi rewire.)
+        mb_dff_d_modules = {
+            e.get('module_name', '') for e in study.get(stage, [])
             if e.get('change_type') == 'rewire' and
             str(e.get('pin', '')).upper().startswith('D') and
             re.match(r'.*_MB_.*|.*_reg_\d+_.*', e.get('cell_name', ''))
         }
-        if mb_dff_d_rewires:
+        if mb_dff_d_modules:
             for e in study.get(stage, []):
                 if e.get('change_type') != 'rewire':
                     continue
                 cell = e.get('cell_name', '') or e.get('instance_name', '')
-                if _TOOL_CELL_RE.match(cell):
-                    issues.append(
-                        f"Check 54 FAIL: rewire on tool-generated cell {cell!r} "
-                        f"(pin={e.get('pin')}) exists alongside direct MB DFF D-pin rewires. "
-                        f"Tool-generated cells like ctmi_*/phs_* appear in multiple modules — "
-                        f"the applier matches the FIRST occurrence (often wrong module). "
-                        f"Remove this rewire; the MB DFF D-pins are already directly rewired.")
+                if not _TOOL_CELL_RE.match(cell):
+                    continue
+                # Same-module scope (documented intent): skip ctmi rewires whose module has no
+                # direct MB-DFF D-pin rewire.
+                if e.get('module_name', '') not in mb_dff_d_modules:
+                    continue
+                # Unique-instance cell → no multi-module "wrong first occurrence" ambiguity, which
+                # is the ENTIRE premise of this check ("appear in multiple modules"). Safe → skip.
+                if _s54_plain and _cell_instance_count(cell, _s54_plain) <= 1:
+                    continue
+                issues.append(
+                    f"Check 54 FAIL: rewire on tool-generated cell {cell!r} "
+                    f"(pin={e.get('pin')}) exists alongside direct MB DFF D-pin rewires IN THE "
+                    f"SAME MODULE ({e.get('module_name')!r}) and the cell is instantiated in "
+                    f"multiple modules — the applier matches the FIRST occurrence (often wrong "
+                    f"module). Remove this rewire; the MB DFF D-pins are already directly rewired.")
 
     # ── Check 55: new DFF CP = bare clock when shadow gate exists in module ──
     # When a CKOR*/ICG* shadow gate is present in a module, ALL new_logic_dff
@@ -5434,18 +5566,24 @@ def main():
     _FUNC_PINS_65 = ('A1', 'A2', 'B1', 'B2', 'I', 'IN', 'D')
     _SKIP_SYNTH_PREFIXES_65 = ("1'b", "n_eco_", "ECO_", "PENDING", "UNRESOLVABLE",
                                 "FxPrePlace_", "FxPlace_", "FxOptCts_", "FxCts_")
-    # Load PreEco text for all 3 stages (for bare-name existence check)
-    _preeco_txt_65: dict = {}
+    # Per-stage word-token SETS (cached, one build) for the bare-name existence check. Using a set
+    # membership test is O(1) vs a `re.search(r'\bnet\b', <300MB text>)` per net per stage — with
+    # 200+ gate entries × several pins × 3 stages the regex form was an O(gates×file) hotspot
+    # (~1h). Non-identifier net names (brackets etc.) fall back to a cached full-text regex (rare).
+    _preeco_words_65: dict = {}
     for _s65 in ('Synthesize', 'PrePlace', 'Route'):
         _gz65 = Path(args.ref_dir) / 'data' / 'PreEco' / f'{_s65}.v.gz'
         if _gz65.is_file():
             try:
-                import gzip as _gz65mod
-                _preeco_txt_65[_s65] = _gz65mod.open(str(_gz65), 'rt', errors='ignore').read()
+                _preeco_words_65[_s65] = _nl_words_br(_plain_netlist(str(_gz65)))
             except Exception:
-                _preeco_txt_65[_s65] = ''
+                _preeco_words_65[_s65] = set()
         else:
-            _preeco_txt_65[_s65] = ''
+            _preeco_words_65[_s65] = set()
+
+    def _bare_in_stage_65(net, s65):
+        # O(1) membership for BOTH plain and bracket-bit net names (no per-net full-text regex)
+        return net in _preeco_words_65.get(s65, set())
 
     for _e65 in study.get('Synthesize', []):
         if _e65.get('change_type') not in ('new_logic_gate', 'new_logic_dff'):
@@ -5458,11 +5596,8 @@ def main():
             if not _syn_net or any(_syn_net.startswith(p) for p in _SKIP_SYNTH_PREFIXES_65):
                 continue  # Synth already uses CTS name or ECO-internal — skip
             # Check if bare name exists in ALL 3 stages (condition for Check 65 to apply)
-            _bare_in_all = all(
-                bool(re.search(r'\b' + re.escape(_syn_net) + r'\b',
-                               _preeco_txt_65.get(_s65, '')))
-                for _s65 in ('Synthesize', 'PrePlace', 'Route')
-            )
+            _bare_in_all = all(_bare_in_stage_65(_syn_net, _s65)
+                               for _s65 in ('Synthesize', 'PrePlace', 'Route'))
             if not _bare_in_all:
                 continue  # bare name absent in some stage → structural trace / CTS rename OK
             for _stg65 in ('PrePlace', 'Route'):
@@ -5949,7 +6084,8 @@ def main():
                     f"study — the deterministic builder did not run (a studier-hand-built OR2 into D is the "
                     f"JIRA-9666 postcas bug). Re-run eco_cone_rebuild.py --emit-into-study.")
             if args.ref_dir and mod:
-                bad = _rg_surgical_mismatch(args.ref_dir, mod, reg)
+                _bt = c.get('branch_loads') if c.get('branch_loads') is not None else c.get('branch_assigns')
+                bad = _rg_surgical_mismatch(args.ref_dir, mod, reg, branch_target=_bt)
                 if bad:
                     issues.append(
                         f"HIGH/REG-GUARD: register guard-change on {reg!r} — the surgical re-drive "

@@ -54,6 +54,7 @@ _TOKSPEC = [
     ('ID',   r"`?[A-Za-z_]\w*"),
     ('IPU',  r'\+:'),
     ('IPD',  r'-:'),
+    ('SHL',  r'<<'), ('SHR', r'>>'),   # MUST precede REL so `<<`/`>>` aren't split into `<`/`>`
     ('REL',  r'<=|>=|<|>'),
     ('EQ',   r'==|!='),
     ('LAND', r'&&'),
@@ -87,7 +88,7 @@ def tokenize(expr):
 # binary operator precedence (higher binds tighter)
 _BINPREC = {
     'LOR': 1, 'LAND': 2, 'OR': 3, 'XOR': 4, 'RXNOR': 4, 'AND': 5,
-    'EQ': 6, 'REL': 7, 'PLUS': 8, 'MINUS': 8,
+    'EQ': 6, 'REL': 7, 'SHL': 8, 'SHR': 8, 'PLUS': 9, 'MINUS': 9,
 }
 _UNARY = {'NOT', 'LNOT', 'MINUS', 'AND', 'OR', 'XOR', 'RNAND', 'RNOR', 'RXNOR'}
 _REDMAP = {'AND': '&', 'OR': '|', 'XOR': '^', 'RNAND': '~&', 'RNOR': '~|', 'RXNOR': '~^'}
@@ -585,7 +586,45 @@ class _Synth:
             return self._eq(a, b, op == '!=')
         if op in ('<', '>', '<=', '>='):
             return self._cmp(a, b, op)
+        if op in ('<<', '>>'):
+            # shift by a CONSTANT amount = bit reindex (the common RTL form, e.g. 4'b1<<0,
+            # dsp_cmd_msc[..]>>3). Non-constant shift amount -> fail-closed (caller grounds
+            # the signal as a netlist leaf or aborts). Out-of-range bit -> 0.
+            n = _const_int(b)
+            if n is None:
+                raise _SErr(f"non-constant shift amount in {op}")
+            if op == '<<':
+                return self.bit(a, i - n) if i - n >= 0 else "1'b0"
+            wa = self._w(a)                       # '>>'
+            if wa is not None and i + n >= wa:
+                return "1'b0"
+            return self.bit(a, i + n)
+        if op in ('+', '-'):
+            return self._addsub(node, a, b, i, op == '-')
         raise _SErr(f"binary op {op} unsupported")
+
+    def _addsub(self, node, a, b, i, sub):
+        """Ripple add/subtract, bit i. Subtract via two's complement: a - b = a + ~b + 1.
+        Carry/borrow-in per bit is memoized per (node, bit) so the chain is O(width), not O(w^2)."""
+        ck = getattr(self, '_carry_cache', None)
+        if ck is None:
+            ck = self._carry_cache = {}
+        nid = id(node)
+        def bbit(k):
+            return self._inv(self.bit(b, k)) if sub else self.bit(b, k)
+        def carry(k):
+            if k == 0:
+                return "1'b1" if sub else "1'b0"     # two's-complement +1 for subtract
+            key = (nid, k)
+            if key in ck:
+                return ck[key]
+            ak, bk, cin = self.bit(a, k - 1), bbit(k - 1), carry(k - 1)
+            axb = self._reduce([ak, bk], 'xor')
+            cout = self._or(self._and(ak, bk), self._and(cin, axb))   # majority
+            ck[key] = cout
+            return cout
+        ak, bk = self.bit(a, i), bbit(i)
+        return self._reduce([ak, bk, carry(i)], 'xor')
 
     def _cmp(self, a, b, op):
         """Unsigned magnitude comparator -> 1-bit net. Built from AND/OR/INV only."""
