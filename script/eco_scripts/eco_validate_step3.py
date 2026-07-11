@@ -325,6 +325,87 @@ def _gate_input_completeness(study):
     return issues
 
 
+def _rg_surgical_mismatch(ref_dir, module, reg, N=4000):
+    """Intent-A backstop (RTL-signal space — NO netlist-leaf confound): return a short mismatch
+    string if the surgical re-drive the reg_guard_delta builder emits (`sel ? region : old_D`) does
+    NOT equal the RTL golden next-state (full new priority-tree fold) for register `reg`, else ''.
+    Brute-forces random RTL-input vectors. Best-effort: any build/parse error returns '' (never a
+    false hard-fail). This is the same oracle that proved the postcas fix (surgical==golden 0/20000)."""
+    try:
+        import random
+        import eco_cone_rebuild as _ecr
+        from eco_rtl_synth import parse_expr as _pexpr
+        from eco_cell_truth_tables import ABSTRACT_GATE_FUNCTIONS as _AGF
+        synth, mk, rtl_text, old_text, wm = _ecr._synth_setup(ref_dir, module, jira='vchk')
+        new_tree = _ecr.parse_always(rtl_text, reg)
+        old_tree = _ecr.parse_always(old_text, reg)
+        width = wm.get(reg) or 1
+        def build_full(tree):
+            branch = [(synth._path_scalar(cc), _pexpr(vv)) for cc, vv in tree['assigns']]
+            hp = list(reversed(branch)); sels = [s for s, _ in hp]
+            actives, none = synth._priority_masks(sels)
+            dflt = _pexpr(tree['default']) if tree.get('default') is not None else None
+            out = {}
+            for b in range(width):
+                terms = [synth._and(actives[k], synth.bit(v, b)) for k, (_, v) in enumerate(hp)]
+                if dflt is not None:
+                    terms.append(synth._and(none, synth.bit(dflt, b)))
+                out[b] = synth._reduce(terms, 'or') if terms else "1'b0"
+            return out
+        golden = build_full(new_tree); old = build_full(old_tree)
+        r = _ecr._region_of(synth, rtl_text, old_text, reg, wm)
+        if r is None:
+            return ''
+        sel = r['sel']; nsel = synth._inv(sel)
+        surg = {b: synth._or(synth._and(sel, r['region_bits'].get(b, "1'b0")), synth._and(nsel, old[b]))
+                for b in range(width)}
+        driver = {g['output_net']: g for g in synth.gates}
+        def _leaves(net, acc):
+            g = driver.get(net)
+            if not g:
+                if not str(net).startswith(("1'b", "0'b")):
+                    acc.add(net)
+                return
+            for k, v in g['port_connections'].items():
+                if k in ('Z', 'ZN') or not isinstance(v, str):
+                    continue
+                _leaves(v, acc)
+        allleaves = set()
+        for d in (golden, old, surg):
+            for b in d:
+                if isinstance(d[b], str):
+                    _leaves(d[b], allleaves)
+        _leaves(sel, allleaves)
+        leaflist = sorted(allleaves)
+        def _ev(net, env, memo):
+            if net in memo:
+                return memo[net]
+            m = re.match(r"\d*'[bB]([01]+)", str(net))
+            if m:
+                memo[net] = int(m.group(1), 2) & 1; return memo[net]
+            g = driver.get(net)
+            if not g:
+                memo[net] = env.get(net, 0); return memo[net]
+            expr = _AGF.get(g['gate_function'])
+            if not expr:
+                raise RuntimeError('gate_function %r not in AGF' % g['gate_function'])
+            pin = {k: _ev(v, env, memo) for k, v in g['port_connections'].items() if k not in ('Z', 'ZN')}
+            memo[net] = eval(next(iter(expr.values())), {"__builtins__": {}}, pin) & 1
+            return memo[net]
+        random.seed(3)
+        for _ in range(N):
+            env = {l: random.randint(0, 1) for l in leaflist}
+            for b in range(width):
+                memo = {}
+                gv = _ev(golden[b], env, memo) if isinstance(golden[b], str) else golden[b]
+                sv = _ev(surg[b], env, memo) if isinstance(surg[b], str) else surg[b]
+                if gv != sv:
+                    return f"bit{b} differs on a reachable input vector"
+        return ''
+    except Exception:
+        return ''
+
+
 def _pf_modbody(ref_dir, module):
     gz = os.path.join(ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
     want = re.sub(r'_\d+$', '', re.sub(r'^ddrss_\w+?_t_', '', str(module or '')))
@@ -3050,6 +3131,25 @@ def main():
         # where no per-stage data exists at all).
         return synth_v
 
+    # FM-resolved leaves: a rename_map key whose per-stage values are all REAL
+    # resolved nets (different from the bare leaf, not echo/FM-036/FALLBACK) was
+    # resolved by find_equivalent_nets, which reports polarity as (+)/(−). The
+    # studier/chain accept ONLY (+) results, so such a leaf is GUARANTEED
+    # same-polarity across stages — the bounded inverter-parity walk below cannot
+    # see that (the three stages use DIFFERENT named nets that trace to different
+    # local cells), so it would false-fire. Skip parity for these, exactly as the
+    # CTS-primary-input carve-out does (see _net_parity_in_stage note). Partial
+    # resolution (any stage echoes/FM-036) is NOT skipped → still parity-checked.
+    _fm_resolved_leaves_38 = set()
+    for _k, _v in (_rmap or {}).items():
+        if _k == '_metadata' or not isinstance(_v, dict):
+            continue
+        _leaf = _k.rsplit('/', 1)[-1]
+        _vals = [_v.get(s) for s in ('Synthesize', 'PrePlace', 'Route')]
+        if all(isinstance(x, str) and x and x != _leaf
+               and 'FM-036' not in x and 'FALLBACK' not in x for x in _vals):
+            _fm_resolved_leaves_38.add(_leaf)
+
     for e in study.get('Synthesize', []):
         if e.get('change_type') not in _ENTRY_TYPES_38:
             continue
@@ -3062,8 +3162,13 @@ def main():
             if pin in _NO_CHECK_PINS_38 or not isinstance(val, str): continue
             v = val.strip()
             if v.startswith(("1'b","0'b","1'h","0'h","n_eco_")): continue
+            # FM-(+)-resolved leaf → polarity guaranteed; parity walk is invalid
+            # (different named nets per stage). Skip, per the CTS carve-out rule.
+            if v in _fm_resolved_leaves_38:
+                continue
             per_stage_nets = {
-                'Synthesize': v,
+                'Synthesize': _lookup_pin_net_38(inst, pin, 'Synthesize',
+                                                 pcs_per_stage, v),
                 'PrePlace':   _lookup_pin_net_38(inst, pin, 'PrePlace',
                                                  pcs_per_stage, v),
                 'Route':      _lookup_pin_net_38(inst, pin, 'Route',
@@ -5818,6 +5923,38 @@ def main():
                 issues.append(
                     f"HIGH/TERM-OP: and_term term_op='and' (AND-narrow of {old_tok!r}) but combine gate "
                     f"{e.get('instance_name')!r} is {fam} (pure OR) — an AND-narrow cannot be an OR gate.")
+
+    # ── #2b Intent-A register guard-change: builder-owned + surgical==golden (HARD-FAIL) ──
+    # A guard broaden/tighten on a register branch that assigns a constant MUST be re-driven by the
+    # deterministic eco_cone_rebuild reg_guard_delta pass (correct-by-construction: OR for set /
+    # AND-NOT for clear). Enforce (a) the study carries that pass's .D rewire for the register (the
+    # builder ran; the studier did NOT hand-build an OR2 into D), and (b) the surgical model equals
+    # the RTL golden next-state. Either miss is the JIRA-9666 postcas class → hard-fail.
+    _rg_changes = [c for c in rtl_diff.get('changes', [])
+                   if c.get('change_type') == 'and_term' and c.get('target_register')
+                   and c.get('branch_assigns') is not None]
+    if _rg_changes:
+        _rg_rewires = [e for e in _syn3
+                       if isinstance(e, dict) and e.get('reg_guard_delta')]
+        for c in _rg_changes:
+            reg = c.get('target_register'); mod = c.get('module_name')
+            owned = any((reg in str(rw.get('cell_name') or '')) or
+                        (reg in str((rw.get('cell_name_per_stage') or {}).get('Synthesize') or '')) or
+                        (reg in str(rw.get('old_net') or '') and rw.get('dff_pin_rewire'))
+                        for rw in _rg_rewires)
+            if not owned:
+                issues.append(
+                    f"HIGH/REG-GUARD: register guard-change on {reg!r} (branch_assigns="
+                    f"{c.get('branch_assigns')!r}) has NO eco_cone_rebuild reg_guard_delta .D rewire in the "
+                    f"study — the deterministic builder did not run (a studier-hand-built OR2 into D is the "
+                    f"JIRA-9666 postcas bug). Re-run eco_cone_rebuild.py --emit-into-study.")
+            if args.ref_dir and mod:
+                bad = _rg_surgical_mismatch(args.ref_dir, mod, reg)
+                if bad:
+                    issues.append(
+                        f"HIGH/REG-GUARD: register guard-change on {reg!r} — the surgical re-drive "
+                        f"(sel ? region : old_D) does NOT equal the RTL golden next-state ({bad}); the "
+                        f"emitted .D combine would compute wrong logic. Fix the RTL diff / builder.")
 
     # ── #3 uniquified-family completeness ─────────────────────────────────────
     # If the ECO touches a synthesis-uniquified generate array (a child module

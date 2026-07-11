@@ -718,6 +718,112 @@ def _emit_signal_muxes(synth, mk, r, module, signal, dmaps):
     return rewires, errs
 
 
+def _finalize_study(ref_dir, module, synth, rewires, jira, rename_map, tech_map, summ, prune_roots, errs):
+    """Shared tail for the surgical emitters (comb_net_force + register guard-delta): prune
+    dead gates to the live cone (`prune_roots`), optional compound-cell tech-map, resolve every
+    gate/rewire leaf net per stage (fenets rename-map authoritative, then flat/registered-leaf
+    heuristics), default instance names, and fill audit fields. Returns the study-shaped dict.
+    Factored out of emit_comb_net_force_batch so the register-D-cone builder reuses the IDENTICAL
+    per-stage resolution (no divergence between Intent-A and Intent-B net grounding)."""
+    from eco_emit_priority_force import (_stage_net_tokens, _stage_net, _map_stage_net,
+                                         _pcstage, STAGES, _module_netlist_body)
+    gates = synth.gates
+    # PRUNE dead gates: _Synth emits gates eagerly, then _and/_or/_inv fold constants and
+    # discard subtrees; the discarded gates linger dangling. Keep ONLY the fan-in cone of the
+    # real outputs (prune_roots).
+    gates = _prune_to_cone(gates, prune_roots)
+    # Depth-reducing compound-cell tech mapping (fail-closed): returns the ORIGINAL gates
+    # unchanged if no compound cells resolve or the map isn't provably equivalent.
+    if tech_map:
+        try:
+            import eco_tech_map
+            _prot = set()
+            for _rw in rewires:            # never fold away a net a rewire still references
+                for _k in ('old_net', 'new_net'):
+                    if _rw.get(_k):
+                        _prot.add(_rw[_k])
+            gates = eco_tech_map.tech_map_gates(gates, ref_dir, synth.module, jira, protected_nets=_prot)
+        except Exception as _tm_e:
+            print(f"  [tech_map] skipped ({type(_tm_e).__name__}: {_tm_e}); using primitive gates")
+    # give every cone/mux gate a per-stage view, then resolve leaf nets per stage.
+    leaf2key = {}
+    for k in (rename_map or {}):
+        if k != '_metadata':
+            leaf2key.setdefault(k.rsplit('/', 1)[-1], k)
+    toks = {st: _stage_net_tokens(ref_dir, module, st) for st in STAGES}
+    bodies = {st: _module_netlist_body(ref_dir, module, st) for st in STAGES}
+    def _exists(v, st):
+        return isinstance(v, str) and (v in toks[st] or v.split('/')[0] in toks[st])
+    def _pin_wire_in_cell(cell, pin, st):
+        m = re.search(r'\b' + re.escape(cell) + r'\s*\((.*?)\)\s*;', bodies[st], re.S)
+        if not m:
+            return ''
+        pm = re.search(r'\.\s*' + re.escape(pin) + r'\s*\(\s*([A-Za-z_][\w\[\]]*)\s*\)', m.group(1))
+        w = pm.group(1) if pm else ''
+        return w if (w and _exists(w, st)) else ''
+    def _reg_wire_by_constituent(cons, st):
+        for cm in re.finditer(r'\b(\w*' + re.escape(cons) + r'\w*)\s*\(', bodies[st]):
+            cell = cm.group(1)
+            parts = cell.split('_MB_')
+            idx = next((j for j, p in enumerate(parts) if p == cons), None)
+            if idx is None:
+                continue
+            pin = 'Q' if len(parts) == 1 else f'Q{idx + 1}'
+            w = _pin_wire_in_cell(cell, pin, st)
+            if w:
+                return w
+        return ''
+    def _reg_leaf_wire(nn_, st):
+        m = re.match(r'^([A-Za-z_]\w*)\[(\d+)\]$', nn_)
+        if m:
+            cons = f'{m.group(1)}_reg_{m.group(2)}_'
+        elif re.match(r'^[A-Za-z_]\w*$', nn_):
+            cons = f'{nn_}_reg'
+        else:
+            return ''
+        return _reg_wire_by_constituent(cons, st)
+    def _resolve(nn_, st):
+        fk = leaf2key.get(nn_)
+        if fk:
+            mapped = _map_stage_net(nn_, st, fk.rsplit('/', 1)[0], rename_map)
+            if (mapped and mapped != nn_ and '/' not in mapped and _exists(mapped, st)):
+                return mapped
+        flat = _stage_net(nn_, toks[st])
+        if _exists(flat, st):
+            return flat
+        w = _reg_leaf_wire(nn_, st)
+        if w:
+            return w
+        if fk:
+            mapped = _map_stage_net(nn_, st, fk.rsplit('/', 1)[0], rename_map)
+            if '/' not in (mapped or '/') and _exists(mapped, st):
+                return mapped
+        return flat
+    for g in gates:
+        pcs = g.get('port_connections_per_stage') or _pcstage(g['port_connections'])
+        for st in STAGES:
+            if isinstance(pcs.get(st), dict):
+                pcs[st] = {p: _resolve(v, st) for p, v in pcs[st].items()}
+        g['port_connections_per_stage'] = pcs
+        if not g.get('instance_name'):
+            _on = str(g['output_net'])
+            if _on.startswith(('n_eco_', 'eco_')):
+                g['instance_name'] = _on
+            else:
+                g['instance_name'] = 'eco_cr_redrive_' + re.sub(r'\W+', '_', _on).strip('_')
+    for rw in rewires:
+        ops = {st: _resolve(rw['old_net'], st) for st in STAGES}
+        rw['old_net_per_stage'] = ops
+    for _e in gates + rewires:
+        _e.setdefault('source', 'eco_cone_rebuild')
+        if not (_e.get('reason') or '').strip():
+            _e['reason'] = _e.get('notes') or (
+                f"cone-rebuild {_e.get('gate_function') or _e.get('change_type')}")
+        if not (_e.get('notes') or '').strip():
+            _e['notes'] = _e.get('reason') or "cone-rebuild entry"
+    return {'gates': gates, 'rewires': rewires, 'errors': errs, 'summary': summ}
+
+
 def emit_comb_net_force(ref_dir, module, signal, jira='eco', rename_map=None, tech_map=True):
     """Single-signal comb net-force ECO (wrapper around the batch emitter)."""
     return emit_comb_net_force_batch(ref_dir, module, [signal], jira, rename_map, tech_map=tech_map)
@@ -746,130 +852,162 @@ def emit_comb_net_force_batch(ref_dir, module, signals, jira='eco', rename_map=N
         rewires.extend(rw); errs.extend(e)
     if errs:
         return {'gates': synth.gates, 'rewires': [], 'errors': errs, 'summary': summ}
-    gates = synth.gates
-    # PRUNE dead gates: _Synth emits gates eagerly, then _and/_or/_inv fold constants and
-    # discard subtrees (e.g. reg_dcascramen=0 => the postnopdly compare is dropped). The
-    # discarded gates linger in synth.gates — dangling, and still referencing nets synthesis
-    # removed. Keep ONLY the fan-in cone of the real outputs (the rewire targets); this
-    # eliminates the DANGLING-CONE gates and the last NET-ABSENT refs (they live only in
-    # dead gates once the guard folds).
-    gates = _prune_to_cone(gates, {rw['old_net'] for rw in rewires})
-    # Depth-reducing compound-cell tech mapping (fail-closed): fold the primitive AND2/OR2/INV
-    # cone into library compound + wide cells (AOI/OAI/AO/OA/INR2 + OR3/4, AND3/4, NOR/NAND) so
-    # the emitted logic depth (LOL) matches synthesis/human QoR instead of a deep primitive tree.
-    # Returns the ORIGINAL gates unchanged if no compound cells resolve or the map isn't provably
-    # equivalent, so it can only make correct logic shallower — never emit wrong logic.
-    if tech_map:
-        try:
-            import eco_tech_map
-            _prot = set()
-            for _rw in rewires:            # never fold away a net a rewire still references
-                for _k in ('old_net', 'new_net'):
-                    if _rw.get(_k):
-                        _prot.add(_rw[_k])
-            gates = eco_tech_map.tech_map_gates(gates, ref_dir, synth.module, jira, protected_nets=_prot)
-        except Exception as _tm_e:
-            print(f"  [tech_map] skipped ({type(_tm_e).__name__}: {_tm_e}); using primitive gates")
-    # give every cone/mux gate a per-stage view, then resolve leaf nets per stage
-    # (fenets rename map authoritative, then flat-name heuristic; internal n_eco_ names
-    # are absent from both and pass through unchanged).
-    # The rename map keys are scoped ('<tile-relative-scope>/<leaf>', e.g.
-    # 'rec/recdsp/WckSyncCtr0[0]'); a comb_net_force change carries no scope, so index the
-    # map by bare leaf name and use each key's own scope. Cone leaves are single-module
-    # (unique bare names), so this is unambiguous.
-    leaf2key = {}
-    for k in (rename_map or {}):
-        if k != '_metadata':
-            leaf2key.setdefault(k.rsplit('/', 1)[-1], k)
-    toks = {st: _stage_net_tokens(ref_dir, module, st) for st in STAGES}
-    bodies = {st: _module_netlist_body(ref_dir, module, st) for st in STAGES}
-    def _exists(v, st):
-        return isinstance(v, str) and (v in toks[st] or v.split('/')[0] in toks[st])
-    def _pin_wire_in_cell(cell, pin, st):
-        m = re.search(r'\b' + re.escape(cell) + r'\s*\((.*?)\)\s*;', bodies[st], re.S)
-        if not m:
-            return ''
-        pm = re.search(r'\.\s*' + re.escape(pin) + r'\s*\(\s*([A-Za-z_][\w\[\]]*)\s*\)', m.group(1))
-        w = pm.group(1) if pm else ''
-        return w if (w and _exists(w, st)) else ''
-    def _reg_wire_by_constituent(cons, st):
-        # Find a flop instance (single or MB-banked) whose `_MB_`-split constituent list
-        # contains EXACTLY `cons` (e.g. 'dsp_cmd_pgst_reg_0_'); its output pin is
-        # Q<idx+1> (1-based position in the bank), or bare Q for a single-bit flop.
-        for cm in re.finditer(r'\b(\w*' + re.escape(cons) + r'\w*)\s*\(', bodies[st]):
-            cell = cm.group(1)
-            parts = cell.split('_MB_')
-            idx = next((j for j, p in enumerate(parts) if p == cons), None)
-            if idx is None:
-                continue
-            pin = 'Q' if len(parts) == 1 else f'Q{idx + 1}'
-            w = _pin_wire_in_cell(cell, pin, st)
-            if w:
-                return w
-        return ''
-    def _reg_leaf_wire(nn_, st):
-        # Resolve a REGISTERED leaf to its OWN flop's Q-output net in stage `st`, derived
-        # STRUCTURALLY from the leaf name (never from an FM pin-path, which can name a
-        # scan-input/other-flop pin and silently resolve to the wrong signal). A bare
-        # bracket name SIG[b] survives only in Synthesize; at P&R the flop-Q wire is
-        # renamed (bus-flatten SIG_b_, an inserted buffer -> FxPrePlace_ZBUF_*/dftopt*,
-        # or an MB-flop re-bank that renumbers pins). Reading the signal's OWN flop-Q pin
-        # is unambiguous across all three cases.
-        m = re.match(r'^([A-Za-z_]\w*)\[(\d+)\]$', nn_)
-        if m:
-            cons = f'{m.group(1)}_reg_{m.group(2)}_'
-        elif re.match(r'^[A-Za-z_]\w*$', nn_):
-            cons = f'{nn_}_reg'
+    # For comb_net_force the live-cone roots are the mux output nets == the rewired signal nets.
+    return _finalize_study(ref_dir, module, synth, rewires, jira, rename_map, tech_map, summ,
+                           {rw['old_net'] for rw in rewires}, errs)
+
+
+# ── Intent-A: register guard-change (and_term) deterministic builder ──────────
+# An `and_term` that broadens/tightens the guard of an existing branch of a REGISTER's
+# always-block (e.g. `else if (... & (mop==RD) & ...) reg <= 1'b0;` widened with `| (mop==MRR)`)
+# is NOT a bare `OR2(D_net, new_term)`: whether the netlist combine is OR (broaden a SET branch)
+# or AND-NOT (broaden a CLEAR branch) depends on the value the branch ASSIGNS. The old flow let
+# the LLM studier hand-build `OR2` regardless → forced the register toward 1 on a clear-branch
+# (the JIRA-9666 `postcas`/`WckSyncCtr0` bug). This builder is correct-by-construction: it diffs
+# the register's PreEco-vs-new next-state priority tree and re-drives the flop's D via the SAME
+# surgical region fold used for comb_net_force (`new_D = sel ? region : old_D`, region built from
+# the new tree). The assigned value (0/1/data) is baked into the fold — no operator choice.
+
+def _reg_dpin_per_stage(ref_dir, module, reg, old_tok, rename_map):
+    """Per-stage (cell_name, pin, old_net) for the register's `.D` pin. Prefer old_token's fenets
+    rename-map '<cell>/<pin>' address (authoritative, carries the Route MB-merge cell + pin, e.g.
+    postcas_reg→..._MB_..._0_ , D→D2); else locate the flop in the stage netlist by the D-net, or
+    default to '<reg>_reg'/'D'."""
+    from eco_emit_priority_force import STAGES, _module_netlist_body
+    entry = None
+    for k, v in (rename_map or {}).items():
+        if k != '_metadata' and isinstance(v, dict) and k.rsplit('/', 1)[-1] == old_tok:
+            entry = v
+            break
+    cellps, pinps, oldps = {}, {}, {}
+    for st in STAGES:
+        val = (entry or {}).get(st) if isinstance(entry, dict) else None
+        aw = (entry or {}).get(f'actual_wire_{st}') if isinstance(entry, dict) else None
+        cell = pin = None
+        oldnet = aw or (val if (isinstance(val, str) and '/' not in val and val) else old_tok)
+        if isinstance(val, str) and '/' in val:
+            cell, pin = val.split('/', 1)
         else:
-            return ''
-        return _reg_wire_by_constituent(cons, st)
-    def _resolve(nn_, st):
-        # Prefer the fenets map, but ONLY when it gives a REAL renamed NET (a plain net
-        # name present in the stage netlist — not a '<cell>/<pin>' path, which we resolve
-        # structurally below). A bracket echo / FM-036 entry must NOT override the
-        # flat-name heuristic (which flattens sig[b]->sig_b_).
-        fk = leaf2key.get(nn_)
-        if fk:
-            mapped = _map_stage_net(nn_, st, fk.rsplit('/', 1)[0], rename_map)
-            if (mapped and mapped != nn_ and '/' not in mapped and _exists(mapped, st)):
-                return mapped
-        flat = _stage_net(nn_, toks[st])
-        if _exists(flat, st):
-            return flat
-        # REGISTERED leaf: its bare/flat name is absent at P&R (buffered / MB re-banked).
-        # Resolve to the signal's OWN flop-Q output net, structurally.
-        w = _reg_leaf_wire(nn_, st)
-        if w:
-            return w
-        # last resort: a real map value even if it equals the bare name
-        if fk:
-            mapped = _map_stage_net(nn_, st, fk.rsplit('/', 1)[0], rename_map)
-            if '/' not in (mapped or '/') and _exists(mapped, st):
-                return mapped
-        return flat
-    for g in gates:
-        pcs = g.get('port_connections_per_stage') or _pcstage(g['port_connections'])
+            body = _module_netlist_body(ref_dir, module, st) or ''
+            cell, pin = _find_dff_by_dnet(body, oldnet, reg)
+        cellps[st] = cell or f'{reg}_reg'
+        pinps[st] = pin or 'D'
+        oldps[st] = oldnet
+    return cellps, pinps, oldps
+
+
+def _find_dff_by_dnet(body, dnet, reg):
+    """Find the flop instance (single or MB-banked) whose D-family pin (.D/.D1../.Dn) connects to
+    `dnet`; prefer an instance whose name contains `<reg>_reg`. Returns (cell, pin) or (None,None)."""
+    best = (None, None)
+    for m in re.finditer(r'([A-Za-z0-9_]+)\s+([A-Za-z0-9_\\]+)\s*\(([^;]*)\)\s*;', body):
+        inst, conns = m.group(2), m.group(3)
+        pm = re.search(r'\.(D\d*)\s*\(\s*' + re.escape(dnet) + r'\s*\)', conns)
+        if not pm:
+            continue
+        if f'{reg}_reg' in inst:
+            return inst, pm.group(1)
+        if best == (None, None):
+            best = (inst, pm.group(1))
+    return best
+
+
+def emit_reg_guard_delta_batch(ref_dir, module, changes, jira='eco', rename_map=None, tech_map=True):
+    """Emit register guard-change (Intent-A) ECOs for one or more registers in the SAME module
+    through a SHARED synth. Each change dict needs {target_register, old_token} (branch_assigns is
+    validated upstream). Returns {'gates','rewires','errors','summary'} (study-shaped, per-stage
+    resolved) — study UNTOUCHED semantics via the caller on any error."""
+    # Distinct net namespace: reg-guard nets become n_eco_<jira>rg_cr_* so they can NEVER collide
+    # with the comb_net_force emitter's n_eco_<jira>_cr_* nets — both emitters build through their
+    # OWN _synth_setup (independent per-synth `seq` counters), so without a namespace their low-seq
+    # 'cr_and_<n>'/'cr_or_<n>' names would overlap when both run in one --emit-into-study.
+    synth, mk, rtl_text, old_text, wm = _synth_setup(ref_dir, module, f'{jira}rg', rename_map=rename_map)
+    rewires, errs, summ = [], [], {}
+    roots = set()
+    for c in changes:
+        reg = c.get('target_register')
+        old_tok = c.get('old_token')
+        if not reg or not old_tok:
+            errs.append(f"reg_guard_delta: change missing target_register/old_token ({c.get('new_token')!r}).")
+            continue
+        try:
+            r = _region_of(synth, rtl_text, old_text, reg, wm)
+        except Exception as e:
+            errs.append(f"reg_guard_delta {reg}: region build failed: {e}")
+            continue
+        if r is None:
+            errs.append(f"reg_guard_delta {reg}: no next-state delta between PreEco and new RTL "
+                        f"(expected a guard change). Check target_register/RTL.")
+            continue
+        summ[reg] = r['summary']
+        width = r['width']
+        sel = r['sel']
+        nsel = synth._inv(sel)
+        cellps, pinps, oldps = _reg_dpin_per_stage(ref_dir, module, reg, old_tok, rename_map)
+        is_bus = width > 1
+        for b in range(width):
+            region = r['region_bits'].get(b, "1'b0")
+            old_leaf = (f'{old_tok}[{b}]' if is_bus else old_tok)
+            t_reg = synth._and(sel, region)
+            t_old = synth._and(nsel, old_leaf)
+            if t_reg == "1'b0" and t_old == "1'b0":
+                errs.append(f"reg_guard_delta {reg}[{b}]: D folds to constant 0 both legs — refusing.")
+                continue
+            new_net = mk(f'{reg}_{b}_dnew') if is_bus else mk(f'{reg}_dnew')
+            synth._g(synth.cells['OR2'], 'OR2', {'A1': t_reg, 'A2': t_old, 'Z': new_net})
+            roots.add(new_net)
+            rewires.append({
+                'change_type': 'rewire', 'instance_name': cellps['Synthesize'],
+                'cell_name': cellps['Synthesize'], 'cell_name_per_stage': cellps,
+                'module_name': synth.module, 'pin': pinps['Synthesize'], 'pin_per_stage': pinps,
+                'old_net': old_leaf, 'new_net': new_net, 'region_sel': sel,
+                'confirmed': True, 'force_reapply': True, 'source': 'eco_cone_rebuild',
+                'reg_guard_delta': True, 'dff_pin_rewire': True,
+                'notes': f"reg guard-change (surgical): re-drive {reg} flop .D through the region mux "
+                         f"D = {sel} ? region : {old_leaf} (branch-value baked into the fold; DFF-pin "
+                         f"rewire, driver of {old_leaf} left untouched).",
+            })
+    if errs:
+        return {'gates': synth.gates, 'rewires': [], 'errors': errs, 'summary': summ}
+    return _finalize_study(ref_dir, module, synth, rewires, jira, rename_map, tech_map, summ, roots, errs)
+
+
+def emit_reg_guard_delta_into_study(rtl_diff, study, jira, ref_dir, rename_map=None):
+    """Splice every register guard-change `and_term` (change with `target_register`+`branch_assigns`)
+    into `study` (all stages) via the deterministic builder. Mirrors emit_into_study; on ANY builder
+    error returns (0, errors) with study UNTOUCHED (caller aborts fail-closed)."""
+    from eco_emit_priority_force import STAGES
+    import collections
+    changes = [c for c in rtl_diff.get('changes', [])
+               if c.get('change_type') == 'and_term' and c.get('target_register')
+               and c.get('branch_assigns') is not None]
+    if not changes:
+        return 0, []
+    by_mod = collections.OrderedDict()
+    for c in changes:
+        by_mod.setdefault(c.get('module_name'), []).append(c)
+    pending, errs = [], []
+    for mod, cs in by_mod.items():
+        if not mod:
+            errs.append(f"reg_guard_delta: change(s) missing module_name.")
+            continue
+        try:
+            out = emit_reg_guard_delta_batch(ref_dir, mod, cs, jira=jira, rename_map=rename_map)
+        except Exception as e:
+            errs.append(f"reg_guard_delta {mod}: build failed: {e}")
+            continue
+        if out['errors']:
+            errs.extend(f"reg_guard_delta {mod}: {m}" for m in out['errors'])
+            continue
+        pending.append(out['gates'] + out['rewires'])
+    if errs:
+        return 0, errs
+    added = 0
+    for entries in pending:
         for st in STAGES:
-            if isinstance(pcs.get(st), dict):
-                pcs[st] = {p: _resolve(v, st) for p, v in pcs[st].items()}
-        g['port_connections_per_stage'] = pcs
-        if not g.get('instance_name'):
-            # Default the instance name from the output net — BUT only when that net is a
-            # FRESH eco net. A real TARGET net makes an invalid/colliding instance name:
-            #   * bracketed bus-bit (recdsp_c0mop[0]) is INVALID Verilog → applier skips it;
-            #   * a bare real net (recdsp_c0vld) collides with the existing wire → applier
-            #     skips/mis-handles it.
-            # Either way the target net ends up UNDRIVEN. Derive a distinct valid name for
-            # the re-drive gate; the gate still OUTPUTS the target net (output_net unchanged).
-            _on = str(g['output_net'])
-            if _on.startswith(('n_eco_', 'eco_')):
-                g['instance_name'] = _on
-            else:
-                g['instance_name'] = 'eco_cr_redrive_' + re.sub(r'\W+', '_', _on).strip('_')
-    for rw in rewires:
-        ops = {st: _resolve(rw['old_net'], st) for st in STAGES}
-        rw['old_net_per_stage'] = ops
-    return {'gates': gates, 'rewires': rewires, 'errors': errs, 'summary': summ}
+            study.setdefault(st, []).extend(dict(e) for e in entries)
+            added += len(entries)
+    return added, []
 
 
 # small gate helpers reusing the resolved library cells
@@ -995,18 +1133,27 @@ if __name__ == '__main__':
                 rmap = json.loads(open(a.rename_map).read())
             except Exception:
                 rmap = None
+        # Deterministic surgical emitters, both fail-closed (study UNTOUCHED on any error):
+        #  (1) comb_net_force  — combinational net re-drive (Intent-B).
+        #  (2) reg_guard_delta — register guard-change .D re-drive (Intent-A). Builds the combine
+        #      correct-by-construction (OR vs AND-NOT baked into the region fold) so the studier no
+        #      longer hand-builds OR2 into a clear-branch D-net (the JIRA-9666 postcas bug).
         n, errs = emit_into_study(rtl_diff, study, a.jira, a.ref_dir, rename_map=rmap)
-        if errs:
+        n2, errs2 = ([], []) if errs else emit_reg_guard_delta_into_study(
+            rtl_diff, study, a.jira, a.ref_dir, rename_map=rmap)
+        allerrs = list(errs) + list(errs2)
+        if allerrs:
             marker = ("ECO_SCRIPT_LAUNCHED: eco_cone_rebuild.py --emit-into-study\n"
-                      f"  ABORTED — {len(errs)} comb_net_force build error(s):\n"
-                      + "".join(f"    - {e}\n" for e in errs)
-                      + "  Study UNTOUCHED. Fix the comb_net_force change(s) and re-run.\n")
+                      f"  ABORTED — {len(allerrs)} surgical-emitter build error(s):\n"
+                      + "".join(f"    - {e}\n" for e in allerrs)
+                      + "  Study UNTOUCHED. Fix the comb_net_force / reg_guard_delta change(s) and re-run.\n")
             print(marker)
             open(a.output.replace('.json', '_comb_net_force_marker.txt'), 'w').write(marker)
             sys.exit(2)
         open(a.output, 'w').write(json.dumps(study, indent=2))
         marker = ("ECO_SCRIPT_LAUNCHED: eco_cone_rebuild.py --emit-into-study\n"
-                  f"  comb_net_force entries spliced (gates+rewires, all stages): {n}\n")
+                  f"  comb_net_force entries spliced (gates+rewires, all stages): {n}\n"
+                  f"  reg_guard_delta entries spliced (gates+rewires, all stages): {n2}\n")
         print(marker)
         open(a.output.replace('.json', '_comb_net_force_marker.txt'), 'w').write(marker)
         sys.exit(0)

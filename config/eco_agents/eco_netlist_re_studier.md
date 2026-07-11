@@ -175,6 +175,8 @@ If `fanout > 10` → **DO NOT rename the driver**. High-fanout nets feed many do
 
 ### GAP-24: Fixing HIGH/41 (or `combinational loop detected`) on a register D-cone
 
+> **Register guard-change (`target_register` + `branch_assigns`) is NOT hand-built here.** If the change carries `target_register` + `branch_assigns` (constant-assign guard broaden/tighten), do NOT hand-build the combine or the `.D` rewire — the deterministic `eco_cone_rebuild.py --emit-into-study` pass (`emit_reg_guard_delta_batch`) owns it, correct-by-construction (OR vs AND-NOT chosen by the assigned value). Do not "fix" it here with a hand OR2 — that is the JIRA-9666 `postcas` clear-branch bug. The GAP-24 recipe below is for combinational term-folds only (no `branch_assigns`).
+
 When the validator reports `HIGH/41-REWIRE-DESTROYS-OLD-NET` or `combinational loop detected` and `old_token` drives a **register D-cone** (`*_reg.D`, e.g. `rcqe_pgst`), do the FULL DFF-pin-rewire — **dropping the driver-rename alone leaves a self-loop** (gate reads AND drives `old_token`):
 
 1. Keep the original driver of `old_token` untouched (no rename).
