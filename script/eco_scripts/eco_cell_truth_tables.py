@@ -84,7 +84,7 @@ ABSTRACT_GATE_FUNCTIONS = {
 # marking broke it) → those cells were unresolvable → the sim treated real gates
 # as leaves (68/119 families in umcrecdsp were lost). Anchor on the `BWP` library
 # marker (with optional AMD/other alpha marking before it) instead.
-_FAMILY_RE = re.compile(r"^(.+?)D\d+(?:P\d+)?[A-Z]*BWP")
+_FAMILY_RE = re.compile(r"^(.+)D\d+(?:P\d+)?[A-Z0-9]*BWP")
 
 def family_of(cell_type):
     """Extract the cell family prefix from a full cell_type string. Returns

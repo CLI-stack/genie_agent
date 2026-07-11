@@ -94,7 +94,7 @@ def liberty_to_python(fn):
 # Must match eco_cell_truth_tables._FAMILY_RE exactly (same keys on both sides).
 # Family = prefix before drive `D<n>[P<n>][markers]BWP`; handles marked cells
 # (FCICONEQ2A, AOI22BA1M2EQ2A, …) that the old `([A-Z]+\d*)` form dropped.
-_FAM_RE = re.compile(r'^(.+?)D\d+(?:P\d+)?[A-Z]*BWP')
+_FAM_RE = re.compile(r'^(.+)D\d+(?:P\d+)?[A-Z0-9]*BWP')
 
 def family_of(cell_name):
     """Extract family prefix. AN2D1BWP... → AN2. None if unrecognized."""

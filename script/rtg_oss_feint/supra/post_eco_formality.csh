@@ -501,13 +501,14 @@ endif
 if (-d "$refdir_name/rpts" && -d "$logs_dir") then
     echo "" >> $out
     echo "=== Auto-invoking eco_fm_status_collector.py ===" >> $out
+    set targets_csv = `echo "$eco_targets" | tr ' ' ','`
     python3 $source_dir/script/eco_scripts/eco_fm_status_collector.py \
         --ref-dir $refdir_name \
         --tag     $tag \
         --round   1 \
-        --targets `echo "$eco_targets" | tr ' ' ','` \
+        --targets $targets_csv \
         $prev_verify_arg \
-        --output  $fm_verify_path >> $out 2>&1
+        --output  $fm_verify_path >>& $out
     echo "Canonical verdict: $fm_verify_path" >> $out
 endif
 
