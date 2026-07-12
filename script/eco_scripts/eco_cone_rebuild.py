@@ -821,6 +821,8 @@ def _emit_signal_muxes(synth, mk, r, module, signal, dmaps):
     if sel is None:
         return [], [f"{signal}: region selector missing — cannot build the region mux (fail-closed)."]
     nsel = synth._inv(sel)
+    # region_get: look up per-bit region value from r['region_bits'] (same lambda as emit_reg_guard_delta_batch)
+    region_get = (lambda b, _rb=r['region_bits']: _rb.get(b, "1'b0"))
     # pass 2: per-bit force-mux net[b] = sel ? region[b] : net_orig[b] + driver rewire
     for b in range(width):
         if b not in orig_bit:
