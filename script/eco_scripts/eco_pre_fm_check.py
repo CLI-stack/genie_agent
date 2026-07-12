@@ -52,6 +52,22 @@ def _zcat(gz_path):
     return t
 
 
+# Split a netlist into (module_name, body) pairs ONCE per text and memoize. Callers
+# that scan per-module (e.g. check_missing_output_port_decls) reuse the split instead
+# of re-running the O(filesize) DOTALL regex for every ECO net.
+_MOD_BODIES_CACHE = {}
+
+def _module_bodies(text):
+    key = (len(text), hash(text))
+    b = _MOD_BODIES_CACHE.get(key)
+    if b is None:
+        b = [(m.group(1), m.group(0))
+             for m in re.finditer(r'^module\s+(\S+).*?^endmodule\b', text,
+                                  re.DOTALL | re.MULTILINE)]
+        _MOD_BODIES_CACHE[key] = b
+    return b
+
+
 # ── Argument parsing ──────────────────────────────────────────────────────────
 
 def parse_args():
@@ -1031,15 +1047,40 @@ def check_missing_output_port_decls(applied, ref_dir):
         except Exception:
             continue
         text = strip_verilog_comments(text)
+        # A net needs a port_declaration ONLY if it is referenced in a module that does
+        # NOT own it — where "own" means either (a) it is the ECO gate's declaring module
+        # (incl. its Route `_0` uniquify variant), so the net is a legitimate INTERNAL net
+        # even without an explicit wire decl (instance-output nets are implicit), or
+        # (b) the module locally RE-declares the same net name as its own wire/port.
+        #
+        # The old global-grep `total > local` false-fired on uniquified generate blocks:
+        # the SAME local net name (e.g. ctmn_917) recurs as a module-local `wire` in every
+        # sibling copy (umcrecrcqentry_0.._39), so a whole-file name count attributed 39
+        # siblings' own local wires to the one last-wins declaring module. Case (b) below
+        # excludes those. Case (a) keeps internal ECO cone nets (e.g. n_eco_*rg_cr_and_*,
+        # used only inside umcrecdsp_0) from being mistaken for cross-module threading.
+        bodies = _module_bodies(text)
+        _DECL_KW = r'\b(?:wire|tri|wand|wor|reg|input|output|inout)\b'
         for out_net, (inst, mod) in eco_outputs.items():
-            # Count occurrences in full netlist vs inside declaring module
-            total = len(re.findall(rf'\b{re.escape(out_net)}\b', text))
-            mod_m = re.search(rf'^module\s+{re.escape(mod)}(?:_0)?\b.*?^endmodule\b', text, re.DOTALL | re.MULTILINE)
-            local = len(re.findall(rf'\b{re.escape(out_net)}\b', mod_m.group(0))) if mod_m else 0
-            if total > local and out_net not in declared:
+            if out_net in declared or out_net not in text:
+                continue
+            owner_names = {mod, mod + '_0'}          # ECO declaring module + Route variant
+            netre = re.compile(rf'\b{re.escape(out_net)}\b')
+            declre = re.compile(rf'{_DECL_KW}[^;]*\b{re.escape(out_net)}\b')
+            foreign = []
+            for mname, body in bodies:
+                if out_net not in body or not netre.search(body):
+                    continue
+                if mname in owner_names:              # (a) the ECO module owns it internally
+                    continue
+                if declre.search(body):               # (b) sibling with its own local decl
+                    continue
+                foreign.append(mname)                 # uses net but neither owns nor declares
+            if foreign:
                 failures.append(
                     f'[MISSING_OUTPUT_PORT] {stage}: ECO net {out_net!r} (from {inst} in {mod}) '
-                    f'referenced {total - local} time(s) outside its module but no port_declaration applied.')
+                    f'referenced in {len(foreign)} non-owning module(s) (e.g. {foreign[:3]}) '
+                    f'without a port_declaration — threaded cross-module, needs a port (FE-LINK-7).')
     return failures
 
 
