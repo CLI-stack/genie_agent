@@ -1120,6 +1120,25 @@ def emit_reg_guard_delta_batch(ref_dir, module, changes, jira='eco', rename_map=
     # OWN _synth_setup (independent per-synth `seq` counters), so without a namespace their low-seq
     # 'cr_and_<n>'/'cr_or_<n>' names would overlap when both run in one --emit-into-study.
     synth, mk, rtl_text, old_text, wm = _synth_setup(ref_dir, module, f'{jira}rg', rename_map=rename_map)
+    # DRIVER-SIDE net-force (engineer methodology): instead of rewiring the flop's .D pin to a new
+    # net (which re-maps the MB-bank D connectivity and breaks FM's multibit/reg register mapping —
+    # the JIRA-9666 "logic correct but FM fails" cascade), we KEEP the flop pin on its original .D
+    # net and fold the delta UPSTREAM at the net's combinational driver: rename the driver's output
+    # <Dnet>-><Dnet>_orig and re-drive <Dnet> through the fold. This is the SAME driver-side pattern
+    # comb_net_force (Intent B) + the engineer's Conformal ECO use, and leaves every flop pin intact.
+    from eco_emit_priority_force import _driver_map, STAGES
+    dmaps = {st: _driver_map(ref_dir, module, st) for st in STAGES}
+    def _dnet_driver_ps(net_ps):
+        """net_ps: {stage: Dnet}. Return (cps, pps, ok): per-stage combinational driver cell/pin of
+        the D-net. ok=False if any stage's D-net is missing or driven by a flop (.Q) — fail-closed."""
+        cps, pps = {}, {}
+        for st in STAGES:
+            dnet = net_ps.get(st)
+            sd = dmaps[st].get(dnet) if dnet else None
+            if not sd or sd[2]:
+                return None, None, False
+            cps[st], pps[st] = sd[0], sd[1]
+        return cps, pps, True
     rewires, errs, summ = [], [], {}
     roots = set()
     for c in changes:
@@ -1191,64 +1210,91 @@ def emit_reg_guard_delta_batch(ref_dir, module, changes, jira='eco', rename_map=
             bad = False
             for b in range(width):
                 inst0, pin0, oldD = dbits[b]['Synthesize']
-                t_reg = synth._and(load_active, synth.bit(val_ast, b)); t_old = synth._and(nload, oldD)
+                dnet_ps = {st: dbits[b][st][2] for st in dbits[b]}
+                dcps, dpps, ok = _dnet_driver_ps(dnet_ps)
+                if not ok:
+                    errs.append(f"reg_guard_delta {reg}[{b}]: D-net {oldD} has no combinational driver "
+                                f"in some stage — cannot do driver-side fold (fail-closed).")
+                    bad = True; break
+                orig = mk(f'{reg}_{b}_orig')
+                t_reg = synth._and(load_active, synth.bit(val_ast, b)); t_old = synth._and(nload, orig)
                 if t_reg == "1'b0" and t_old == "1'b0":
                     errs.append(f"reg_guard_delta {reg}[{b}]: D folds to constant 0 both legs — refusing.")
                     bad = True; break
-                new_net = mk(f'{reg}_{b}_dnew')
-                synth._g(synth.cells['OR2'], 'OR2', {'A1': t_reg, 'A2': t_old, 'Z': new_net})
-                roots.add(new_net)
-                cps = {st: dbits[b][st][0] for st in dbits[b]}
-                pps = {st: dbits[b][st][1] for st in dbits[b]}
+                # DRIVER-SIDE: fold OUTPUTS to the original D-net; flop .D pin stays on oldD.
+                synth._g(synth.cells['OR2'], 'OR2', {'A1': t_reg, 'A2': t_old, 'Z': oldD})
+                roots.add(oldD)
                 rewires.append({
-                    'change_type': 'rewire', 'instance_name': inst0, 'cell_name': inst0,
-                    'cell_name_per_stage': cps, 'module_name': synth.module, 'pin': pin0,
-                    'pin_per_stage': pps, 'old_net': oldD, 'new_net': new_net, 'region_sel': load_active,
+                    'change_type': 'rewire', 'instance_name': dcps['Synthesize'], 'cell_name': dcps['Synthesize'],
+                    'cell_name_per_stage': dcps, 'module_name': synth.module, 'pin': dpps['Synthesize'],
+                    'pin_per_stage': dpps, 'old_net': oldD, 'new_net': orig,
+                    'old_net_per_stage': dnet_ps, 'region_sel': load_active,
                     'confirmed': True, 'force_reapply': True, 'source': 'eco_cone_rebuild',
-                    'reg_guard_delta': True, 'dff_pin_rewire': True,
-                    'notes': f"reg guard-change (clock-gated, slim hold-mux): {reg}[{b}] "
-                             f"D = load_active ? load_val : orig-.D (else-leg = existing silicon).",
+                    'target_register': reg, 'reg_guard_delta': True, 'net_force': True, 'driver_side': True,
+                    'notes': f"reg guard-change (clock-gated, DRIVER-SIDE): rename driver of {reg}[{b}] "
+                             f".D-net {oldD}->{orig}; re-drive {oldD} = load_active ? load_val : {orig}. "
+                             f"Flop .D pin UNCHANGED (engineer methodology; preserves MB-bank mapping).",
                 })
             if bad:
                 continue
-            # widen the clock-gate enable so the flop clocks in the changed region
-            new_E = synth._or(old_tok, load_active)   # old_tok = clean E net (e.g. N294)
-            roots.add(new_E)
-            ecps = {st: cg[st][0] for st in cg}; epps = {st: cg[st][1] for st in cg}
+            # widen the clock-gate enable so the flop clocks in the changed region — DRIVER-SIDE:
+            # keep the clock-gate .E pin on its original net (old_tok, e.g. N294); rename that net's
+            # driver output old_tok->old_tok_orig and re-drive old_tok = old_tok_orig | load_active.
+            en_ps = {st: cg[st][2] for st in cg}      # the E net per stage (e.g. N294)
+            edcps, edpps, eok = _dnet_driver_ps(en_ps)
+            if not eok:
+                errs.append(f"reg_guard_delta {reg}: clock-gate E-net {old_tok} has no combinational "
+                            f"driver in some stage — cannot do driver-side E widen (fail-closed).")
+                continue
+            e_orig = mk(f'{reg}_E_orig')
+            synth._g(synth.cells['OR2'], 'OR2', {'A1': e_orig, 'A2': load_active, 'Z': old_tok})
+            roots.add(old_tok)
             rewires.append({
-                'change_type': 'rewire', 'instance_name': ecps['Synthesize'], 'cell_name': ecps['Synthesize'],
-                'cell_name_per_stage': ecps, 'module_name': synth.module, 'pin': epps['Synthesize'],
-                'pin_per_stage': epps, 'old_net': old_tok, 'new_net': new_E, 'region_sel': load_active,
+                'change_type': 'rewire', 'instance_name': edcps['Synthesize'], 'cell_name': edcps['Synthesize'],
+                'cell_name_per_stage': edcps, 'module_name': synth.module, 'pin': edpps['Synthesize'],
+                'pin_per_stage': edpps, 'old_net': old_tok, 'new_net': e_orig,
+                'old_net_per_stage': en_ps, 'region_sel': load_active,
                 'confirmed': True, 'force_reapply': True, 'source': 'eco_cone_rebuild',
-                'reg_guard_delta': True, 'clock_gate_enable_widen': True,
-                'notes': f"reg guard-change (clock-gated): widen {reg} clock-gate E = {old_tok} | load_active "
-                         f"so the flop clocks in the new region (paired with the per-bit .D re-drive).",
+                'target_register': reg, 'reg_guard_delta': True, 'net_force': True, 'driver_side': True, 'clock_gate_enable_widen': True,
+                'notes': f"reg guard-change (clock-gated, DRIVER-SIDE): rename driver of {reg} clock-gate "
+                         f"E-net {old_tok}->{e_orig}; re-drive {old_tok} = {e_orig} | load_active. Clock-gate "
+                         f".E pin UNCHANGED (engineer methodology).",
             })
             continue
-        # ── SIMPLE (non-clock-gated) flop path ──
-        cellps, pinps, oldps = _reg_dpin_per_stage(ref_dir, module, reg, old_tok, rename_map)
+        # ── SIMPLE (non-clock-gated) flop path — DRIVER-SIDE ──
+        # Keep the flop .D pin on old_tok (e.g. SEQMAP_NET_1235); rename old_tok's combinational
+        # driver output old_tok->old_tok_orig and re-drive old_tok through the region mux. Flop pin
+        # unchanged (engineer methodology) — preserves the register's D-connectivity for FM mapping.
+        _, _, oldps = _reg_dpin_per_stage(ref_dir, module, reg, old_tok, rename_map)
         is_bus = width > 1
         for b in range(width):
             region = region_get(b)
             old_leaf = (f'{old_tok}[{b}]' if is_bus else old_tok)
+            leaf_ps = {st: (f'{oldps.get(st, old_tok)}[{b}]' if is_bus else oldps.get(st, old_tok))
+                       for st in STAGES}
+            dcps, dpps, ok = _dnet_driver_ps(leaf_ps)
+            if not ok:
+                errs.append(f"reg_guard_delta {reg}[{b}]: D-net {old_leaf} has no combinational driver "
+                            f"in some stage — cannot do driver-side fold (fail-closed).")
+                continue
+            orig = mk(f'{reg}_{b}_orig') if is_bus else mk(f'{reg}_orig')
             t_reg = synth._and(sel, region)
-            t_old = synth._and(nsel, old_leaf)
+            t_old = synth._and(nsel, orig)
             if t_reg == "1'b0" and t_old == "1'b0":
                 errs.append(f"reg_guard_delta {reg}[{b}]: D folds to constant 0 both legs — refusing.")
                 continue
-            new_net = mk(f'{reg}_{b}_dnew') if is_bus else mk(f'{reg}_dnew')
-            synth._g(synth.cells['OR2'], 'OR2', {'A1': t_reg, 'A2': t_old, 'Z': new_net})
-            roots.add(new_net)
+            synth._g(synth.cells['OR2'], 'OR2', {'A1': t_reg, 'A2': t_old, 'Z': old_leaf})
+            roots.add(old_leaf)
             rewires.append({
-                'change_type': 'rewire', 'instance_name': cellps['Synthesize'],
-                'cell_name': cellps['Synthesize'], 'cell_name_per_stage': cellps,
-                'module_name': synth.module, 'pin': pinps['Synthesize'], 'pin_per_stage': pinps,
-                'old_net': old_leaf, 'new_net': new_net, 'region_sel': sel,
+                'change_type': 'rewire', 'instance_name': dcps['Synthesize'],
+                'cell_name': dcps['Synthesize'], 'cell_name_per_stage': dcps,
+                'module_name': synth.module, 'pin': dpps['Synthesize'], 'pin_per_stage': dpps,
+                'old_net': old_leaf, 'new_net': orig, 'old_net_per_stage': leaf_ps, 'region_sel': sel,
                 'confirmed': True, 'force_reapply': True, 'source': 'eco_cone_rebuild',
-                'reg_guard_delta': True, 'dff_pin_rewire': True,
-                'notes': f"reg guard-change (surgical): re-drive {reg} flop .D through the region mux "
-                         f"D = {sel} ? region : {old_leaf} (branch-value baked into the fold; DFF-pin "
-                         f"rewire, driver of {old_leaf} left untouched).",
+                'target_register': reg, 'reg_guard_delta': True, 'net_force': True, 'driver_side': True,
+                'notes': f"reg guard-change (DRIVER-SIDE): rename driver of {reg} .D-net "
+                         f"{old_leaf}->{orig}; re-drive {old_leaf} = {sel} ? region : {orig}. Flop .D pin "
+                         f"UNCHANGED (engineer methodology; branch-value baked into the fold).",
             })
     if errs:
         return {'gates': synth.gates, 'rewires': [], 'errors': errs, 'summary': summ}

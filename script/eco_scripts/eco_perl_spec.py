@@ -467,7 +467,9 @@ def main():
                 # n_eco_* nets are intermediate batch nets — they don't exist in PostEco
                 # yet but will be created by other gates in the same Perl batch insertion.
                 # Skip the PostEco check for these — they are always valid within a batch.
-                if re.match(r'^n_eco_\d+_', str(net)):
+                # (digits may carry a namespace suffix, e.g. reg_guard uses n_eco_<jira>rg_cr_*,
+                #  so allow optional lowercase letters after the jira number before the '_').
+                if re.match(r'^n_eco_\d+[a-z]*_', str(net)):
                     continue
                 # SEQMAP_NET_*_orig is a driver-rename intermediate net — also valid in batch
                 if re.match(r'^SEQMAP_NET_\d+_orig$', str(net)):

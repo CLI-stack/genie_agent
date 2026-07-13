@@ -3836,6 +3836,10 @@ def main():
         for _c in rtl_diff.get('changes', []):
             if _c.get('change_type') != 'and_term':
                 continue
+            if _c.get('target_register'):
+                continue  # reg_guard_delta: the driver-side region-mux fold is validated by
+                          # _rg_surgical_mismatch (RTL next-state oracle), not this and_term
+                          # polarity heuristic (which assumes a bare comb and_term redrive).
             _old_tok = _c.get('old_token', '')
             # Find old driver cell instance from study rewire entries
             _cell_inst = ''
@@ -6073,7 +6077,8 @@ def main():
                        if isinstance(e, dict) and e.get('reg_guard_delta')]
         for c in _rg_changes:
             reg = c.get('target_register'); mod = c.get('module_name')
-            owned = any((reg in str(rw.get('cell_name') or '')) or
+            owned = any((rw.get('target_register') == reg) or  # driver-side reg_guard (engineer-style)
+                        (reg in str(rw.get('cell_name') or '')) or
                         (reg in str((rw.get('cell_name_per_stage') or {}).get('Synthesize') or '')) or
                         (reg in str(rw.get('old_net') or '') and rw.get('dff_pin_rewire'))
                         for rw in _rg_rewires)
