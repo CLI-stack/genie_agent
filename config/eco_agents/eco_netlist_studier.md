@@ -115,11 +115,16 @@ Exit:
 
 The `<fenets_tag>_spec` file uses `#text#` / `#table#` block markers. FM find_equivalent_nets output appears in `#text#` blocks. **Polarity rule:** Only use `(+)` impl lines. Lines marked `(-)` are inverted nets — never use them. If a net only returns `(-)` results, treat it as `fm_failed`.
 
-Results are grouped by target — parse each block separately:
+Results are grouped by target — parse each block separately. Match on the
+`TARGET:` marker and derive the stage from the name's suffix
+(`...SynthesizeVs...SynRtl`=Synthesize, `...PrePlaceVs...Synthesize`=PrePlace,
+`...RouteVs...PrePlace`=Route) — do NOT match the full literal, since UPF
+projects (e.g. soundwave) carry a `PwrAllUpfSuppliesOn` infix. The plain names
+below are examples only:
 ```
-TARGET: FmEqvPreEcoSynthesizeVsPreEcoSynRtl
-TARGET: FmEqvPreEcoPrePlaceVsPreEcoSynthesize
-TARGET: FmEqvPreEcoRouteVsPreEcoPrePlace
+TARGET: FmEqvPreEcoSynthesizeVsPreEcoSynRtl        (UPF: FmEqvPwrAllUpfSuppliesOnPreEcoSynthesizeVsPreEcoSynRtl)
+TARGET: FmEqvPreEcoPrePlaceVsPreEcoSynthesize      (UPF: FmEqvPwrAllUpfSuppliesOnPreEcoPrePlaceVsPreEcoSynthesize)
+TARGET: FmEqvPreEcoRouteVsPreEcoPrePlace           (UPF: FmEqvPwrAllUpfSuppliesOnPreEcoRouteVsPreEcoPrePlace)
 ```
 
 ---

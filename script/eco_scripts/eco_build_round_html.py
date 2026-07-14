@@ -30,6 +30,16 @@ from eco_html_design import (
     esc as _esc_shared, badge, section_wrap, tbl as design_tbl,
     pre_block as design_pre, html_wrap
 )
+from eco_fm_targets import detect_targets, target_to_stage
+
+# Ordered Eco target triple for FM-result display. Defaults to canonical plain
+# names; main() overrides with the tile's real triple (plain or UPF) once
+# --ref-dir is known, so UPF-named projects (soundwave) render correctly.
+ECO_TARGETS = (
+    "FmEqvEcoSynthesizeVsSynRtl",
+    "FmEqvEcoPrePlaceVsEcoSynthesize",
+    "FmEqvEcoRouteVsEcoPrePlace",
+)
 
 # Email-safe table header cell (avoids double-quote in f-string)
 def _th(text): return f'<th>{text}</th>'
@@ -78,9 +88,7 @@ def _parse_fm_verify_rpt(rpt_path: Path) -> dict | None:
         return None
     import re as _re
     result = {"per_target": {}}
-    targets = ("FmEqvEcoSynthesizeVsSynRtl",
-               "FmEqvEcoPrePlaceVsEcoSynthesize",
-               "FmEqvEcoRouteVsEcoPrePlace")
+    targets = ECO_TARGETS
     for i, tgt in enumerate(targets):
         # Step 1: find the status on the target line
         m = _re.search(
@@ -174,9 +182,7 @@ def fm_results_table(fm_verify: dict | None) -> str:
     # Support both nested schema (per_target dict) and flat top-level schema
     nested = fm_verify.get("per_target", {}) or {}
     rows = []
-    for tgt in ("FmEqvEcoSynthesizeVsSynRtl",
-                "FmEqvEcoPrePlaceVsEcoSynthesize",
-                "FmEqvEcoRouteVsEcoPrePlace"):
+    for tgt in ECO_TARGETS:
         det = nested.get(tgt) or fm_verify.get(tgt)
         if isinstance(det, dict):
             status = det.get("status") or det.get("verdict", "?")
@@ -210,9 +216,7 @@ def fm_results_table(fm_verify: dict | None) -> str:
 def failing_points_detail(fm_verify: dict | None, max_lines: int = 30,
                           evidence: dict | None = None) -> str:
     blocks = []
-    FM_TGTS = ("FmEqvEcoSynthesizeVsSynRtl",
-                "FmEqvEcoPrePlaceVsEcoSynthesize",
-                "FmEqvEcoRouteVsEcoPrePlace")
+    FM_TGTS = ECO_TARGETS
 
     # Primary: evidence walk per_target dossiers (round-specific)
     if evidence and evidence.get("per_target"):
@@ -566,9 +570,7 @@ def _build_fm_verify_from_json(evidence_path: Path, verify_path: Path,
       2. eco_fm_verify.json           → len(failing_points) or failing_count field
       3. eco_step6_fm_verify_roundN.rpt → RPT parsing (format varies — last resort)
     """
-    TARGETS = ("FmEqvEcoSynthesizeVsSynRtl",
-               "FmEqvEcoPrePlaceVsEcoSynthesize",
-               "FmEqvEcoRouteVsEcoPrePlace")
+    TARGETS = ECO_TARGETS
     result = {"per_target": {}}
 
     evidence  = read_json(evidence_path) or {}
@@ -703,9 +705,17 @@ def main() -> int:
     p.add_argument("--tile",     required=True)
     p.add_argument("--ai-eco-flow-dir", default=None,
                    help="If set, also list AI_ECO_FLOW_DIR rpts in companion files section")
+    p.add_argument("--ref-dir", default=None,
+                   help="TileBuilder REF_DIR — used to resolve the tile's real Eco "
+                        "target triple (plain or UPF) for FM-result display")
     p.add_argument("--output",   default=None,
                    help="Output HTML path (default: <BASE_DIR>/data/<TAG>_eco_report_round<N>.html)")
     args = p.parse_args()
+
+    # Resolve the tile's real Eco target triple for display (infix-tolerant).
+    if args.ref_dir:
+        global ECO_TARGETS
+        ECO_TARGETS = tuple(detect_targets(args.ref_dir, "Eco"))
 
     out_path = Path(args.output) if args.output else (
         Path(args.base_dir) / "data" / f"{args.tag}_eco_report_round{args.round}.html"

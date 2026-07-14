@@ -156,6 +156,17 @@ Read `<fenets_tag>` from CLI output.
 
 > **MANDATORY net format — pass tile-relative paths, NOT tile-prefixed.** Use net values exactly as written in `queries.json` net_path field (e.g. `<HIER>/<wire>`). DO NOT pre-prepend `<TILE>/` — `find_equivalent_nets.csh` auto-prepends the tile name. Pre-prepending produces `<TILE>/<TILE>/...` paths that FM-036 on every query. The script is idempotent against double-prefix as a defensive fix, but the contract is: pass tile-RELATIVE paths only.
 
+> **PROJECT-PORTABLE TARGET DIR NAMES.** The `rpts/FmEqvPreEco*` directory names
+> in the B2/B4/D-CHAIN snippets below are the *plain* konark/umc-family names and
+> are **examples only**. UPF projects (e.g. soundwave) use
+> `rpts/FmEqvPwrAllUpfSuppliesOnPreEco.../`. Before polling/reading, resolve the
+> tile's real PreEco triple and substitute it into every `rpts/<target>/` path:
+> `python3 script/eco_scripts/eco_fm_targets.py --detect <REF_DIR> PreEco`
+> (prints the comma-separated Synthesize,PrePlace,Route target names). The
+> deterministic `eco_fenets_rename_map.py` already classifies these correctly, so
+> the rename-map JSON is unaffected — this note is only for the raw-rpt paths you
+> `cat`/`grep` by hand.
+
 **B2. Poll every 5 minutes with individual Bash tool calls** (keeps main session responsive and showing progress):
 ```bash
 # Each poll = one tool call = one "Running..." update visible in the session

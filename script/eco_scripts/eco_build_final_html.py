@@ -15,6 +15,16 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from eco_html_design import esc, badge, tbl, pre_block, html_wrap, section_wrap
+from eco_fm_targets import detect_targets, target_to_stage
+
+# Ordered Eco target triple for FM-result display. Defaults to canonical plain
+# names; build_html() overrides with the tile's real triple (plain or UPF) once
+# ref_dir is resolved, so UPF-named projects (soundwave) render correctly.
+ECO_TARGETS = (
+    "FmEqvEcoSynthesizeVsSynRtl",
+    "FmEqvEcoPrePlaceVsEcoSynthesize",
+    "FmEqvEcoRouteVsEcoPrePlace",
+)
 
 
 def read(p):
@@ -31,9 +41,7 @@ def readj(p):
 
 def parse_fm_rpt(rpt_text):
     results = []
-    for tgt in ("FmEqvEcoSynthesizeVsSynRtl",
-                "FmEqvEcoPrePlaceVsEcoSynthesize",
-                "FmEqvEcoRouteVsEcoPrePlace"):
+    for tgt in ECO_TARGETS:
         m = re.search(
             rf'{re.escape(tgt)}\s*[:\|]\s*(PASS|FAIL|ABORT\S*)'
             rf'(?:\s*\[failing(?:_count)?:\s*(\d+)\]'
@@ -43,7 +51,7 @@ def parse_fm_rpt(rpt_text):
         if m:
             st  = m.group(1)
             cnt = int(m.group(2) or m.group(3) or m.group(4) or 0)
-            short = tgt.replace("FmEqvEco","").replace("VsEco"," vs Eco").replace("VsSynRtl"," vs SynRtl")
+            short = target_to_stage(tgt) or tgt.replace("FmEqvEco","").replace("VsEco"," vs Eco").replace("VsSynRtl"," vs SynRtl")
             results.append((short, st, cnt))
     return results
 
@@ -62,6 +70,11 @@ def build_html(args):
     study_json  = readj(data / f"{tag}_eco_preeco_study.json") or {}
     fixer_state = readj(data / f"{tag}_eco_fixer_state") or {}
     ref_dir     = args.ref_dir or handoff.get("ref_dir", "")
+
+    # Resolve the tile's real Eco target triple for display (infix-tolerant).
+    global ECO_TARGETS
+    if ref_dir:
+        ECO_TARGETS = tuple(detect_targets(ref_dir, "Eco"))
 
     final_verdict = handoff.get("status", "UNKNOWN")
     next_phase    = handoff.get("next_phase", "UNKNOWN")
@@ -117,9 +130,9 @@ def build_html(args):
         actions = "<br>".join(esc(a) for a in st.get("actions", [])[:5])
         fm_r    = fm_per_round.get(rnd, {})
         fc      = fm_r.get("failing_count", {})
-        fm_sum  = (f"S:{fc.get('FmEqvEcoSynthesizeVsSynRtl','—')} "
-                   f"PP:{fc.get('FmEqvEcoPrePlaceVsEcoSynthesize','—')} "
-                   f"RT:{fc.get('FmEqvEcoRouteVsEcoPrePlace','—')}")
+        fm_sum  = (f"S:{fc.get(ECO_TARGETS[0],'—')} "
+                   f"PP:{fc.get(ECO_TARGETS[1],'—')} "
+                   f"RT:{fc.get(ECO_TARGETS[2],'—')}")
         progress = fm_r.get("progress_note", "")
         strategy_rows.append([str(rnd), esc(fm_mode), esc(diag[:180]),
                                actions, esc(fm_sum),

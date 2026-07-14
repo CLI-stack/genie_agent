@@ -71,6 +71,7 @@ from pathlib import Path
 # Reuse the abort cause classifier (loads YAML at import time)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import eco_extract_fm_abort_cause as _abort_cause
+from eco_fm_targets import detect_targets
 
 
 SCHEMA_VERSION = "v1"
@@ -360,9 +361,10 @@ def main():
     p.add_argument('--tag',       required=True)
     p.add_argument('--round',     type=int, default=1)
     p.add_argument('--output',    required=True, help='Output eco_fm_verify.json')
-    p.add_argument('--targets',   default=','.join(DEFAULT_ECO_TARGETS),
+    p.add_argument('--targets',   default=None,
                    help='Comma-separated list of FM targets to inspect '
-                        f'(default: {",".join(DEFAULT_ECO_TARGETS)})')
+                        '(default: auto-detect the tile\'s Eco triple, '
+                        'infix-tolerant for UPF-named projects)')
     p.add_argument('--prev-verify', default=None,
                    help='Path to previous round eco_fm_verify.json — carry forward '
                         'PASS results for targets not in --targets (avoids missing '
@@ -375,7 +377,11 @@ def main():
         return 2
     logs_dir = ref_dir / 'logs'
 
-    targets = [t.strip() for t in args.targets.split(',') if t.strip()]
+    if args.targets:
+        targets = [t.strip() for t in args.targets.split(',') if t.strip()]
+    else:
+        # Auto-detect the tile's Eco triple (plain or UPF).
+        targets = detect_targets(str(ref_dir), 'Eco')
     per_target = {}
     for t in targets:
         per_target[t] = classify_target(str(ref_dir), str(logs_dir), t)
@@ -385,9 +391,11 @@ def main():
         try:
             prev = json.loads(Path(args.prev_verify).read_text())
             prev_per = prev.get('per_target', {})
-            for t in DEFAULT_ECO_TARGETS:
-                if t not in per_target and prev_per.get(t, {}).get('verdict') == 'PASS':
-                    per_target[t] = dict(prev_per[t])
+            # Iterate the ACTUAL prior-round target keys (project-aware: works
+            # for plain and UPF names) rather than a hardcoded triple.
+            for t, pv in prev_per.items():
+                if t not in per_target and isinstance(pv, dict) and pv.get('verdict') == 'PASS':
+                    per_target[t] = dict(pv)
                     per_target[t]['carried_forward_from_round'] = prev.get('round')
                     print(f'  CARRY_FORWARD: {t} PASS from round {prev.get("round")}')
         except Exception as ex:

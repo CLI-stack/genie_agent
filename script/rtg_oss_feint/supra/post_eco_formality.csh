@@ -70,8 +70,10 @@ set out           = "$source_dir/data/${tag}_spec"
 #------------------------------------------------------------------------------
 set config_file = "$refdir_name/data/eco_fm_config"
 
-# Defaults
-set all_eco_targets = (FmEqvEcoSynthesizeVsSynRtl FmEqvEcoPrePlaceVsEcoSynthesize FmEqvEcoRouteVsEcoPrePlace)
+# Defaults — auto-detect the tile's real Eco target triple (infix-tolerant:
+# handles UPF names like soundwave's FmEqvPwrAllUpfSuppliesOnEco*). Falls back
+# to canonical plain names if the tile cannot be scanned.
+set all_eco_targets = (`python3 $source_dir/script/eco_scripts/eco_fm_targets.py --detect "$refdir_name" Eco | sed 's/,/ /g'`)
 set eco_targets     = ($all_eco_targets)
 set run_svf_gen     = 0
 set eco_svf_entries = ""
@@ -94,26 +96,10 @@ if (-f "$config_file") then
         set smart_applied = `grep "^APPLIED_JSON=" "$config_file" | sed 's/APPLIED_JSON=//'`
         set smart_prev    = `grep "^PREV_VERIFY_JSON=" "$config_file" | sed 's/PREV_VERIFY_JSON=//'`
         echo "  SMART_TARGETS=1 — computing optimal targets..."
-        set eco_targets = (`python3 -c "
-import json, sys
-T = ['FmEqvEcoSynthesizeVsSynRtl','FmEqvEcoPrePlaceVsEcoSynthesize','FmEqvEcoRouteVsEcoPrePlace']
-changed = {'Synthesize':0,'PrePlace':0,'Route':0}
-try:
-    d=json.load(open('$smart_applied'))
-    for s in changed:
-        changed[s]=sum(1 for e in d.get(s,[]) if e.get('status') in ('APPLIED','INSERTED'))
-except: pass
-prev={}
-try:
-    pt=json.load(open('$smart_prev')).get('per_target',{})
-    prev={t:(v.get('verdict')=='PASS') for t,v in pt.items() if isinstance(v,dict)}
-except: pass
-targets=[]
-if changed['Synthesize']>0 or not prev.get(T[0],False): targets.append(T[0])
-if changed['PrePlace']>0 or changed['Synthesize']>0 or not prev.get(T[1],False): targets.append(T[1])
-if changed['Route']>0 or changed['PrePlace']>0: targets.append(T[2])
-print(' '.join(targets) if targets else ' '.join(T))
-"`)
+        # Single-line call into the shared helper (avoids a multi-line backtick
+        # substitution that some tcsh builds reject with 'Unmatched `'). The
+        # helper is infix-tolerant, so UPF Eco target names resolve correctly.
+        set eco_targets = (`python3 $source_dir/script/eco_scripts/eco_fm_targets.py --smart-eco "$refdir_name" "$smart_applied" "$smart_prev"`)
         echo "  SMART_TARGETS selected: $eco_targets"
     endif
 
@@ -136,12 +122,20 @@ endif
 #------------------------------------------------------------------------------
 source $source_dir/script/rtg_oss_feint/lsf_tilebuilder.csh
 
+# Per-tile TileBuilder release + seras env (project-portable). Selects the
+# tile's OWN release binary ($TBTERM) + VOV/seras binding so serascmd/
+# TileBuilderShow attach to the right scheduler across projects. See tbterm_env.csh.
+set tb_refdir = "$tile_dir"
+source $source_dir/script/rtg_oss_feint/supra/tbterm_env.csh
+
 #------------------------------------------------------------------------------
 # PHASE A: RUN FmEcoSvfGen (if needed, as dependency for FmEqvEcoSynthesizeVsSynRtl)
 #------------------------------------------------------------------------------
 set synth_in_targets = 0
 foreach tgt ($eco_targets)
-    if ("$tgt" == "FmEqvEcoSynthesizeVsSynRtl") set synth_in_targets = 1
+    # Infix-tolerant: match the Synthesize target regardless of UPF naming.
+    set _tstage = `python3 $source_dir/script/eco_scripts/eco_fm_targets.py --stage "$tgt"`
+    if ("$_tstage" == "Synthesize") set synth_in_targets = 1
 end
 
 if ($run_svf_gen == 1 && $synth_in_targets == 1) then
@@ -152,10 +146,10 @@ if ($run_svf_gen == 1 && $synth_in_targets == 1) then
 
     cd $tile_dir
     echo "Resetting FmEcoSvfGen ..."
-    TileBuilderTerm -x "serascmd -find_jobs 'name=~FmEcoSvfGen dir=~${tile_dir_name}' --action reset"
+    $TBTERM -x "serascmd -find_jobs 'name=~FmEcoSvfGen dir=~${tile_dir_name}' --action reset"
     sleep 20
     echo "Running FmEcoSvfGen ..."
-    TileBuilderTerm -x "serascmd -find_jobs 'name=~FmEcoSvfGen dir=~${tile_dir_name}' --action run"
+    $TBTERM -x "serascmd -find_jobs 'name=~FmEcoSvfGen dir=~${tile_dir_name}' --action run"
     cd $source_dir
 
     # Poll until FmEcoSvfGen complete (60 min timeout, 5 min intervals)
@@ -170,7 +164,7 @@ if ($run_svf_gen == 1 && $synth_in_targets == 1) then
         @ elapsed += $poll_interval
 
         cd $tile_dir
-        TileBuilderTerm -x "TileBuilderShow >& $svfgen_log"
+        $TBTERM -x "TileBuilderShow >& $svfgen_log"
         cd $source_dir
         sleep 5
 
@@ -252,10 +246,10 @@ echo "Stale rpt cleanup done." >> $out
 cd $tile_dir
 foreach tgt ($eco_targets)
     echo "Resetting $tgt ..."
-    TileBuilderTerm -x "serascmd -find_jobs 'name=~${tgt} dir=~${tile_dir_name}' --action reset"
+    $TBTERM -x "serascmd -find_jobs 'name=~${tgt} dir=~${tile_dir_name}' --action reset"
     sleep 20
     echo "Running $tgt ..."
-    TileBuilderTerm -x "serascmd -find_jobs 'name=~${tgt} dir=~${tile_dir_name}' --action run"
+    $TBTERM -x "serascmd -find_jobs 'name=~${tgt} dir=~${tile_dir_name}' --action run"
 end
 cd $source_dir
 
@@ -288,7 +282,7 @@ while ($all_done == 0)
     sleep $poll_interval
 
     cd $tile_dir
-    TileBuilderTerm -x "TileBuilderShow >& $tb_status_log"
+    $TBTERM -x "TileBuilderShow >& $tb_status_log"
     cd $source_dir
     sleep 5
 
@@ -412,9 +406,15 @@ foreach tgt ($eco_targets)
     echo "Item,Value" >> $out
     echo "Target,$tgt" >> $out
     echo "Status,$tgt_status" >> $out
-    if ("$lec_result" != "N/A") echo "LEC Result,$lec_result" >> $out
-    if ("$num_eq"     != "N/A") echo "Equivalent Points,$num_eq" >> $out
-    if ("$num_noneq"  != "N/A") echo "Non-Equivalent Points,$num_noneq" >> $out
+    if ("$lec_result" != "N/A") then
+        echo "LEC Result,$lec_result" >> $out
+    endif
+    if ("$num_eq" != "N/A") then
+        echo "Equivalent Points,$num_eq" >> $out
+    endif
+    if ("$num_noneq" != "N/A") then
+        echo "Non-Equivalent Points,$num_noneq" >> $out
+    endif
     echo "Failing Points,$failing_count ($failing_status)" >> $out
     echo "Failing Points Report,$fp_rpt" >> $out
     echo "#table end#" >> $out

@@ -63,6 +63,20 @@ EOF
 ```
 
 - `RUN_SVF_GEN` is always `0`. Never write `ECO_SVF_ENTRIES` — Step 4b (eco_svf_updater) is permanently disabled; a missing SVF file causes post_eco_formality.csh to abort.
+
+> **PROJECT-PORTABLE TARGET NAMES (read first).** The literal `FmEqvEco*` names shown
+> throughout this file are the *plain* konark/umc-family names and are **examples
+> only**. UPF power-aware projects (e.g. soundwave) name their targets
+> `FmEqvPwrAllUpfSuppliesOnEco...`. Do **NOT** hardcode the plain names into
+> `eco_fm_config` for such a tile. Two safe options:
+>   1. **Preferred — omit `ECO_TARGETS` (Round 1) or use `SMART_TARGETS=1` (Round 2+).**
+>      `post_eco_formality.csh` auto-detects the tile's real Eco triple via
+>      `script/eco_scripts/eco_fm_targets.py` (infix-tolerant), so you never need to
+>      name targets explicitly.
+>   2. If you must write an explicit `ECO_TARGETS=` list, resolve the real names first:
+>      `python3 script/eco_scripts/eco_fm_targets.py --detect <REF_DIR> Eco`
+>      (prints the comma-separated real triple; convert commas to spaces for the config).
+
 - **`ECO_TARGETS` policy — smart selection based on which stages changed (Round 2+):**
 
   **The FM runner MUST decide which targets to run based on:**
@@ -109,11 +123,15 @@ EOF
   RUN_SVF_GEN=0
   ```
 
-  **Round 1 — write all 3 explicitly (no previous verify available):**
+  **Round 1 — run all 3 (no previous verify available).** Preferred: omit
+  `ECO_TARGETS` entirely — post_eco_formality.csh defaults to the tile's real
+  detected triple (plain or UPF), which is exactly all 3:
   ```
-  ECO_TARGETS=FmEqvEcoSynthesizeVsSynRtl FmEqvEcoPrePlaceVsEcoSynthesize FmEqvEcoRouteVsEcoPrePlace
   RUN_SVF_GEN=0
   ```
+  (If you insist on an explicit list, resolve the real names first via
+  `eco_fm_targets.py --detect <REF_DIR> Eco` — do NOT hardcode the plain
+  `FmEqvEco*` names, which are wrong for UPF tiles.)
 
   **Round 2+ — use SMART_TARGETS (recommended, agent does NOT decide targets):**
   ```

@@ -17,11 +17,14 @@ touch $source_dir/data/${tag}_spec
 set refdir_name = `echo $refDir | sed 's/refDir://' | sed 's/^://g'`
 
 # Strip "target:" prefix — result may be comma-separated list of targets
-# If empty or not specified, default to all 3 PreEco targets
+# If empty or not specified, auto-detect the tile's 3 PreEco targets.
 set target_raw = `echo $target | sed 's/target://'`
 if ("$target_raw" == "" || "$target_raw" == "target") then
-    set target_raw = "FmEqvPreEcoSynthesizeVsPreEcoSynRtl,FmEqvPreEcoPrePlaceVsPreEcoSynthesize,FmEqvPreEcoRouteVsPreEcoPrePlace"
-    echo "No target specified — defaulting to all 3 PreEco targets"
+    # Infix-tolerant detection (handles UPF names like soundwave's
+    # FmEqvPwrAllUpfSuppliesOnPreEco*). Falls back to canonical plain names if
+    # the tile cannot be scanned. See script/eco_scripts/eco_fm_targets.py.
+    set target_raw = `python3 $source_dir/script/eco_scripts/eco_fm_targets.py --detect "$refdir_name" PreEco`
+    echo "No target specified — auto-detected PreEco targets: $target_raw"
 endif
 set target_list = (`echo $target_raw | sed 's/,/ /g'`)
 set target_count = $#target_list
@@ -98,12 +101,19 @@ echo "Net name(s):           $net_raw  (count: $net_count)"
 # --- Phase 2: Source LSF environment ---
 source $source_dir/script/rtg_oss_feint/lsf_tilebuilder.csh
 
+# --- Phase 2b: Per-tile TileBuilder release + seras env (project-portable) ---
+# Selects the tile's OWN release binary ($TBTERM) and VOV/seras binding so this
+# works across projects (konark 2026.01 plain targets, soundwave frozen UPF
+# targets) without relying on the ambient TileBuilderTerm. See tbterm_env.csh.
+set tb_refdir = "$refdir_name"
+source $source_dir/script/rtg_oss_feint/supra/tbterm_env.csh
+
 # --- Phase 3: Check ALL FM target statuses via one TileBuilderShow ---
 echo "Checking FM target statuses via TileBuilderShow..."
 set tb_status_log = "/tmp/tb_fm_status_${tag}.log"
 
 cd $refdir_name
-TileBuilderTerm -x "TileBuilderShow >& $tb_status_log"
+$TBTERM -x "TileBuilderShow >& $tb_status_log"
 cd $source_dir
 sleep 5
 
@@ -175,16 +185,30 @@ redirect ${refdir_name}/${output_rpt} {
 exit
 TCLEOF
 
-    # umcdat Synthesize target requires higher memory reservation (large netlist)
+    # High memory reservation for the heavy Synthesize FM target.
+    # NOTE: FM memory demand is an empirical PER-TILE property (driven by the
+    # Formality session/compare-point density — the FM session runs to 8-9 GB on
+    # these tiles), NOT the gate-level netlist file size. Counter-example: konark
+    # umccmd has a LARGER netlist than umcdat yet runs fine on normal memory,
+    # while umcdat cannot. So we gate on a tile allowlist, not on file size.
+    # Match the Synthesize target by SUFFIX (infix-tolerant — also matches UPF
+    # names like FmEqvPwrAllUpfSuppliesOnPreEcoSynthesizeVsPreEcoSynRtl).
+    # Add new memory-hog tiles to $_himem_tiles as they are identified.
+    set _himem_tiles = (umcdat umc)
     set extra_opts = ""
-    if ("$tile_name" == "umcdat" && "$tgt" == "FmEqvPreEcoSynthesizeVsPreEcoSynRtl") then
-        set extra_opts = "-r 130000"
-        echo "umcdat Synthesize: using -r 130000 (high memory reservation)"
+    set _is_syn = `echo "$tgt" | grep -cE 'SynthesizeVs.*SynRtl$'`
+    if ($_is_syn > 0) then
+        foreach _ht ($_himem_tiles)
+            if ("$tile_name" == "$_ht") then
+                set extra_opts = "-r 130000"
+                echo "${tgt}: using -r 130000 (high-memory tile: $tile_name)"
+            endif
+        end
     endif
 
     echo "Launching TileBuilderIntFM for target: $tgt"
     cd $refdir_name
-    TileBuilderTerm -x "TileBuilderIntFM --nogui --append $tcl_script $tgt $extra_opts" &
+    $TBTERM -x "TileBuilderIntFM --nogui --append $tcl_script $tgt $extra_opts" &
     cd $source_dir
 
     set result_files = ($result_files $result_file)

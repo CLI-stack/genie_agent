@@ -34,6 +34,8 @@ Output schema:
 """
 import argparse, glob, json, os, re, subprocess, sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from eco_fm_targets import target_to_stage
 try:
     from eco_fenets_derive_queries import _pf_cone_leaves
 except Exception:
@@ -57,15 +59,9 @@ NOEQ_RE   = re.compile(r'^---\s*No Equivalent Nets:')
 EQ_RE     = re.compile(r'^---\s*Equivalent Nets:')
 IMPL_NET_RE = re.compile(r'^\s*Impl\s+Net\s+([+\-])\s+i:/[^/]+/[^/]+/(\S+)')
 
-# FmEqv target → stage name map
-TARGET_TO_STAGE = {
-    'FmEqvPreEcoSynthesizeVsPreEcoSynRtl':       'Synthesize',
-    'FmEqvPreEcoPrePlaceVsPreEcoSynthesize':     'PrePlace',
-    'FmEqvPreEcoRouteVsPreEcoPrePlace':          'Route',
-    'FmEqvEcoSynthesizeVsSynRtl':                'Synthesize',
-    'FmEqvEcoPrePlaceVsEcoSynthesize':           'PrePlace',
-    'FmEqvEcoRouteVsEcoPrePlace':                'Route',
-}
+# FmEqv target → stage name: use the shared infix-tolerant classifier so both
+# plain (konark) and UPF-named (soundwave) targets resolve correctly, for both
+# PreEco (Step 2) and Eco (round re-fenets) rpts.
 
 def parse_raw_rpt(path):
     """Parse one raw fenets rpt. Returns dict {(stage, net_signal): result}
@@ -90,7 +86,7 @@ def parse_raw_rpt(path):
             m = TARGET_RE.match(line)
             if m:
                 flush()
-                cur_stage = TARGET_TO_STAGE.get(m.group(1))
+                cur_stage = target_to_stage(m.group(1))
                 cur_net = None
                 cur_status = None
                 cur_pos = []; cur_neg = []

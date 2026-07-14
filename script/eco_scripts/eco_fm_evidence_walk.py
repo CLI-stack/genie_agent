@@ -40,7 +40,13 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from eco_fm_targets import target_to_stage, detect_targets  # noqa: E402
 
+# Canonical plain Eco targets — used ONLY as a fallback when the project's real
+# target triple cannot be detected from the tile dir. Real target names are
+# resolved per-tile via detect_targets(ref_dir, 'Eco') so UPF-named projects
+# (e.g. soundwave 'FmEqvPwrAllUpfSuppliesOnEco...') are handled correctly.
 FM_TARGETS = [
     "FmEqvEcoSynthesizeVsSynRtl",
     "FmEqvEcoPrePlaceVsEcoSynthesize",
@@ -106,8 +112,15 @@ def read_json(path: Path) -> Any:
 # Phase 1A — Verdict triage
 # ---------------------------------------------------------------------------
 
-def initial_verdict(fm_verify: dict | None) -> tuple[str, str, dict]:
+def initial_verdict(fm_verify: dict | None,
+                    expected_targets: list | None = None) -> tuple[str, str, dict]:
     """Triage from eco_fm_verify.json. Returns (verdict, reason, per_target_status).
+
+    `expected_targets` is the project's real Eco target triple (from
+    detect_targets); when None we fall back to the canonical plain FM_TARGETS.
+    Using the detected triple is what makes MISSING-detection correct on
+    UPF-named projects — otherwise every hardcoded-name lookup misses and the
+    loop is pinned at RERUN_SAME_ROUND forever.
 
     SOURCE OF TRUTH for loop_verdict semantics. The downstream chain (analyzer
     Phase 1, ROUND_ORCHESTRATOR Step 6.2-VERDICT, re-studier Step 1) keys off
@@ -132,10 +145,12 @@ def initial_verdict(fm_verify: dict | None) -> tuple[str, str, dict]:
     if not fm_verify:
         return ("RERUN_SAME_ROUND", "eco_fm_verify.json missing or empty", per_target)
 
+    targets = expected_targets or FM_TARGETS
+
     # Support both flat schema (target at top level) and nested schema (per_target dict)
     nested = fm_verify.get("per_target", {})
 
-    for tgt in FM_TARGETS:
+    for tgt in targets:
         # Try nested per_target first, then flat top-level
         entry = nested.get(tgt) if nested else None
         if entry is None:
@@ -156,8 +171,8 @@ def initial_verdict(fm_verify: dict | None) -> tuple[str, str, dict]:
         miss = [t for t, s in per_target.items() if s in ("MISSING", "NOT_RUN")]
         return ("RERUN_SAME_ROUND", f"Missing/not-run targets: {', '.join(miss)}", per_target)
 
-    if all(s == "PASS" for s in statuses):
-        return ("CONVERGED", "All 3 FM targets PASS", per_target)
+    if statuses and all(s == "PASS" for s in statuses):
+        return ("CONVERGED", "All FM targets PASS", per_target)
 
     # FAIL or ABORT → re-study needed. ABORT in round 2+ means a new structural
     # issue from re-apply; treat same as FAIL (needs diagnosis + fix, not retry).
@@ -705,7 +720,7 @@ def build_summary_signals(per_target: dict[str, dict],
         dom_sig = ps.get("dominant_signal")
         top_inputs = ps.get("top_unmatched_cone_inputs", [])
         eco_fail = ps.get("eco_inserted_failing", 0)
-        tgt_short = tgt.replace("FmEqvEco", "").replace("VsEco", "→").replace("VsSynRtl", "→SynRtl")
+        tgt_short = target_to_stage(tgt) or tgt.replace("FmEqvEco", "").replace("VsEco", "→").replace("VsSynRtl", "→SynRtl")
         # Elevate to CRITICAL if ECO-inserted DFFs are failing
         level = "critical" if eco_fail > 0 else "high"
         top_scope = top_mod[0]["scope"] if top_mod else "unknown"
@@ -845,14 +860,18 @@ def main() -> int:
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Resolve the project's real Eco target triple (plain or UPF) from the tile.
+    expected_targets = detect_targets(ref_dir, "Eco")
+
     # Load eco_fm_verify.json + eco_applied for triage
     fm_verify = read_json(base_dir / "data" / f"{args.tag}_eco_fm_verify.json")
     eco_applied = read_json(base_dir / "data" / f"{args.tag}_eco_applied_round{args.round}.json")
 
-    verdict, reason, per_target_status = initial_verdict(fm_verify if isinstance(fm_verify, dict) else None)
+    verdict, reason, per_target_status = initial_verdict(
+        fm_verify if isinstance(fm_verify, dict) else None, expected_targets)
 
     per_target_details: dict[str, dict] = {}
-    for tgt in FM_TARGETS:
+    for tgt in expected_targets:
         status = per_target_status.get(tgt, "UNKNOWN")
         details: dict[str, Any] = {"status": status}
 
