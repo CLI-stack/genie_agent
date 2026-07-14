@@ -34,7 +34,7 @@ OPTIONS
   --list           show this help
 
 STEPS
-  1 READ      QoR passes, endpoint hierarchies, effective weights
+  1 READ      QoR passes, Design totals (FxSynthesize.dat), endpoint hierarchies, effective weights
   2 DIAGNOSE  7 root cause checks A–G
   3 SUGGEST   full plan + RTL flags, saves .optimizer_plan.json
   4 GENERATE  writes tune files exactly as proposed in Step 3
@@ -52,6 +52,8 @@ WRITES (Step 4)
 REQUIREMENTS
   rpts/FxSynthesize/FxSynthesize.pass_*.proc_qor.rpt.gz  (≥1 pass)
   tune/FxSynthesize/  (may be empty — created if missing)
+  rpts/FxSynthesize/FxSynthesize.dat  (optional — authoritative Design totals; falls back to
+                                        per-group data with a WARNING if missing)
 ```
 
 ---
@@ -125,6 +127,23 @@ grep -iE "num_compiles|compile.*passes|max_compile" <TILE_DIR>/override.params
 grep -E "max_multibit_size|FLOORPLAN_DEF" <TILE_DIR>/override.params
 ```
 
+### 1h. Read FxSynthesize.dat for authoritative Design-level totals
+```bash
+grep -E "^DesignWNS|^DesignTNS|^DesignNVP|^totalCoreWNS|^totalCoreTNS|^totalCoreNVP|^totalIOWNS|^totalIOTNS|^totalIONVP" \
+  <TILE_DIR>/rpts/FxSynthesize/FxSynthesize.dat
+```
+`FxSynthesize.dat` is Fusion Compiler's own per-run summary. `DesignWNS`/`DesignTNS`/`DesignNVP` are the
+tool's deduplicated, authoritative design-wide totals — use these as the reported baseline WNS/TNS/NVP.
+
+**Never derive the design total by summing each path group's TNS/NVP column from Step 1c.** That arithmetic
+sum looks legitimate but is systematically too large — it double-counts endpoints that get reported under
+more than one path group. `DesignWNS` is unaffected either way (it's a `min()` across groups, not a sum),
+but `DesignTNS`/`DesignNVP` must come from this file, not from adding up the per-group table.
+
+If `FxSynthesize.dat` is missing (older tiles / not yet generated): fall back to the per-group sum from
+Step 1c, but flag it explicitly — `DesignTNS≈<sum> [APPROXIMATE — FxSynthesize.dat missing, likely inflated
+by cross-group double-counting]` — never present a fallback sum as if it were the authoritative total.
+
 ### Step 1 Output — ALL groups, ALL passes, full tables
 ```
 ╔══════════════════════════════════════════════════════════════════╗
@@ -133,9 +152,14 @@ grep -E "max_multibit_size|FLOORPLAN_DEF" <TILE_DIR>/override.params
 Tune files: pre_opt=YES  group_paths=YES/NO  r2r_opt=YES/NO  post_opt=YES/NO
 DEF: <path>  [EXISTS / MISSING]
 
+Design Totals (FxSynthesize.dat, primary pass): DesignWNS=<ps>  DesignTNS=<ps>  DesignNVP=<N>
+  Core: WNS=<ps> TNS=<ps> NVP=<N>   |   IO: WNS=<ps> TNS=<ps> NVP=<N>
+  [If FxSynthesize.dat missing: "DesignTNS≈<sum> APPROXIMATE — FxSynthesize.dat missing"]
+
 --- ALL Groups Primary Pass (P<N>) ---
   Path Group          WNS(ps)   TNS(ps)    NVP   LOL  W(eff)  CritLen(ps)  CritLen%
   <every group, sorted worst WNS first, including non-violating>
+  ⚠ Do NOT sum this column's TNS/NVP to get a design total — use Design Totals above instead.
 
 --- Pass Progression ALL Groups ---
   Path Group          P1        P2        P3        P4        P5
@@ -498,9 +522,15 @@ set_app_options -name compile.timing.buffer_replication            -value true
 
 ### Save plan file (always, every mode)
 `<TILE_DIR>/.optimizer_plan.json`
+
+`baseline_wns_ps`/`baseline_tns_ps`/`baseline_nvp` = `DesignWNS`/`DesignTNS`/`DesignNVP` from
+`FxSynthesize.dat` (Step 1h) — never a sum of the per-group table. Set `baseline_source` to
+`"FxSynthesize.dat"` or `"per-group-sum-APPROXIMATE"` so `--apply` and any downstream comparison
+knows whether the baseline is authoritative or a fallback estimate.
 ```json
 {
-  "tile_dir":"<>","tile_type":"<>","baseline_wns_ps":<>,"baseline_tns_ps":<>,
+  "tile_dir":"<>","tile_type":"<>",
+  "baseline_wns_ps":<>,"baseline_tns_ps":<>,"baseline_nvp":<>,"baseline_source":"FxSynthesize.dat|per-group-sum-APPROXIMATE",
   "period_ps":<>,"primary_pass":<>,
   "fixes":[
     {"check":"A","group":"<>","action":"split","modes":[],"weights":[]},
