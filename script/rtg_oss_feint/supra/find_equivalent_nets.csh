@@ -173,6 +173,22 @@ set nets { ${net_full_list} }
 
 redirect ${refdir_name}/${output_rpt} {
     foreach net_suffix \$nets {
+        # Guard against a redundant self-prefix: ref_top already ends in
+        # \$topModule, so when net_suffix ALSO starts with "\$topModule/"
+        # (tile-level FM runs where topModule == tile instance name, e.g.
+        # a standalone-tile TileBuilder ECO run) the naive concatenation
+        # below would produce ".../topModule/topModule/net" and FM-036
+        # "Unknown name" on every query. Strip one redundant leading
+        # "topModule/" copy before building the r: path. Root-caused on
+        # run 20260713182634 (ddrss_umc_t Synthesize/PrePlace/Route all
+        # FM-036'd identically). Safe no-op for tiles where topModule is a
+        # true chip-level top and net_suffix references a nested instance
+        # that legitimately does not start with topModule/.
+        set _self_prefix "\${topModule}/"
+        set _self_plen [string length \$_self_prefix]
+        if {[string length \$net_suffix] > \$_self_plen && [string equal -length \$_self_plen \$_self_prefix \$net_suffix]} {
+            set net_suffix [string range \$net_suffix \$_self_plen end]
+        }
         set full_ref_net "r:/\$ref_top/\$net_suffix"
         echo "=========================================="
         echo "Net: \$full_ref_net"
@@ -194,7 +210,7 @@ TCLEOF
     # Match the Synthesize target by SUFFIX (infix-tolerant — also matches UPF
     # names like FmEqvPwrAllUpfSuppliesOnPreEcoSynthesizeVsPreEcoSynRtl).
     # Add new memory-hog tiles to $_himem_tiles as they are identified.
-    set _himem_tiles = (umcdat umc)
+    set _himem_tiles = (umcdat umc ddrss_umc_t)
     set extra_opts = ""
     set _is_syn = `echo "$tgt" | grep -cE 'SynthesizeVs.*SynRtl$'`
     if ($_is_syn > 0) then

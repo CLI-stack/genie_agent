@@ -10,6 +10,10 @@ DFF0X failures).
 
 Categories — same as eco_fenets_runner.md STEP A but enforced as code:
 
+  Cat 0: passthrough of the analyzer-provided top-level nets_to_query — already
+         fully-qualified per-branch cone leaves. Essential for a comb_net_force
+         in a MULTIPLY-INSTANTIATED module (no single scope; the per-change cone
+         walk in Cat 4c cannot qualify it, so Step 1 pre-resolves it here).
   Cat 1: wire_swap / and_term — both old_token and new_token.
   Cat 2: new_logic_dff dff_clock.
   Cat 3: new_logic_dff reset_signal.
@@ -140,6 +144,31 @@ def derive(rtl_diff, tile='', ref_dir=None):
                 v = c.get(f)
                 if isinstance(v, str) and v:
                     eco_new_signals.add(v)
+
+    # Cat 0 (passthrough): consume the analyzer-provided top-level nets_to_query.
+    # Step 1 (rtl_diff_analyzer) pre-resolves fully-qualified, tile-relative cone
+    # leaves here for cases the per-change cone walk cannot scope on its own — most
+    # importantly a comb_net_force whose declaring module is instantiated MORE THAN
+    # ONCE (no single `scope`; the module lives under several different parents, so
+    # each cone leaf needs its own per-instance hierarchy prefix). Those net_paths
+    # already carry the correct per-branch hierarchy, so pass them straight through;
+    # the end-of-function
+    # dedup absorbs any overlap with the Cat 1..4 derivations below. Harmless for a
+    # single-instance run (adds its and_term driver queries, which are legit).
+    for q in (rtl_diff.get('nets_to_query') or []):
+        np = (q.get('net_path') or '').strip()
+        if not np:
+            continue
+        leaf = np.split('/')[-1]
+        if re.sub(r'\[.*$', '', leaf) in eco_new_signals:
+            continue
+        out.append({
+            'net_path': np,
+            'signal':   leaf,
+            'category': 0,
+            'source':   q.get('source') or 'rtl_diff.nets_to_query',
+        })
+
     for idx, c in enumerate(rtl_diff.get('changes', [])):
         ct = c.get('change_type', '')
         scope = _scope_of(c)
@@ -426,14 +455,23 @@ def derive(rtl_diff, tile='', ref_dir=None):
         # the cone; the emitter consumes the map (then flat heuristic) per stage.
         if ct == 'comb_net_force' and ref_dir and cone_leaves:
             sig = c.get('signal') or c.get('new_token') or c.get('target')
-            if sig:
-                for leaf in cone_leaves(ref_dir, c.get('module_name') or '', sig):
-                    out.append({
-                        'net_path': _abs_path(tile, scope, leaf),
-                        'signal':   leaf,
-                        'category': 4,
-                        'source':   f'changes[{idx}].comb_net_force_cone_leaf',
-                    })
+            # Scope(s) used to qualify the cone leaves. A module instantiated more
+            # than once has no single `scope`; the analyzer records the per-instance
+            # hierarchy in `instances[]` and ALSO pre-resolves the leaves into
+            # nets_to_query (Cat 0 above). With neither a `scope` nor `instances`,
+            # _abs_path would strip the hierarchy to a bare leaf name (unscoped →
+            # FM-036) — so skip the walk entirely and rely on the Cat 0 passthrough.
+            cnf_scopes = [scope] if scope else list(c.get('instances') or [])
+            if sig and cnf_scopes:
+                leaves = cone_leaves(ref_dir, c.get('module_name') or '', sig)
+                for sc in cnf_scopes:
+                    for leaf in leaves:
+                        out.append({
+                            'net_path': _abs_path(tile, sc, leaf),
+                            'signal':   leaf,
+                            'category': 4,
+                            'source':   f'changes[{idx}].comb_net_force_cone_leaf',
+                        })
 
         # Cat 4d: comb_net_force SELECTOR branch-conditions. The region selector (delta-prefix
         # path guard) references folded combinational wires (e.g. dsp_cmd_valid, dsp_cnt_end =
@@ -444,14 +482,19 @@ def derive(rtl_diff, tile='', ref_dir=None):
         # conditions() excludes signals that constant-fold or are already in the netlist.
         if ct == 'comb_net_force' and ref_dir and selector_folded_conditions:
             sig = c.get('signal') or c.get('new_token') or c.get('target')
-            if sig:
-                for cond in selector_folded_conditions(c, ref_dir):
-                    out.append({
-                        'net_path': _abs_path(tile, scope, cond),
-                        'signal':   cond,
-                        'category': 4,
-                        'source':   f'changes[{idx}].comb_net_force_selector_cond',
-                    })
+            # Same multi-instance scoping rule as Cat 4c: qualify per instance when
+            # the module has no single scope; skip when unscoped (Cat 0 covers it).
+            cnf_scopes = [scope] if scope else list(c.get('instances') or [])
+            if sig and cnf_scopes:
+                conds = selector_folded_conditions(c, ref_dir)
+                for sc in cnf_scopes:
+                    for cond in conds:
+                        out.append({
+                            'net_path': _abs_path(tile, sc, cond),
+                            'signal':   cond,
+                            'category': 4,
+                            'source':   f'changes[{idx}].comb_net_force_selector_cond',
+                        })
 
         # Cat 4e: reg_guard_delta (Intent-A and_term on a register) WIDENED-BRANCH guard leaves.
         # The clock-gate builder (eco_cone_rebuild emit_reg_guard_delta_batch) re-derives the load
