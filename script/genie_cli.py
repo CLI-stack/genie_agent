@@ -1195,7 +1195,10 @@ class GenieCLI:
 
         temp_text = preserve_braces(instruction_text)
         # Preserve commas within NetName: values (e.g. "NetName: A, B, C") before comma split
-        temp_text = re.sub(r'(?i)(NetName:\s*[\w/]+)(\s*,\s*[\w/]+)+',
+        # Character class includes [ ] to support bus-bit-indexed net paths (e.g. "sig[3]") —
+        # without them this regex stopped protecting commas at the first bracketed entry,
+        # so the later global comma->newline replace (below) fragmented the netName list.
+        temp_text = re.sub(r'(?i)(NetName:\s*[\w/\[\]]+)(\s*,\s*[\w/\[\]]+)+',
                            lambda m: m.group(0).replace(',', '\x01'), temp_text)
         temp_text = temp_text.replace(',', '\n')
         temp_text = temp_text.replace('\x00', ',')  # Restore commas inside braces
@@ -1301,7 +1304,11 @@ class GenieCLI:
                 continue
 
             # NetName pattern: NetName: <net_suffix>
-            net_name_match = re.search(r'NetName:\s*([\w/]+(?:\s*[\x01,]\s*[\w/]+)*)', line, re.I)
+            # Character class includes [ ] to support bus-bit-indexed net paths
+            # (e.g. "sig[3]"), which are first-class inputs from queries.json —
+            # without them the regex silently truncated the whole comma-joined
+            # netName list at the first bracketed entry.
+            net_name_match = re.search(r'NetName:\s*([\w/\[\]]+(?:\s*[\x01,]\s*[\w/\[\]]+)*)', line, re.I)
             if net_name_match:
                 net_name = re.sub(r'\s*[\x01,]\s*', ',', net_name_match.group(1).strip())
                 print(f"# Detected NetName: {net_name}")
@@ -1560,7 +1567,15 @@ class GenieCLI:
             if part.startswith('$'):
                 arg_name = part[1:]
                 if arg_name in arguementInfo and arguementInfo[arg_name] != arg_name:
-                    final_command.append(arguementInfo[arg_name])
+                    value = arguementInfo[arg_name]
+                    # netName carries bus-bit-indexed net paths like "sig[3]".
+                    # The run script is sourced by tcsh unquoted; "[...]" is
+                    # filename-glob syntax there and aborts with "No match" if
+                    # no file happens to match. Quote it so tcsh treats it as
+                    # a literal single word instead of a glob pattern.
+                    if arg_name == 'netName' and '[' in value:
+                        value = f'"{value}"'
+                    final_command.append(value)
                 else:
                     # Use placeholder with arg name for undefined variables (csh doesn't handle "" well)
                     final_command.append(f'{arg_name}:')

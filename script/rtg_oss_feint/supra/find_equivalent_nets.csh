@@ -4,6 +4,14 @@
 # Parameters: refDir, tag, target, netName, tile
 # target supports comma-separated list for parallel execution
 
+# netName carries bus-bit-indexed net paths like "sig[3]". tcsh treats
+# unquoted "[...]" as filename-glob syntax and aborts with "No match" on
+# every unquoted reference to $netName/$net_raw/$4 below (there are several,
+# incl. inside backticks) if no file happens to match. This script never
+# relies on real globbing, so disable it for the whole script rather than
+# relying on quoting every reference correctly.
+set noglob
+
 set refDir    = $1
 set tag       = $2
 set target    = $3
