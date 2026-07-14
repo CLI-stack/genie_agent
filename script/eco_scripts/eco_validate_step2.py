@@ -227,24 +227,45 @@ def main():
             # where 5 of 6 C6 entries (BeqCtrlPeSrc bits, REG_UmcCfgEco_1_)
             # were preserved-name bus signals, not FM failures.
             if real_fallbacks and args.ref_dir:
+                syn_gz = Path(args.ref_dir) / 'data' / 'PreEco' / 'Synthesize.v.gz'
                 pp_gz = Path(args.ref_dir) / 'data' / 'PreEco' / 'PrePlace.v.gz'
                 rt_gz = Path(args.ref_dir) / 'data' / 'PreEco' / 'Route.v.gz'
                 accepted = set()
-                if pp_gz.is_file() and rt_gz.is_file():
+                # Match BOTH the bracket form (foo[3]) and the bit-blasted netlist
+                # form (foo_3_) — synthesis renames bus bits to underscores.
+                def _present(gz, bare):
+                    m = re.match(r'^(.*)\[(\d+)\]$', bare)
+                    if m:
+                        b, i = re.escape(m.group(1)), m.group(2)
+                        pat = rf'\b{b}\[{i}\]\b|\b{b}_{i}_\b'
+                    else:
+                        pat = rf'\b{re.escape(bare)}\b'
+                    try:
+                        r = subprocess.run(f"zgrep -cE '{pat}' '{gz}'",
+                                           shell=True, capture_output=True, text=True, timeout=90)
+                        return int((r.stdout or '0').strip() or '0') > 0
+                    except Exception:
+                        return False
+                if syn_gz.is_file() and pp_gz.is_file() and rt_gz.is_file():
                     for sig in real_fallbacks:
                         bare = sig.rsplit('/', 1)[-1]
-                        try:
-                            r_pp = subprocess.run(
-                                f"zgrep -c '\\b{re.escape(bare)}\\b' '{pp_gz}'",
-                                shell=True, capture_output=True, text=True, timeout=60)
-                            r_rt = subprocess.run(
-                                f"zgrep -c '\\b{re.escape(bare)}\\b' '{rt_gz}'",
-                                shell=True, capture_output=True, text=True, timeout=60)
-                            n_pp = int((r_pp.stdout or '0').strip() or '0')
-                            n_rt = int((r_rt.stdout or '0').strip() or '0')
-                        except Exception:
-                            n_pp, n_rt = 0, 0
-                        if n_pp > 0 and n_rt > 0:
+                        in_syn = _present(syn_gz, bare)
+                        in_pp  = _present(pp_gz, bare)
+                        in_rt  = _present(rt_gz, bare)
+                        # (a) PRESERVED name: survives PP+Route unchanged -> legit echo.
+                        # (b) GENUINELY DISSOLVED: absent in ALL stages (incl Synthesize)
+                        #     -> synthesis eliminated it (behavioral always@* local like
+                        #     dsp_condsok[1-7,9-11], or a dissolved internal reg like
+                        #     recdsp_c0cs). FM correctly returns FM-036; Step-3 REBUILDS it
+                        #     from real surviving leaves (eco_cone_rebuild _sig_bit->_rebuild)
+                        #     or it folds out of the delta region entirely. Echo is expected
+                        #     and the emitted study never wires the dissolved name (proven:
+                        #     passing study 20260711182702 has zero dsp_condsok/recdsp_c0cs
+                        #     references). This matches the reg_guard C10b advisory treatment.
+                        # FLAG ONLY (c): present in Synthesize but optimized away in PP/Route
+                        #     -> a REAL net that needs per-stage fenets binding (the
+                        #     dsp_cmd_msc[0]/[3] NET-ABSENT class) — genuine C6 failure.
+                        if (in_pp and in_rt) or (not in_syn and not in_pp and not in_rt):
                             accepted.add(sig)
                 real_fallbacks = [s for s in real_fallbacks if s not in accepted]
 
