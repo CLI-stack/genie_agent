@@ -28,8 +28,10 @@ Phase discriminator: a PreEco target name contains the substring 'PreEco';
 an Eco target name contains 'Eco' but NOT 'PreEco'.
 """
 
-from __future__ import annotations
-
+# NOTE: intentionally no `from __future__ import annotations` — this module is
+# invoked by find_equivalent_nets.csh under the TileBuilder cpd.cshrc env, whose
+# python3 is 3.6.8 (the annotations future feature requires 3.7+). No PEP 604/585
+# annotation syntax is used here, so the import is unnecessary. Keep it removed.
 import os
 import re
 
