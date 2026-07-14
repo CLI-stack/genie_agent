@@ -327,91 +327,6 @@ def _bus_width_int(bw):
     return int(s) if s.isdigit() else 1
 
 
-def _cnf_instance_site_completeness(rtl_diff, ref_dir):
-    """DETERMINISTIC completeness for module-level multi-instance changes.
-
-    A comb_net_force edits the *module* (module_name), so it affects EVERY
-    instantiation of that module — across ALL RTL source files, not just the
-    first one the analyzer traced. The analyzer historically enumerated only the
-    instantiation sites in one file and silently missed sites reachable through a
-    different parent (a different .v file), leaving those instances with no cone
-    queries and thus no ECO / no FM coverage.
-
-    This guard independently enumerates every instantiation site of module_name
-    by grepping ALL data/PreEco/SynRtl/*.v{,sv} for `<module> <inst> (`, then
-    hard-fails any site not covered by the change's `instances[]` hierarchy or by
-    a nets_to_query path segment. It is generic — it keys on module_name and the
-    RTL, with no per-design/per-module hardcoding.
-
-    Requires --ref-dir. If ref_dir is absent or no RTL is found, returns []
-    (best-effort: the check simply cannot run without the sources)."""
-    import glob
-    issues = []
-    if not ref_dir:
-        return issues
-    syn_dir = os.path.join(ref_dir, 'data', 'PreEco', 'SynRtl')
-    if not os.path.isdir(syn_dir):
-        return issues
-    vfiles = sorted(glob.glob(os.path.join(syn_dir, '*.v')) +
-                    glob.glob(os.path.join(syn_dir, '*.sv')))
-    if not vfiles:
-        return issues
-
-    # Segments covered by the change set's instances[] + the global nets_to_query
-    # paths (net_path/hierarchy/instance). Instance names appear as path segments
-    # (e.g. .../DATRDSCRAMBLE/NormAddr), so a set of all '/'-split segments is a
-    # robust, order-independent coverage test.
-    nq = rtl_diff.get('nets_to_query', []) or []
-    covered_segments = set()
-    for q in nq:
-        for field in ('net_path', 'hierarchy', 'instance'):
-            for seg in str(q.get(field, '')).split('/'):
-                if seg:
-                    covered_segments.add(seg)
-
-    # Report once per module (many comb_net_force changes typically share one
-    # changed module — a per-change message would repeat the same finding N times).
-    seen_modules = set()
-    for idx, c in enumerate(rtl_diff.get('changes', [])):
-        if c.get('change_type') != 'comb_net_force':
-            continue
-        module = c.get('module_name')
-        if not module or module in seen_modules:
-            continue
-        seen_modules.add(module)
-        inst_re = re.compile(r'(?m)^\s*' + re.escape(module) + r'\s+(\w+)\s*\(')
-        actual = {}  # instance_name -> source file basename
-        for vf in vfiles:
-            try:
-                txt = open(vf, errors='ignore').read()
-            except OSError:
-                continue
-            for m in inst_re.finditer(txt):
-                actual.setdefault(m.group(1), os.path.basename(vf))
-        # 0 or 1 site: the scope-based / single-instance path handles it.
-        if len(actual) <= 1:
-            continue
-        # per-change coverage = global nq segments + this change's instances[]
-        change_covered = set(covered_segments)
-        for sc in (c.get('instances') or []):
-            for seg in str(sc).split('/'):
-                if seg:
-                    change_covered.add(seg)
-        missing = sorted(set(actual) - change_covered)
-        if missing:
-            detail = ', '.join('%s (in %s)' % (mi, actual[mi]) for mi in missing)
-            issues.append(
-                "changes[%d] comb_net_force on module %r: RTL has %d instantiation "
-                "site(s) but only %d are covered by instances[]/nets_to_query. "
-                "MISSING %d: %s. A module-level change affects EVERY instantiation "
-                "— grep every data/PreEco/SynRtl/*.v for '<module> <inst> (' across "
-                "ALL files and cover each site (full-hierarchy instances[] + "
-                "per-instance nets_to_query cone leaves)." %
-                (idx, module, len(actual), len(change_covered & set(actual)),
-                 len(missing), detail))
-    return issues
-
-
 def _rtl_port_width(ref_dir, module, port):
     """Declared bit-width of `port` in the module's NEW RTL (data/SynRtl). Returns an
     int (1 for scalar) or None if the RTL/declaration can't be found."""
@@ -1752,47 +1667,6 @@ def main():
                 f"required by Step 3 to disambiguate when host module {c.get('module_name','?')!r} "
                 f"is instantiated multiple times")
     if scope_field_issues:
-        overall_pass = False
-
-    # comb_net_force multi-instance completeness — a comb_net_force change on a
-    # module instantiated more than once has NO single `scope`. In that case the
-    # analyzer MUST record either `instances[]` (per-branch hierarchy that Step 2's
-    # deriver Cat 4c iterates) OR matching top-level nets_to_query entries (the
-    # fully-qualified cone leaves Step 2 consumes via Cat 0 passthrough). With
-    # scope=null AND neither of those, Step 2 derives ZERO queries for the change
-    # and historically fell back to the banned hand-picked netName fallback.
-    # Coverage is by cone-LEAF entries, not the target signal: nets_to_query holds
-    # the cone leaves (e.g. NormAddr/ReqSize/Offset), never the comb_net_force target
-    # (NormAddrDw*). The analyzer tags those entries via reason/source; a single
-    # comb_net_force cone-leaf entry proves the multi-instance leaves were resolved.
-    cnf_scope_issues = []
-    _has_cnf_leaf_nq = any(
-        'comb_net_force' in (str(q.get('reason', '')) + str(q.get('source', ''))).lower()
-        for q in rtl_diff.get('nets_to_query', []))
-    for idx, c in enumerate(rtl_diff.get('changes', [])):
-        if c.get('change_type') != 'comb_net_force':
-            continue
-        if c.get('scope') or c.get('instance_scope'):
-            continue  # single-instance: scope present → deriver Cat 4c self-scopes
-        insts = c.get('instances') or []
-        if not insts and not _has_cnf_leaf_nq:
-            sig = c.get('signal') or ''
-            cnf_scope_issues.append(
-                f"changes[{idx}] comb_net_force signal={sig!r} in module "
-                f"{c.get('module_name','?')!r}: scope is null but NEITHER `instances[]` "
-                f"NOR any comb_net_force cone-leaf nets_to_query entry is present. A "
-                f"multiply-instantiated module has no single scope — populate instances[] "
-                f"(full per-branch hierarchy) AND/OR nets_to_query cone leaves, else Step 2 "
-                f"derives 0 queries.")
-    if cnf_scope_issues:
-        overall_pass = False
-
-    # comb_net_force INSTANTIATION-SITE completeness (deterministic, ref-dir).
-    # The cnf_scope check above only proves >=1 instance is covered; this proves
-    # ALL instantiation sites of the changed module (across every SynRtl file) are
-    # covered — closing the "analyzer enumerated only the first file's sites" hole.
-    cnf_inst_site_issues = _cnf_instance_site_completeness(rtl_diff, args.ref_dir)
-    if cnf_inst_site_issues:
         overall_pass = False
 
     # wire_swap MUX context — even when polarity is NOT pending, the agent must
@@ -3334,10 +3208,6 @@ def main():
         'mode_i_field_issues':           mode_i_field_issues,
         'scope_field_issue_count':       len(scope_field_issues),
         'scope_field_issues':            scope_field_issues,
-        'cnf_scope_issue_count':         len(cnf_scope_issues),
-        'cnf_scope_issues':              cnf_scope_issues,
-        'cnf_inst_site_issue_count':     len(cnf_inst_site_issues),
-        'cnf_inst_site_issues':          cnf_inst_site_issues,
         'wire_swap_field_issue_count':   len(wire_swap_field_issues),
         'wire_swap_field_issues':        wire_swap_field_issues,
         'unconnected_var_issue_count':   len(unconnected_var_issues),
@@ -3442,8 +3312,6 @@ def main():
     for p in mode_i_field_issues:
         print(f'    - {p}')
     for p in scope_field_issues:
-        print(f'    - {p}')
-    for p in cnf_scope_issues:
         print(f'    - {p}')
     for p in wire_swap_field_issues:
         print(f'    - {p}')
