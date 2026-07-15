@@ -48,6 +48,14 @@ try:
     from eco_cone_rebuild import selector_folded_conditions as _cnf_sel_conds
 except Exception:
     _cnf_sel_conds = None
+try:
+    from eco_cone_rebuild import reg_guard_cone_leaves as _rg_cone_leaves
+except Exception:
+    _rg_cone_leaves = None
+try:
+    from eco_cone_rebuild import reg_guard_folded_conditions as _rg_sel_conds
+except Exception:
+    _rg_sel_conds = None
 
 # ── Raw FM rpt parser ────────────────────────────────────────────────────────
 
@@ -174,6 +182,24 @@ def derive_queries(rtl_diff, ref_dir=None):
                 if t:
                     queries.append({'net_path': f'{scope}/{t}'.strip('/'),
                                     'signal': t, 'source': f'changes[{idx}].{fld}'})
+
+        # Cat 4e: and_term reg-guard-delta (Intent-A and_term on target_register) cone leaves
+        # + widened-branch selector condition (mirror the comb_net_force Cat 4c/4d blocks
+        # above). Without this the map is missing every reg_guard_cone_leaf /
+        # reg_guard_selector_cond key that eco_fenets_derive_queries.py DID query for and
+        # DID get resolved by FM — they were just never looked up here (9666 gap: IReset,
+        # recdsp_c0mop[*], recdsp_c0vld, recdsp_c0cs, WckSyncCtr0 and siblings all silently
+        # absent from the rename map even though the raw rpt has their FM results).
+        if ct == 'and_term' and c.get('target_register') and ref_dir and _rg_cone_leaves:
+            for leaf in _rg_cone_leaves(c, ref_dir):
+                queries.append({'net_path': f'{scope}/{leaf}'.strip('/'),
+                                'signal': leaf,
+                                'source': f'changes[{idx}].reg_guard_cone_leaf'})
+        if ct == 'and_term' and c.get('target_register') and ref_dir and _rg_sel_conds:
+            for cond in _rg_sel_conds(c, ref_dir):
+                queries.append({'net_path': f'{scope}/{cond}'.strip('/'),
+                                'signal': cond,
+                                'source': f'changes[{idx}].reg_guard_selector_cond'})
         # Cat 2-4: new_logic DFF + chain leaves
         if ct in ('new_logic', 'new_logic_dff'):
             for fld in ('dff_clock', 'reset_signal'):

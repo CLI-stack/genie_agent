@@ -92,7 +92,13 @@ def _parse_raw(path):
             # keep the recdsp-scope-relative net (last 1-2 components: NET or CELL/PIN)
             full = m2.group(2)
             parts = full.split('/')
-            impl = '/'.join(parts[-2:]) if parts[-1] in ('A1','A2','A3','B','B1','B2','C','I','ZN','Z','D','A') else parts[-1]
+            # Pin names are short all-caps tokens, optionally with a trailing digit/index
+            # (A1, B2, ZN, I, Q, Q3, Q8, SI, SE, CDN, ...). The old fixed tuple missed
+            # multi-bit-bank flop Q-pins (Q1..Q8) — for those, parts[-1] ("Q3") fell into
+            # the else branch and the CELL NAME was silently dropped, leaving a bare "Q3"
+            # that _pick() then treated as if it were a real net name (9666: dsp_cmd_msc[*]
+            # PrePlace chain resolved to the meaningless standalone string "Q3").
+            impl = '/'.join(parts[-2:]) if re.fullmatch(r'[A-Z]{1,4}\d{0,2}', parts[-1] or '') else parts[-1]
             res[cur].append((m2.group(1), impl))
     return res
 
@@ -107,8 +113,17 @@ def _pick(equivs):
 
 
 def _stage_key_net(rmap, key, stage):
+    """Return the best net name to chain FORWARD from `stage`. Prefer actual_wire_<stage>
+    (the polarity-correct wire-on-pin resolution, --ref-dir Patch #3) over the raw cell/pin
+    value: a cell name like `postcas_reg` can get uniquified/renamed by the next P&R stage's
+    incremental netlist regen even though the DFT-renamed wire (e.g. `dftopt1130`) survives
+    verbatim, so chaining off the bare cell/pin form FM-036'd on the literal name (9666:
+    postcas, WckIsAlwaysInSync2 both failed Route chaining this way until actual_wire was
+    tried instead)."""
     e = rmap.get(key)
-    return e.get(stage, '') if isinstance(e, dict) else ''
+    if not isinstance(e, dict):
+        return ''
+    return e.get(f'actual_wire_{stage}') or e.get(stage, '')
 
 
 def main():
@@ -154,7 +169,14 @@ def main():
     missing = []
     for scope, sig, mod in conds:
         key = f'{scope}/{sig}' if scope else sig
-        if isinstance(rmap.get(key), dict) and rmap[key].get(a.stage):
+        cur_val = rmap.get(key, {}).get(a.stage) if isinstance(rmap.get(key), dict) else None
+        # Only treat as "already set (survivor)" when it's a genuine resolution written by
+        # THIS chain run's own emit-nets survival-shortcut. A bare echo of `sig` (or an
+        # 'FM-036' marker) is the STALE fallback build_rename_map.py wrote before chaining
+        # ever ran — accepting it here silently drops the real chained value below (9666:
+        # dsp_cmd_msc[*]/dsp_cmd_valid/dsp_cnt_end kept their pre-chain PrePlace echo forever
+        # because every subsequent merge saw a truthy value and skipped).
+        if cur_val and cur_val != sig and 'FM-036' not in str(cur_val):
             continue   # already set (survivor)
         prev_net = _stage_key_net(rmap, key, prev)
         equivs = parsed.get(prev_net.rsplit('/', 1)[-1], [])

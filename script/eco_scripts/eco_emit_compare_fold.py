@@ -548,7 +548,12 @@ def build_for_module(ref_dir, stage_mods, jira, params, tag='', rename_map=None,
               'old_net': per_stage_M['Synthesize'],
               'old_net_per_stage': {st: per_stage_M[st] for st in STAGES},
               'new_net': m_raw, 'driver_side': True, 'net_force': True,
-              'source': 'eco_emit_compare_fold'}
+              'source': 'eco_emit_compare_fold',
+              'reason': f'compare_fold (Intent-C) driver-side net-force: rename the mismatch '
+                        f'net driver output {per_stage_M["Synthesize"]}->{m_raw} and re-drive '
+                        f'through the fold gate (M_new = M & ~(R & S))',
+              'notes': 'eco_emit_compare_fold.py driver-side rewire (keeps the consumer pin on '
+                       'the original net; renames the driver output). source: eco_emit_compare_fold'}
     return {'gates': merged, 'rename': rename, 'errors': []}
 
 
