@@ -871,15 +871,20 @@ def _map_stage_net(net, stage, scope, rename_map):
         return None
     entry = rename_map.get(f'{scope}/{net}'.strip('/')) or rename_map.get(net)
     if isinstance(entry, dict):
-        v = entry.get(stage)
-        if isinstance(v, str) and v and not v.startswith(_BAD_MAP_VALS):
-            # strip annotation prefixes the rename-map builder adds (e.g. an input-port
-            # bit is recorded 'input_port:reg_cs_enable[0]' — the real net is the part
-            # after the annotation). Without this the ':' -prefixed string is spliced as
-            # a pin value and is NET-ABSENT in every stage.
-            if v.startswith('input_port:'):
-                v = v.split(':', 1)[1]
-            return v
+        # PREFER actual_wire_<stage>: it is the real per-stage NET. The plain entry[stage]
+        # is often a '<cell>/<pin>' ADDRESS (e.g. dsp_cnt_end -> 'A2577424/ZN'), which
+        # every caller rejects via its '/'-guard and then falls back to the bare RTL name
+        # — which is NET-ABSENT when synthesis renamed the net (dsp_cnt_end's real net is
+        # N1920538, dsp_cmd_valid's is ctmn_1251606). actual_wire carries that real net.
+        for cand in (entry.get(f'actual_wire_{stage}'), entry.get(stage)):
+            if isinstance(cand, str) and cand and not cand.startswith(_BAD_MAP_VALS):
+                # strip annotation prefixes the rename-map builder adds (e.g. an input-port
+                # bit is recorded 'input_port:reg_cs_enable[0]' — the real net is the part
+                # after the annotation). Without this the ':' -prefixed string is spliced as
+                # a pin value and is NET-ABSENT in every stage.
+                if cand.startswith('input_port:'):
+                    cand = cand.split(':', 1)[1]
+                return cand
     return None
 
 
