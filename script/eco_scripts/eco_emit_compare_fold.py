@@ -400,10 +400,18 @@ def _selfcheck(gates, m_raw, M, Rbits, s_net, s_pol):
 
 
 def _gate(inst, cell, fn, pc, out_net, pcs=None):
+    # reason/notes are REQUIRED context fields (eco_netlist_studier.md 0e); the step-3
+    # validator hard-fails new_logic_gate entries missing them. Populate them here so the
+    # deterministic compare_fold chain is self-describing (all other emitters do the same).
     return {'change_type': 'new_logic_gate', 'instance_name': inst, 'cell_type': cell,
             'gate_function': fn, 'output_net': out_net, 'port_connections': dict(pc),
             'port_connections_per_stage': pcs or {s: dict(pc) for s in STAGES},
-            'confirmed': True, 'source': 'eco_emit_compare_fold'}
+            'confirmed': True, 'source': 'eco_emit_compare_fold',
+            'reason': f'compare_fold (Intent-C) {fn} gate {inst}: surgical net-force fold '
+                      f'M_new = M & ~(R & S) into the existing equality-compare cone',
+            'notes': 'eco_emit_compare_fold.py deterministic fold-gate chain (driver-side '
+                     'net-force; S = stage-stable separating branch-select literal derived '
+                     'from the PreEco netlist). source: eco_emit_compare_fold'}
 
 
 def _build_gates(jira, tag, m_raw, M, Rbits, s_net, s_pol, cells):
