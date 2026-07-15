@@ -360,24 +360,39 @@ def build_rename_map(rtl_diff, fm_results, tag, tile, raw_rpts, ref_dir=''):
                 if is_clock_query:
                     entry[stage] = sig
                 else:
-                    # Keep the last 2 path components so studier sees
-                    # `<cell>/<pin>` (e.g. `ArbCtrlPeRdy_reg/Q`) rather than
-                    # just `Q` — useful for disambiguating identical pin names
-                    # across cells.
+                    # PREFER the bare net FM listed as a POSITIVE equivalent (leaf == sig):
+                    # FM returns several same-sign (+) equivalents per stage — `<sig>_reg/Q`,
+                    # `<buf>/I`, AND the bare net `<sig>` — and the builder used to pick
+                    # positive[0] (a `<cell>/<pin>` address). That address form makes the C8
+                    # polarity gate read a pin sense (output `/Q` in one stage vs input `/SI`
+                    # in another) that is NOT a logical inversion — the same net read at an
+                    # input pin has the same value as at its driver's output. It produced
+                    # spurious C8 flags on run 20260714232530 while run 20260714010156
+                    # (IDENTICAL FM output) passed only because its catch-and-fix loop
+                    # post-rewrote these to the bare net. Choosing the bare positive here is
+                    # deterministic, keeps the Rule-32 polarity guarantee (an inverted net is
+                    # in the `-` list, so it is never chosen as the bare net), and is exactly
+                    # the net Step 3 / RULE 32 consume via actual_wire. Scope-matched first.
+                    bare = next((p for p in r['positive']
+                                 if p.rsplit('/', 1)[-1] == sig
+                                 and (not scope_hint or scope_hint in p)), None)
+                    if bare is None:
+                        bare = next((p for p in r['positive']
+                                     if p.rsplit('/', 1)[-1] == sig), None)
+                    if bare is not None:
+                        entry[stage] = sig
+                        entry[f'actual_wire_{stage}'] = sig
+                        continue
+                    # No bare positive survives this stage — keep the `<cell>/<pin>` form
+                    # (last 2 path components disambiguate identical pin names across cells)
+                    # and resolve the polarity-correct ACTUAL WIRE on that pin (Patch #3 for
+                    # Rule 32: P&R may add inverters between a registered driver and the
+                    # port-named wire, so the bare RTL name can carry INVERSE value vs. the
+                    # FM-resolved pin — see run 20260515084942 round 6, ArbCtrlPeRdy).
                     parts = pick.rsplit('/', 2)
                     entry[stage] = '/'.join(parts[-2:]) if len(parts) >= 2 else pick
-                    # Also emit the polarity-correct ACTUAL WIRE on that pin
-                    # (Patch #3 for Rule 32 fix). Studier should use
-                    # `actual_wire_<stage>` instead of bare RTL name whenever
-                    # they disagree. P&R may add odd inverters between a
-                    # registered driver and the port-named wire (drive-
-                    # strength optimization at module boundaries) — bare
-                    # RTL name then carries INVERSE logical value vs. the
-                    # FM-resolved pin. See run 20260515084942 round 6 for
-                    # the ArbCtrlPeRdy 3-INV polarity flip in Route.
                     if ref_dir:
-                        cell_pin = entry[stage]
-                        actual_wire = _wire_on_pin(cell_pin, ref_dir, stage)
+                        actual_wire = _wire_on_pin(entry[stage], ref_dir, stage)
                         if actual_wire:
                             entry[f'actual_wire_{stage}'] = actual_wire
             else:
