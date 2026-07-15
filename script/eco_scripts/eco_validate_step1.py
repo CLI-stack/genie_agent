@@ -327,28 +327,36 @@ def _bus_width_int(bw):
     return int(s) if s.isdigit() else 1
 
 
-def _flattened_instance_issues(rtl_diff, ref_dir):
-    """HARD FAIL: a comb_net_force edits a MODULE, so it affects EVERY
+def _flattened_instance_warnings(rtl_diff, ref_dir):
+    """WARN (non-blocking): a comb_net_force edits a MODULE, so it affects EVERY
     instantiation. Synthesis keeps some instances as clean uniquified netlist
-    copies (`<base>_<i>`, cleanly ECO-able) but FLATTENS others into a parent
-    module (the sub-hierarchy boundary is dissolved). Flattened combinational
-    logic cannot be cleanly metal-ECO'd — there is no module scope and the nets
-    are renamed/merged into the parent. The historical failure mode reported such
-    instances as 'optimized away' (because the module-copy count was 0) and
-    silently shipped an INCOMPLETE ECO that fails FM on the flattened region.
+    copies (`<base>_<i>`, cleanly ECO-able — the study covers these) but FLATTENS
+    others into a parent module (the sub-hierarchy boundary is dissolved, logic
+    inlined + renamed). Flattened logic has no module scope, so the module-scoped
+    ECO does not touch it — the study simply leaves that region unpatched.
 
-    This guard independently detects flattened instances that retain a LIVE
-    remnant — a net driven by a gate whose name carries the instance's flattened
-    hierarchy prefix — and FAILS, so the case is surfaced (verify FM / re-synth)
-    rather than silently dropped. Deterministic; keys on the changed module name
-    + the netlist; no per-design hardcoding. Requires --ref-dir (returns [] if
-    the RTL/netlist can't be read — best-effort, cannot check).
+    This surfaces flattened instances that retain a LIVE remnant (a net driven by
+    a gate whose name carries the instance's flattened hierarchy prefix), so the
+    case is not silently mislabeled 'optimized away'. It does NOT block: the flow
+    proceeds with the ECO-able copies and **FM (Step 6) is the authoritative
+    check** on the flattened region — FM compares the unpatched flattened logic
+    against the ECO'd RTL and reports exactly whether it is non-equivalent. Only
+    then (if FM fails there) is re-synthesis warranted. Blocking at Step 1 would
+    be over-conservative: a flattened remnant may be value-unchanged (e.g. a bus
+    bit whose function did not change), which FM would pass.
 
-    Conservative BY DESIGN: it fails on ANY live flattened remnant of a changed
-    module, even one whose surviving bit value may be unchanged — because the
-    flow cannot clean-ECO flattened logic regardless of change-affectedness, so a
-    human/FM must confirm coverage before the ECO proceeds. Clean uniquified
-    copies and fully-optimized-away instances (no live remnant) do NOT trigger."""
+    Deterministic; keys on the changed module name + the netlist; no per-design
+    hardcoding. Requires --ref-dir (returns [] if the RTL/netlist can't be read).
+    Clean uniquified copies and fully-optimized-away instances (no live remnant)
+    do NOT warn.
+
+    HEURISTIC / INCOMPLETE — this is exactly why it is a WARN, not a fail: it can
+    only see melted instances whose remnant nets KEPT the instance-name prefix.
+    An instance whose melted nets were renamed to their output-signal name (or to
+    generic tmp_net*) is INVISIBLE here and will NOT be warned — so a clean run of
+    this check does NOT prove full coverage. FM is the only authoritative,
+    name-agnostic completeness gate for flattened logic; treat these warnings as
+    a hint, not a complete list."""
     import glob, gzip
     issues = []
     if not ref_dir:
@@ -423,12 +431,14 @@ def _flattened_instance_issues(rtl_diff, ref_dir):
         if rec and rec[1]:
             pm, nets = rec
             issues.append(
-                "comb_net_force module %r instance %r (RTL %s) is FLATTENED into netlist "
-                "module %r with %d live remnant net(s) (e.g. %s) — a dissolved boundary the "
-                "module-scoped ECO CANNOT cleanly patch, and it is NOT one of the clean "
-                "uniquified copies. Do NOT treat as 'optimized away': verify FM equivalence "
-                "for this region — flattened combinational logic of a changed module "
-                "typically needs RE-SYNTHESIS, not metal ECO." %
+                "WARN (non-blocking): comb_net_force module %r instance %r (RTL %s) appears "
+                "FLATTENED into netlist module %r with %d live remnant net(s) (e.g. %s) — a "
+                "dissolved boundary the module-scoped ECO does NOT patch, and it is NOT one of "
+                "the clean uniquified copies. The flow proceeds with the ECO-able copies; this "
+                "region is left unpatched and FM (Step 6) is the authoritative check on whether "
+                "it is non-equivalent. If FM fails there, this region needs RE-SYNTHESIS, not "
+                "metal ECO. (Heuristic: instances whose melted nets were renamed away from the "
+                "instance prefix are NOT listed here.)" %
                 (base_of_inst.get(inst), inst, fn, pm or '?', len(nets), sorted(nets)[:2]))
     return issues
 
@@ -3121,13 +3131,14 @@ def main():
     if comb_net_force_issues:
         overall_pass = False
 
-    # FLATTENED-INSTANCE guard (hard fail): a changed module whose instances are
-    # flattened into a parent (dissolved boundary) with a live remnant cannot be
-    # cleanly metal-ECO'd. Catches the "reported optimized-away but really
-    # flattened" hole. Requires --ref-dir; conservative (see helper docstring).
-    flattened_instance_issues = _flattened_instance_issues(rtl_diff, args.ref_dir)
-    if flattened_instance_issues:
-        overall_pass = False
+    # FLATTENED-INSTANCE guard (WARN, non-blocking): a changed module whose
+    # instances are flattened into a parent (dissolved boundary) with a live
+    # remnant is not cleanly metal-ECO'd. Surfaces the "reported optimized-away
+    # but really flattened" hole so it isn't silent, but does NOT block —
+    # the flow proceeds with the ECO-able copies and FM (Step 6) is the
+    # authoritative equivalence gate on the flattened region. Heuristic and
+    # incomplete (see helper docstring); requires --ref-dir.
+    flattened_instance_warnings = _flattened_instance_warnings(rtl_diff, args.ref_dir)
 
     # priority_force condition-leaf availability (needs --ref-dir + extractor)
     pf_leaf_issues = _pf_condition_leaf_issues(rtl_diff, args.ref_dir)
@@ -3295,8 +3306,8 @@ def main():
         'priority_force_issues':      priority_force_issues,
         'comb_net_force_issue_count': len(comb_net_force_issues),
         'comb_net_force_issues':      comb_net_force_issues,
-        'flattened_instance_issue_count': len(flattened_instance_issues),
-        'flattened_instance_issues':      flattened_instance_issues,
+        'flattened_instance_warning_count': len(flattened_instance_warnings),
+        'flattened_instance_warnings':      flattened_instance_warnings,
         'pending_term_issue_count':   len(pending_term_issues),
         'pending_term_issues':        pending_term_issues,
         'term_op_issue_count':        len(term_op_issues),
