@@ -260,6 +260,11 @@ def main():
                 drop = set()
                 for i, modname in sorted(copy_mod.items()):
                     ex = by_mod.get(modname) or []
+                    # reason/notes are REQUIRED context fields (step-3 validator 0e).
+                    _rsn = (f'uniquified per-copy input port {pname} on {modname} (copy {i}) '
+                            f'for the compare_fold ECO')
+                    _nts = (f'eco_emit_uniquify.py replicated the canonical new-port declaration '
+                            f'to uniquified copy {i} ({modname}). source: eco_emit_uniquify')
                     if ex:
                         keep = ex[0]                       # override the first in place
                         keep['signal_name'] = pname
@@ -267,6 +272,10 @@ def main():
                         keep['declaration_type'] = 'input'
                         if bw is not None and not keep.get('bus_width'):
                             keep['bus_width'] = bw
+                        if not keep.get('reason'):
+                            keep['reason'] = _rsn
+                        if not keep.get('notes'):
+                            keep['notes'] = _nts
                         for extra in ex[1:]:               # collapse duplicates
                             drop.add(id(extra))
                     else:
@@ -275,6 +284,7 @@ def main():
                             'signal_name': pname, 'declaration_type': 'input',
                             'context_line': npd.get('context_line'),
                             'source': 'eco_emit_uniquify', 'uniquify_copy': i,
+                            'reason': _rsn, 'notes': _nts,
                         }
                         if bw is not None:
                             pd['bus_width'] = bw
