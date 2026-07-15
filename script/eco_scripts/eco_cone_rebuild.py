@@ -488,12 +488,29 @@ def _prune_to_cone(gates, roots):
 
 def _bindable_from_rename_map(rename_map):
     """Bare signal names (base + optional [bit]) that FM proved equivalent to a netlist net
-    (step2 rename map keys). _Synth grounds these as leaves instead of re-deriving them."""
+    (step2 rename map keys). _Synth grounds these as leaves instead of re-deriving them.
+
+    EXCLUDE FM-036 echo-fallback entries: when FM finds no equivalent net, rename_map.py
+    echoes the input name across all stages with no actual_wire. Grounding such a signal as
+    a bindable leaf makes the builder WIRE a phantom net that does not exist in the netlist
+    (the 9666 recdsp_c0cs NET-ABSENT class). These must instead be REBUILT from real leaves
+    (or fold out). A real net whose name happens to be preserved is still grounded — it
+    falls through to _sig_bit's in_netlist() check; only genuinely-dissolved echoes are
+    excluded here. Matches the passing-run behavior where FM-036 signals were omitted from
+    the map entirely and the builder rebuilt them."""
     out = set()
-    for k in (rename_map or {}):
+    for k, v in (rename_map or {}).items():
         if k == '_metadata':
             continue
         leaf = k.rsplit('/', 1)[-1]
+        if isinstance(v, dict):
+            present = [v.get(s) for s in ('Synthesize', 'PrePlace', 'Route') if v.get(s)]
+            has_aw = any(v.get(f'actual_wire_{s}') for s in ('Synthesize', 'PrePlace', 'Route'))
+            base = re.sub(r'\[\d+\]$', '', leaf)
+            # pure echo-fallback: every present stage entry == the input name (leaf or its
+            # base), and no actual_wire resolved -> FM-036, not a real binding.
+            if present and not has_aw and all(s in (leaf, base) for s in present):
+                continue
         out.add(leaf)
         out.add(re.sub(r'\[\d+\]$', '', leaf))   # base name too
     return out
