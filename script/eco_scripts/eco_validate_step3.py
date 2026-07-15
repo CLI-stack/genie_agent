@@ -3771,6 +3771,15 @@ def main():
             _mod_body = _mod_m.group(0)
             if _re_ct.search(rf'\b{_re_ct.escape(_ct)}\b', _mod_body):
                 continue  # exact cell type found in module ✅
+            # Uniquified-copy tolerance: P&R instantiates different drive/leakage/track
+            # variants of the SAME functional cell in different uniquified copies (e.g.
+            # umcrecrcqentry_8 has no plain AN2D1, only its LL variant). A cell that
+            # exists ANYWHERE in the PreEco netlist is a REAL library cell — FM reads it
+            # from the .db and handles it fine (no scan-path/structural mismatch for a
+            # combinational cell). Only a cell absent from the ENTIRE PreEco is truly
+            # invented (a typo'd name), which is what this check must catch.
+            if _re_ct.search(rf'\b{_re_ct.escape(_ct)}\b', _synth_text_ct):
+                continue  # valid library cell, present in a sibling module/copy ✅
             # Check if ANY cell with same prefix exists in module
             _prefix_found = bool(_re_ct.search(rf'\b{_re_ct.escape(_prefix)}\w*\b', _mod_body))
             if not _prefix_found:

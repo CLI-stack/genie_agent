@@ -234,8 +234,13 @@ def _resolve_cells(ref_dir, module):
         if not cands:
             return default
         # prefer a plain functional cell: NOT a spare gate (SPG), NOT low-leakage (LL),
-        # then the shortest name (fewest special qualifiers) for a clean A1/A2/Z gate.
-        return sorted(cands, key=lambda c: ('SPG' in c, c.endswith('LL'), len(c)))[0]
+        # then the MOST-INSTANTIATED variant in this module (most likely to also be
+        # present in sibling uniquified copies), then shortest name, then the name
+        # itself as a DETERMINISTIC final tie-break (a bare set iteration order made the
+        # M117-vs-M156 choice non-deterministic across runs — 20260711 picked M117 and
+        # passed, 20260714 picked M156 and tripped GATE-TYPE-NOT-IN-PREECO).
+        return sorted(cands, key=lambda c: ('SPG' in c, c.endswith('LL'),
+                                            -body.count(c), len(c), c))[0]
     cells['INV']  = pick([r'INVD1'], _INV_CELL)
     cells['AND2'] = pick([r'AN2D1', r'AND2D1'], _AND2_CELL)
     cells['AND3'] = pick([r'AN3D1', r'AND3D1'], 'AND3D1BWP136P5M156H3P48CPDLVT')
