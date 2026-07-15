@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Synthesis Timing Optimizer — Skill Guide</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    color: #e0e0e0;
+    min-height: 100vh;
+    padding: 40px 20px 80px;
+  }
+  .container { max-width: 1040px; margin: 0 auto; }
+
+  h1 { text-align: center; color: #00d4ff; font-size: 26px; letter-spacing: 1px; margin-bottom: 8px; }
+  .subtitle { text-align: center; color: #8899aa; font-size: 13px; margin-bottom: 8px; }
+  .trigger-line { text-align: center; margin-bottom: 36px; }
+  .trigger-line code { font-size: 13px; }
+
+  h2 {
+    color: #00d4ff;
+    font-size: 17px;
+    margin: 56px 0 18px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #2a3f5f;
+    letter-spacing: 0.5px;
+  }
+  h2 .num { color: #445566; font-weight: 400; margin-right: 8px; }
+
+  code, .mono {
+    font-family: 'SF Mono', 'Consolas', monospace;
+  }
+  code {
+    background: rgba(0,0,0,0.3);
+    border-radius: 3px;
+    padding: 1px 6px;
+    color: #00d4ff;
+    font-size: 0.9em;
+  }
+  pre {
+    background: #10192b;
+    border: 1px solid #2a3f5f;
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #c0cfe0;
+    margin: 10px 0;
+  }
+  pre .cm { color: #667788; }
+  pre .kw { color: #ffd93d; }
+  pre .st { color: #6bcb77; }
+
+  /* ---------- Output policy banner ---------- */
+  .policy-banner {
+    max-width: 760px;
+    margin: 0 auto 40px;
+    background: #1a1510;
+    border: 1px solid #ffd93d;
+    border-radius: 8px;
+    padding: 14px 20px;
+    text-align: center;
+    font-size: 12.5px;
+    color: #ffe88a;
+    line-height: 1.7;
+  }
+  .policy-banner strong { color: #ffd93d; }
+
+  /* ---------- Mode cards ---------- */
+  .modes-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+  }
+  .mode-card {
+    background: #1e2d4a;
+    border: 1px solid #2a3f5f;
+    border-radius: 8px;
+    padding: 14px 14px;
+    font-size: 12px;
+  }
+  .mode-card .flag { color: #00d4ff; font-weight: 700; font-size: 12.5px; margin-bottom: 6px; display: block; }
+  .mode-card .desc { color: #aabbcc; line-height: 1.5; }
+  .mode-flow {
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    margin-top: 18px; font-size: 12px; color: #8899aa; flex-wrap: wrap;
+  }
+  .mode-flow .box { background: #162840; border: 1px solid #2a3f5f; border-radius: 6px; padding: 8px 14px; color: #c0cfe0; }
+  .mode-flow .arrow { color: #4a6a8a; }
+
+  /* ---------- Execution model ---------- */
+  .exec-flow {
+    display: flex; align-items: center; justify-content: center; gap: 0;
+    flex-wrap: wrap; margin-top: 10px;
+  }
+  .exec-node {
+    background: #1e2d4a; border: 1px solid #2a4a7a; border-radius: 8px;
+    padding: 12px 16px; text-align: center; font-size: 12px; min-width: 150px;
+  }
+  .exec-node .icon { font-size: 1.5em; display: block; margin-bottom: 4px; }
+  .exec-node .label { color: #aabbcc; line-height: 1.4; }
+  .exec-arrow { color: #4a6a8a; font-size: 1.4em; padding: 0 10px; }
+  .exec-note {
+    text-align: center; color: #667788; font-size: 11.5px; margin-top: 14px; line-height: 1.7;
+  }
+  .exec-note strong { color: #ff8e8e; }
+
+  /* ---------- Pipeline (4-step) ---------- */
+  .pipeline {
+    display: flex; flex-direction: column; align-items: center; gap: 0; margin-top: 10px;
+  }
+  .step-node {
+    width: 100%; max-width: 760px;
+    background: #1e2d4a; border: 2px solid #00d4ff; border-radius: 10px;
+    padding: 16px 22px; margin-bottom: 0;
+  }
+  .step-node .step-title { color: #00d4ff; font-weight: 700; font-size: 14px; margin-bottom: 8px; }
+  .step-node .step-title .tag { background: rgba(0,212,255,0.15); border-radius: 4px; padding: 2px 8px; margin-right: 8px; font-size: 11px; }
+  .step-node ul { margin: 6px 0 0 18px; color: #c0cfe0; font-size: 12.5px; line-height: 1.9; }
+  .step-node .out-box {
+    margin-top: 10px; background: #10192b; border: 1px dashed #445566; border-radius: 6px;
+    padding: 8px 12px; font-size: 11.5px; color: #8899aa;
+  }
+  .step-node .out-box strong { color: #6bcb77; }
+  .pipe-arrow-v { color: #4a6a8a; font-size: 1.6em; margin: 6px 0; }
+
+  /* ---------- Checks grid ---------- */
+  .priority-strip {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    flex-wrap: wrap; margin: 8px 0 26px; font-size: 12px;
+  }
+  .priority-strip .chip {
+    background: #162840; border: 1px solid #2a3f5f; border-radius: 20px;
+    padding: 5px 14px; color: #c0cfe0; font-weight: 600;
+  }
+  .priority-strip .gt { color: #4a6a8a; }
+
+  .checks-grid {
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px;
+  }
+  .check-card {
+    border-radius: 8px; padding: 14px 16px; font-size: 12px; line-height: 1.6;
+  }
+  .check-card .ch-title { font-weight: 700; font-size: 13.5px; margin-bottom: 8px; display:flex; align-items:center; gap:8px;}
+  .check-card .ch-badge { font-size: 10px; padding: 1px 7px; border-radius: 10px; font-weight: 700; }
+  .check-card .ch-row { margin-bottom: 4px; }
+  .check-card .ch-row b { color: inherit; opacity: 0.85; }
+
+  .check-A { background: #1f1020; border: 1px solid #ff6b6b; color: #ffb3b3; }
+  .check-A .ch-title { color: #ff6b6b; }
+  .check-A .ch-badge { background: rgba(255,107,107,0.2); color: #ff6b6b; }
+
+  .check-F { background: #1f1020; border: 1px solid #ff6b6b; color: #ffb3b3; }
+  .check-F .ch-title { color: #ff6b6b; }
+  .check-F .ch-badge { background: rgba(255,107,107,0.2); color: #ff6b6b; }
+
+  .check-G { background: #1a1a10; border: 1px solid #ffd93d; color: #ffe6a3; }
+  .check-G .ch-title { color: #ffd93d; }
+  .check-G .ch-badge { background: rgba(255,217,61,0.2); color: #ffd93d; }
+
+  .check-B { background: #1a1a10; border: 1px solid #ffd93d; color: #ffe6a3; }
+  .check-B .ch-title { color: #ffd93d; }
+  .check-B .ch-badge { background: rgba(255,217,61,0.2); color: #ffd93d; }
+
+  .check-C { background: #1a1a10; border: 1px solid #ffd93d; color: #ffe6a3; }
+  .check-C .ch-title { color: #ffd93d; }
+  .check-C .ch-badge { background: rgba(255,217,61,0.2); color: #ffd93d; }
+
+  .check-E { background: #162840; border: 1px solid #00d4ff; color: #b3ecff; }
+  .check-E .ch-title { color: #00d4ff; }
+  .check-E .ch-badge { background: rgba(0,212,255,0.2); color: #00d4ff; }
+
+  .check-D { background: #0e1f18; border: 1px solid #6bcb77; color: #c3f0cb; }
+  .check-D .ch-title { color: #6bcb77; }
+  .check-D .ch-badge { background: rgba(107,203,119,0.2); color: #6bcb77; }
+
+  /* ---------- IO columns ---------- */
+  .io-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .io-col {
+    background: #162840; border: 1px solid #2a3f5f; border-radius: 8px; padding: 16px 18px;
+  }
+  .io-col .io-title { font-weight: 700; font-size: 13px; margin-bottom: 10px; }
+  .io-col.reads .io-title { color: #6bcb77; }
+  .io-col.writes .io-title { color: #ff8e8e; }
+  .io-col ul { margin-left: 18px; font-size: 12px; color: #c0cfe0; line-height: 1.9; }
+
+  /* ---------- Principles ---------- */
+  .principles-list { display: flex; flex-direction: column; gap: 8px; }
+  .principle {
+    display: flex; gap: 12px; align-items: flex-start;
+    background: #162840; border: 1px solid #2a3f5f; border-radius: 8px; padding: 10px 16px;
+    font-size: 12.5px; color: #c0cfe0; line-height: 1.6;
+  }
+  .principle .pnum {
+    background: #00d4ff; color: #0d1b2a; font-weight: 700; font-size: 11px;
+    border-radius: 50%; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; margin-top: 1px;
+  }
+  .principle strong { color: #00d4ff; }
+
+  /* ---------- Pitfall table ---------- */
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th {
+    text-align: left; color: #8899aa; font-weight: 600; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    padding: 8px 12px; border-bottom: 1px solid #2a3f5f;
+  }
+  td { padding: 10px 12px; border-bottom: 1px solid #1e2d4a; color: #c0cfe0; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  td.risk { color: #ff8e8e; }
+  td.safe { color: #6bcb77; }
+
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 14px; justify-content: center;
+    margin-top: 50px; padding-top: 20px; border-top: 1px solid #2a3f5f;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #8899aa; }
+  .legend-box { width: 12px; height: 12px; border-radius: 3px; }
+
+  .footer-note { text-align: center; color: #445566; font-size: 11px; margin-top: 30px; }
+
+  /* ---------- Worked example ---------- */
+  h3 { color: #c0cfe0; font-size: 14px; margin: 26px 0 10px; }
+  .case-banner {
+    background: #162840; border: 1px solid #00d4ff; border-radius: 8px;
+    padding: 12px 18px; font-size: 12px; color: #b3ecff; line-height: 1.7; margin-bottom: 20px;
+  }
+  .case-banner code { color: #00d4ff; }
+
+  .stat-strip { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 26px; }
+  .stat {
+    background: #10192b; border: 1px solid #2a3f5f; border-radius: 8px;
+    padding: 12px 20px; text-align: center; min-width: 140px;
+  }
+  .stat-val { display: block; font-size: 18px; font-weight: 700; color: #c0cfe0; }
+  .stat-label { display: block; font-size: 10.5px; color: #8899aa; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+  .callout-anomaly {
+    background: #1a1a10; border: 1px solid #ffd93d; border-radius: 8px;
+    padding: 12px 16px; font-size: 12px; color: #ffe6a3; line-height: 1.7; margin: 14px 0 24px;
+  }
+  .callout-anomaly b { color: #ffd93d; }
+
+  .bug-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 14px 0 26px; }
+  .bug-col { border-radius: 8px; padding: 14px 16px; font-size: 12px; line-height: 1.7; }
+  .bug-before { background: #1f1020; border: 1px solid #ff6b6b; color: #ffb3b3; }
+  .bug-after  { background: #0e1f18; border: 1px solid #6bcb77; color: #c3f0cb; }
+  .bug-col .bug-title { font-weight: 700; font-size: 12.5px; margin-bottom: 8px; }
+  .bug-before .bug-title { color: #ff6b6b; }
+  .bug-after .bug-title { color: #6bcb77; }
+  .bug-col code { font-size: 0.85em; }
+
+  .fix-card {
+    background: #162840; border: 1px solid #2a3f5f; border-radius: 8px;
+    padding: 12px 18px; margin-bottom: 10px; font-size: 12.5px; line-height: 1.7; color: #c0cfe0;
+  }
+  .fix-card .fix-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
+  .fix-card .fix-id { font-weight: 700; color: #00d4ff; font-size: 13px; }
+  .fix-card .fix-check-tag { font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: 700; }
+  .fix-card .why { color: #8899aa; margin-top: 4px; }
+  .fix-card .why b { color: #ffd93d; }
+
+  .rtl-note {
+    background: #1f1020; border: 1px dashed #ff6b6b; border-radius: 8px;
+    padding: 12px 16px; font-size: 12px; color: #ffb3b3; line-height: 1.7; margin-top: 16px;
+  }
+
+  /* ---------- Line-by-line diffs ---------- */
+  .diff-file-head {
+    display: flex; align-items: center; gap: 8px; margin: 26px 0 6px; flex-wrap: wrap;
+  }
+  .diff-file-head .fname { color: #00d4ff; font-weight: 700; font-size: 13px; }
+  .newfile-badge { background: rgba(107,203,119,0.2); color: #6bcb77; font-size: 10px; padding: 2px 9px; border-radius: 10px; font-weight: 700; }
+  .updated-badge { background: rgba(255,217,61,0.2); color: #ffd93d; font-size: 10px; padding: 2px 9px; border-radius: 10px; font-weight: 700; }
+  .nochange-badge { background: rgba(136,153,170,0.2); color: #8899aa; font-size: 10px; padding: 2px 9px; border-radius: 10px; font-weight: 700; }
+
+  .hunk-label { color: #8899aa; font-size: 11px; margin: 14px 0 4px; letter-spacing: 0.3px; }
+
+  .diff-block {
+    background: #0a1120; border: 1px solid #2a3f5f; border-radius: 8px;
+    padding: 12px 14px; font-family: 'SF Mono','Consolas',monospace; font-size: 11px;
+    line-height: 1.75; overflow-x: auto; margin: 0 0 16px;
+  }
+  .diff-block .l { display: block; white-space: pre; padding: 0 4px; border-radius: 2px; }
+  .diff-block .add { color: #9ee6ac; background: rgba(107,203,119,0.10); }
+  .diff-block .add::before { content: "+ "; color: #6bcb77; }
+  .diff-block .del { color: #ffb3b3; background: rgba(255,107,107,0.10); }
+  .diff-block .del::before { content: "- "; color: #ff6b6b; }
+  .diff-block .ctx { color: #667788; }
+  .diff-block .ctx::before { content: "  "; }
+  .diff-block .cm2 { color: #4a5a6a; }
+
+  .nochange-block {
+    background: #10192b; border: 1px dashed #445566; border-radius: 8px;
+    padding: 12px 16px; font-size: 12px; color: #8899aa; line-height: 1.7; margin-bottom: 16px;
+  }
+  .nochange-block code { color: #c0cfe0; }
+
+  @media (max-width: 720px) {
+    .modes-grid, .checks-grid, .io-grid, .bug-compare { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <h1>Synthesis Timing Optimizer</h1>
+  <p class="subtitle">One-shot FxSynthesize timing fix for any TileBuilder tile</p>
+  <p class="subtitle">Reads QoR → diagnoses 7 root causes → proposes a plan → writes tune files</p>
+  <p class="trigger-line">Trigger: <code>/syn-timing-optimizer</code></p>
+
+  <div class="policy-banner">
+    <strong>Output Policy</strong> — Never summarize. Print every table in full. No truncation.<br>
+    The <code>.optimizer_plan.json</code> is a machine artifact for <code>--apply</code> to consume later —
+    the terminal report is the primary deliverable and must be complete.
+  </div>
+
+  <!-- ================= USAGE MODES ================= -->
+  <h2><span class="num">§1</span>Trigger &amp; Usage Modes</h2>
+  <div class="modes-grid">
+    <div class="mode-card">
+      <span class="flag">(no flag)</span>
+      <div class="desc">Full run — Steps 1→2→3→4. Reads QoR, diagnoses, proposes, <strong style="color:#ff8e8e">writes tune files</strong> immediately.</div>
+    </div>
+    <div class="mode-card">
+      <span class="flag">--analyze-only</span>
+      <div class="desc">Steps 1→2→3 only. Review the plan, no writes. Saves the plan to disk for later.</div>
+    </div>
+    <div class="mode-card">
+      <span class="flag">--apply</span>
+      <div class="desc">Step 4 only. Reads the previously saved plan and writes the tune files exactly as proposed.</div>
+    </div>
+    <div class="mode-card">
+      <span class="flag">--list</span>
+      <div class="desc">Prints the built-in cheat-sheet inline — no subagent spawned, no analysis run.</div>
+    </div>
+  </div>
+
+  <div class="mode-flow">
+    <div class="box">analyze-only<br><span style="color:#667788">review plan</span></div>
+    <div class="arrow">→</div>
+    <div class="box" style="border-color:#ffd93d;color:#ffd93d;">.optimizer_plan.json<br><span style="color:#8899aa">saved to &lt;tile_dir&gt;</span></div>
+    <div class="arrow">→</div>
+    <div class="box" style="border-color:#6bcb77;color:#6bcb77;">--apply<br><span style="color:#667788">write it for real</span></div>
+  </div>
+
+  <!-- ================= EXECUTION MODEL ================= -->
+  <h2><span class="num">§2</span>Execution Model</h2>
+  <div class="exec-flow">
+    <div class="exec-node">
+      <span class="icon">🎯</span>
+      <span class="label">Main session<br>receives command</span>
+    </div>
+    <div class="exec-arrow">→</div>
+    <div class="exec-node" style="border-color:#ffd93d;">
+      <span class="icon">🚀</span>
+      <span class="label" style="color:#ffd93d;">Spawns ONE<br>general-purpose subagent</span>
+    </div>
+    <div class="exec-arrow">→</div>
+    <div class="exec-node">
+      <span class="icon">⚙️</span>
+      <span class="label">Subagent runs<br>Steps 1→2→3→4 alone</span>
+    </div>
+    <div class="exec-arrow">→</div>
+    <div class="exec-node" style="border-color:#6bcb77;">
+      <span class="icon">📋</span>
+      <span class="label" style="color:#6bcb77;">Returns full report<br>verbatim</span>
+    </div>
+  </div>
+  <div class="exec-note">
+    <strong>DO NOT SPAWN ANY FURTHER SUBAGENTS.</strong> The one subagent executes everything itself with Bash/Read/Write —
+    no fan-out. The main session's only job afterward is to print the subagent's output in full: no summary, no highlights, no paraphrasing.
+  </div>
+
+  <!-- ================= END TO END PIPELINE ================= -->
+  <h2><span class="num">§3</span>End-to-End Flow — 4 Steps</h2>
+  <div class="pipeline">
+
+    <div class="step-node">
+      <div class="step-title"><span class="tag">STEP 1</span>READ</div>
+      <ul>
+        <li><b>1a</b> — Inventory <code>tune/FxSynthesize/</code>, read every existing <code>.tcl</code> fully, find all <code>tunesource</code> lines</li>
+        <li><b>1b</b> — Locate QoR passes (<code>FxSynthesize.pass_*.proc_qor.rpt.gz</code>) — highest N is the primary dataset</li>
+        <li><b>1c</b> — Extract per-group timing for every pass: WNS, TNS, NVP, LOL, CritLen, Period</li>
+        <li><b>1d</b> — Read top-20 worst endpoints — reveals which modules are actually failing</li>
+        <li><b>1e</b> — Read worst-path traces for the top-3 groups — wire vs gate delay split, MB4/MB8 launch cells</li>
+        <li><b>1f</b> — Build the effective-weight map (last-sourced tune file wins on name conflicts)</li>
+        <li><b>1g</b> — Read <code>override.params</code> for compile-pass count and DEF path</li>
+        <li><b>1h</b> — Read <code>FxSynthesize.dat</code> for the authoritative <code>DesignWNS</code>/<code>DesignTNS</code>/<code>DesignNVP</code> — <em>never</em> derive the design total by summing the per-group table in 1c (double-counts shared endpoints)</li>
+      </ul>
+      <div class="out-box"><strong>Output:</strong> full tables — all groups × all passes × top-20 endpoints × weight map. No truncation.</div>
+    </div>
+    <div class="pipe-arrow-v">↓</div>
+
+    <div class="step-node">
+      <div class="step-title"><span class="tag">STEP 2</span>DIAGNOSE — 7 Root-Cause Checks</div>
+      <ul>
+        <li>Runs Checks <b>A</b> through <b>G</b> (detailed in §4 below) against the Step 1 data</li>
+        <li>Each check independently emits a verdict — FOUND/CLEAN, a cost table, or a fix list</li>
+        <li>Checks are prioritized: <code>A &gt; F &gt; G &gt; B,C &gt; E &gt; D</code> — masking/missing-group bugs before weight tuning, weight tuning before physical bounds, physical bounds before RTL escalation</li>
+      </ul>
+      <div class="out-box"><strong>Output:</strong> one full table per check — nothing is ever silently skipped, even when a check is CLEAN.</div>
+    </div>
+    <div class="pipe-arrow-v">↓</div>
+
+    <div class="step-node">
+      <div class="step-title"><span class="tag">STEP 3</span>SUGGEST — Propose All Changes</div>
+      <ul>
+        <li>Builds a hierarchy map: <code>group → endpoint prefix → get_cells filter</code>, from real endpoint/path-trace data</li>
+        <li>Decides create vs. update for <code>pre_opt.tcl</code>, <code>group_paths.tcl</code>, <code>r2r_optimization.tcl</code></li>
+        <li>Writes the <em>complete</em> TCL for every fix — group_path lines, create_bound blocks, compile-effort <code>set_app_options</code> — never abbreviated</li>
+        <li>No files are written yet in either mode — this step only proposes and reports</li>
+        <li>Always saves <code>&lt;tile_dir&gt;/.optimizer_plan.json</code> — a structured, machine-readable record of every fix</li>
+      </ul>
+      <div class="out-box"><strong>Output:</strong> fix list, full file diffs, expected WNS gain per fix, RTL action items table.</div>
+    </div>
+    <div class="pipe-arrow-v">↓</div>
+
+    <div class="step-node">
+      <div class="step-title"><span class="tag">STEP 4</span>GENERATE — Write Tune Files</div>
+      <ul>
+        <li><b>Full run:</b> executes immediately after Step 3, using the plan just built</li>
+        <li><b>--apply run:</b> loads the previously saved <code>.optimizer_plan.json</code> — stops if it's missing</li>
+        <li>Re-derives ESTIMATED bound coordinates against the real DEF if one has since become available</li>
+        <li>Write order: <code>pre_opt.tcl</code> tunesource → <code>group_paths.tcl</code> → <code>r2r_optimization.tcl</code> → <code>override.params</code></li>
+      </ul>
+      <div class="out-box"><strong>Output:</strong> per-file line counts + CREATED/UPDATED status — "all changes match Step 3 proposal exactly."</div>
+    </div>
+  </div>
+
+  <!-- ================= 7 CHECKS ================= -->
+  <h2><span class="num">§4</span>The 7 Diagnostic Checks</h2>
+  <div class="priority-strip">
+    <span class="chip" style="border-color:#ff6b6b;color:#ff6b6b;">A · Phantom Clocks</span>
+    <span class="gt">&gt;</span>
+    <span class="chip" style="border-color:#ff6b6b;color:#ff6b6b;">F · Missing Groups</span>
+    <span class="gt">&gt;</span>
+    <span class="chip" style="border-color:#ffd93d;color:#ffd93d;">G · I2R Split</span>
+    <span class="gt">&gt;</span>
+    <span class="chip" style="border-color:#ffd93d;color:#ffd93d;">B/C · Weights</span>
+    <span class="gt">&gt;</span>
+    <span class="chip" style="border-color:#00d4ff;color:#00d4ff;">E · Wire-Dominated</span>
+    <span class="gt">&gt;</span>
+    <span class="chip" style="border-color:#6bcb77;color:#6bcb77;">D · Arch Limits</span>
+  </div>
+
+  <div class="checks-grid">
+
+    <div class="check-card check-A">
+      <div class="ch-title">A — Phantom Clock Paths <span class="ch-badge">structural</span></div>
+      <div class="ch-row"><b>Detect:</b> group with no scenario suffix, NVP &gt; 500, |TNS| &gt; 50,000 ps</div>
+      <div class="ch-row"><b>Why:</b> paths between mutually-exclusive modes dominate WNS/TNS and hide the real violations</div>
+      <div class="ch-row"><b>Fix:</b> split into one group per mode</div>
+    </div>
+
+    <div class="check-card check-F">
+      <div class="ch-title">F — Missing Groups <span class="ch-badge">structural</span></div>
+      <div class="ch-row"><b>Detect:</b> a module shows up in the top-20 endpoints but has no dedicated <code>group_path -to</code></div>
+      <div class="ch-row"><b>Why:</b> its paths are being absorbed into a generic catch-all — invisible to targeted tuning</div>
+      <div class="ch-row"><b>Fix:</b> add a named group_path for that hierarchy</div>
+    </div>
+
+    <div class="check-card check-G">
+      <div class="ch-title">G — I2R Catch-All Split <span class="ch-badge">structural</span></div>
+      <div class="ch-row"><b>Detect:</b> SYN_I2R spans 2+ modules or 2+ clocks, or WNS improves &lt;5 ps/pass</div>
+      <div class="ch-row"><b>Why:</b> one broad group dilutes optimization effort across unrelated hierarchies</div>
+      <div class="ch-row"><b>Fix:</b> split into per-module <code>SYN_I2R_&lt;module&gt;</code> sub-groups</div>
+    </div>
+
+    <div class="check-card check-B">
+      <div class="ch-title">B — Weight Starvation <span class="ch-badge">weight tuning</span></div>
+      <div class="ch-row"><b>Formula:</b> <code>Cost = weight × NVP × |WNS|</code></div>
+      <div class="ch-row"><b>Detect:</b> Cost &lt; 5% of the max cost across all groups</div>
+      <div class="ch-row"><b>Fix:</b> <code>new_weight = clamp(round(sqrt(max_cost / (NVP×|WNS|))), 6, 16)</code></div>
+    </div>
+
+    <div class="check-card check-C">
+      <div class="ch-title">C — Override Conflicts <span class="ch-badge">weight tuning</span></div>
+      <div class="ch-row"><b>Detect:</b> same <code>group_path -name X</code> defined in both tune files with different weights</div>
+      <div class="ch-row"><b>Why:</b> the last-sourced file (r2r_optimization.tcl) wins <em>silently</em> — a group_paths.tcl weight can be quietly ignored</div>
+      <div class="ch-row"><b>Fix:</b> correct the weight in r2r_optimization.tcl to match intent</div>
+    </div>
+
+    <div class="check-card check-E">
+      <div class="ch-title">E — Wire-Dominated Paths <span class="ch-badge">physical</span></div>
+      <div class="ch-row"><b>Triggers:</b> CritLen &gt; 95% of period &amp; WNS &lt; -30ps, <em>or</em> LOL &lt; 15 &amp; WNS &lt; -50ps</div>
+      <div class="ch-row"><b>Classify:</b> hierarchical startpoint → <b>BOUND</b> (create_bound); bare I/O port → <b>PORT-LIMITED</b> (RTL action item only)</div>
+      <div class="ch-row"><b>Fix:</b> one dedicated <code>create_bound</code> per BOUND group, DEF-derived coordinates when possible</div>
+    </div>
+
+    <div class="check-card check-D">
+      <div class="ch-title">D — Architecture Limits <span class="ch-badge">escalation</span></div>
+      <div class="ch-row"><b>Detect:</b> LOL &gt; 28 <em>and</em> WNS &lt; -20 ps</div>
+      <div class="ch-row"><b>Why:</b> ~9.5 ps/gate × 30 levels ≈ 96% of a typical period — synthesis has no more logic-depth headroom</div>
+      <div class="ch-row"><b>Fix:</b> comment block only — escalate to the RTL team, synthesis cannot fix this</div>
+    </div>
+
+  </div>
+
+  <!-- ================= FILES ================= -->
+  <h2><span class="num">§5</span>Files Read vs. Files Written</h2>
+  <div class="io-grid">
+    <div class="io-col reads">
+      <div class="io-title">📥 Reads (never modified)</div>
+      <ul>
+        <li><code>rpts/FxSynthesize/FxSynthesize.pass_*.proc_qor.rpt.gz</code></li>
+        <li><code>rpts/FxSynthesize/FxSynthesize.dat</code> — authoritative <code>DesignWNS</code>/<code>DesignTNS</code>/<code>DesignNVP</code> (optional; falls back to an explicitly-flagged approximate sum if missing)</li>
+        <li><code>rpts/FxSynthesize/report_timing.pass_*.rpt.sum.sort_slack.endpts.gz</code></li>
+        <li><code>rpts/FxSynthesize/FuncTT0p9v_&lt;GROUP&gt;_max.rpt.gz</code></li>
+        <li>Existing <code>tune/FxSynthesize/*.tcl</code> (full read, every file)</li>
+        <li><code>override.params</code> (compile passes, DEF path, multibit size)</li>
+        <li>Floorplan DEF (<code>data/*.def.gz</code>) — if available, for bound coordinates</li>
+      </ul>
+    </div>
+    <div class="io-col writes">
+      <div class="io-title">📤 Writes (Step 4 only)</div>
+      <ul>
+        <li><code>tune/FxSynthesize/FxSynthesize.group_paths.tcl</code></li>
+        <li><code>tune/FxSynthesize/FxSynthesize.r2r_optimization.tcl</code></li>
+        <li><code>tune/FxSynthesize/FxSynthesize.pre_opt.tcl</code> — tunesource line added if missing</li>
+        <li><code>override.params</code> — compile-passes param → 5</li>
+        <li><code>&lt;tile_dir&gt;/.optimizer_plan.json</code> — written after Step 3, every mode</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ================= KEY PRINCIPLES ================= -->
+  <h2><span class="num">§6</span>Key Principles</h2>
+  <div class="principles-list">
+    <div class="principle"><span class="pnum">1</span><span><strong>Name groups before tuning weights.</strong> Named groups alone give the first WNS gain — a correctly-scoped group lets the optimizer focus effort where it actually matters.</span></div>
+    <div class="principle"><span class="pnum">2</span><span><strong>Effective weight = last-sourced file wins.</strong> r2r_optimization.tcl overrides group_paths.tcl silently on name collisions — always compute the effective weight, never assume the declared one.</span></div>
+    <div class="principle"><span class="pnum">3</span><span><strong>Cost = W × NVP × |WNS| reveals starvation.</strong> A group sitting at 2% of the max cost is functionally invisible to the optimizer no matter how bad its own WNS looks in isolation.</span></div>
+    <div class="principle"><span class="pnum">4</span><span><strong>Bounds: loose is safer than tight.</strong> Dense hierarchies target 40–65% utilization; congestion-sensitive ones target 10–20%. Tight bounds cause non-convergent placement.</span></div>
+    <div class="principle"><span class="pnum">5</span><span><strong>Arch limits need RTL, not synthesis.</strong> LOL &gt; 28 with WNS &lt; -20 ps means logic depth itself is the bottleneck — no tune-file change closes that gap.</span></div>
+    <div class="principle"><span class="pnum">6</span><span><strong>Safety-check after rebalancing.</strong> Recompute the full cost table after every weight change — no group should silently fall back below the 5% starvation threshold.</span></div>
+  </div>
+
+  <!-- ================= PITFALLS ================= -->
+  <h2><span class="num">§7</span>Pitfall Reference</h2>
+  <table>
+    <thead>
+      <tr><th>Pitfall</th><th>Risk</th><th>Safe Practice</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Bounds density &gt; 400 cells/µm²</td><td class="risk">Hours of non-convergence</td><td class="safe">Target ~200; always <code>-type soft</code></td></tr>
+      <tr><td><code>set_boundary_optimization</code> on a large hierarchy</td><td class="risk">TNS explosion</td><td class="safe">Only on a specific sub-hierarchy</td></tr>
+      <tr><td>Same group defined in both tune files</td><td class="risk">Weight silently overridden</td><td class="safe">r2r_opt wins — always verify the effective weight</td></tr>
+      <tr><td><code>set_max_fanout</code> on a broad hierarchy</td><td class="risk">Buffering overhead</td><td class="safe">Specific registers from the path trace only</td></tr>
+      <tr><td>Bound without <code>enable_auto_feasibility_recovery</code></td><td class="risk">No congestion recovery</td><td class="safe">Set it before any <code>create_bound</code></td></tr>
+      <tr><td>Weight raised without cost rebalance</td><td class="risk">Creates a new starvation case</td><td class="safe">Recompute the cost table after every change</td></tr>
+      <tr><td><code>group_path</code> without <code>-to</code>/<code>-from</code></td><td class="risk">Empty group, wasted memory</td><td class="safe">Always specify cell scope</td></tr>
+      <tr><td>Bound on an arch-limited group (LOL &gt; 28)</td><td class="risk">Zero gain</td><td class="safe">Check D first; skip the bound</td></tr>
+      <tr><td>Backward retiming enabled</td><td class="risk">Pass instability</td><td class="safe">Forward only; validate monotonic convergence</td></tr>
+    </tbody>
+  </table>
+
+  <div class="legend">
+    <div class="legend-item"><span class="legend-box" style="background:#ff6b6b;"></span>Structural bug — fix before anything else</div>
+    <div class="legend-item"><span class="legend-box" style="background:#ffd93d;"></span>Weight tuning</div>
+    <div class="legend-item"><span class="legend-box" style="background:#00d4ff;"></span>Physical placement</div>
+    <div class="legend-item"><span class="legend-box" style="background:#6bcb77;"></span>RTL escalation</div>
+  </div>
+
+  <!-- ================= WORKED EXAMPLE ================= -->
+  <h2><span class="num">§8</span>Worked Example — <code>umcdat_Jul06_1to2</code></h2>
+  <div class="case-banner">
+    A real <code>--analyze-only</code> run against a live umcdat tile (Auto-Floorplan/ColdStart flow, ~1.04M placed cells,
+    DEF auto-generated by Fusion Compiler). Every number below came straight out of the actual QoR reports and DEF —
+    nothing here is illustrative or simulated.
+  </div>
+
+  <div class="stat-strip">
+    <div class="stat"><span class="stat-val" style="color:#ff6b6b;">-144.294 ps</span><span class="stat-label">DesignWNS</span></div>
+    <div class="stat"><span class="stat-val" style="color:#ff6b6b;">-32,757.8 ps</span><span class="stat-label">DesignTNS</span></div>
+    <div class="stat"><span class="stat-val">1,788</span><span class="stat-label">DesignNVP</span></div>
+    <div class="stat"><span class="stat-val">3</span><span class="stat-label">passes read (P1–P3)</span></div>
+  </div>
+
+  <h3>Step 1 — What it extracted</h3>
+  <table>
+    <thead><tr><th>Path Group</th><th>WNS (ps)</th><th>TNS (ps)</th><th>NVP</th><th>LOL</th><th>CritLen %</th></tr></thead>
+    <tbody>
+      <tr><td>SYN_R2O</td><td class="risk">-144.29</td><td class="risk">-4,166.4</td><td>248</td><td>2</td><td>17.4%</td></tr>
+      <tr><td>SYN_nonIP</td><td class="risk">-103.52</td><td class="risk">-19,149.0</td><td>1,293</td><td>26</td><td>36.9%</td></tr>
+      <tr><td>clock_gating_default</td><td class="risk">-96.80</td><td class="risk">-286.8</td><td>22</td><td>24</td><td>29.8%</td></tr>
+      <tr><td>io_to_flop</td><td class="risk">-92.81</td><td class="risk">-146.7</td><td>2</td><td>11</td><td>126.9%</td></tr>
+      <tr><td>SYN_I2R</td><td class="risk">-92.48</td><td class="risk">-11,521.6</td><td>353</td><td>0</td><td>81.3%</td></tr>
+      <tr><td>flop_to_io</td><td class="risk">-87.90</td><td class="risk">-112.5</td><td>2</td><td>2</td><td>4.7%</td></tr>
+      <tr><td>io_to_io</td><td class="safe">+61.92</td><td>0.0</td><td>0</td><td>1</td><td>46.1%</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout-anomaly">
+    <b>⚠ Anomaly Step 1 surfaced:</b> <code>group_paths.tcl</code> defines 9+ named groups, but only these
+    7 show up in the actual QoR report. Six defined groups — <code>SYN_R2R</code>, <code>umc_dat_r2r</code>,
+    <code>umc_sec_r2r</code>, <code>umc_BEQ_r2r</code>, <code>SYN_R2R_2gclk</code>, <code>SYN_DFICLK</code> —
+    show <b>zero paths</b>. Config says 9+, the tool reports 7. That gap is what triggered the Step 2 investigation below.
+  </div>
+
+  <h3>Step 2 — What Check F found (the critical bug)</h3>
+  <div class="bug-compare">
+    <div class="bug-col bug-before">
+      <div class="bug-title">✗ Before — masked</div>
+      <code>group_path -name SYN_nonIP<br>&nbsp;&nbsp;-from "full_name!~umc0/*"<br>&nbsp;&nbsp;-to "full_name!~umc0/*"</code>
+      <p style="margin-top:8px;">Defined <b>last</b> in the file. No <code>umc0</code> hierarchy exists in this design
+      (real top-level modules: BEQ, umcctrl, umcsec, PHYINTF, ECC, WDB…) — so the filter matches
+      <b>every register</b>. Last-definition-wins semantics means it steals every reg2reg path from
+      the 6 specific groups defined above it.</p>
+    </div>
+    <div class="bug-col bug-after">
+      <div class="bug-title">✓ After — corrected</div>
+      <code>group_path -name SYN_nonIP<br>&nbsp;&nbsp;-weight 6 &nbsp;&nbsp;<i>(defined FIRST)</i></code>
+      <p style="margin-top:8px;">Moved to be the <b>most general, first-defined</b> group. The 6 specific groups
+      (plus 3 new ones added by Fix F-2/3/4) are now defined <i>after</i> it and correctly claim their own paths.
+      <code>SYN_nonIP</code> becomes what it was always meant to be — a residual bucket for genuinely unclaimed paths.</p>
+    </div>
+  </div>
+  <p style="font-size:12px;color:#8899aa;line-height:1.7;margin-bottom:20px;">
+    <b style="color:#c0cfe0;">Proof, not just theory:</b> <code>SYN_nonIP</code>'s own worst path
+    (<code>BEQ/umcbeq_rd_comb/Fifo0Rdptr_reg[1]</code> → <code>ECC/ECCRD/DscEccSynd_d1_reg[28]</code>)
+    starts inside <code>BEQ</code> — which should have matched <code>umc_BEQ_r2r</code>'s filter. It didn't.
+    Direct confirmation the catch-all was grabbing paths it wasn't meant to.
+  </p>
+
+  <h3>Step 2 — Full diagnosis summary for this tile</h3>
+  <table>
+    <thead><tr><th>Check</th><th>Verdict for this tile</th></tr></thead>
+    <tbody>
+      <tr><td>A — Phantom Clocks</td><td class="safe">CLEAN — no group crosses both the NVP and TNS thresholds together</td></tr>
+      <tr><td>F — Missing Groups</td><td class="risk">CRITICAL — the masking bug above; 6 groups + 3 unrepresented hierarchies (PHYINTF, ECC/ECCRD, DAT_MCA)</td></tr>
+      <tr><td>G — I2R Split</td><td class="risk">NEEDED — WNS improvement collapsed to 0.11 ps/pass by P3, spans PHYINTF/BEQ/WDB/clk-gate</td></tr>
+      <tr><td>B — Starvation</td><td class="risk">3 groups &lt;2% of max cost: <code>clock_gating_default</code>, <code>io_to_flop</code>, <code>flop_to_io</code></td></tr>
+      <tr><td>C — Override Conflicts</td><td class="safe">CLEAN — no <code>r2r_optimization.tcl</code> existed yet, so no cross-file conflict (yet)</td></tr>
+      <tr><td>E — Wire-Dominated</td><td class="risk">4 flagged — 1 BOUND (<code>SYN_R2O</code> via PHYINTF cluster), 3 PORT-LIMITED (<code>io_to_flop</code>, <code>SYN_I2R</code>, <code>flop_to_io</code>)</td></tr>
+      <tr><td>D — Arch Limits</td><td class="safe">CLEAN / borderline — <code>SYN_nonIP</code> LOL=26, below the &gt;28 threshold but worth watching</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Step 3 — The fixes proposed, and why (mapped back to the skill's own logic)</h3>
+
+  <div class="fix-card">
+    <div class="fix-head"><span class="fix-id">FF-1</span><span class="fix-check-tag" style="background:rgba(255,107,107,0.2);color:#ff6b6b;">Check F</span></div>
+    Reorder <code>SYN_nonIP</code> to be defined first, narrow its filter, bump weight 1→6.
+    <div class="why"><b>Why:</b> the skill's Check F rule is "general groups first, specific groups last" —
+    Fusion Compiler resolves overlapping group_path matches by last-definition-wins. Putting the catch-all first
+    means every later, more specific definition takes priority for its own matches.</div>
+  </div>
+
+  <div class="fix-card">
+    <div class="fix-head"><span class="fix-id">FG-1</span><span class="fix-check-tag" style="background:rgba(255,217,61,0.2);color:#ffd93d;">Check G</span></div>
+    Split <code>SYN_I2R</code> into 5 sub-groups: <code>SYN_I2R_PHYINTF</code> (w=8), <code>SYN_I2R_BEQ</code> (w=8),
+    <code>SYN_I2R_WDB</code> (w=6), <code>SYN_I2R_CLKGATE</code> (w=6), residual <code>SYN_I2R</code> (w=6).
+    <div class="why"><b>Why:</b> Check G's split trigger fired on both conditions at once — endpoints span 5+ modules
+    <i>and</i> WNS improvement fell from 3.12 ps/pass to 0.11 ps/pass by P3. A flat catch-all can't give any one
+    module the weight it individually needs.</div>
+  </div>
+
+  <div class="fix-card">
+    <div class="fix-head"><span class="fix-id">FB-1/2/3</span><span class="fix-check-tag" style="background:rgba(255,217,61,0.2);color:#ffd93d;">Check B</span></div>
+    Weight bumps: <code>clock_gating_default</code> 1→8, <code>io_to_flop</code> 1→16, <code>flop_to_io</code> 1→16.
+    <div class="why"><b>Why:</b> Check B's cost formula (<code>W × NVP × |WNS|</code>) put every one of these under
+    2% of the max cost (<code>SYN_nonIP</code> at 133,852.9) — literally invisible to the optimizer's effort allocation
+    regardless of how bad their individual WNS looked.</div>
+  </div>
+
+  <div class="fix-card">
+    <div class="fix-head"><span class="fix-id">FE-1</span><span class="fix-check-tag" style="background:rgba(0,212,255,0.2);color:#00d4ff;">Check E</span></div>
+    <code>create_bound SYN_R2O_PHYINTF_bound</code> — DEF-derived bbox (346.93, 148.93)–(473.76, 323.26) µm,
+    664 cells, density 0.03 cells/µm².
+    <div class="why"><b>Why:</b> <code>SYN_R2O</code> hit trigger T2 (LOL=2 &lt; 15, WNS=-144.29 &lt; -50 ps).
+    Its dominant repeating pattern (<code>PHYINTF/PHYIF_CHN*</code>) has a hierarchical startpoint → BOUND-eligible.
+    Two singular outlier paths (clock-gen sync, global alert) were deliberately excluded from this bound —
+    they don't share the pattern and risk masking a real bug if force-fit into a placement fix.</div>
+  </div>
+
+  <div class="rtl-note">
+    <b>Left as RTL action items, not auto-fixed:</b> 3 paths whose startpoint is a bare I/O port
+    (<code>preUCLK</code>, <code>DAT_FEI_RdDatErr</code>, <code>DFICLK_ungated</code>) were classified
+    PORT-LIMITED by Check E — a placement bound cannot move a port. These need manual timing-intent review
+    (<code>set_false_path</code> / <code>set_multicycle_path</code>) which is outside this skill's scope —
+    it only ever touches synthesis tune files, never SDC/constraints.
+  </div>
+
+  <h3>Step 4 — Exact file changes, line by line</h3>
+  <p style="font-size:12px;color:#8899aa;line-height:1.7;margin-bottom:6px;">
+    This is what actually landed on disk when the plan was applied — not the proposal, the real written files.
+  </p>
+
+  <!-- group_paths.tcl -->
+  <div class="diff-file-head">
+    <span class="fname">FxSynthesize.group_paths.tcl</span><span class="updated-badge">UPDATED</span>
+  </div>
+
+  <div class="hunk-label">Hunk 1 — SYN_nonIP relocated from the bottom of the file to the very top (Fix F-1)</div>
+  <div class="diff-block">
+    <span class="l add">fif { $fUsePriority } { incr nPriority }</span>
+    <span class="l add">fif { [amd_getvarsave DDRSS_FEINT_IS_TILE_RTL 1] } {</span>
+    <span class="l add">group_path -name SYN_nonIP -critical_range 200 -weight 6 -priority $nPriority \</span>
+    <span class="l add">    -from [filter_collection $ff "full_name!~umcdat/umc0/*"] \</span>
+    <span class="l add">    -to   [filter_collection $ff "full_name!~umcdat/umc0/*"]</span>
+    <span class="l add">}</span>
+  </div>
+
+  <div class="hunk-label">Hunk 2 — SYN_I2R weight corrected + 4 new sub-groups inserted immediately after it (Fix F-1 weight, Fix G-1 split)</div>
+  <div class="diff-block">
+    <span class="l del">group_path -name SYN_I2R -critical_range 200 -weight 1 -priority $nPriority -from $pi -to $rr</span>
+    <span class="l add">group_path -name SYN_I2R -critical_range 200 -weight 6 -priority $nPriority -from $pi -to $rr</span>
+    <span class="l add">group_path -name SYN_I2R_PHYINTF -critical_range 200 -weight 8 -priority $nPriority -from $pi -to [filter_collection $rr "full_name=~*PHYINTF/PHYIF_CHN*"]</span>
+    <span class="l add">group_path -name SYN_I2R_BEQ -critical_range 200 -weight 8 -priority $nPriority -from $pi -to [filter_collection $rr "full_name=~*BEQ/dfi*_ctrl*"]</span>
+    <span class="l add">group_path -name SYN_I2R_WDB -critical_range 200 -weight 6 -priority $nPriority -from $pi -to [filter_collection $rr "full_name=~*WDB/*"]</span>
+    <span class="l add">group_path -name SYN_I2R_CLKGATE -critical_range 200 -weight 6 -priority $nPriority -from $pi -to [filter_collection $rr "full_name=~*clk_gate*"]</span>
+  </div>
+
+  <div class="hunk-label">Hunk 3 — 3 new reg2reg groups inserted right after SYN_R2R (Fix F-2/F-3/F-4 — hierarchies that were previously masked or unrepresented)</div>
+  <div class="diff-block">
+    <span class="l ctx">group_path -name SYN_R2R -critical_range 200 -weight 1 -priority $nPriority -from $ff -to $ff</span>
+    <span class="l add">group_path -name SYN_R2R_PHYINTF -critical_range 200 -weight 8 -priority $nPriority -from [filter_collection $ff "full_name=~*PHYINTF/PHYIF_CHN*"] -to [filter_collection $ff "full_name=~*PHYINTF/PHYIF_CHN*"]</span>
+    <span class="l add">group_path -name SYN_R2R_ECC -critical_range 200 -weight 6 -priority $nPriority -from [filter_collection $ff "full_name=~*ECC/ECCRD*"] -to [filter_collection $ff "full_name=~*ECC/ECCRD*"]</span>
+    <span class="l add">group_path -name SYN_R2R_DATMCA -critical_range 200 -weight 6 -priority $nPriority -from [filter_collection $ff "full_name=~*UMCMCAWRAP/DAT_MCA*"] -to [filter_collection $ff "full_name=~*UMCMCAWRAP/DAT_MCA*"]</span>
+  </div>
+
+  <div class="hunk-label">Hunk 4 — the old SYN_nonIP definition removed from its original bottom-of-file position</div>
+  <div class="diff-block">
+    <span class="l del">fif { [amd_getvarsave DDRSS_FEINT_IS_TILE_RTL 1] } {</span>
+    <span class="l del">group_path -name SYN_nonIP -critical_range 200 -weight 1 -priority $nPriority -from [filter_collection $ff "full_name!~umc0/*"] -to [filter_collection $ff "full_name!~umc0/*"]</span>
+    <span class="l del">}</span>
+  </div>
+
+  <div class="nochange-block">
+    <b style="color:#c0cfe0;">Untouched in this file:</b> <code>SYN_R2O</code>, <code>SYN_R2R_2gclk</code>, <code>SYN_R2R</code>,
+    <code>umc_dat_r2r</code>, <code>umc_sec_r2r</code>, <code>umc_BEQ_r2r</code> (×2), <code>SYN_DFICLK</code> (×3) —
+    these were already correctly scoped; only their <em>effective priority</em> changes as a side effect of Hunk 1
+    (they now sit after the general catch-all instead of before it).
+  </div>
+
+  <!-- r2r_optimization.tcl -->
+  <div class="diff-file-head">
+    <span class="fname">FxSynthesize.r2r_optimization.tcl</span><span class="newfile-badge">NEW FILE — 90 lines</span>
+  </div>
+  <p style="font-size:12px;color:#8899aa;line-height:1.7;margin-bottom:6px;">
+    Did not exist before this run. Every line below is new.
+  </p>
+
+  <div class="hunk-label">Section 1 — Fix B: weight corrections for 3 starved default groups</div>
+  <div class="diff-block">
+    <span class="l cm2"># FB-1: clock_gating_default   old_weight=1 -&gt; new_weight=8  (cost was 1.6% of max)</span>
+    <span class="l add">group_path -name clock_gating_default -weight 8</span>
+    <span class="l cm2"></span>
+    <span class="l cm2"># FB-2: io_to_flop   old_weight=1 -&gt; new_weight=16  (cost was 0.14% of max)</span>
+    <span class="l add">group_path -name io_to_flop -weight 16</span>
+    <span class="l cm2"></span>
+    <span class="l cm2"># FB-3: flop_to_io   old_weight=1 -&gt; new_weight=16  (cost was 0.13% of max)</span>
+    <span class="l add">group_path -name flop_to_io -weight 16</span>
+  </div>
+
+  <div class="hunk-label">Section 2 — Fix E: the one physical bound (DEF-derived coordinates)</div>
+  <div class="diff-block">
+    <span class="l add">set_app_options -name compile.flow.enable_auto_feasibility_recovery -value true</span>
+    <span class="l cm2"></span>
+    <span class="l add">set syn_r2o_phyintf_cells [get_cells -quiet -hier -filter \</span>
+    <span class="l add">    "full_name =~ *PHYINTF/PHYIF_CHN*"]</span>
+    <span class="l add">if {[sizeof_collection $syn_r2o_phyintf_cells] &gt; 0} {</span>
+    <span class="l add">    create_bound -name SYN_R2O_PHYINTF_bound \</span>
+    <span class="l add">        -boundary [list [list 346.93 148.93] [list 473.76 323.26]] \</span>
+    <span class="l add">        -type soft $syn_r2o_phyintf_cells</span>
+    <span class="l add">} else {</span>
+    <span class="l add">    puts "WARNING: SYN_R2O_PHYINTF_bound — no cells matched *PHYINTF/PHYIF_CHN*"</span>
+    <span class="l add">}</span>
+  </div>
+
+  <div class="hunk-label">Section 3 — compile-effort settings (always-on tier + Check E wire-dominated tier + Check G buffer replication)</div>
+  <div class="diff-block">
+    <span class="l add">set_app_options -name compile.flow.high_effort_timing               -value 1</span>
+    <span class="l add">set_app_options -name opt.timing.effort                             -value high</span>
+    <span class="l add">set_app_options -name opt.area.effort                                -value high</span>
+    <span class="l add">set_app_options -name opt.common.buffer_area_effort                  -value ultra</span>
+    <span class="l add">set_app_options -name compile.timing.prioritize_tns                  -value true</span>
+    <span class="l add">set_app_options -name opt.timing.slack_based_tns_optimization        -value true</span>
+    <span class="l add">set_app_options -name opt.timing.tns_optimization_paths_per_endpoint -value 35</span>
+    <span class="l add">set_app_options -name opt.common.advanced_logic_restructuring_mode   -value area_timing</span>
+    <span class="l add">set_app_options -name opt.common.advanced_logic_restructuring_wirelength_costing -value high</span>
+    <span class="l cm2"></span>
+    <span class="l cm2"># Check E fired (SYN_R2O wire-dominated):</span>
+    <span class="l add">set_app_options -name compile.final_place.effort                    -value high</span>
+    <span class="l add">set_app_options -name place_opt.final_place.effort                  -value high</span>
+    <span class="l add">set_app_options -name place_opt.place.congestion_effort              -value high</span>
+    <span class="l add">set_app_options -name route.common.rc_driven_setup_effort_level      -value high</span>
+    <span class="l add">set_app_options -name route.global.effort_level                      -value high</span>
+    <span class="l add">set_congestion_optimization [get_designs] TRUE</span>
+    <span class="l cm2"></span>
+    <span class="l cm2"># Check G fired (Fifo0Rdptr repeats 70x as worst startpoint, &gt;=3 threshold):</span>
+    <span class="l add">set_app_options -name compile.timing.buffer_replication               -value true</span>
+  </div>
+
+  <!-- pre_opt.tcl -->
+  <div class="diff-file-head">
+    <span class="fname">FxSynthesize.pre_opt.tcl</span><span class="updated-badge">UPDATED — 1 line added</span>
+  </div>
+  <div class="diff-block">
+    <span class="l ctx">tunesource tune/$TARGET_NAME/$TARGET_NAME.group_paths.tcl</span>
+    <span class="l add">tunesource tune/$TARGET_NAME/$TARGET_NAME.r2r_optimization.tcl</span>
+  </div>
+
+  <!-- override.params -->
+  <div class="diff-file-head">
+    <span class="fname">override.params</span><span class="nochange-badge">NO CHANGE</span>
+  </div>
+  <div class="nochange-block">
+    The saved plan originally proposed <code>DDRSS_FEINT_NUM_COMPILES: 3 → 5</code>. For this specific apply run
+    the user explicitly overrode that instruction — <b style="color:#c0cfe0;">compile passes were kept at 3</b>
+    and this file was not touched at all (verified: file mtime unchanged after the run). Every other fix
+    (F, G, B, E) was still applied in full — the compile-pass count is the one independent knob the skill
+    proposes, and it was consciously skipped here.
+  </div>
+
+  <p class="footer-note">Source: <code>.claude/skills/syn-timing-optimizer/SKILL.md</code> + a real <code>--analyze-only</code> → <code>--apply</code> run against <code>umcdat_Jul06_1to2</code> (written to <code>umcdat_Jul06_1to2_optimize</code>).</p>
+
+</div>
+</body>
+</html>
