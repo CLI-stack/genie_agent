@@ -224,15 +224,23 @@ TCLEOF
     if ($_is_syn > 0) then
         foreach _ht ($_himem_tiles)
             if ("$tile_name" == "$_ht") then
-                # -r 130000: high-memory reservation for the heavy Synthesize FM.
+                # -r <mem>: high-memory reservation for the heavy Synthesize FM.
                 # -q regr_high: force the regr_high queue instead of the tile
-                #   default TILEBUILDER_LSFQUEUE (gb256). gb256 is chronically
-                #   saturated and our group fairshare there is near-zero, so
-                #   fenets jobs pended ~20h. A command-line -q overrides
+                #   default TILEBUILDER_LSFQUEUE. A command-line -q overrides
                 #   TILEBUILDER_LSFQUEUE (TileBuilderIntCommonLSF: the
                 #   `if ("x$queue"=="x")` fallback is skipped when queue is set).
-                set extra_opts = "-r 130000 -q regr_high"
-                echo "${tgt}: using -r 130000 -q regr_high (high-memory tile: $tile_name)"
+                set _mem = 130000
+                # SPECIAL CASE — PreEco synth-vs-synth (FmEqv...PreEcoSynthesize
+                #   VsPreEcoSynRtl): reserve 100 GB, not 130 GB. 130000 lands in
+                #   the gb256 memory boundary (tbsub's gb-flag logic) and forces
+                #   the job onto gb256-class hosts / the saturated gb256 queue;
+                #   100000 stays under that boundary so it runs on regr_high.
+                #   Infix-tolerant suffix match handles UPF names (soundwave:
+                #   FmEqvPwrAllUpfSuppliesOnPreEcoSynthesizeVsPreEcoSynRtl).
+                set _is_preeco_syn = `echo "$tgt" | grep -cE 'PreEcoSynthesizeVsPreEcoSynRtl$'`
+                if ($_is_preeco_syn > 0) set _mem = 100000
+                set extra_opts = "-r $_mem -q regr_high"
+                echo "${tgt}: using -r $_mem -q regr_high (high-memory tile: $tile_name)"
             endif
         end
     endif
