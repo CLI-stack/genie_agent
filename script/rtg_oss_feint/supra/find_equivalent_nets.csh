@@ -224,8 +224,15 @@ TCLEOF
     if ($_is_syn > 0) then
         foreach _ht ($_himem_tiles)
             if ("$tile_name" == "$_ht") then
-                set extra_opts = "-r 130000"
-                echo "${tgt}: using -r 130000 (high-memory tile: $tile_name)"
+                # -r 130000: high-memory reservation for the heavy Synthesize FM.
+                # -q regr_high: force the regr_high queue instead of the tile
+                #   default TILEBUILDER_LSFQUEUE (gb256). gb256 is chronically
+                #   saturated and our group fairshare there is near-zero, so
+                #   fenets jobs pended ~20h. A command-line -q overrides
+                #   TILEBUILDER_LSFQUEUE (TileBuilderIntCommonLSF: the
+                #   `if ("x$queue"=="x")` fallback is skipped when queue is set).
+                set extra_opts = "-r 130000 -q regr_high"
+                echo "${tgt}: using -r 130000 -q regr_high (high-memory tile: $tile_name)"
             endif
         end
     endif
