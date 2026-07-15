@@ -327,6 +327,112 @@ def _bus_width_int(bw):
     return int(s) if s.isdigit() else 1
 
 
+def _flattened_instance_issues(rtl_diff, ref_dir):
+    """HARD FAIL: a comb_net_force edits a MODULE, so it affects EVERY
+    instantiation. Synthesis keeps some instances as clean uniquified netlist
+    copies (`<base>_<i>`, cleanly ECO-able) but FLATTENS others into a parent
+    module (the sub-hierarchy boundary is dissolved). Flattened combinational
+    logic cannot be cleanly metal-ECO'd — there is no module scope and the nets
+    are renamed/merged into the parent. The historical failure mode reported such
+    instances as 'optimized away' (because the module-copy count was 0) and
+    silently shipped an INCOMPLETE ECO that fails FM on the flattened region.
+
+    This guard independently detects flattened instances that retain a LIVE
+    remnant — a net driven by a gate whose name carries the instance's flattened
+    hierarchy prefix — and FAILS, so the case is surfaced (verify FM / re-synth)
+    rather than silently dropped. Deterministic; keys on the changed module name
+    + the netlist; no per-design hardcoding. Requires --ref-dir (returns [] if
+    the RTL/netlist can't be read — best-effort, cannot check).
+
+    Conservative BY DESIGN: it fails on ANY live flattened remnant of a changed
+    module, even one whose surviving bit value may be unchanged — because the
+    flow cannot clean-ECO flattened logic regardless of change-affectedness, so a
+    human/FM must confirm coverage before the ECO proceeds. Clean uniquified
+    copies and fully-optimized-away instances (no live remnant) do NOT trigger."""
+    import glob, gzip
+    issues = []
+    if not ref_dir:
+        return issues
+    syn = os.path.join(ref_dir, 'data', 'PreEco', 'SynRtl')
+    nlp = os.path.join(ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
+    if not (os.path.isdir(syn) and os.path.isfile(nlp)):
+        return issues
+    # comb_net_force changed base modules + covered instance leaf-names (scopes)
+    bases, covered = set(), set()
+    for c in rtl_diff.get('changes', []):
+        if c.get('change_type') != 'comb_net_force':
+            continue
+        b = re.sub(r'_\d+$', '', re.sub(r'^ddrss_\w+?_t_', '', str(c.get('module_name') or '')))
+        if b:
+            bases.add(b)
+        sc = c.get('scope') or c.get('instance_scope') or ''
+        if sc:
+            covered.add(str(sc).split('/')[-1])
+    if not bases:
+        return issues
+    # RTL instantiation sites per base module, across ALL SynRtl files
+    uncovered, base_of_inst = {}, {}
+    for f in glob.glob(os.path.join(syn, '*.v')) + glob.glob(os.path.join(syn, '*.sv')):
+        try:
+            txt = open(f, errors='ignore').read()
+        except OSError:
+            continue
+        fn = os.path.basename(f)
+        for base in bases:
+            for m in re.finditer(r'(?m)^\s*' + re.escape(base) + r'\s+(\w+)\s*\(', txt):
+                inst = m.group(1)
+                if inst not in covered:
+                    uncovered.setdefault(inst, fn)
+                    base_of_inst[inst] = base
+    if not uncovered:
+        return issues
+    # ONE netlist pass: identify clean-copy instances (skip those) + LIVE
+    # (gate-driven) remnant nets carrying an uncovered instance's flattened name.
+    copy_re = re.compile(r'^\s*[A-Za-z0-9_]*(?:' +
+                         '|'.join(re.escape(b) for b in bases) + r')_\d+\s+(\w+)\s*\(')
+    driven_re = re.compile(r'\.(?:Z|ZN|Q)\s*\(\s*([A-Za-z0-9_]+)\s*\)')
+    unc = list(uncovered)
+    clean, flat = set(), {}   # flat: inst -> (parent_module, set(nets))
+    try:
+        with gzip.open(nlp, 'rt', errors='ignore') as fh:
+            cur_mod = None
+            for line in fh:
+                if line.startswith('module '):
+                    p = line.split()
+                    cur_mod = p[1] if len(p) > 1 else None
+                    continue
+                cm = copy_re.match(line)
+                if cm:
+                    clean.add(cm.group(1))
+                    continue
+                if '.Z' in line or '.Q' in line:
+                    dm = driven_re.search(line)
+                    if dm:
+                        net = dm.group(1)
+                        for i in unc:
+                            if i in net:
+                                pm, nets = flat.get(i, (cur_mod, set()))
+                                nets.add(net)
+                                flat[i] = (pm, nets)
+    except OSError:
+        return issues
+    for inst, fn in sorted(uncovered.items()):
+        if inst in clean:
+            continue          # actually a clean uniquified copy -> ECO-able, OK
+        rec = flat.get(inst)
+        if rec and rec[1]:
+            pm, nets = rec
+            issues.append(
+                "comb_net_force module %r instance %r (RTL %s) is FLATTENED into netlist "
+                "module %r with %d live remnant net(s) (e.g. %s) — a dissolved boundary the "
+                "module-scoped ECO CANNOT cleanly patch, and it is NOT one of the clean "
+                "uniquified copies. Do NOT treat as 'optimized away': verify FM equivalence "
+                "for this region — flattened combinational logic of a changed module "
+                "typically needs RE-SYNTHESIS, not metal ECO." %
+                (base_of_inst.get(inst), inst, fn, pm or '?', len(nets), sorted(nets)[:2]))
+    return issues
+
+
 def _rtl_port_width(ref_dir, module, port):
     """Declared bit-width of `port` in the module's NEW RTL (data/SynRtl). Returns an
     int (1 for scalar) or None if the RTL/declaration can't be found."""
@@ -3015,6 +3121,14 @@ def main():
     if comb_net_force_issues:
         overall_pass = False
 
+    # FLATTENED-INSTANCE guard (hard fail): a changed module whose instances are
+    # flattened into a parent (dissolved boundary) with a live remnant cannot be
+    # cleanly metal-ECO'd. Catches the "reported optimized-away but really
+    # flattened" hole. Requires --ref-dir; conservative (see helper docstring).
+    flattened_instance_issues = _flattened_instance_issues(rtl_diff, args.ref_dir)
+    if flattened_instance_issues:
+        overall_pass = False
+
     # priority_force condition-leaf availability (needs --ref-dir + extractor)
     pf_leaf_issues = _pf_condition_leaf_issues(rtl_diff, args.ref_dir)
     priority_force_issues.extend(pf_leaf_issues)
@@ -3181,6 +3295,8 @@ def main():
         'priority_force_issues':      priority_force_issues,
         'comb_net_force_issue_count': len(comb_net_force_issues),
         'comb_net_force_issues':      comb_net_force_issues,
+        'flattened_instance_issue_count': len(flattened_instance_issues),
+        'flattened_instance_issues':      flattened_instance_issues,
         'pending_term_issue_count':   len(pending_term_issues),
         'pending_term_issues':        pending_term_issues,
         'term_op_issue_count':        len(term_op_issues),
