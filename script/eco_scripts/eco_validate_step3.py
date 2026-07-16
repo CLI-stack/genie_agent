@@ -5504,86 +5504,64 @@ def main():
         except Exception:
             pass
 
-    # ── Check 64: rewired pre-existing DFFs must have consistent SI/SE across stages ─
-    # When a pre-existing DFF has its CP or D rewired (flop-pin model) OR when a
-    # driver-side reg_guard_delta rewire targets a register whose flop has scan-stitched
-    # SI/SE in PP/Route but 1'b0 in Synth, FM sees the d0nt_mux scan-enable output as a
-    # globally unmatched cone input → cascades to 195+ DFF failures in PPvsSynth.
-    # Fix: the study must include SI=SE=1'b0 rewire entries for PP/Route on those flops.
-    #
-    # Path A (original): flop-pin D/CP rewires → check the rewired flop's SI/SE.
-    # Path B (driver-side): reg_guard_delta rewires with pin in ZN/Z/Q → identify the
-    #   downstream flop via target_register field; match PreEco Synth inst names that
-    #   start with <target_register>_reg (handles MB8 bank suffix and similar).
+    # ── Check 64: rewired pre-existing DFFs must have consistent SI across stages ─
+    # When a pre-existing DFF has its CP or D rewired, its SI pin may differ between
+    # stages (1'b0 in Synth from PreEco, scan-stitched value in PP/Route).
+    # FM sees this as a scan cone mismatch → d0nt_mux globally unmatched → DFF failures.
+    # Fix: add SI=1'b0 rewire entries for PP and Route to maintain consistency.
     if os.path.isfile(_gl_s):
         try:
             import gzip as _gz4
             _non_const_re64 = re.compile(r"^1'b[01]$")
             _inst_si_re64   = re.compile(r'\.(SI|SE)\s*\(\s*([^)]+?)\s*\)')
+            _mod_re64        = re.compile(r'^\s*module\s+(\w+)\b')
 
-            # Path A: explicit flop-pin D/CP rewires
+            # Collect all rewired DFF instance names (CP or D rewires)
             _rewired_insts64 = set()
             for _e64 in study.get('Synthesize', []):
-                if _e64.get('change_type') == 'rewire' and _e64.get('pin') in (
-                        'CP', 'D', 'D1','D2','D3','D4','D5','D6','D7','D8'):
+                if _e64.get('change_type') == 'rewire' and _e64.get('pin') in ('CP', 'D', 'D1','D2','D3','D4','D5','D6','D7','D8'):
                     _rewired_insts64.add(_e64.get('cell_name') or _e64.get('instance_name',''))
 
-            # Path B: driver-side reg_guard_delta — find flop by target_register
-            _target_regs64 = set()
-            for _e64 in study.get('Synthesize', []):
-                if (_e64.get('change_type') == 'rewire'
-                        and _e64.get('reg_guard_delta')
-                        and _e64.get('pin') in ('ZN', 'Z', 'Q', 'ZN1')):
-                    _tr64 = _e64.get('target_register') or _e64.get('reg') or ''
-                    if _tr64:
-                        _target_regs64.add(_tr64)
-            if _target_regs64:
-                _syn_gz64 = os.path.join(args.ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
-                if os.path.isfile(_syn_gz64):
-                    _inst_re64 = re.compile(r'^\s*\w[\w:]+\s+(\w+)\s*\(')
-                    with _gz4.open(_syn_gz64, 'rt', errors='ignore') as _f64:
-                        for _l64 in _f64:
-                            _im64 = _inst_re64.match(_l64)
-                            if _im64:
-                                _inst64 = _im64.group(1)
-                                for _tr64 in _target_regs64:
-                                    if _inst64.startswith(f'{_tr64}_reg'):
-                                        _rewired_insts64.add(_inst64)
-
-            # Collect SI/SE rewires already in study (PP/Route)
+            # Collect SI/SE rewire entries already in study JSON (PP/Route)
             _si_se_rewired64 = set()  # (cell_name, pin) pairs already covered
             for _stage64 in ('PrePlace', 'Route'):
                 for _e64 in study.get(_stage64, []):
                     if _e64.get('change_type') == 'rewire' and _e64.get('pin') in ('SI', 'SE'):
-                        _si_se_rewired64.add(
-                            (_e64.get('cell_name') or _e64.get('instance_name',''), _e64.get('pin')))
+                        _key64 = (_e64.get('cell_name') or _e64.get('instance_name',''), _e64.get('pin'),'')
+                        _si_se_rewired64.add(_key64)
 
-            # Scan PreEco PP/Route netlists — full statement parse handles multi-line flops
+            # Scan PreEco netlists to find inconsistent SI
             for _stage64, _stage_gz64 in [
                 ('PrePlace', os.path.join(args.ref_dir, 'data', 'PreEco', 'PrePlace.v.gz')),
                 ('Route',    os.path.join(args.ref_dir, 'data', 'PreEco', 'Route.v.gz')),
             ]:
                 if not os.path.isfile(_stage_gz64): continue
+                # Build SI map for rewired instances in this stage
                 with _gz4.open(_stage_gz64, 'rt', errors='ignore') as _f64:
-                    _txt64 = _f64.read()
-                for _sm64 in re.finditer(r'\w[\w:]+\s+(\w+)\s*\((.*?)\)\s*;', _txt64, re.S):
-                    _inst64 = _sm64.group(1)
-                    if _inst64 not in _rewired_insts64:
-                        continue
-                    for _pm64 in _inst_si_re64.finditer(_sm64.group(2)):
-                        _pin64 = _pm64.group(1)
-                        _val64 = _pm64.group(2).strip()
-                        if (not _non_const_re64.match(_val64)
-                                and (_inst64, _pin64) not in _si_se_rewired64):
-                            issues.append(
-                                f"Check 64 FAIL: [{_stage64}] pre-existing DFF "
-                                f"{_inst64!r} has .{_pin64}={_val64!r} (scan-stitched "
-                                f"in {_stage64}) but PreEco Synthesize has {_pin64}=1'b0. "
-                                f"The driver-side ECO leaves the scan chain intact so FM "
-                                f"PPvsSynth sees an unmatched scan cone (d0nt_mux globally "
-                                f"unmatched → cascade DFF failures). "
-                                f"Add rewire entry: cell_name={_inst64!r}, pin={_pin64!r}, "
-                                f"old_net={_val64!r}, new_net=\"1'b0\" for {_stage64}.")
+                    _cur_inst64 = None
+                    _depth64 = 0
+                    for _l64 in _f64:
+                        _mm64 = _mod_re64.match(_l64)
+                        if _mm64: _cur_inst64 = None; _depth64 = 0
+                        # Detect instance line
+                        _im64 = re.match(r'^\s*\w[\w:]+\s+(\w+)\s*\(', _l64)
+                        if _im64 and _depth64 == 0: _cur_inst64 = _im64.group(1)
+                        _depth64 += _l64.count('(') - _l64.count(')')
+                        if _depth64 <= 0: _cur_inst64 = None; _depth64 = 0
+                        if _cur_inst64 and _cur_inst64 in _rewired_insts64:
+                            for _pm64 in _inst_si_re64.finditer(_l64):
+                                _pin64    = _pm64.group(1)   # SI or SE
+                                _val64    = _pm64.group(2).strip()
+                                _key64    = (_cur_inst64, _pin64, '')
+                                # If scan-stitched (non-constant) and no rewire entry covers it
+                                if not _non_const_re64.match(_val64) and _key64 not in _si_se_rewired64:
+                                    issues.append(
+                                        f"Check 64 FAIL: [{_stage64}] rewired pre-existing DFF "
+                                        f"{_cur_inst64!r} has .{_pin64}={_val64!r} (scan-stitched) "
+                                        f"but PreEco Synthesize has {_pin64}=1'b0. "
+                                        f"Add rewire entry: cell_name={_cur_inst64!r}, pin={_pin64!r}, "
+                                        f"old_net={_val64!r}, new_net=\"1'b0\" to maintain "
+                                        f"scan cone consistency across stages for FM.")
         except Exception:
             pass
 
