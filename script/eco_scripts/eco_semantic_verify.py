@@ -217,6 +217,21 @@ def verify_new_logic(entry, view, stage):
     # Check each port connection
     pcs_per_stage = entry.get('port_connections_per_stage', {}) or {}
     pcs = pcs_per_stage.get(stage) or entry.get('port_connections', {}) or {}
+    flat_pcs = entry.get('port_connections', {}) or {}
+    output_net = entry.get('output_net')
+    # Identify this entry's own output pin: whichever key in the flat (stage-
+    # agnostic) port_connections equals output_net. Used below to allow a
+    # documented, legitimate exception on that pin only -- input pins keep
+    # the strict per-stage comparison unchanged.
+    output_pin = None
+    if output_net:
+        for k, v in flat_pcs.items():
+            if isinstance(v, str) and v.strip() == output_net.strip():
+                output_pin = k
+                break
+    import re as _re
+    def _to_flat(n):
+        return _re.sub(r'\[(\d+)\]', lambda m: f'_{m.group(1)}_', n)
     for pin, expected_net in pcs.items():
         if not isinstance(expected_net, str):
             continue
@@ -229,11 +244,21 @@ def verify_new_logic(entry, view, stage):
         expected_s = expected_net.strip()
         if actual_s != expected_s:
             # Tolerate bracket↔flat form equivalence: 'net[N]' ↔ 'net_N_'
-            import re as _re
-            def _to_flat(n):
-                return _re.sub(r'\[(\d+)\]', lambda m: f'_{m.group(1)}_', n)
-            if _to_flat(actual_s) != _to_flat(expected_s):
-                return f'instance {inst}.{pin} = {actual_s!r} but expected {expected_s!r}'
+            if _to_flat(actual_s) == _to_flat(expected_s):
+                continue
+            # Documented exception, output pin only: eco_applier is allowed
+            # (Real Net Preference / RULE 32) to use the entry's canonical
+            # output_net (the real RTL name, stable across all 3 stages)
+            # instead of a stage-specific port_connections_per_stage alias
+            # that a later verifier pass superseded (net_source_per_stage ==
+            # "real_rtl_name") or that is otherwise stale. This is only ever
+            # safe on the gate's OWN output pin -- input pins never get this
+            # exception, since a wrong input net is a real functional bug.
+            if pin == output_pin and output_net and _to_flat(actual_s) == _to_flat(output_net.strip()):
+                net_source = ((entry.get('net_source_per_stage', {}) or {}).get(stage, {}) or {}).get(pin)
+                if net_source == 'real_rtl_name':
+                    continue
+            return f'instance {inst}.{pin} = {actual_s!r} but expected {expected_s!r}'
     return None
 
 

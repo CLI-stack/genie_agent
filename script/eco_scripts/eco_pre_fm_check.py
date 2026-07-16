@@ -525,6 +525,18 @@ def check_rewires_in_netlist(ref_dir, applied):
     """For every applied rewire entry, verify the netlist's cell.pin actually
     points to new_net (not old_net). Catches silent-rewire-no-op pattern where
     apply_rewire's regex matched something but didn't change the right line.
+
+    MODULE-SCOPED (bug fix): hierarchical netlists frequently contain many
+    module definitions that reuse the same local instance name (e.g. a
+    replicated per-entry submodule where every replica has its own local
+    'ctmi_1182'). An unscoped re.search() over the whole file always finds
+    the FIRST textual occurrence, which silently mis-attributes every entry
+    for every OTHER module's copy of that instance name to the first module's
+    cell block -- producing false-positive REWIRE_MISSING for every entry
+    whose module isn't the first one in the file (RULE 19 class of bug).
+    Scope the search to the entry's own module (module_name) first; fall
+    back to the old unscoped search only when module_name is absent/unmatched
+    so entries without that field still get checked.
     """
     failures = []
     # Reason format from apply_rewire: '{cell}.{pin}: {old} → {new}' (Unicode arrow)
@@ -538,6 +550,7 @@ def check_rewires_in_netlist(ref_dir, applied):
         except Exception:
             continue
         text = strip_verilog_comments(raw)  # Option A: comments don't count
+        mod_bodies_by_name = None  # lazy-built per stage, only if needed
         for e in applied.get(stage, []):
             if e.get('status') != 'APPLIED':
                 continue
@@ -548,14 +561,36 @@ def check_rewires_in_netlist(ref_dir, applied):
             if not m:
                 continue
             cell, pin, old_net, new_net = m.groups()
-            # Find the cell instance in the netlist (best-effort by name)
-            inst_m = re.search(rf'\b{re.escape(cell)}\s*\(', text)
+            module_name = e.get('module_name')
+
+            search_space = text
+            scope_note = ''
+            if module_name:
+                if mod_bodies_by_name is None:
+                    mod_bodies_by_name = {}
+                    for mname, mbody in _module_bodies(text):
+                        # A module name can legitimately repeat (uniquified
+                        # variants) -- concatenate all bodies sharing a name
+                        # so the cell search still finds every candidate.
+                        mod_bodies_by_name.setdefault(mname, []).append(mbody)
+                bodies = mod_bodies_by_name.get(module_name)
+                if bodies:
+                    search_space = '\n'.join(bodies)
+                    scope_note = f' (scoped to module {module_name})'
+                # else: module_name given but not found as a module in this
+                # stage's netlist -- fall back to unscoped search below
+                # rather than hard-failing, since module names can differ
+                # slightly from stage to stage (handled by module_name being
+                # read per-stage from the applied JSON already).
+
+            # Find the cell instance, scoped to its module when possible
+            inst_m = re.search(rf'\b{re.escape(cell)}\s*\(', search_space)
             if not inst_m:
-                failures.append(f'[REWIRE_CELL_MISSING] {stage}: rewire APPLIED on {cell}.{pin} but cell not found in netlist')
+                failures.append(f'[REWIRE_CELL_MISSING] {stage}: rewire APPLIED on {cell}.{pin} but cell not found in netlist{scope_note}')
                 continue
-            cell_block = text[inst_m.start():inst_m.start() + 50000]
+            cell_block = search_space[inst_m.start():inst_m.start() + 50000]
             if not re.search(rf'\.\s*{re.escape(pin)}\s*\(\s*{re.escape(new_net)}\s*\)', cell_block):
-                failures.append(f'[REWIRE_MISSING] {stage}: rewire APPLIED {cell}.{pin}: {old_net}→{new_net} but .{pin}({new_net}) not in cell block')
+                failures.append(f'[REWIRE_MISSING] {stage}: rewire APPLIED {cell}.{pin}: {old_net}→{new_net} but .{pin}({new_net}) not in cell block{scope_note}')
     return failures
 
 
