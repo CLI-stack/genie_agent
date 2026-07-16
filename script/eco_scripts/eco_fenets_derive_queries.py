@@ -512,7 +512,23 @@ def derive(rtl_diff, tile='', ref_dir=None):
                     'source':   f'changes[{idx}].reg_guard_selector_cond',
                 })
 
-        # Cat 4f: reg_guard_delta BUILD cone leaves. The clock-gate builder rebuilds the load
+        # Cat 4f: reg_guard_delta old_guard_net per-stage resolution.
+        # The input-pin-rewire builder needs to know the per-stage equivalent of the old guard
+        # netlist signal (e.g. ctmn_1251735). In many designs this net is stable (same name in
+        # Synth/PP/Route), but in general P&R may rename it — querying via fenets ensures the
+        # per-stage rename_map entry is available so the builder can resolve it reliably.
+        # The query is a NOP if the signal is stable (fenets returns it verbatim); it is critical
+        # when the signal was optimised/renamed across stages.
+        _ogn = c.get('old_guard_net') or ''
+        if ct == 'and_term' and c.get('target_register') and _ogn:
+            out.append({
+                'net_path': _abs_path(tile, scope, _ogn),
+                'signal':   _ogn,
+                'category': 4,
+                'source':   f'changes[{idx}].old_guard_net',
+            })
+
+        # Cat 4g: reg_guard_delta BUILD cone leaves. The clock-gate builder rebuilds the load
         # guard from RTL (a dissolved guard signal like `recdsp_c0cs` is rebuilt, not bound); that
         # rebuild grounds on deeper leaves (e.g. `recdsp_c0cs = case(dsp_cmd_msc[7:0])` -> dsp_cmd_msc
         # bits) that P&R may optimize away per stage (9666: dsp_cmd_msc[0]/[3] gone in PP/Route ->

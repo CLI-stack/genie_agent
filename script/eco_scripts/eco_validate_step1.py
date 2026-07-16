@@ -3078,6 +3078,21 @@ def main():
                         f"so eco_cone_rebuild reg_guard_delta re-drives the per-bit .D AND widens the "
                         f"clock-gate E. OR-ing only the E-pin (old flow) enables the update but loads the "
                         f"WRONG value (JIRA-9666 WckSyncCtr0: loaded decrement instead of rdwcksyncclks).")
+            # old_guard_net mandatory for clock-gated (branch_loads) registers.
+            # For simple-flop (branch_assigns) it is strongly recommended but not hard-failed
+            # (driver-side fallback still works, though PPvsSynth may fail without it).
+            if (c.get('branch_loads') is not None and treg
+                    and not c.get('old_guard_net') and args.ref_dir):
+                reg_guard_issues.append(
+                    f"changes[{idx}] and_term clock-gated register guard-change on {treg!r} "
+                    f"(branch_loads set) is MISSING `old_guard_net`. The builder uses input-pin-rewire "
+                    f"methodology — it must know which netlist net encodes the OLD guard condition so it "
+                    f"can find every consuming cell and rewire its input pin to the new guard expression. "
+                    f"Without old_guard_net the builder cannot emit stage-consistent rewires and will "
+                    f"fail closed. Find it: grep PreEco Synthesize for the cell driving the clock-gate "
+                    f"E-net, then identify which of its input pins carries the old guard (e.g. "
+                    f"ctmi_1636536.A2 = ctmn_1251735 for JIRA-9666 WckSyncCtr0). Set "
+                    f"old_guard_net to that net name.")
     # comb_net_force schema: a combinational net re-driven under a new region (selector ?
     # new : original). The deterministic builder (eco_cone_rebuild.emit_comb_net_force)
     # derives the delta/region/gates from RTL+netlist given ONLY {module_name, signal}, so

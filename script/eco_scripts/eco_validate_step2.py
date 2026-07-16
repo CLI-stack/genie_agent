@@ -623,6 +623,44 @@ def main():
                             f"FM-anchorable (a port/flop, not a dissolved combinational reg), add a Cat-4e "
                             f"query + chain to slim it. Non-blocking.")
 
+    # C10c — old_guard_net per-stage resolution check (Cat 4f queries).
+    # The input-pin-rewire builder needs old_guard_net resolved per stage so it can find
+    # the correct consumer cell/pin in PP/Route. If the net is stable (same name in all
+    # stages) the rename_map entry will have identical values → no issue. If it was P&R
+    # renamed (absent or different in PP/Route) and the entry is missing/echo-fallback,
+    # the builder cannot resolve the correct consumer → HARD-FAIL (builder aborts).
+    if args.rename_map and Path(args.rename_map).is_file() and args.rtl_diff and Path(args.rtl_diff).is_file():
+        _rmap_c10c = _load_json(args.rename_map) or {}
+        _rtl_c10c  = _load_json(args.rtl_diff) or {}
+        def _c10c_unres(v, sig):
+            return (not v) or v == sig or 'FM-036' in str(v) or 'FALLBACK' in str(v)
+        for idx, c in enumerate(_rtl_c10c.get('changes', [])):
+            if c.get('change_type') != 'and_term' or not c.get('target_register'):
+                continue
+            ogn = c.get('old_guard_net') or ''
+            if not ogn:
+                continue
+            scope = c.get('scope') or c.get('instance_scope') or ''
+            key = f"{scope}/{ogn}" if scope else ogn
+            entry = _rmap_c10c.get(key)
+            if not isinstance(entry, dict):
+                issues.append(
+                    f"C10c: change[{idx}] reg_guard_delta {c.get('target_register')!r} "
+                    f"old_guard_net={ogn!r} is NOT in the rename_map. "
+                    f"Add Cat-4f query for old_guard_net in eco_fenets_derive_queries.py so FM "
+                    f"resolves it per-stage. Without it the input-pin-rewire builder cannot find "
+                    f"the correct consumer cell in PP/Route → fails closed.")
+            else:
+                unres = [st for st in ('Synthesize', 'PrePlace', 'Route')
+                         if _c10c_unres(entry.get(st, ''), ogn)
+                         and entry.get(f'actual_wire_{st}') is None]
+                if unres:
+                    issues.append(
+                        f"C10c: change[{idx}] reg_guard_delta {c.get('target_register')!r} "
+                        f"old_guard_net={ogn!r} UNRESOLVED in stages {unres} "
+                        f"(rename_map value = echo/FM-036). Builder will use Synth consumers as "
+                        f"fallback for those stages — consumer-pin may be wrong if P&R renamed it.")
+
     out = {
         'queries':            args.queries,
         'queries_raw':        args.queries_raw,
