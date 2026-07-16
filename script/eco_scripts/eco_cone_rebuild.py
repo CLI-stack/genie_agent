@@ -1137,19 +1137,14 @@ def emit_reg_guard_delta_batch(ref_dir, module, changes, jira='eco', rename_map=
     # OWN _synth_setup (independent per-synth `seq` counters), so without a namespace their low-seq
     # 'cr_and_<n>'/'cr_or_<n>' names would overlap when both run in one --emit-into-study.
     synth, mk, rtl_text, old_text, wm = _synth_setup(ref_dir, module, f'{jira}rg', rename_map=rename_map)
-    # INPUT-PIN-REWIRE methodology: instead of renaming the output pin of the D/E-net driver
-    # (which breaks PPvsSynth FM because the same logical net is driven by DIFFERENT cell
-    # instances in Synth vs PP/Route — P&R renames the functional driver), we target the
-    # INPUT pins of cells that CONSUME the old guard signal (`old_guard_net`) and rewire
-    # those inputs to the new guard expression net.  This is what the engineer's Conformal
-    # ECO does: it finds every cell in the cone that has `ctmn_1251735` (or equivalent) on
-    # an input pin and replaces it with the new guard net.  Same cell instance name in both
-    # Synth and PP/Route → stage-consistent → PPvsSynth FM passes.
-    from eco_emit_priority_force import _driver_map, _consumer_map, STAGES
+    # DRIVER-SIDE net-force (engineer methodology): instead of rewiring the flop's .D pin to a new
+    # net (which re-maps the MB-bank D connectivity and breaks FM's multibit/reg register mapping —
+    # the JIRA-9666 "logic correct but FM fails" cascade), we KEEP the flop pin on its original .D
+    # net and fold the delta UPSTREAM at the net's combinational driver: rename the driver's output
+    # <Dnet>-><Dnet>_orig and re-drive <Dnet> through the fold. This is the SAME driver-side pattern
+    # comb_net_force (Intent B) + the engineer's Conformal ECO use, and leaves every flop pin intact.
+    from eco_emit_priority_force import _driver_map, STAGES
     dmaps = {st: _driver_map(ref_dir, module, st) for st in STAGES}
-    # consumer_maps: old_guard_net -> {stage: [(inst, pin)]} for input-pin rewires
-    # built lazily per change (keyed by old_guard_net value)
-    _cmap_cache = {}
     def _dnet_driver_ps(net_ps):
         """net_ps: {stage: Dnet}. Return (cps, pps, ok): per-stage combinational driver cell/pin of
         the D-net. ok=False if any stage's D-net is missing or driven by a flop (.Q) — fail-closed."""
@@ -1210,23 +1205,12 @@ def emit_reg_guard_delta_batch(ref_dir, module, changes, jira='eco', rename_map=
         # RTL re-fold of the old state as the else-leg, mismatched 11/2500 — both avoided here.)
         cg = _reg_clockgate(ref_dir, module, reg)
         if cg:
-            # ── INPUT-PIN-REWIRE path (clock-gated register) ────────────────────────
-            # Engineer methodology (confirmed from 9666 Conformal ECO analysis):
-            #   1. Synthesize the new guard expression `load_active` as a fresh n_eco net.
-            #   2. Find every consumer of `old_guard_net` (ctmn_1251735-equivalent) in
-            #      each stage's PreEco netlist via _consumer_map.
-            #   3. Emit one input-pin rewire per consumer per stage: replace the pin that
-            #      carried `old_guard_net` with `load_active`.
-            #   4. Never rename any output pin / never insert a mux — the existing cone
-            #      structure stays identical in Synth and PP/Route → PPvsSynth FM passes.
-            #
-            # Old_guard_net is the netlist signal encoding the OLD branch guard (e.g.
-            # `ctmn_1251735` = synthesized form of `mop==RD`). It comes from the change
-            # dict field `old_guard_net`; if absent, fall back to scanning the E-gate's
-            # inputs for the one that is not the E-net's other structural inputs.
-            old_guard_net = c.get('old_guard_net') or ''
-
-            # Locate the widened branch and compute load_active (new guard expression).
+            dbits = _flop_dpins_per_bit(ref_dir, module, reg, width)
+            if not dbits:
+                errs.append(f"reg_guard_delta {reg}: clock-gated but per-bit .D pins unresolved.")
+                continue
+            # Locate the widened branch via the SHARED helper (same branch the step-2 deriver +
+            # step-3 validator key on — cannot drift).
             tgt = c.get('branch_loads') if c.get('branch_loads') is not None else c.get('branch_assigns')
             load_cond, load_val = _rg_widened_branch(synth, rtl_text, old_text, reg, tgt)
             if load_cond is None:
@@ -1234,162 +1218,70 @@ def emit_reg_guard_delta_batch(ref_dir, module, changes, jira='eco', rename_map=
                             f"branch_loads/branch_assigns={tgt!r} found in new RTL.")
                 continue
             try:
-                load_active = synth._path_scalar(load_cond)
+                load_active = synth._path_scalar(load_cond)    # full priority-correct active mask
+                val_ast = parse_expr(load_val)
             except Exception as e:
                 errs.append(f"reg_guard_delta {reg}: widened-branch lowering failed: {e}")
                 continue
-
-            # `load_active` is already a named net in synth (the priority-correct new guard).
-            # This net IS the replacement for old_guard_net on every consumer's input pin.
-            new_guard_net = load_active   # e.g. n_eco_9666rg_cr_and_<seq>
-            roots.add(new_guard_net)
-
-            if not old_guard_net:
-                errs.append(f"reg_guard_delta {reg}: clock-gated input-pin-rewire requires "
-                            f"`old_guard_net` field in the change entry (the netlist net encoding "
-                            f"the old branch guard, e.g. ctmn_1251735). Add it to the rtl_diff.")
-                continue
-
-            # Build per-stage consumer map for old_guard_net (cached across changes).
-            if old_guard_net not in _cmap_cache:
-                _cmap_cache[old_guard_net] = {
-                    st: _consumer_map(ref_dir, module, old_guard_net, st) for st in STAGES}
-            consumers_ps = _cmap_cache[old_guard_net]
-
-            # Group cross-stage: cell instances that appear in all 3 stages with the same
-            # logical role get ONE rewire entry with per-stage cell/pin dicts.
-            # Cell instances that only appear in some stages are emitted separately.
-            # Strategy: group by Synthesize instance name; for PP/Route find the matching
-            # consumer (same input net) — may differ in cell name due to P&R renaming.
-            syn_consumers = consumers_ps.get('Synthesize', [])
-            if not syn_consumers:
-                errs.append(f"reg_guard_delta {reg}: old_guard_net={old_guard_net!r} has no "
-                            f"consumers in Synthesize PreEco netlist — cannot emit input-pin rewires.")
-                continue
-
-            # Build set of Synth consumer instance names for cross-stage matching
-            syn_inst_names = {inst for inst, _ in syn_consumers}
-            # PP/Route consumers that share a Synth instance name → "stable" (same cell across stages)
-            # PP/Route consumers with no Synth match → P&R-renamed equivalents of Synth-only cells
-            for syn_inst, syn_pin in syn_consumers:
-                # Build per-stage (cell, pin) for this consumer.
-                # Synthesize: the cell we found.
-                # PP/Route matching strategy:
-                #   1. Exact name match in that stage → use it.
-                #   2. No exact match AND this Synth consumer is NOT present in that stage by name:
-                #      find the PP/Route consumer that has NO matching Synth name — it is the
-                #      P&R-renamed equivalent of this Synth-only cell.
-                #   3. Multiple candidates remain → pick first.
-                cps = {'Synthesize': syn_inst}
-                pps = {'Synthesize': syn_pin}
-                for st in ('PrePlace', 'Route'):
-                    st_consumers = consumers_ps.get(st, [])
-                    st_inst_names = {inst for inst, _ in st_consumers}
-                    # Exact match
-                    match = next(((c, p) for c, p in st_consumers if c == syn_inst), None)
-                    if match:
-                        cps[st], pps[st] = match
-                    elif syn_inst not in st_inst_names:
-                        # This Synth consumer has no same-name peer in this stage.
-                        # The P&R-renamed equivalent is the consumer(s) in this stage that
-                        # also have no same-name peer in Synth (both are "stage-only").
-                        stage_only = [(c, p) for c, p in st_consumers if c not in syn_inst_names]
-                        if len(stage_only) == 1:
-                            cps[st], pps[st] = stage_only[0]
-                        elif len(stage_only) > 1:
-                            cps[st], pps[st] = stage_only[0]  # first; could refine with name similarity
-                        else:
-                            # No stage-only candidate — this consumer genuinely absent in this stage
-                            # (e.g. optimized away). Fallback to Synth values; applier will skip.
-                            cps[st], pps[st] = syn_inst, syn_pin
-                    else:
-                        # syn_inst exists in this stage by name (matched above) but wasn't found
-                        # with the guard net on an input — use Synth as fallback.
-                        cps[st], pps[st] = syn_inst, syn_pin
-
+            nload = synth._inv(load_active)
+            bad = False
+            for b in range(width):
+                inst0, pin0, oldD = dbits[b]['Synthesize']
+                dnet_ps = {st: dbits[b][st][2] for st in dbits[b]}
+                dcps, dpps, ok = _dnet_driver_ps(dnet_ps)
+                if not ok:
+                    errs.append(f"reg_guard_delta {reg}[{b}]: D-net {oldD} has no combinational driver "
+                                f"in some stage — cannot do driver-side fold (fail-closed).")
+                    bad = True; break
+                orig = mk(f'{reg}_{b}_orig')
+                t_reg = synth._and(load_active, synth.bit(val_ast, b)); t_old = synth._and(nload, orig)
+                if t_reg == "1'b0" and t_old == "1'b0":
+                    errs.append(f"reg_guard_delta {reg}[{b}]: D folds to constant 0 both legs — refusing.")
+                    bad = True; break
+                # DRIVER-SIDE: fold OUTPUTS to the original D-net; flop .D pin stays on oldD.
+                synth._g(synth.cells['OR2'], 'OR2', {'A1': t_reg, 'A2': t_old, 'Z': oldD})
+                roots.add(oldD)
                 rewires.append({
-                    'change_type': 'rewire',
-                    'instance_name': syn_inst, 'cell_name': syn_inst,
-                    'cell_name_per_stage': cps, 'module_name': synth.module,
-                    'pin': syn_pin, 'pin_per_stage': pps,
-                    'old_net': old_guard_net,
-                    'old_net_per_stage': {st: old_guard_net for st in STAGES},
-                    'new_net': new_guard_net,
+                    'change_type': 'rewire', 'instance_name': dcps['Synthesize'], 'cell_name': dcps['Synthesize'],
+                    'cell_name_per_stage': dcps, 'module_name': synth.module, 'pin': dpps['Synthesize'],
+                    'pin_per_stage': dpps, 'old_net': oldD, 'new_net': orig,
+                    'old_net_per_stage': dnet_ps, 'region_sel': load_active,
                     'confirmed': True, 'force_reapply': True, 'source': 'eco_cone_rebuild',
-                    'target_register': reg, 'reg_guard_delta': True,
-                    'input_pin_rewire': True,   # distinguishes from driver-side/output rename
-                    'clock_gate_enable_widen': True,
-                    'notes': (f"reg guard-change (INPUT-PIN-REWIRE): {syn_inst}.{syn_pin}: "
-                              f"{old_guard_net!r} -> {new_guard_net!r}. "
-                              f"Replaces old guard on consumer input — no output rename, no mux. "
-                              f"Stage-consistent: same cell in Synth/PP/Route → PPvsSynth FM passes."),
+                    'target_register': reg, 'reg_guard_delta': True, 'net_force': True, 'driver_side': True,
+                    'notes': f"reg guard-change (clock-gated, DRIVER-SIDE): rename driver of {reg}[{b}] "
+                             f".D-net {oldD}->{orig}; re-drive {oldD} = load_active ? load_val : {orig}. "
+                             f"Flop .D pin UNCHANGED (engineer methodology; preserves MB-bank mapping).",
                 })
-            continue
-        # ── SIMPLE (non-clock-gated) flop path ───────────────────────────────────
-        # When old_guard_net is provided, use INPUT-PIN-REWIRE (same as clock-gate
-        # path) instead of driver-side output rename.  This keeps the cone structure
-        # identical between Synth and PP/Route → PPvsSynth FM passes.
-        # When old_guard_net is absent, fall back to DRIVER-SIDE (rename output of
-        # D-net driver + insert mux) — functionally correct but may cause PPvsSynth
-        # stage-consistency failures if the driver cell is P&R-renamed.
-        old_guard_net = c.get('old_guard_net') or ''
-        if old_guard_net:
-            # INPUT-PIN-REWIRE for simple flop (same algorithm as clock-gated path above)
-            tgt2 = c.get('branch_assigns') or c.get('branch_loads') or ''
-            try:
-                sel2 = synth._path_scalar(r['sel'] if r else None)
-            except Exception:
-                sel2 = sel
-            new_guard_net2 = sel2
-            roots.add(new_guard_net2)
-            if old_guard_net not in _cmap_cache:
-                _cmap_cache[old_guard_net] = {
-                    st: _consumer_map(ref_dir, module, old_guard_net, st) for st in STAGES}
-            consumers_ps2 = _cmap_cache[old_guard_net]
-            syn_consumers2 = consumers_ps2.get('Synthesize', [])
-            if not syn_consumers2:
-                # No consumers found — skip silently (guard may propagate via Intent-B cone)
+            if bad:
                 continue
-            syn_inst_names2 = {inst for inst, _ in syn_consumers2}
-            for syn_inst2, syn_pin2 in syn_consumers2:
-                cps2 = {'Synthesize': syn_inst2}; pps2 = {'Synthesize': syn_pin2}
-                for st in ('PrePlace', 'Route'):
-                    st_c2 = consumers_ps2.get(st, [])
-                    st_names2 = {inst for inst, _ in st_c2}
-                    match2 = next(((c2, p2) for c2, p2 in st_c2 if c2 == syn_inst2), None)
-                    if match2:
-                        cps2[st], pps2[st] = match2
-                    elif syn_inst2 not in st_names2:
-                        stage_only2 = [(c2, p2) for c2, p2 in st_c2 if c2 not in syn_inst_names2]
-                        if stage_only2:
-                            cps2[st], pps2[st] = stage_only2[0]
-                        else:
-                            cps2[st], pps2[st] = syn_inst2, syn_pin2
-                    else:
-                        cps2[st], pps2[st] = syn_inst2, syn_pin2
-                rewires.append({
-                    'change_type': 'rewire',
-                    'instance_name': syn_inst2, 'cell_name': syn_inst2,
-                    'cell_name_per_stage': cps2, 'module_name': synth.module,
-                    'pin': syn_pin2, 'pin_per_stage': pps2,
-                    'old_net': old_guard_net,
-                    'old_net_per_stage': {st: old_guard_net for st in STAGES},
-                    'new_net': new_guard_net2,
-                    'confirmed': True, 'force_reapply': True, 'source': 'eco_cone_rebuild',
-                    'target_register': reg, 'reg_guard_delta': True,
-                    'input_pin_rewire': True,
-                    'notes': (f"reg guard-change simple-flop (INPUT-PIN-REWIRE): "
-                              f"{syn_inst2}.{syn_pin2}: {old_guard_net!r} -> {new_guard_net2!r}."),
-                })
+            # widen the clock-gate enable so the flop clocks in the changed region — DRIVER-SIDE:
+            # keep the clock-gate .E pin on its original net (old_tok, e.g. N294); rename that net's
+            # driver output old_tok->old_tok_orig and re-drive old_tok = old_tok_orig | load_active.
+            en_ps = {st: cg[st][2] for st in cg}      # the E net per stage (e.g. N294)
+            edcps, edpps, eok = _dnet_driver_ps(en_ps)
+            if not eok:
+                errs.append(f"reg_guard_delta {reg}: clock-gate E-net {old_tok} has no combinational "
+                            f"driver in some stage — cannot do driver-side E widen (fail-closed).")
+                continue
+            e_orig = mk(f'{reg}_E_orig')
+            synth._g(synth.cells['OR2'], 'OR2', {'A1': e_orig, 'A2': load_active, 'Z': old_tok})
+            roots.add(old_tok)
+            rewires.append({
+                'change_type': 'rewire', 'instance_name': edcps['Synthesize'], 'cell_name': edcps['Synthesize'],
+                'cell_name_per_stage': edcps, 'module_name': synth.module, 'pin': edpps['Synthesize'],
+                'pin_per_stage': edpps, 'old_net': old_tok, 'new_net': e_orig,
+                'old_net_per_stage': en_ps, 'region_sel': load_active,
+                'confirmed': True, 'force_reapply': True, 'source': 'eco_cone_rebuild',
+                'target_register': reg, 'reg_guard_delta': True, 'net_force': True, 'driver_side': True, 'clock_gate_enable_widen': True,
+                'notes': f"reg guard-change (clock-gated, DRIVER-SIDE): rename driver of {reg} clock-gate "
+                         f"E-net {old_tok}->{e_orig}; re-drive {old_tok} = {e_orig} | load_active. Clock-gate "
+                         f".E pin UNCHANGED (engineer methodology).",
+            })
             continue
-        # DRIVER-SIDE fallback: rename output of D-net driver + insert mux.
-        # Only reached when old_guard_net is absent. If this is intentional (the guard
-        # change propagates via a separate intent, e.g. Intent-B comb_net_force) the
-        # caller should set old_guard_net='' explicitly to suppress this path.
-        # Flop pin unchanged — preserves D-connectivity for FM mapping.
-        if not c.get('old_guard_net_allow_driver_side', True) or c.get('suppress_driver_side'):
-            # Caller explicitly suppressed driver-side for this register.
-            continue
+        # ── SIMPLE (non-clock-gated) flop path — DRIVER-SIDE ──
+        # Keep the flop .D pin on old_tok (e.g. SEQMAP_NET_1235); rename old_tok's combinational
+        # driver output old_tok->old_tok_orig and re-drive old_tok through the region mux. Flop pin
+        # unchanged (engineer methodology) — preserves the register's D-connectivity for FM mapping.
         _, _, oldps = _reg_dpin_per_stage(ref_dir, module, reg, old_tok, rename_map)
         is_bus = width > 1
         for b in range(width):

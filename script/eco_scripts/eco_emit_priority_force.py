@@ -893,28 +893,6 @@ def _map_stage_net(net, stage, scope, rename_map):
     return None
 
 
-def _consumer_map(ref_dir, module, net, stage='Synthesize'):
-    """Return list of (inst, input_pin) for every cell in <module>'s PreEco <stage>
-    netlist that has `net` on a NON-output pin.  The complement of _driver_map: instead
-    of finding what drives a net, find what consumes it.  Used by the input-pin-rewire
-    path of emit_reg_guard_delta_batch to locate per-stage consumers of the old guard
-    signal so we can rewire their input rather than rename the driver's output — the
-    latter breaks PPvsSynth because the same output net is driven by DIFFERENT cells in
-    Synth vs PP/Route (P&R renames the functional driver)."""
-    body = _module_netlist_body(ref_dir, module, stage)
-    consumers = []
-    for stmt in body.split(';'):
-        m = re.match(r'\s*([\w:]+)\s+(\w+)\s*\(', stmt)
-        if not m or m.group(1) == 'module':
-            continue
-        inst = m.group(2)
-        pins = dict(re.findall(r'\.(\w+)\s*\(\s*([^)]*?)\s*\)', stmt))
-        for p, n in pins.items():
-            if n.strip() == net and p not in _OUT_PINS_DRV:
-                consumers.append((inst, p))
-    return consumers
-
-
 def _driver_map(ref_dir, module, stage='Synthesize'):
     """Map each net in <module>'s PreEco <stage> netlist to its driver: net -> (inst,
     out_pin, is_flop). is_flop = the driving instance is clocked (has CP/CK). Lets the
