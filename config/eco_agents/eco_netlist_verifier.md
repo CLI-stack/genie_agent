@@ -400,6 +400,43 @@ Update `port_connections_per_stage` for all 3 stages. Set `confirmed: false` for
 
 ---
 
+## Check 2b — Cascade Re-Propagation of Chain-Gate Confirmation (MANDATORY)
+> **SKIP IF** no condition-chain / `wire_swap` gate entries exist.
+> **DONE WHEN** no gate is `confirmed:false` in a stage while all its input pins are resolved/driven in that stage, and no gate's `verifier_note` cites an upstream instance as "BLOCKED"/"unresolved" that is actually `confirmed:true`.
+
+Check 2 resolves pins **per gate**, but a condition-chain gate's inputs are the OUTPUTS of upstream chain gates (a downstream gate's input pin = an upstream gate's `.Z`/`n_eco_*` net). When Check 2 flips an upstream gate from unresolved → `confirmed:true` (structural driver trace, port-boundary fallback, etc.), any downstream gate that was set `confirmed:false` on an EARLIER pass is **never re-visited** → it keeps a stale `confirmed:false` + stale `verifier_note`. The applier then SKIPS it (`eco_perl_spec.py`) → the wire_swap target and every downstream chain net are left UNDRIVEN → Step-4 CRITICAL UNDRIVEN / FM stage FAIL.
+
+After ALL per-gate resolution completes, run one fixpoint pass **per stage**:
+
+```python
+OUT = {'Z','ZN','ZN1','Q','QN','CO','S'}
+STATUS = ('UNRESOLVABLE','UNRESOLVED_IN_','PENDING_FM_RESOLUTION','NEEDS_NAMED_WIRE')
+changed = True
+while changed:                       # fixpoint: a flip may unblock a further-downstream gate
+    changed = False
+    driven = {n for e in stage_entries for p,n in (e.get('port_connections') or {}).items()
+              if p in OUT and isinstance(n,str)}
+    driven |= {e['new_net'] for e in stage_entries
+               if e.get('change_type')=='rewire' and isinstance(e.get('new_net'),str)}
+    for e in stage_entries:
+        if e.get('confirmed',True) or not is_chain_gate(e):   # is_chain_gate: wire_swap/condition-chain/eco_*_c*
+            continue
+        pcs = e.get('port_connections') or {}
+        blocked = [f"{p}={n}" for p,n in pcs.items()
+                   if p not in OUT and isinstance(n,str) and n
+                   and not is_constant(n) and n not in driven
+                   and (n.startswith(STATUS) or n.startswith(('n_eco_','ECO_','eco_')))]
+        if not blocked:                       # every input now resolved/driven → flip
+            e['confirmed'] = True
+            e['verifier_note'] = (f"VERIFIER CHECK 2b: cascade re-propagated confirmed:true "
+                                  f"(all inputs resolved/driven in {stage}).")
+            changed = True
+```
+
+Do NOT flip a gate that still has a genuinely-blocked input. For a genuinely-unresolvable dissolved condition input, first apply the studier **Mode H port-boundary DFF-output fallback** (`eco_netlist_studier.md` Mode H step 3); only if that is exhausted may the gate stay `confirmed:false`, and then it MUST carry `route_resolution_exhausted:true` (else Check 9c in `eco_validate_step3.py` hard-fails). Never leave a stale `verifier_note` that references an upstream gate as BLOCKED once that gate is `confirmed:true`.
+
+---
+
 ## Check 3 — Per-Stage Pin Verification (Every new_logic_dff Entry)
 > **SKIP IF** no `new_logic_dff` entries exist.
 > **DONE WHEN** every DFF entry has `port_connections_per_stage` populated for CP/SE/SI/D/Q in all 3 stages; SE/SI = `1'b0` in all 3 stages; CTS clock rename flagged via `cts_clock_renamed: true` when CP differs across stages.
@@ -865,6 +902,7 @@ ECO NETLIST VERIFIER REPORT — TAG=<TAG>
 ========================================
 CHECK 1  GAP-15:        <N> entries checked, <N> corrected
 CHECK 2  Per-stage nets: <N> gate entries enriched, <N> UNRESOLVED remaining
+CHECK 2b Cascade re-prop: <N> chain gates flipped confirmed:false→true, <N> stale notes cleared
 CHECK 3  DFF pins:       <N> DFF entries enriched, <N> CTS clock renames found
          Reset pin approach: <N> DFFs used reset pin (GAP-CTS-2 avoided), <N> fell back to D-input baking
          [for each DFF: reset_pin_used=YES → cell=<type> pin=<name> | NO → GAP-CTS-2 risk]

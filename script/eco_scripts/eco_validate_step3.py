@@ -1525,6 +1525,62 @@ def main():
                         f"did not resolve this leaf; it would be an undriven gate input at FM. Fix its "
                         f"per-stage name (rename map / verifier) or thread it in.")
 
+    # ── 9c. CONDITION-CHAIN gate confirmed:false guard (catch BEFORE applier) ─────
+    # A wire_swap Mode-F1 condition-chain gate that is confirmed:false is SKIPPED by the
+    # applier (eco_perl_spec.py:~324). But a wire_swap FREES the driver_sub_target net and
+    # the chain RE-DRIVES it — so skipping ANY chain gate leaves the swap target (and every
+    # downstream chain net) UNDRIVEN → Step-4 CRITICAL UNDRIVEN / FM stage FAIL. A chain
+    # gate may be confirmed:false ONLY when a real input is genuinely unresolved AND the
+    # studier recorded that the Mode-H port-boundary DFF-output fallback was exhausted.
+    # Two signatures are caught:
+    #   (a) STALE-CASCADE  — confirmed:false while EVERY input is already resolved/driven
+    #       (upstream blocker resolved but this gate was never re-propagated). Always a bug:
+    #       the gate is applyable as-authored.
+    #   (b) UNJUSTIFIED-PUNT — confirmed:false with a genuinely-unresolved input but no
+    #       `route_resolution_exhausted: true` evidence that Mode-H was tried.
+    _STATUS_PREFIXES = ('UNRESOLVABLE', 'UNRESOLVED_IN_', 'PENDING_FM_RESOLUTION',
+                        'NEEDS_NAMED_WIRE')
+    def _is_chain_gate(e):
+        r = str(e.get('reason', '')).lower()
+        inst = str(e.get('instance_name', ''))
+        return ('condition-chain' in r or 'wire_swap' in r
+                or re.match(r'^eco_\w*_c(\d+|_final)$', inst) is not None)
+    for stage in ['Synthesize', 'PrePlace', 'Route']:
+        entries = study.get(stage, [])
+        driven = {n for e in entries
+                  for p, n in (e.get('port_connections') or {}).items()
+                  if p in OUT_PINS and isinstance(n, str)}
+        driven |= {e.get('new_net') for e in entries
+                   if e.get('change_type') == 'rewire' and isinstance(e.get('new_net'), str)}
+        for e in entries:
+            if e.get('confirmed', True) or not _is_chain_gate(e):
+                continue
+            inst = e.get('instance_name', '?')
+            pcs = e.get('port_connections') or {}
+            unresolved = []
+            for pin, net in pcs.items():
+                if pin in OUT_PINS or not isinstance(net, str) or not net:
+                    continue
+                if _CONST_RE.match(net) or net in driven:
+                    continue
+                if net.startswith(_STATUS_PREFIXES) or net.startswith(('n_eco_', 'ECO_', 'eco_')):
+                    unresolved.append(f"{pin}={net}")  # ECO/status net no entry drives here
+                # else: real bare net / stage-stable input — assume present (conservative)
+            if not unresolved:
+                issues.append(
+                    f"CRITICAL/STALE-CASCADE: condition-chain gate {inst!r} is confirmed:false in "
+                    f"{stage} but ALL its inputs are resolved/driven ({list(pcs)}). The applier will "
+                    f"SKIP it -> {e.get('output_net')!r} left UNDRIVEN -> {stage} FM FAIL. Re-propagate "
+                    f"confirmation (flip to true once the upstream blocker resolved) per verifier "
+                    f"cascade re-propagation. stale verifier_note={str(e.get('verifier_note',''))[:100]!r}")
+            elif not e.get('route_resolution_exhausted'):
+                issues.append(
+                    f"CRITICAL/UNJUSTIFIED-PUNT: condition-chain gate {inst!r} is confirmed:false in "
+                    f"{stage} with unresolved input(s) {unresolved} but no `route_resolution_exhausted:true`. "
+                    f"Resolve the dissolved condition input to its module-boundary DFF-output port "
+                    f"(Mode-H port-boundary fallback, eco_netlist_studier.md Mode H) before deferring; "
+                    f"if genuinely exhausted, set route_resolution_exhausted:true + port_boundary_searched.")
+
     # ── 10. Stale-reference guard: when a port_connection renames net A→B,
     # no other entry's input pin may still reference A (becomes stale post-Step 4)
     for stage in ['Synthesize', 'PrePlace', 'Route']:

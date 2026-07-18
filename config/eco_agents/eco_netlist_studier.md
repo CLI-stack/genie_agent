@@ -341,9 +341,15 @@ When Path 1 returns a Route value that's actually Synth-only (`zgrep -c "<route_
 
 1. Search same run's `changes[]` for `new_port` / `port_promotion` whose signal is logically related (same module scope, same domain).
 2. If substitute ECO port exists in `PreEco/Route.v.gz`, use it as Route value. Record `route_substituted_with_eco_port: true` + `original_signal: <unresolvable>`.
-3. No substitute → set `confirmed: false` for Route entries only. Applier skips Route chain; FM will FAIL on Route; Round 2 handles.
+3. **Port-boundary DFF-output fallback (do this in ROUND 1 — do NOT punt to Round 2).** A *dissolved* condition input — an internal RTL reg/signal with 0 gate-level refs whose FM `find_equivalent_nets` result is only *synthesis-internal* nets (arbitrary `N<n>` names, `ctmn_*`, `phfnn_*`, cell pins) that die in P&R — often has a stable handle that survives all 3 stages by name: the **module-boundary DFF Q-output port** the internal signal maps to. When the FM-returned combinational equivalent is unresolvable in Route:
+   - Find the register whose Q output the dissolved signal corresponds to at the module boundary (a `*_reg/Q`, or a host-module input port that is a DFF output). Confirm it survives with `zgrep -c "<port>" PreEco/<stage>.v.gz` ≥ 1 in **all 3 stages**.
+   - Use that port name for the pin in all 3 stages; set `confirmed: true`; record `port_boundary_dff_resolution: <port>` + `original_signal: <dissolved_name>`.
+   - Correctness is NOT a pre-proof of `dissolved ≡ port` (they need not be combinationally identical — one may be a registered `_d1` form); it is guaranteed by the FINAL FM cone check on the full D-input cone passing (Step 6). Do this in Round 1, not as a Round-2 re-study.
+4. **Only if steps 1–3 ALL fail** → set `confirmed: false` for Route entries only AND record `route_resolution_exhausted: true` + `port_boundary_searched: <ports you checked>`. Without `route_resolution_exhausted`, `eco_validate_step3.py` Check 9c HARD-FAILS the study (a confirmed:false condition-chain gate is skipped by the applier → the wire_swap target is left undriven → FM FAIL), so the deferral MUST carry this evidence. Applier skips Route chain; FM will FAIL on Route; Round 2 handles.
 
 Apply only to Route (Synth/PP already resolved via fenets fix1 ZBUF retry).
+
+**Never leave a condition-chain gate `confirmed:false` when its inputs are actually resolved.** When an upstream chain gate flips from unresolved to resolved, the verifier MUST re-propagate confirmation to every downstream gate that consumes it (see `eco_netlist_verifier.md` Check 2b) — a stale `confirmed:false` with resolved inputs is caught by Check 9c as STALE-CASCADE.
 
 ---
 
