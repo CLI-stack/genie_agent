@@ -1581,6 +1581,49 @@ def main():
                     f"(Mode-H port-boundary fallback, eco_netlist_studier.md Mode H) before deferring; "
                     f"if genuinely exhausted, set route_resolution_exhausted:true + port_boundary_searched.")
 
+    # ── 9d. SELF-DELAYED-FEED guard (cycle-correctness) ──────────────────────────
+    # A signal must NEVER be reconstructed from its OWN `_d<N>` registered copy.
+    # `X_d1` is, by naming convention, `X` delayed one clock — a different (stale)
+    # value. If this ECO drives net `X` (via a gate output pin or a promoted output
+    # port) AND some entry reads `X_d<N>` as an INPUT in the same stage, the rebuilt
+    # `X` is fed from its own delayed register → off by N clocks → FM mismatch.
+    # This is the PhArbFineGater bug: `PhArbFineGater` rebuilt from `PhArbFineGater_d1`
+    # in PP/Route. The check is name-based on a MATCHING base, so it does NOT fire on a
+    # legitimate substitution whose base differs (e.g. `QualPhArbReqVld` sourced from
+    # `QualPhArbWinVld_d1` — different base = an equivalent net, not a self-delay).
+    _DELAY_SUFFIX = re.compile(r'^(.+)_d(\d+)$')
+    for stage in ['Synthesize', 'PrePlace', 'Route']:
+        entries = study.get(stage, [])
+        driven = set()
+        for e in entries:
+            pcs = (e.get('port_connections_per_stage') or {}).get(stage) or e.get('port_connections') or {}
+            for p, n in pcs.items():
+                if p in OUT_PINS and isinstance(n, str):
+                    driven.add(n)
+            if e.get('change_type') in ('port_declaration', 'port_promotion', 'new_port'):
+                for f in ('signal_name', 'port_name'):
+                    v = e.get(f)
+                    if isinstance(v, str) and v:
+                        driven.add(v)
+        for e in entries:
+            pcs = (e.get('port_connections_per_stage') or {}).get(stage) or e.get('port_connections') or {}
+            inst = e.get('instance_name', '?')
+            for p, n in pcs.items():
+                if p in OUT_PINS or not isinstance(n, str):
+                    continue
+                m = _DELAY_SUFFIX.match(n)
+                if not m:
+                    continue
+                base = m.group(1)
+                if base in driven and not base.startswith(('n_eco_', 'eco_', 'ECO_', 'tmp_net')):
+                    issues.append(
+                        f"CRITICAL/SELF-DELAYED-FEED: {inst}.{p} = {n!r} in {stage} reconstructs "
+                        f"{base!r} (which this ECO drives) from its OWN _d{m.group(2)} register — "
+                        f"a value {m.group(2)} clock(s) late → FM mismatch. Source the COMBINATIONAL "
+                        f"net of {base!r} (its real per-stage P&R name via eco_resolve_synth_internal.py), "
+                        f"NOT its _d{m.group(2)} flop. (A different-base registered equivalent is fine; "
+                        f"the same base delayed is not.)")
+
     # ── 10. Stale-reference guard: when a port_connection renames net A→B,
     # no other entry's input pin may still reference A (becomes stale post-Step 4)
     for stage in ['Synthesize', 'PrePlace', 'Route']:

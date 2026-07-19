@@ -1100,8 +1100,15 @@ def check_missing_output_port_decls(applied, ref_dir):
             if out_net in declared or out_net not in text:
                 continue
             owner_names = {mod, mod + '_0'}          # ECO declaring module + Route variant
-            netre = re.compile(rf'\b{re.escape(out_net)}\b')
-            declre = re.compile(rf'{_DECL_KW}[^;]*\b{re.escape(out_net)}\b')
+            # A real net reference is NOT preceded by '.', which would make it a child
+            # instance's FORMAL PORT NAME (e.g. `.QualPmArbWinVld_d1(parent_net)`) — a
+            # port name, not a use of a parent net. Excluding `.name` tokens prevents a
+            # false MISSING_OUTPUT_PORT when the ECO drives a PRE-EXISTING output port
+            # whose name recurs as the child instance's formal port in the parent (the
+            # actual parent net is the differently-named connection argument, e.g.
+            # `DcqArb1_QualPmArbWinVld_d1`, which is properly declared as a wire).
+            netre = re.compile(rf'(?<!\.)\b{re.escape(out_net)}\b')
+            declre = re.compile(rf'{_DECL_KW}[^;]*(?<!\.)\b{re.escape(out_net)}\b')
             foreign = []
             for mname, body in bodies:
                 if out_net not in body or not netre.search(body):
