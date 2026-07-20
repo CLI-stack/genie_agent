@@ -310,8 +310,13 @@ P&R renames DFF outputs (CTS/optimization in Route). A wire may exist in scope b
    ```
 
 2. **`<BASE_DIR>/data/<TAG>_eco_fenets_rename_map.json`** — use when Priorities 0 and 1
-   both failed. The rename map `actual_wire_<stage>` is `(+)` polarity-correct by
-   construction (fenets only accepts `(+)` impl lines). USE ITS VALUES VERBATIM.
+   both failed. Read `actual_wire_<stage>` if present (it is `(+)` polarity-correct by
+   construction — fenets only accepts `(+)` impl lines); **otherwise read the plain
+   `<stage>` field** (`Synthesize`/`PrePlace`/`Route`). USE THE VALUE VERBATIM.
+   > Per-stage CHAINED values (from `eco_fenets_chain.py`, e.g. `wire_swap` condition inputs
+   > chained Synth→PP→Route) are written into the plain `<stage>` field, **not**
+   > `actual_wire_<stage>` — so you MUST fall through to the plain field. A resolved
+   > combinational value here is authoritative; never override it with a Mode-H `_d<N>` port.
 
 3. **Neighbor-DFF inference** (only when signal absent from rename map): find a pre-existing
    DFF in same module scope whose Synth value matches; copy its per-stage net verbatim.
@@ -337,7 +342,11 @@ Log: `PR_ALIAS: <gate>.<pin> Syn=<net> PP=<alias> Route=<alias>` or `PR_ALIAS_SA
 
 **Mode H Route fallback — condition gate chain inputs unavailable in Route:**
 
-When Path 1 returns a Route value that's actually Synth-only (`zgrep -c "<route_value>" PreEco/Route.v.gz` = 0), the signal doesn't exist in Route. Do NOT use the Synth fallback — it will FAIL FM. Instead:
+**FIRST — consult the rename_map (step-2 chaining takes precedence over everything below).** As of the step-2 fix, `eco_fenets_chain.py` chains every `wire_swap condition_inputs_to_query` (dissolved COMBINATIONAL signals) Synth→PP→Route into the rename_map (Synth synth-internal net → its P&R-renamed combinational net per stage). For each condition input, look up its rename_map entry (`<instance-scope>/<signal>`, scope = module→instance-resolved):
+- If PP/Route resolve to a **real combinational net** (not the bare RTL name, not `FM-036`), **USE THOSE VERBATIM per stage** (this is Priority 2 — the correct, FM-verified combinational value). **Do NOT enter the Mode H steps below, and do NOT substitute a registered `_d<N>` port.** The rename_map already holds the correct net.
+- Only if the rename_map's PP/Route value is still the **bare RTL name / unresolved** (step-2 chaining did not resolve it) do the Mode H steps below apply.
+
+When Path 1 returns a Route value that's actually Synth-only (`zgrep -c "<route_value>" PreEco/Route.v.gz` = 0) AND the rename_map did not chain it, the signal doesn't exist in Route. Do NOT use the Synth fallback — it will FAIL FM. Instead:
 
 1. Search same run's `changes[]` for `new_port` / `port_promotion` whose signal is logically related (same module scope, same domain).
 2. If substitute ECO port exists in `PreEco/Route.v.gz`, use it as Route value. Record `route_substituted_with_eco_port: true` + `original_signal: <unresolvable>`.
