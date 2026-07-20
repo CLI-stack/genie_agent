@@ -1085,7 +1085,7 @@ def check_missing_output_port_decls(applied, ref_dir):
             mod     = e.get('module_name', '')
             inst    = e.get('instance_name', '?')
             if out_net and mod:
-                eco_outputs[out_net] = (inst, mod)
+                eco_outputs[out_net] = (inst, mod, e)
         if not eco_outputs:
             continue
         # Build set of port_declaration entries that were APPLIED for this stage
@@ -1115,10 +1115,19 @@ def check_missing_output_port_decls(applied, ref_dir):
         # used only inside umcrecdsp_0) from being mistaken for cross-module threading.
         bodies = _module_bodies(text)
         _DECL_KW = r'\b(?:wire|tri|wand|wor|reg|input|output|inout)\b'
-        for out_net, (inst, mod) in eco_outputs.items():
+        for out_net, (inst, mod, e) in eco_outputs.items():
             if out_net in declared or out_net not in text:
                 continue
-            owner_names = {mod, mod + '_0'}          # ECO declaring module + Route variant
+            # Ownership is encoding-general: the ECO declaring module may be recorded
+            # as a bare RTL base (e.g. 'umccmdarb') while the netlist module is
+            # tile-prefixed / uniquified ('<prefix>_umccmdarb'[_<N>][_0]). Match the
+            # per-stage resolved names AND a prefix-agnostic <...>_<mod>[_N][_0] form,
+            # else a bare owner never equals the full netlist name -> false FE-LINK-7.
+            owner_names = {mod, mod + '_0', mod + '_1', mod + '_0_0'}
+            mps = e.get('module_name_per_stage')
+            if isinstance(mps, dict):
+                owner_names |= {v for v in mps.values() if isinstance(v, str)}
+            owner_re = re.compile(r'(?:^|_)' + re.escape(mod) + r'(?:_\d+)?(?:_0)?$')
             # A real net reference is NOT preceded by '.', which would make it a child
             # instance's FORMAL PORT NAME (e.g. `.QualPmArbWinVld_d1(parent_net)`) — a
             # port name, not a use of a parent net. Excluding `.name` tokens prevents a
@@ -1132,7 +1141,7 @@ def check_missing_output_port_decls(applied, ref_dir):
             for mname, body in bodies:
                 if out_net not in body or not netre.search(body):
                     continue
-                if mname in owner_names:              # (a) the ECO module owns it internally
+                if mname in owner_names or owner_re.search(mname):  # (a) ECO module owns it internally
                     continue
                 if declre.search(body):               # (b) sibling with its own local decl
                     continue

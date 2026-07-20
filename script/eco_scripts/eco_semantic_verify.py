@@ -86,11 +86,15 @@ class NetlistView:
         """
         if module_name in self._module_cache:
             return self._module_cache[module_name]
-        # Try exact, _0 suffix, '<prefix>_<bare>', '<prefix>_<bare>_0' tile-prefix variants
+        # Try exact, P&R uniquify suffixes (_0, _1, and multi-level _0_0), then a
+        # prefix-agnostic '<prefix>_<bare>[_<N>][_0]' tile-prefix variant. The
+        # multi-level _0_0 form is what Route uses for a uniquified generate array
+        # (e.g. ddrss_<tile>_t_umcdcqarb_0_0) — the old patterns stopped at a single
+        # _0 and missed it, false-failing Route port-list checks on the bare base name.
         for cand_pat in (rf'^module\s+{re.escape(module_name)}\b',
                          rf'^module\s+{re.escape(module_name)}_0\b',
-                         rf'^module\s+\S+_{re.escape(module_name)}_0\b',
-                         rf'^module\s+\S+_{re.escape(module_name)}\b'):
+                         rf'^module\s+{re.escape(module_name)}_0_0\b',
+                         rf'^module\s+\S+_{re.escape(module_name)}(?:_\d+)?(?:_0)?\b'):
             m = re.search(cand_pat, self.text, re.MULTILINE)
             if m:
                 break
@@ -268,7 +272,11 @@ def verify_port_declaration(entry, view, stage):
     if direction == 'wire':
         return None  # implicit — no declaration needed
     signal = entry.get('signal_name') or entry.get('new_token')
-    module = entry.get('module_name')
+    # Per-stage-aware, encoding-general (mirrors verify_port_connection): the studier
+    # may keep module_name as the bare RTL base and carry the real per-stage netlist
+    # module (tile-prefixed, possibly _<N>/_0-suffixed) in module_name_per_stage.
+    module = (entry.get('module_name_per_stage', {}) or {}).get(stage, '') \
+             or entry.get('child_module_name') or entry.get('module_name')
     if not signal or not module:
         return None
     if not view.module_has_port_in_list(module, signal):
