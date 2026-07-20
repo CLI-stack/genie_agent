@@ -26,13 +26,21 @@
 
 ```bash
 cd <REF_DIR>
-diff -rq --exclude="*.vf" --exclude="*.vfe" --exclude="*.d" data/PreEco/SynRtl/ data/SynRtl/
+diff -rqw --exclude="*.vf" --exclude="*.vfe" --exclude="*.d" data/PreEco/SynRtl/ data/SynRtl/
 ```
 
 For each file that differs, run full diff:
 ```bash
-diff <REF_DIR>/data/PreEco/SynRtl/<file> <REF_DIR>/data/SynRtl/<file>
+diff -w <REF_DIR>/data/PreEco/SynRtl/<file> <REF_DIR>/data/SynRtl/<file>
 ```
+
+> **Use `-w` (ignore whitespace) — Verilog whitespace is never functional.** A hunk whose two
+> sides carry the SAME tokens and differ ONLY in whitespace/indentation/formatting (e.g.
+> `X = Y;` → `X =  Y;`) is **NOT a change** — do NOT emit an rtl_diff change for it. Emitting
+> one produces a phantom change that step2/step3 then mis-handle (a single extra-space diff can
+> otherwise yield a spurious `new_port` / `wire_swap` on an unchanged signal). The Step-1
+> HUNK-COMPLETENESS validator likewise ignores whitespace-only hunks, so it will NOT force you
+> to represent one.
 
 ---
 

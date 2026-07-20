@@ -178,7 +178,16 @@ def _extract_logic_hunks(diff_text):
     hunks, old_t, new_t, has_logic, in_hunk = [], set(), set(), False, False
     def _flush():
         if in_hunk and has_logic:
-            hunks.append((old_t ^ new_t) or (old_t | new_t))
+            # CHANGED tokens = symmetric difference of the removed/added sides. A hunk whose
+            # two sides carry IDENTICAL tokens differs only in WHITESPACE / formatting (e.g.
+            # `= X` vs `=  X`) and is NOT a logic change — drop it. The old `or (old_t | new_t)`
+            # fallback counted such hunks, which then FORCED the completeness check to demand a
+            # phantom rtl_diff change (non-deterministically mis-classified — 9899 emitted a
+            # bogus new_port:BothArbPickRdWr in one run and wire_swap:ZeroVec in another off the
+            # same whitespace diff). Pure add/delete hunks keep a non-empty symmetric difference.
+            changed = old_t ^ new_t
+            if changed:
+                hunks.append(changed)
     for ln in diff_text.split('\n'):
         if re.match(r'^\d+(,\d+)?[acd]\d+(,\d+)?$', ln):
             _flush()
@@ -268,7 +277,7 @@ def _hunk_completeness_issues(rtl_diff, ref_dir):
         return []
     try:
         listing = subprocess.run(
-            ['diff', '-rq', '--exclude=*.vf', '--exclude=*.vfe', '--exclude=*.d', pre, new],
+            ['diff', '-rqw', '--exclude=*.vf', '--exclude=*.vfe', '--exclude=*.d', pre, new],
             capture_output=True, text=True, timeout=120).stdout
     except Exception:
         return []
@@ -282,7 +291,7 @@ def _hunk_completeness_issues(rtl_diff, ref_dir):
         if not (fn.endswith('.v') or fn.endswith('.sv')):
             continue                                    # skip .vh config headers
         try:
-            dtext = subprocess.run(['diff', pf, nf], capture_output=True, text=True,
+            dtext = subprocess.run(['diff', '-w', pf, nf], capture_output=True, text=True,
                                    timeout=60).stdout
         except Exception:
             continue
