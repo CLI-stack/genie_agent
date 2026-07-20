@@ -56,6 +56,25 @@ try:
     from eco_cone_rebuild import reg_guard_folded_conditions as _rg_sel_conds
 except Exception:
     _rg_sel_conds = None
+try:
+    from eco_module_inst_path import inst_paths as _inst_paths
+except Exception:
+    _inst_paths = None
+
+# condition-input signals that never need an FM query (constants / already-resolved gate nets)
+_SKIP_COND_PREFIXES = ("1'b", "0'b", 'n_eco_', 'PENDING_FM_RESOLUTION')
+
+
+def _cond_input_scopes(ci, change, ref_dir):
+    """Resolve a condition_input's recorded scope (often an RTL MODULE name) to the
+    gate-level instance path(s) FM needs. Falls back to the raw scope when the netlist
+    can't be introspected (keeps old behaviour)."""
+    raw = ci.get('scope') or change.get('scope') or change.get('module_name') or ''
+    if ref_dir and _inst_paths:
+        paths = _inst_paths(raw, ref_dir)
+        if paths:
+            return paths
+    return [raw] if raw else ['']
 
 # ── Raw FM rpt parser ────────────────────────────────────────────────────────
 
@@ -83,11 +102,20 @@ def parse_raw_rpt(path):
 
     def flush():
         if cur_stage and cur_net:
-            out[(cur_stage, cur_net)] = {
+            key = (cur_stage, cur_net)
+            new = {
                 'status': cur_status,
                 'positive': list(cur_pos),
                 'inverted': list(cur_neg),
             }
+            # The SAME leaf signal can be queried at multiple hierarchy scopes in one rpt
+            # (e.g. the correct instance path resolves, while a bare module-name scope
+            # FM-036s). Plain last-wins would let a wrong-scope FM-036 clobber the good FOUND
+            # result. Prefer a resolved (FOUND) result over FM036/NO_EQUIV.
+            old = out.get(key)
+            if old and old.get('status') == 'FOUND' and new['status'] != 'FOUND':
+                return
+            out[key] = new
 
     with open(path, errors='ignore') as f:
         for line in f:
@@ -182,6 +210,23 @@ def derive_queries(rtl_diff, ref_dir=None):
                 if t:
                     queries.append({'net_path': f'{scope}/{t}'.strip('/'),
                                     'signal': t, 'source': f'changes[{idx}].{fld}'})
+
+        # Cat 9: wire_swap condition_inputs_to_query — dissolved COMBINATIONAL condition
+        # inputs. Each resolves to a synthesis-internal net ONLY in Synthesize; PP/Route are
+        # then produced by the per-stage chaining pass (eco_fenets_chain.py). Emitting the key
+        # here — at the module→instance-resolved scope so the FM positive matches — is what
+        # seeds the Synthesize value the chain carries forward. Without it these inputs were
+        # left unqueried and fell back to a registered _d<N> companion (wrong for a
+        # combinational signal — off by N clocks).
+        if ct == 'wire_swap':
+            for ci in (c.get('condition_inputs_to_query') or []):
+                sig = ci.get('signal', '')
+                if not sig or sig.startswith(_SKIP_COND_PREFIXES):
+                    continue
+                for isc in _cond_input_scopes(ci, c, ref_dir):
+                    queries.append({'net_path': f'{isc}/{sig}'.strip('/'),
+                                    'signal': sig,
+                                    'source': f'changes[{idx}].condition_inputs_to_query'})
 
         # Cat 4e: and_term reg-guard-delta (Intent-A and_term on target_register) cone leaves
         # + widened-branch selector condition (mirror the comb_net_force Cat 4c/4d blocks

@@ -34,6 +34,12 @@ try:
     from eco_emit_priority_force import _module_netlist_body
 except Exception:
     selector_folded_conditions = reg_guard_cone_leaves = _module_netlist_body = None
+try:
+    from eco_module_inst_path import inst_paths as _inst_paths
+except Exception:
+    _inst_paths = None
+
+_SKIP_COND_PREFIXES = ("1'b", "0'b", 'n_eco_', 'PENDING_FM_RESOLUTION')
 
 PREV = {'PrePlace': 'Synthesize', 'Route': 'PrePlace'}
 
@@ -65,6 +71,22 @@ def _conditions(rtl_diff, ref_dir):
             key = (scope, sig, mod)
             if key not in out:
                 out.append(key)
+        # wire_swap condition_inputs_to_query: dissolved COMBINATIONAL condition inputs.
+        # Their Synthesize seed (a synth-internal net) is captured by eco_fenets_rename_map
+        # Cat 9; chain it Synth->PP->Route so the studier gets the per-stage combinational net
+        # instead of falling back to a registered _d<N> companion (off by N clocks). Scope is
+        # resolved module-name -> instance-path so the key matches the rename map.
+        if ct == 'wire_swap':
+            for ci in (c.get('condition_inputs_to_query') or []):
+                sig = ci.get('signal', '')
+                if not sig or sig.startswith(_SKIP_COND_PREFIXES):
+                    continue
+                raw = ci.get('scope') or c.get('module_name') or ''
+                iscopes = (_inst_paths(raw, ref_dir) if (_inst_paths and ref_dir) else None) or [raw]
+                for isc in iscopes:
+                    key = (isc, sig, raw)   # mod=raw (module base) for the survival-shortcut body lookup
+                    if key not in out:
+                        out.append(key)
     return out
 
 
