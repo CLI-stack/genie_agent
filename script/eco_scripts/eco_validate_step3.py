@@ -6307,9 +6307,18 @@ def main():
                 for e in study.get('Synthesize', []):
                     if e.get('change_type') != 'port_declaration':
                         continue
-                    mn = e.get('module_name')
-                    if isinstance(mn, str):
-                        mm = re.search(re.escape(base) + r'_(\d+)(?:_0)?$', mn)
+                    # Resolve the uniquified target via the SAME refs the applier uses
+                    # (child_module_name / module_name_per_stage carry the <base>_<i> name;
+                    # module_name is intentionally kept as the RTL base). Mirrors the
+                    # presence check (a) above, which also uses _entry_refs — reading only
+                    # module_name here caused a false 0/N when the studier normalizes
+                    # module_name to the base and puts the uniquified name in child_module_name.
+                    refs = list(_entry_refs(e))
+                    mps = e.get('module_name_per_stage')
+                    if isinstance(mps, dict):
+                        refs += [v for v in mps.values() if isinstance(v, str)]
+                    for ref in refs:
+                        mm = re.search(re.escape(base) + r'_(\d+)(?:_0)?$', ref)
                         if mm:
                             pd_cov.add(int(mm.group(1)))
                 pd_missing = sorted(all_idx - pd_cov)

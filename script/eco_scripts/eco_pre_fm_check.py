@@ -68,6 +68,49 @@ def _module_bodies(text):
     return b
 
 
+def entry_module(entry, stage):
+    """Best netlist module name for a study entry in a given stage.
+
+    General across studier encodings (no hardcoded tile naming):
+      * current encoding — `module_name` may be the bare RTL base (e.g.
+        'umccmdarb') while the real per-stage netlist module (tile-prefixed and
+        possibly _<N>/_0-suffixed by P&R uniquification) is carried in
+        `module_name_per_stage` / `child_module_name`;
+      * older encoding — `module_name` already holds the full per-stage netlist
+        name and `module_name_per_stage` is absent.
+    Priority: per-stage resolved name > child module > bare module_name.
+    """
+    return ((entry.get('module_name_per_stage') or {}).get(stage)
+            or entry.get('child_module_name')
+            or entry.get('module_name', ''))
+
+
+def find_module_body(text, modname, cache=None):
+    """Extract a module body by name — prefix-agnostic and uniquification-tolerant.
+
+    Tries the exact name and P&R uniquification suffixes first, then a GENERAL
+    `<prefix>_<name>` fallback (any synthesis/tile prefix, no hardcoded naming)
+    so a bare RTL base name still resolves to its tile-prefixed netlist module.
+    The general pattern is last, so it never overrides a real exact hit.
+    """
+    if not modname:
+        return ''
+    if cache is not None and modname in cache:
+        return cache[modname]
+    pats = [r'^module\s+' + re.escape(c) + r'\b'
+            for c in (modname, modname + '_0', modname + '_1', modname + '_0_0')]
+    pats.append(r'^module\s+\w+_' + re.escape(modname) + r'(?:_\d+)?(?:_0)?\b')
+    body = ''
+    for pat in pats:
+        m = re.search(pat + r'.*?^endmodule', text, re.S | re.M)
+        if m:
+            body = m.group(0)
+            break
+    if cache is not None:
+        cache[modname] = body
+    return body
+
+
 # ── Argument parsing ──────────────────────────────────────────────────────────
 
 def parse_args():
@@ -298,11 +341,11 @@ def check_cells_in_netlist(applied, ref_dir, study_path=None):
                     if e.get('change_type') not in gate_types:
                         continue
                     inst = e.get('instance_name', '')
-                    mod  = e.get('module_name', '')
+                    # Per-stage-aware, encoding-general (see entry_module docstring):
+                    # reading module_name alone false-fails HOST_MODULE_NOT_FOUND when
+                    # the studier keeps module_name as the bare RTL base.
+                    mod  = entry_module(e, stage)
                     if inst and mod:
-                        # Last write wins — per-stage module_name may differ
-                        # in Route (suffix _0) but we'll handle that below
-                        # via try (mod, mod+'_0') variants.
                         inst_to_host[(stage, inst)] = mod
         except Exception:
             pass
@@ -325,17 +368,7 @@ def check_cells_in_netlist(applied, ref_dir, study_path=None):
         # suffix). Lazy-extract on first lookup.
         mod_body_cache = {}
         def _body_of(mod):
-            if mod in mod_body_cache:
-                return mod_body_cache[mod]
-            text = _zcat(gz)
-            for cand in (mod, mod + '_0', mod + '_1'):
-                m = re.search(r'^module\s+' + re.escape(cand) + r'\b.*?^endmodule',
-                              text, re.S | re.M)
-                if m:
-                    mod_body_cache[mod] = m.group(0)
-                    return m.group(0)
-            mod_body_cache[mod] = ''
-            return ''
+            return find_module_body(_zcat(gz), mod, mod_body_cache)
 
         for inst in inserted:
             if not inst:
@@ -719,13 +752,8 @@ def check_eco_input_drivers(study_path, ref_dir):
         def _drivers_for(mod):
             if mod in per_mod_cache:
                 return per_mod_cache[mod]
-            for cand in (mod, mod + '_0'):
-                m = re.search(rf'^module\s+{re.escape(cand)}\b.*?^endmodule\b',
-                              text, re.MULTILINE | re.DOTALL)
-                if m:
-                    per_mod_cache[mod] = _drivers_in_module(m.group(0))
-                    return per_mod_cache[mod]
-            per_mod_cache[mod] = set()
+            body = find_module_body(text, mod)
+            per_mod_cache[mod] = _drivers_in_module(body) if body else set()
             return per_mod_cache[mod]
 
         for entry in study.get(stage, []):
@@ -734,7 +762,7 @@ def check_eco_input_drivers(study_path, ref_dir):
             if not entry.get('confirmed', True):
                 continue
             inst = entry.get('instance_name', '?')
-            host = entry.get('module_name', '')
+            host = entry_module(entry, stage)
             if not host:
                 # Fall back to global scan if host module unknown — old behavior
                 continue
@@ -818,16 +846,7 @@ def check_input_net_strict_driver(study_path, ref_dir):
         # Cache module body by host name.
         body_cache = {}
         def _body_of(mod):
-            if mod in body_cache:
-                return body_cache[mod]
-            for cand in (mod, mod + '_0'):
-                m = re.search(rf'^module\s+{re.escape(cand)}\b.*?^endmodule\b',
-                              text, re.MULTILINE | re.DOTALL)
-                if m:
-                    body_cache[mod] = m.group(0)
-                    return body_cache[mod]
-            body_cache[mod] = ''
-            return ''
+            return find_module_body(text, mod, body_cache)
 
         def _net_has_driver(net, mod_body):
             net_esc = re.escape(net)
@@ -882,7 +901,7 @@ def check_input_net_strict_driver(study_path, ref_dir):
             if not entry.get('confirmed', True):
                 continue
             inst = entry.get('instance_name', '?')
-            host = entry.get('module_name', '')
+            host = entry_module(entry, stage)
             if not host:
                 continue
             body = _body_of(host)
@@ -1163,25 +1182,20 @@ def check_port_conn_target_exists(study_path, ref_dir):
             if mod in port_cache:
                 return port_cache[mod]
             ports = set()
-            for cand in (mod, mod + '_0'):
-                m = re.search(
-                    rf'^module\s+{re.escape(cand)}\b.*?^endmodule\b',
-                    text, re.MULTILINE | re.DOTALL)
-                if not m:
-                    continue
-                body = m.group(0)
+            body = find_module_body(text, mod)
+            if body:
                 for pm in re.finditer(
                         r'^\s*(?:input|output|inout)\s+(?:\[[^\]]+\]\s*)?'
                         r'([A-Za-z_]\w*)\s*[;,]', body, re.MULTILINE):
                     ports.add(pm.group(1))
                 # Also pick up ports from the header port list (some files only
-                # name them in the header and declare direction inline)
-                hdr = re.search(rf'^module\s+{re.escape(cand)}\s*\(([^)]*)\)',
+                # name them in the header and declare direction inline). The body
+                # already starts with the resolved module name, so match it generically.
+                hdr = re.search(r'^module\s+\S+\s*\(([^)]*)\)',
                                 body, re.MULTILINE | re.DOTALL)
                 if hdr:
                     for tok in re.findall(r'[A-Za-z_]\w*', hdr.group(1)):
                         ports.add(tok)
-                break
             port_cache[mod] = ports
             return ports
         for e in pc_entries:
@@ -1238,16 +1252,14 @@ def check_mode_s_stitching(study_path, ref_dir):
             if this_stage_strat == 'neighbor_dff':
                 continue
             inst = entry.get('instance_name', '?')
-            host = entry.get('module_name', '')
+            host = entry_module(entry, stage)
             if not host:
                 continue
-            # Find host module (with possible _0 suffix in Route)
-            mod_m = re.search(rf'^module\s+{re.escape(host)}(?:_0)?\b.*?^endmodule\b',
-                              text, re.MULTILINE | re.DOTALL)
-            if not mod_m:
+            # Find host module (prefix-agnostic, uniquification-tolerant)
+            body = find_module_body(text, host)
+            if not body:
                 failures.append(f'[MODE_S_MODULE_MISSING] {stage}: host module {host!r} not found for {inst}')
                 continue
-            body = mod_m.group(0)
             # Look for the 3 stitching port declarations (any ECO_*_SI_in / SE_in / Q_out
             # OR <target_reg>_reg_SI_in naming convention)
             si = re.search(r'^\s*input\s+(ECO_\w*_SI_in|eco\w*_si_bridge_in|\w+_reg_SI_in)\s*;', body, re.MULTILINE)
@@ -1480,7 +1492,7 @@ def check_cross_module_bridge_connectivity(study_path, ref_dir):
             role = e.get('bridge_port_role')
             if not role:
                 continue
-            owning_mod = e.get('module_name')
+            owning_mod = entry_module(e, stage)
             port_name  = e.get('port_name')
             port_dir   = e.get('port_direction', '')
             if not (owning_mod and port_name):

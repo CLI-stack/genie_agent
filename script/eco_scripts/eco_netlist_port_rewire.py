@@ -106,11 +106,26 @@ def apply_port_declaration(lines, entry, stage='Synthesize'):
         return lines, 'SKIPPED', f"GAP-3: bridge_port_role={entry['bridge_port_role']} skipped in Synth (uses constant_zero)"
 
     mod_name = entry.get('module_name', '')
+    mod_name_stage = (entry.get('module_name_per_stage') or {}).get(stage)
     signal   = entry.get('signal_name', '')
     direction = entry.get('declaration_type', 'input')  # 'input' or 'output'
 
     if direction == 'wire':
         return lines, 'SKIPPED', 'wire type — implicitly declared by port connections'
+
+    mod_start = -1
+
+    # Try the per-stage resolved module name FIRST (exact match) — handles
+    # multi-level P&R uniquification suffixes (e.g. 'umcdcqarb_0_0') that the
+    # generic _0 / prefix patterns below cannot express (they only strip one
+    # trailing '_0'). Mirrors the fallback already used by the port_connection
+    # path (mod_name resolution near _module_bounds callers) for consistency.
+    if mod_name_stage and mod_name_stage != mod_name:
+        re_exact_stage = re.compile(rf'^module\s+{re.escape(mod_name_stage)}\b')
+        for i, line in enumerate(lines):
+            if re_exact_stage.match(line):
+                mod_start, mod_name = i, mod_name_stage
+                break
 
     # Find module start: try exact, _0 suffix (P&R rename), then any '<prefix>_<bare>' (tile-prefixed netlist)
     # Also handles '<prefix>_<bare>_0' (P&R uniquification of tile-prefixed modules)
@@ -118,8 +133,9 @@ def apply_port_declaration(lines, entry, stage='Synthesize'):
     re_p0       = re.compile(rf'^module\s+{re.escape(mod_name)}_0\b')
     re_prefix   = re.compile(rf'^module\s+(\S+_{re.escape(mod_name)})\b(?!_\d)')
     re_prefix_p0= re.compile(rf'^module\s+(\S+_{re.escape(mod_name)}_0)\b')
-    mod_start = -1
     for i, line in enumerate(lines):
+        if mod_start >= 0:
+            break
         if re_bare.match(line):
             mod_start = i
             break

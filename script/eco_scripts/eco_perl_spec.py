@@ -110,13 +110,37 @@ def build_scope_to_module_map(gz_path, timeout=120):
     return scope_map
 
 
-def resolve_module_name(e, scope_to_mod, gz_path):
+def resolve_module_name(e, scope_to_mod, gz_path, stage=None):
     """
     Resolve gate-level module_name for a study entry.
-    Priority: explicit module_name > scope-based lookup > posteco grep.
+    Priority: module_name_per_stage[stage] (verified) > explicit module_name
+    (with suffix guesses) > scope-based lookup > posteco grep.
     P&R stages uniquify modules with _0/_1 suffixes — try those variants too.
     """
     mod = e.get('module_name', '')
+
+    # Try the per-stage resolved module name FIRST (exact, verified) — the
+    # flat `module_name` field is sometimes the BARE logical module name
+    # (e.g. 'umccmdarb') while the real PostEco module is tile-prefixed
+    # (e.g. 'ddrss_umccmd_t_umccmdarb' / '..._0' in Route). The suffix-only
+    # guesses below (mod, mod_0, mod_1, mod_0_0) can never match a
+    # tile-prefixed name, so without this check the Perl spec silently keys
+    # on a module that doesn't exist -> Perl prints MISSING -> gates never
+    # land, yet eco_perl_spec.py still reports INSERTED (status is decided
+    # before the Perl pipe runs). Mirrors the same per-stage fallback used
+    # in eco_netlist_port_rewire.py's port_declaration/port_connection paths.
+    mod_stage = (e.get('module_name_per_stage') or {}).get(stage) if stage else None
+    if mod_stage:
+        try:
+            proc = subprocess.run(
+                f'zcat {gz_path} | grep -c "^module {re.escape(mod_stage)}\\b"',
+                shell=True, capture_output=True, text=True, timeout=10
+            )
+            if int(proc.stdout.strip() or '0') > 0:
+                return mod_stage
+        except Exception:
+            pass
+
     if mod:
         # In P&R stages, module may be uniquified as mod_0, mod_1, etc.
         # Verify the module exists in PostEco; if not, try _0 suffix.
@@ -128,6 +152,20 @@ def resolve_module_name(e, scope_to_mod, gz_path):
                 )
                 if int(proc.stdout.strip() or '0') > 0:
                     return candidate
+            except Exception:
+                pass
+        # Last resort before giving up on the flat name: try tile-prefixed
+        # form directly ('<prefix>_<mod>' / '<prefix>_<mod>_<N>') — covers
+        # cases where module_name_per_stage is absent for this entry.
+        if mod_stage is None:
+            try:
+                proc = subprocess.run(
+                    f'zcat {gz_path} | grep "^module " | grep -E "_{re.escape(mod)}(_[0-9]+)?\\\\b" | head -1',
+                    shell=True, capture_output=True, text=True, timeout=30
+                )
+                m = re.match(r'^module\s+(\S+)', proc.stdout.strip())
+                if m:
+                    return m.group(1)
             except Exception:
                 pass
         return mod  # fallback: return original even if not found
@@ -329,7 +367,7 @@ def main():
         ct   = e.get('change_type','')
         inst = e.get('instance_name') or e.get('cell_name') or e.get('signal_name','')
         # Resolve gate-level module name (generic — works for any tile)
-        mod   = resolve_module_name(e, scope_to_mod, posteco)
+        mod   = resolve_module_name(e, scope_to_mod, posteco, stage=args.stage)
         # For tile-root entries (empty scope, scope_is_tile_root=True), use tile root module
         if not mod and (e.get('scope_is_tile_root') or not e.get('instance_scope','')):
             mod = tile_root_module
