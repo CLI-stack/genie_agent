@@ -41,16 +41,96 @@ The user must supply the tile run path(s) directly. No hardcoded default.
 **Simple mode runs directly in the main session — no subagent.**
 **Analysis and comparison modes spawn a subagent.**
 
+### Detect MMMC vs Non-MMMC run
+
+**Before reading any timing data**, detect the run type:
+
+```bash
+# MMMC if Func1to2TT0p9v report_global_timing exists (two scenarios merged)
+ls <tile_dir>/rpts/FxSynthesize/report_global_timing.setup_*_Func1to2TT0p9v.rpt 2>/dev/null
+```
+
+| Indicator | MMMC | Non-MMMC |
+|-----------|------|----------|
+| `report_global_timing.setup_*_Func1to2TT0p9v.rpt` | **EXISTS** | absent |
+| `<group>.setup_*_Func1to2TT0p9v_timing.rpt` files | **EXISTS** | absent |
+| `FxSynthesize.pass_*.proc_qor.rpt.gz` | absent | may exist |
+| `FxSynthesize.dat` CostGroups | single-scenario blended | per path group |
+| `qor_summary.rpt.gz` + `setup_timing.csv` | **EXISTS** | absent |
+
+---
+
 ### MODE: SIMPLE — run inline (target: <20 seconds)
 
 Do everything directly in the main session context:
 1. Resolve tile dirs (quick `ls` + mtime check).
-2. For each tile dir, read the two source files directly using Bash:
-   - `cat <tile_dir>/rpts/FxSynthesize/FxSynthesize.dat`
-   - `zcat <tile_dir>/rpts/FxSynthesize/FxSynthesize.pass_*.proc_qor.rpt.gz | grep -E "Timing Path Group|Levels of Logic|Critical Path Slack|Critical Path Clk Period|Total Negative Slack|No\. of Violating"`
-3. Parse the output and format the report directly. Print immediately.
+2. **Detect MMMC vs non-MMMC** (see above).
+3. Read timing data based on run type (see sections below).
+4. Parse the output and format the report directly. Print immediately.
 
 Do NOT spawn a subagent for simple mode.
+
+#### Simple mode — Non-MMMC run
+
+Read the two source files:
+- `cat <tile_dir>/rpts/FxSynthesize/FxSynthesize.dat`
+- `zcat <tile_dir>/rpts/FxSynthesize/FxSynthesize.pass_*.proc_qor.rpt.gz | grep -E "Timing Path Group|Levels of Logic|Critical Path Slack|Critical Path Clk Period|Total Negative Slack|No\. of Violating"`
+
+#### Simple mode — MMMC run
+
+Do NOT read `FxSynthesize.dat` CostGroups for timing — use per-scenario reports instead:
+
+```bash
+# Core summary per scenario (reg->reg, in->reg, reg->out, in->out WNS/TNS/NVP)
+cat <tile_dir>/rpts/FxSynthesize/report_global_timing.setup_*_FuncTT0p9v.rpt
+cat <tile_dir>/rpts/FxSynthesize/report_global_timing.setup_*_Func1to2TT0p9v.rpt
+
+# Per path group per scenario (WNS, TNS, NVP, Levels, CritLen)
+grep -A12 "Scenario\|Timing Path Group\|WNS\|TNS\|No\. of Violating\|Levels of Logic" \
+  <tile_dir>/rpts/FxSynthesize/FxSynthesize.proc_qor.rpt
+```
+
+**MMMC scenarios:**
+- `FuncTT0p9v` = 1:1 mode (UCLK = DFICLK, single frequency)
+- `Func1to2TT0p9v` = 1:2 mode (DFICLK = 2× UCLK, cross-domain violations expected)
+
+**MMMC output layout** — report one block per scenario:
+
+```
+========================================================================
+  FxSynthesize Timing Report  —  <MODULE>  [SIMPLE — MMMC]
+  Run: <run_dir_name>
+  RTL CL: <CL>
+========================================================================
+
+--- Scenario: FuncTT0p9v (1:1)  [report_global_timing] ---
+  Type          Total WNS (ps)    Total TNS (ps)    NVP
+  ──────────────────────────────────────────────────────
+  reg→reg       <val>             <val>             <N>
+  in→reg        <val>             <val>             <N>
+  reg→out       <val>             <val>             <N>
+  in→out        <val>             <val>             <N>
+  DESIGN        <val>             <val>             <N>
+
+--- Scenario: Func1to2TT0p9v (1:2)  [report_global_timing] ---
+  Type          Total WNS (ps)    Total TNS (ps)    NVP
+  ──────────────────────────────────────────────────────
+  reg→reg       <val>             <val>             <N>
+  in→reg        <val>             <val>             <N>
+  reg→out       <val>             <val>             <N>
+  in→out        <val>             <val>             <N>
+  DESIGN        <val>             <val>             <N>
+
+--- Per Path Group  [FxSynthesize.proc_qor.rpt] ---
+  Scenario          Group                WNS (ps)    TNS (ps)    NVP   Levels
+  ──────────────────────────────────────────────────────────────────────────
+  FuncTT0p9v        SYN_R2R              <val>       <val>       <N>   <L>
+  FuncTT0p9v        SYN_I2R              <val>       <val>       <N>   <L>
+  ...
+  Func1to2TT0p9v    SYN_R2R              <val>       <val>       <N>   <L>
+  Func1to2TT0p9v    SYN_I2R              <val>       <val>       <N>   <L>
+  ...
+```
 
 ### MODE: ANALYSIS or COMPARISON — spawn a subagent
 
