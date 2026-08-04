@@ -162,6 +162,22 @@ for stage in Synthesize PrePlace Route:
        <REF_DIR>/data/PostEco/<Stage>.v.gz.bak_<TAG>_round<NEXT_ROUND>
 ```
 
+**Also snapshot the study JSON for this round — MANDATORY.** At this point
+`<BASE_DIR>/data/<TAG>_eco_preeco_study.json` still holds the study that produced **round `<ROUND>`'s**
+FM result (`<ROUND>` = the round that just failed; the STUDY-phase study is round 1). Step 6.6 (Re-Study)
+mutates it **in place**, so it must be frozen FIRST. Use no-clobber so the first capture of each round's
+study is never overwritten:
+```bash
+    # Freeze round<ROUND>'s study before Re-Study rewrites eco_preeco_study.json.
+    # -n (no-clobber): round1's snapshot, once written, is permanent — round 1 passing
+    #  is the primary convergence target, so its study must always be recoverable/diffable.
+    cp -n <BASE_DIR>/data/<TAG>_eco_preeco_study.json \
+          <BASE_DIR>/data/<TAG>_eco_preeco_study_round<ROUND>.json
+```
+`<TAG>_eco_preeco_study_round1.json` is thus the frozen first-round study, always available to diff
+against later rounds or to restore the round-1 attempt. **CHECKPOINT:** verify
+`<TAG>_eco_preeco_study_round<ROUND>.json` exists and is non-zero before proceeding.
+
 **Do NOT restore from any previous backup.** The current `PostEco/<Stage>.v.gz` already contains all correctly-applied changes from previous rounds — eco_applier will leave those untouched in Surgical Mode and only undo+reapply entries marked `force_reapply: true`.
 
 **Safety net:** `bak_<TAG>_round1` (written by eco_applier in Round 1) is always the original PreEco state. It is never overwritten and can be used to fully restore if needed.
