@@ -1035,6 +1035,58 @@ def apply_assign(lines, entry):
     return lines, 'APPLIED', f'inserted assign {lhs} = {rhs} in {mod_name}'
 
 
+def ensure_bitselect_bus_decls(lines, entries, stage):
+    """Post-apply SVR-14 guardrail. For every ECO gate whose `output_net` is a
+    bracket-form bus bit `X[N]`, ensure the bus `X` is declared in the module that
+    CONTAINS the gate — inserting `wire [MSB:0] X ;` right after that module's port
+    list (before first use) when X is not already a wire/port there.
+
+    Why this is needed: the Pass-1 (eco_perl_spec) wire_decls dedup is GLOBAL — it
+    skips X if X exists ANYWHERE in PostEco, e.g. as a *child* module's port. So a new
+    INTERNAL bus that is also a child's port never gets a decl in its own module
+    (10036: RowUpperMask is DRIVEN in ddrss_umccmd_t_umccmd but is a port of the child
+    umcaddr/umcaddr_mod) -> `RowUpperMask[N]` indexes an implicit scalar ->
+    'Indexing into non-array' (SVR-14 / FM-599). This module-scoped pass is the
+    deterministic backstop, independent of the studier's needs_explicit_wire_decl flag."""
+    need = {}   # module -> {bus: maxbit}
+    for e in entries:
+        if e.get('change_type') not in ('new_logic_gate', 'new_logic', 'new_logic_dff'):
+            continue
+        m = re.match(r'^([A-Za-z_]\w*)\[(\d+)\]$', e.get('output_net', '') or '')
+        if not m:
+            continue
+        bus, bit = m.group(1), int(m.group(2))
+        mod = (e.get('module_name_per_stage') or {}).get(stage) or e.get('module_name', '')
+        if mod:
+            need.setdefault(mod, {})
+            need[mod][bus] = max(need[mod].get(bus, -1), bit)
+    added = []
+    for mod, buses in need.items():
+        for bus, mx in sorted(buses.items()):
+            # (re)locate the module each pass — earlier inserts shift line indices.
+            mstart = -1
+            for cand in (mod, mod + '_0'):
+                for i, ln in enumerate(lines):
+                    if re.match(rf'^module\s+{re.escape(cand)}\b', ln):
+                        mstart = i
+                        break
+                if mstart >= 0:
+                    break
+            if mstart < 0:
+                continue
+            mend = mstart + 1
+            while mend < len(lines) and not lines[mend].startswith('endmodule'):
+                mend += 1
+            if _is_wire_declared_in_module(lines[mstart:mend], bus):
+                continue
+            pclose = find_port_list_close(lines, mstart)
+            if pclose < 0:
+                continue
+            lines.insert(pclose + 1, f'  wire [{mx}:0] {bus} ;\n')
+            added.append((mod, bus, mx))
+    return lines, added
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1108,6 +1160,16 @@ def main():
         if st == 'VERIFY_FAILED':
             verify_failed += 1
         print(f"  {st:15} {inst:35} {ct} — {reason[:60]}")
+
+    # SVR-14 guardrail: ensure every bit-selected ECO bus is declared in its own
+    # module before first use (the Pass-1 dedup is global and misses a new internal
+    # bus that is also a child's port — 10036 RowUpperMask).
+    lines, _bus_decls = ensure_bitselect_bus_decls(lines, entries, args.stage)
+    for (mod, bus, mx) in _bus_decls:
+        statuses.append({'name': bus, 'ct': 'wire_decl_guardrail', 'status': 'APPLIED',
+                         'reason': f'SVR-14 guardrail: inserted `wire [{mx}:0] {bus}` in {mod} '
+                                   f'(bit-selected bus was undeclared in its own module)'})
+        print(f"  GUARDRAIL        wire [{mx}:0] {bus:28} → {mod}")
 
     # Write back if any changes were made
     applied = sum(1 for s in statuses if s['status'] == 'APPLIED')
