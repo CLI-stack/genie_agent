@@ -46,7 +46,7 @@ def _mod_key(n):
     """Canonical module key: strip the tile prefix (ddrss_*_t_) and any uniquify
     suffix (_<i>), so a change's short name (umcrecdsp) matches the netlist's
     prefixed name (ddrss_umcdat_t_umcrecdsp) and its uniquified copies."""
-    return re.sub(r'_\d+$', '', re.sub(r'^ddrss_\w+?_t_', '', str(n or '')))
+    return re.sub(r'_\d+$', '', re.sub(r'^\w+?_t_', '', str(n or '')))
 
 
 def _module_body(gz, module):

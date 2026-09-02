@@ -177,7 +177,14 @@ def apply_port_declaration(lines, entry, stage='Synthesize'):
     # an array-type port (e.g. input [7:0] RowUpperMask ;).
     # Without this, bus ports declared as scalar cause SVR-14 when the
     # consumer references RowUpperMask[N] bit-select indexing.
+    # Accept both field names: complete-mode studier emits `bus_width` (e.g. "[7:0]"),
+    # simple-mode studier emits `width` (e.g. 8). Reading only `bus_width` silently
+    # dropped the range for simple entries -> scalar `input RowUpperMask ;` while the
+    # body bit-selects RowUpperMask[N] -> FM read failure "Indexing into non-array"
+    # (FM-599). Fall back to `width` so either schema produces the correct bus port.
     bus_width = entry.get('bus_width')
+    if bus_width in (None, '', 0):
+        bus_width = entry.get('width')
     # bus_width may be an int (e.g. 8) or a range string (e.g. "7:0").
     # Parse both forms to extract the range prefix [W-1:0].
     range_pfx = ''

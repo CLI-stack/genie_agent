@@ -94,7 +94,7 @@ def main():
     width = max(dmap) + 1
 
     # RTL side
-    base = args.rtl_module or re.sub(r'_\d+$', '', re.sub(r'^ddrss_\w+?_t_', '', args.netlist_module))
+    base = args.rtl_module or re.sub(r'_\d+$', '', re.sub(r'^\w+?_t_', '', args.netlist_module))
     subdir = 'PreEco/SynRtl' if args.preeco else 'SynRtl'
     rtl = open(resolve_rtl(ref_dir=args.ref_dir, module=base, subdir=subdir), errors='replace').read()
     cfg = RtlConfig(args.ref_dir)

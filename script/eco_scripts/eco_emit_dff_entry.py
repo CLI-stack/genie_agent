@@ -94,7 +94,7 @@ def _discover_dff_cell_type(host_module, dff_clock, preeco_synth_v, ref_dir, til
     `<tile_module>_<host_module>` prefix variant.
     """
     candidates = [host_module]
-    if host_module and not host_module.startswith('ddrss_'):
+    if host_module and not re.match(r'^\w+?_t_', host_module):
         candidates.append(f'{tile_module}_{host_module}')
     candidates.extend([f'{c}_0' for c in list(candidates)])
     # Build the source: prefer cached file, else gz. Use zcat for .gz paths
@@ -190,17 +190,54 @@ def decide_mode_s_strategy(host_module, ref_dir, tile_module, dff_clock,
 
 # ── Step B: Per-stage CP/SI/SE resolution ───────────────────────────────────
 
-def resolve_cp_per_stage(rename_map, host_scope, dff_clock):
-    """Resolve CP per stage from rename map. Falls back to original name if
-    not in map (caller should grep stage netlists to verify)."""
+def _clock_drives_flops(ref_dir, stage, clock):
+    """True iff `clock` appears as an exact flop clock pin `.CP(<clock>)` in the
+    stage's PreEco netlist — i.e. it is a real clock net other flops connect to.
+    UCLK01 survives CTS as the tree-root source and still clocks flops directly,
+    so this stays true in Route even after CTS renames most datapath clocks to
+    FxCts_ZCTSNET_* leaves."""
+    if not (ref_dir and clock):
+        return False
+    gz = Path(ref_dir) / 'data' / 'PreEco' / f'{stage}.v.gz'
+    if not gz.is_file():
+        return False
+    try:
+        cmd = f"zcat {gz} | grep -m1 -E '\\.CP\\s*\\(\\s*{re.escape(clock)}\\s*\\)'"
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
+        return bool((r.stdout or '').strip())
+    except Exception:
+        return False
+
+
+def resolve_cp_per_stage(rename_map, host_scope, dff_clock, ref_dir=None):
+    """Resolve the new flop's CP net per stage. Priority:
+      1. rename_map value (complete mode / fenets).
+      2. bare `dff_clock` IF it still drives flops (`.CP(<clock>)`) in that stage's
+         netlist — GUARANTEED correct because it IS the clock the RTL specifies.
+      3. else UNRESOLVED — do NOT substitute a CTS leaf or a gated variant. In
+         simple mode there is no FM to catch a wrong-clock insert, and an ungated
+         RTL flop must not be silently moved onto a gated/rebalanced clock.
+    A stage whose netlist is absent (Synth-only run) is 'stage_absent', not a flag.
+    Returns (cp_per_stage, cp_status) with cp_status[stage] in
+    {'rename_map','bare_clock_verified','bare_clock_unverified','stage_absent','UNRESOLVED'}."""
     key = f'{host_scope}/{dff_clock}'
     entry = (rename_map or {}).get(key, {}) or {}
-    out = {}
+    cp, status = {}, {}
     for stage in ('Synthesize', 'PrePlace', 'Route'):
         v = entry.get(stage, '') if isinstance(entry, dict) else ''
-        # Strip trailing /pin (e.g. 'X_reg/CP' → 'X_reg' or just use as-is)
-        out[stage] = v or dff_clock
-    return out
+        if v:
+            cp[stage], status[stage] = v, 'rename_map'
+            continue
+        gz = Path(ref_dir) / 'data' / 'PreEco' / f'{stage}.v.gz' if ref_dir else None
+        if ref_dir and gz is not None and not gz.is_file():
+            cp[stage], status[stage] = dff_clock, 'stage_absent'
+        elif _clock_drives_flops(ref_dir, stage, dff_clock):
+            cp[stage], status[stage] = dff_clock, 'bare_clock_verified'
+        elif not ref_dir:
+            cp[stage], status[stage] = dff_clock, 'bare_clock_unverified'
+        else:
+            cp[stage], status[stage] = dff_clock, 'UNRESOLVED'
+    return cp, status
 
 
 def resolve_neighbor_dff_si_se(host_module, ref_dir):
@@ -508,7 +545,7 @@ def main():
     # Extract key fields
     target_reg  = rtl_change.get('target_register') or rtl_change.get('new_token', '')
     host_module = (rtl_change.get('declaring_module') or rtl_change.get('module_name', ''))
-    if not host_module.startswith('ddrss_') and host_module:
+    if not re.match(r'^\w+?_t_', host_module) and host_module:
         # Heuristic: prepend tile prefix if missing — but guard against
         # double-prepend when the caller passes a tile_module that already
         # contains host_module (e.g. tile_module='ddrss_umccmd_t_umccmd'
@@ -537,6 +574,33 @@ def main():
             if isinstance(v, str) and not v.startswith('n_eco_') and v not in input_names:
                 input_names.append(v)
 
+    # ── Reset fold into the D-cone ────────────────────────────────────────
+    # This emitter keeps SE/SI=1'b0 and BAKES THE RESET INTO THE D-CONE
+    # (reset_pin_used=False). But it only worked when d_input_expected_function
+    # already contained the reset. In simple mode the studier hands the bare data
+    # function (e.g. "REG_UmcCfgEco_12_") with the reset only in `reset_signal`, so
+    # the reset was SILENTLY DROPPED — the new flop loaded data even under reset and
+    # never cleared (10299: EcoDisBlkScrubReqBefDramRdy; complete mode built
+    # `cfg[12] & ~IReset`, simple built just `cfg[12]`). Fold it deterministically:
+    #   R = reset-active expr (active_high -> reset_sig ; active_low -> ~reset_sig)
+    #   reset to 0 -> D = (data) & ~R      reset to 1 -> D = (data) | R
+    reset_sig = rtl_change.get('reset_signal', '')
+    reset_pol = (rtl_change.get('reset_polarity', 'active_high') or 'active_high').lower()
+    _rv       = str(rtl_change.get('reset_value', 0)).strip()
+    reset_to_one = _rv in ('1', "1'b1", "0b1", 'True')
+    if reset_sig and expr and not re.search(rf'\b{re.escape(reset_sig)}\b', expr):
+        # The chain is empty in simple mode, so input_names is empty — seed it with
+        # the data expr's identifiers before synthesizing the folded boolean.
+        for _tok in re.findall(r"[A-Za-z_]\w*", expr):
+            if _tok not in input_names:
+                input_names.append(_tok)
+        R = f'~{reset_sig}' if 'low' in reset_pol else reset_sig
+        expr = f'({expr}) | ({R})' if reset_to_one else f'({expr}) & ~({R})'
+        if reset_sig not in input_names:
+            input_names.append(reset_sig)
+        print(f'  reset fold: baked {reset_sig} ({reset_pol} -> {"1" if reset_to_one else "0"}) '
+              f'into D-cone: D = {expr}', file=sys.stderr)
+
     print(f'eco_emit_dff_entry: target={target_reg}  host={host_module}  clk={dff_clock}',
           file=sys.stderr)
 
@@ -549,7 +613,11 @@ def main():
 
     # ── Step B: per-stage CP/SI/SE ────────────────────────────────────────
     host_scope = rtl_change.get('host_scope', '') or rtl_change.get('hierarchy', '')
-    cp_per_stage = resolve_cp_per_stage(rmap, host_scope, dff_clock)
+    cp_per_stage, cp_status = resolve_cp_per_stage(rmap, host_scope, dff_clock, args.ref_dir)
+    _cp_unresolved = [st for st, s in cp_status.items() if s == 'UNRESOLVED']
+    print(f'  CP per stage: '
+          + ', '.join(f'{st}={cp_per_stage[st]}({cp_status[st]})' for st in
+                      ('Synthesize', 'PrePlace', 'Route')), file=sys.stderr)
 
     # --shadow-cp-net override: replace CP with the ECO shadow clock gate Q
     # output for all stages. Used when the DFF shares the same shadow gate as
@@ -640,10 +708,12 @@ def main():
     # usually just the module scope without tile prefix ('WDB').  Extract the
     # tile name from tile_module (e.g. 'ddrss_umcdat_t' → 'umcdat') and prepend
     # it to each scope candidate so both 'WDB/sig' and 'umcdat/WDB/sig' are tried.
-    # Extract tile scope from tile_module: 'ddrss_umcdat_t' → 'umcdat'
-    # Use re.sub to strip the trailing _t suffix as a substring (not rstrip which
-    # strips individual characters and would incorrectly strip 'umcda' from 'umcdat')
-    _tile_scope = re.sub(r'^ddrss_', '', args.tile_module or '')
+    # Extract tile scope from tile_module: 'ddrss_umcdat_t' → 'umcdat',
+    # 'gmc_gmcch_0_t' → 'gmcch_0'. Strip the leading <project>_ segment (first
+    # underscore-delimited token) and the trailing _t suffix — project-agnostic.
+    # Use re.sub for _t$ (not rstrip, which strips individual chars and would
+    # incorrectly turn 'umcdat' into 'umcda').
+    _tile_scope = re.sub(r'^\w+?_', '', args.tile_module or '')
     _tile_scope = re.sub(r'_t$', '', _tile_scope)
     _scope_candidates_extended = list(dict.fromkeys(
         _scope_candidates +
@@ -1017,6 +1087,7 @@ def main():
             'modei_check':    modei_diagnostics,
             'modei_entries_added': len(modei_extra_entries),
             'bus_width':      bus_width,
+            'cp_resolution':  cp_status,
         },
     }
     if plumbing:
@@ -1025,8 +1096,18 @@ def main():
 
     # Self-validate
     issues = self_validate(out, args.ref_dir)
+    # Fail-closed on an unresolved clock: never emit a new flop whose CP net cannot
+    # be structurally confirmed as the real clock in a present stage — a wrong/guessed
+    # clock is silent functional corruption with no FM to catch it in simple mode.
+    if _cp_unresolved:
+        issues.append(
+            f"CP-UNRESOLVED: dff_clock {dff_clock!r} does not drive any flop "
+            f"(.CP({dff_clock})) in stage(s) {_cp_unresolved} — cannot confirm the "
+            f"new flop's clock structurally. Re-derive per-stage CP (fenets/complete "
+            f"mode) or hand this change to complete mode; do NOT guess a CTS leaf.")
     out['diagnostics']['self_validation_issues'] = issues
     out['diagnostics']['self_validation_pass']   = (len(issues) == 0)
+    out['diagnostics']['cp_unresolved_stages']   = _cp_unresolved
 
     Path(args.output).write_text(json.dumps(out, indent=2))
     print(f'ECO_RPT_GENERATED: dff entry → {args.output}', file=sys.stderr)

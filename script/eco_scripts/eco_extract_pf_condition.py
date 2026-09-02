@@ -39,7 +39,7 @@ def _find_module_rtl(ref_dir, module, subdir='PreEco/SynRtl'):
     subdir='PreEco/SynRtl' is the OLD (pre-ECO) RTL; subdir='SynRtl' is the NEW
     (ECO-changed) target RTL. The added-branch diff needs both."""
     root = os.path.join(ref_dir, 'data', *subdir.split('/'))
-    base = re.sub(r'^ddrss_\w+?_t_', '', module)  # strip tile prefix if present
+    base = re.sub(r'^\w+?_t_', '', module)  # strip tile prefix if present
     for cand in (f'rtl_{base}.v', f'{base}.v', f'rtl_{module}.v'):
         p = os.path.join(root, cand)
         if os.path.isfile(p):

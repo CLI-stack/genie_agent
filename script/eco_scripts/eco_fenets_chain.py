@@ -104,12 +104,12 @@ def _parse_raw(path):
     res, cur = {}, None
     txt = Path(path).read_text(errors='replace') if Path(path).is_file() else ''
     for ln in txt.splitlines():
-        m = re.search(r'Net:\s+r:/\S+?/ddrss_\w+?_t/(.+?)\s*$', ln)
+        m = re.search(r'Net:\s+r:/\S+?/\w+?_t/(.+?)\s*$', ln)
         if m:
             cur = m.group(1).rsplit('/', 1)[-1]     # leaf net name
             res.setdefault(cur, [])
             continue
-        m2 = re.search(r'Impl\s+Net\s+([+-])\s+i:/\S+?/ddrss_\w+?_t/(.+?)\s*$', ln)
+        m2 = re.search(r'Impl\s+Net\s+([+-])\s+i:/\S+?/\w+?_t/(.+?)\s*$', ln)
         if m2 and cur is not None:
             # keep the recdsp-scope-relative net (last 1-2 components: NET or CELL/PIN)
             full = m2.group(2)

@@ -522,7 +522,7 @@ def _synth_setup(ref_dir, module, jira='eco', rename_map=None):
     (e.g. the WCK-sync guard on both recdsp_c0mop and recdsp_c0vld is built once)."""
     if not (_Synth and RtlConfig):
         raise _CErr("synthesizer unavailable")
-    base = _mod_key(module) if _mod_key else re.sub(r'^ddrss_\w+?_t_', '', module)
+    base = _mod_key(module) if _mod_key else re.sub(r'^\w+?_t_', '', module)
     from eco_extract_pf_condition import resolve_rtl
     new_rtl = resolve_rtl(ref_dir=ref_dir, module=base, subdir='SynRtl')
     old_rtl = resolve_rtl(ref_dir=ref_dir, module=base, subdir='PreEco/SynRtl')

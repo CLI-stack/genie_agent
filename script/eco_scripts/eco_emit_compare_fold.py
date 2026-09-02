@@ -661,7 +661,7 @@ def main():
     # standalone debug
     if not (args.netlist_module and args.context_line and args.fold_signal and args.compare_signal):
         ap.error('need --rtl-diff+--study OR --netlist-module+--context-line+--fold-signal+--compare-signal')
-    short = re.sub(r'^ddrss_\w+?_t_', '', re.sub(r'_\d+$', '', args.netlist_module))
+    short = re.sub(r'^\w+?_t_', '', re.sub(r'_\d+$', '', args.netlist_module))
     params, errs = derive_params(args.ref_dir, short, args.context_line,
                                  args.fold_signal, args.compare_signal)
     if errs:

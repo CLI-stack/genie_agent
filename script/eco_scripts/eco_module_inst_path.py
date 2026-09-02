@@ -47,8 +47,10 @@ def build_parent_map(ref_dir, stage='Synthesize'):
             continue
         if cur is None:
             continue
-        # instantiation of a hierarchical (ddrss_*) submodule: "<ModuleType> <inst> ("
-        im = re.match(r'\s*(ddrss_\w+)\s+(\w+)\s*\(', line)
+        # instantiation of a hierarchical (tile-wrapped) submodule: "<ModuleType> <inst> ("
+        # ModuleType carries the tile-wrapper "_t_" infix (e.g. ddrss_umccmd_t_umcarb,
+        # gmc_gmcch_0_t_gmcbeq); leaf std-cells never do. Project-agnostic.
+        im = re.match(r'\s*(\w+_t_\w+)\s+(\w+)\s*\(', line)
         if im:
             parent_of.setdefault(im.group(1), []).append((cur, im.group(2)))
     _PARENT_CACHE[key] = parent_of
@@ -82,7 +84,7 @@ def inst_paths(module_base, ref_dir, stage='Synthesize', tile=None):
     if not parent_of:
         return []
     tile = tile or _detect_tile_module(parent_of)
-    prefix = module_base if module_base.startswith('ddrss_') else (
+    prefix = module_base if re.match(r'^\w+?_t_', module_base) else (
         f'{tile}_{module_base}' if tile else module_base)
     # exact module, else uniquified variants "<prefix>_<N>"
     candidates = [m for m in parent_of if m == prefix]
@@ -98,10 +100,11 @@ def inst_paths(module_base, ref_dir, stage='Synthesize', tile=None):
 
 
 def _detect_tile_module(parent_of):
-    """Tile module = the ddrss_*_t module that is never instantiated by another module."""
+    """Tile module = the tile-wrapper (*_t) module that is never instantiated by
+    another module. Project-agnostic (ddrss_<tile>_t, gmc_<tile>_t, ...)."""
     all_children = set(parent_of.keys())
     all_parents = {p for lst in parent_of.values() for p, _ in lst}
-    roots = [m for m in all_parents if m not in all_children and re.search(r'ddrss_\w+_t$', m)]
+    roots = [m for m in all_parents if m not in all_children and re.search(r'\w_t$', m)]
     return roots[0] if roots else ''
 
 

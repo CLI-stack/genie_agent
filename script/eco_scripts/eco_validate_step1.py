@@ -39,7 +39,7 @@ _PF_MODBODY_CACHE = {}
 def _mod_key(n):
     """Canonical module key: strip tile prefix (ddrss_*_t_) + uniquify suffix (_<i>)
     so a change's short name matches the netlist's prefixed/uniquified name."""
-    return re.sub(r'_\d+$', '', re.sub(r'^ddrss_\w+?_t_', '', str(n or '')))
+    return re.sub(r'_\d+$', '', re.sub(r'^\w+?_t_', '', str(n or '')))
 
 
 def _module_netlist_body(ref_dir, module):
@@ -83,7 +83,7 @@ def _pf_condition_leaf_issues(rtl_diff, ref_dir):
         if c.get('change_type') != 'priority_force':
             continue
         module = c.get('module_name') or ''
-        base = re.sub(r'^ddrss_\w+?_t_', '', module)
+        base = re.sub(r'^\w+?_t_', '', module)
         rtl = resolve_rtl(ref_dir=ref_dir, module=base)   # old RTL — for local-def decomposition
         if not rtl:
             continue
@@ -121,7 +121,7 @@ def _pf_condition_leaf_issues(rtl_diff, ref_dir):
         # new_port tokens threaded into this module by the ECO
         ported = {ch.get('new_token') for ch in rtl_diff.get('changes', [])
                   if ch.get('change_type') == 'new_port'
-                  and re.sub(r'^ddrss_\w+?_t_', '', str(ch.get('module_name') or '')) == base}
+                  and re.sub(r'^\w+?_t_', '', str(ch.get('module_name') or '')) == base}
         missing = []
         for leaf in leaves:
             if leaf.startswith('`'):
@@ -229,7 +229,7 @@ def _module_base(name):
     """Strip tile prefix (ddrss_*_t_) and uniquify suffix (_<i>) -> canonical base."""
     if not name:
         return ''
-    b = re.sub(r'^ddrss_\w+?_t_', '', str(name))
+    b = re.sub(r'^\w+?_t_', '', str(name))
     return re.sub(r'_\d+$', '', b)
 
 
@@ -246,7 +246,7 @@ def _is_registered_signal(signal, module, ref_dir):
     key = (ref_dir, module, signal)
     if key in _REG_SIG_CACHE:
         return _REG_SIG_CACHE[key]
-    base = re.sub(r'_\d+$', '', re.sub(r'^ddrss_\w+?_t_', '', str(module)))
+    base = re.sub(r'_\d+$', '', re.sub(r'^\w+?_t_', '', str(module)))
     text = None
     try:
         from eco_extract_pf_condition import resolve_rtl
@@ -379,7 +379,7 @@ def _flattened_instance_warnings(rtl_diff, ref_dir):
     for c in rtl_diff.get('changes', []):
         if c.get('change_type') != 'comb_net_force':
             continue
-        b = re.sub(r'_\d+$', '', re.sub(r'^ddrss_\w+?_t_', '', str(c.get('module_name') or '')))
+        b = re.sub(r'_\d+$', '', re.sub(r'^\w+?_t_', '', str(c.get('module_name') or '')))
         if b:
             bases.add(b)
         sc = c.get('scope') or c.get('instance_scope') or ''
@@ -457,7 +457,7 @@ def _rtl_port_width(ref_dir, module, port):
     int (1 for scalar) or None if the RTL/declaration can't be found."""
     if not (ref_dir and resolve_rtl and port):
         return None
-    base = re.sub(r'^ddrss_\w+?_t_', '', module or '')
+    base = re.sub(r'^\w+?_t_', '', module or '')
     rtl = resolve_rtl(ref_dir=ref_dir, module=base, subdir='SynRtl')
     if not rtl:
         return None
@@ -651,7 +651,7 @@ def _reg_guard_delta_kind(ref_dir, module, reg):
     try:
         import eco_cone_rebuild as _ecr
         from eco_extract_pf_condition import resolve_rtl
-        base = re.sub(r'^ddrss_\w+?_t_', '', str(module))
+        base = re.sub(r'^\w+?_t_', '', str(module))
         new_rtl = resolve_rtl(ref_dir=ref_dir, module=base, subdir='SynRtl')
         old_rtl = resolve_rtl(ref_dir=ref_dir, module=base, subdir='PreEco/SynRtl')
         if not (new_rtl and old_rtl):
@@ -1686,10 +1686,11 @@ def main():
                     f"(FM-036) on every anchor — Step 3 then has no bridge data.")
             elif '/' in (anchor.get('fm_scope') or ''):
                 # Sanity: fm_scope must look like instance/instance, not contain
-                # any module-type token (e.g. ddrss_<tile>_t_<peer>). Module-type
-                # tokens always start with the tile prefix.
+                # any module-type token (e.g. ddrss_<tile>_t_<peer>, gmc_<tile>_t_<peer>).
+                # Module-type tokens carry the tile-wrapper "_t_" infix or end in "_t";
+                # instance names never do. Project-agnostic.
                 fms = anchor['fm_scope']
-                bad = [tok for tok in fms.split('/') if tok.startswith('ddrss_')]
+                bad = [tok for tok in fms.split('/') if re.search(r'_t_|_t$', tok)]
                 if bad:
                     new_logic_field_issues.append(
                         f"changes[{idx}] target={tgt} [FAIL/13-FM-SCOPE-MODULE-TYPE]: "

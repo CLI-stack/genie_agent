@@ -207,7 +207,7 @@ def _pf_condition_completeness(study, rtl_diff, ref_dir):
         anchor = next((f for f in (c.get('forced_signals') or []) if f.get('const_macro')), None)
         if not anchor:
             continue
-        base = re.sub(r'^ddrss_\w+?_t_', '', mod)
+        base = re.sub(r'^\w+?_t_', '', mod)
         rtl = resolve_rtl(ref_dir=ref_dir, module=base)
         # GROUND TRUTH: the ECO-added branch (present in SynRtl, absent in PreEco).
         added = (extract_added_branch_condition(ref_dir, base, anchor['signal'], anchor['const_macro'])
@@ -495,7 +495,7 @@ def _rg_surgical_mismatch(ref_dir, module, reg, N=2000, branch_target=None):
 
 def _pf_modbody(ref_dir, module):
     gz = os.path.join(ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
-    want = re.sub(r'_\d+$', '', re.sub(r'^ddrss_\w+?_t_', '', str(module or '')))
+    want = re.sub(r'_\d+$', '', re.sub(r'^\w+?_t_', '', str(module or '')))
     body, grab = [], False
     if os.path.isfile(gz):
         try:
@@ -503,7 +503,7 @@ def _pf_modbody(ref_dir, module):
                 for ln in f:
                     mm = re.match(r'^module\s+(\S+)', ln)
                     if mm:
-                        grab = re.sub(r'_\d+$', '', re.sub(r'^ddrss_\w+?_t_', '', mm.group(1))) == want
+                        grab = re.sub(r'_\d+$', '', re.sub(r'^\w+?_t_', '', mm.group(1))) == want
                     if grab:
                         body.append(ln)
                         if ln.lstrip().startswith('endmodule'):
@@ -1429,7 +1429,7 @@ def main():
     # metadata VALUE (e.g. net_source="real_rtl_name") as a net and false-flags it.
     _META_KEYS = {'net_source', 'source', 'origin', 'note', 'comment', 'net_origin', 'resolved_by'}
     def _modkey(n):
-        return re.sub(r'_\d+$', '', re.sub(r'^ddrss_\w+?_t_', '', str(n or '')))
+        return re.sub(r'_\d+$', '', re.sub(r'^\w+?_t_', '', str(n or '')))
     # Build BOTH the global token set and a per-module token map in ONE pass per stage
     # (X4). Per-module scoping catches a leaf that exists somewhere in the stage but
     # NOT in the module where the gate is inserted (e.g. a P&R-renamed SEQMAP_NET).
@@ -6333,7 +6333,7 @@ def main():
                 # (d) parent-side port_connection coverage — the parent instantiates the
                 #     array N times; the new input port must be CONNECTED on every parent
                 #     instance, not just copy _0 (else N-1 copies float the port → FM fail).
-                childbase = re.sub(r'^ddrss_\w+?_t_', '', base)
+                childbase = re.sub(r'^\w+?_t_', '', base)
                 pc_insts = set()
                 for e in study.get('Synthesize', []):
                     if e.get('change_type') != 'port_connection':

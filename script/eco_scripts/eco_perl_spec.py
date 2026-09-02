@@ -261,6 +261,18 @@ def main():
             sig = e.get('signal_name') or e.get('new_token') or ''
             if sig:
                 new_port_nets.add(sig)
+        # Also include nets created/bridged by port_connection entries (Pass 3) in this
+        # same round — e.g. a Mode-I bridge whose companion new_logic_gate (Pass 1) reads
+        # the net that Pass 3 will connect. Pass 3 always runs after Pass 1 mechanically,
+        # but the net is a valid forward reference within the same round — do not SKIP it.
+        if e.get('change_type') == 'port_connection':
+            for key in ('net_name', 'net_name_after'):
+                pc_net = e.get(key, '')
+                if pc_net and isinstance(pc_net, str):
+                    new_port_nets.add(pc_net)
+                    flat_pc_net = re.sub(r'\[(\d+)\]', lambda m: f'_{m.group(1)}_', pc_net)
+                    if flat_pc_net != pc_net:
+                        new_port_nets.add(flat_pc_net)
         # Also include output nets of gates that will be inserted by this same Perl batch
         if e.get('change_type') in ('new_logic_gate', 'new_logic_dff', 'new_logic'):
             out = e.get('output_net', '')
@@ -326,16 +338,16 @@ def main():
     # Build scope → module_name map from PostEco for module resolution
     scope_to_mod = build_scope_to_module_map(posteco)
 
-    # Find the tile-root module name (for entries with empty instance_scope)
-    # Tile-root module follows pattern: ddrss_<tile>_t_<tile> (or with _0 suffix in Route)
+    # Find the tile-root module name (for entries with empty instance_scope).
+    # Tile-root module is the tile wrapper <project>_<tile>_t (or _0 suffix in Route);
+    # it ends in "_<tile>_t" and has NO submodule suffix after _t. Project-agnostic:
+    # match any leading <project>_ prefix (ddrss_, gmc_, ...) via [A-Za-z0-9_]*.
     tile_root_module = ''
     if args.tile:
-        # Tile-root module is ddrss_<tile>_t (or ddrss_<tile>_t_0 in Route)
-        # It does NOT have a submodule suffix after _t
-        for pat in [f'ddrss_{args.tile}_t ', f'ddrss_{args.tile}_t_0 ']:
+        for pat in [f'[A-Za-z0-9_]*{args.tile}_t ', f'[A-Za-z0-9_]*{args.tile}_t_0 ']:
             try:
                 proc = subprocess.run(
-                    f'zcat {posteco} | grep -m1 "^module {pat}" | awk \'{{print $2}}\'',
+                    f'zcat {posteco} | grep -m1 -E "^module {pat}" | awk \'{{print $2}}\'',
                     shell=True, capture_output=True, text=True, timeout=60
                 )
                 candidate = proc.stdout.strip().rstrip('(').rstrip()

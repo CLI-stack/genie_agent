@@ -440,17 +440,28 @@ def _scan_pins(gz):
 
 
 def _find_pins(inst_pins, mod, inst):
-    """Route re-uniquifies the study module with a trailing _0."""
+    """Match the study's module name against the netlist's — tolerant of the tile
+    prefix (ddrss_*_t_) AND the Route uniquify _0 suffix, consistent with _mod_key /
+    _module_netlist_body used by the builder. Complete mode passes the full
+    tile-prefixed name (exact match works); simple mode has no fenets, so the bare
+    RTL name (e.g. 'umcsdpintf' vs netlist 'ddrss_umccmd_t_umcsdpintf') flows through
+    and exact match alone would falsely fail-close the grounding gate."""
+    # fast path: exact + trailing-_0 (preserves prior behavior for full names)
     for m in (mod, mod + '_0'):
         if (m, inst) in inst_pins:
             return inst_pins[(m, inst)]
+    # prefix/uniquify-tolerant fallback: normalize both sides with _mod_key
+    want = _mod_key(mod)
+    for (km, ki), pins in inst_pins.items():
+        if ki == inst and _mod_key(km) == want:
+            return pins
     return None
 
 
 def _mod_key(n):
     """Canonical module key: strip tile prefix (ddrss_*_t_) + uniquify suffix (_<i>)
     so a change's short name matches the netlist's prefixed/uniquified name."""
-    return re.sub(r'_\d+$', '', re.sub(r'^ddrss_\w+?_t_', '', str(n or '')))
+    return re.sub(r'_\d+$', '', re.sub(r'^\w+?_t_', '', str(n or '')))
 
 
 _MOD_BODY_CACHE = {}
@@ -589,13 +600,27 @@ def emit(rtl_diff, study, jira, ref_dir=None, rename_map=None):
         return f"n_eco_{jira}_pf_{tag}_{seq[0]}"
     cfg = RtlConfig(ref_dir) if (ref_dir and RtlConfig) else None
     _body_cache = {}
+    # Nets this SAME ECO introduces (a new flop's Q, a threaded new port). A
+    # priority_force condition may legitimately reference one of these — it does NOT
+    # exist in PreEco yet but WILL exist post-apply (the sibling new_logic_dff /
+    # new_port changes create + thread it). Treat them as grounded so the condition
+    # synthesizes instead of fail-closing on a leaf the ECO itself provides.
+    _eco_new_nets = set()
+    for _c in rtl_diff.get('changes', []):
+        if _c.get('change_type') in ('new_logic_dff', 'new_logic', 'new_logic_gate', 'new_port',
+                                     'port_declaration', 'port_connection'):
+            for _k in ('new_token', 'target_register'):
+                _v = _c.get(_k)
+                if _v:
+                    _eco_new_nets.add(str(_v))
     def _in_netlist_pred(module):
         if not ref_dir:
             return (lambda s: True)
         if module not in _body_cache:
             _body_cache[module] = _module_netlist_body(ref_dir, module)
         txt = _body_cache[module]
-        return (lambda s: bool(re.search(r'\b' + re.escape(s) + r'\b', txt)))
+        return (lambda s: s in _eco_new_nets
+                          or bool(re.search(r'\b' + re.escape(s) + r'\b', txt)))
     added, errs = 0, []
     for c in rtl_diff.get('changes', []):
         if c.get('change_type') != 'priority_force':
@@ -622,7 +647,7 @@ def emit(rtl_diff, study, jira, ref_dir=None, rename_map=None):
             continue
         anchor = next((f for f in (c.get('forced_signals') or []) if f.get('const_macro')), None)
         if ref_dir and extract_added_branch_condition and anchor:
-            base = re.sub(r'^ddrss_\w+?_t_', '', mod)
+            base = re.sub(r'^\w+?_t_', '', mod)
             added_branches = extract_added_branch_condition(ref_dir, base, anchor['signal'], anchor['const_macro'])
             if len(added_branches) > 1:
                 errs.append(f"priority_force {mod}: the ECO diff adds {len(added_branches)} branches "
@@ -650,7 +675,7 @@ def emit(rtl_diff, study, jira, ref_dir=None, rename_map=None):
         _cells = _resolve_cells(ref_dir, mod) if ref_dir else _DEFAULT_CELLS
         cond = None
         if cond_expr and cfg is not None:
-            rtl = resolve_rtl(ref_dir=ref_dir, module=re.sub(r'^ddrss_\w+?_t_', '', mod)) if resolve_rtl else None
+            rtl = resolve_rtl(ref_dir=ref_dir, module=re.sub(r'^\w+?_t_', '', mod)) if resolve_rtl else None
             rtl_text = open(rtl, errors='replace').read() if rtl and os.path.isfile(rtl) else None
             try:
                 cond, cone = synthesize_condition(cond_expr, jira, mod, cfg, nn,
@@ -708,7 +733,18 @@ def emit(rtl_diff, study, jira, ref_dir=None, rename_map=None):
                 old = bspec.get('old_net')
                 dff_cell = bspec.get('dff_cell'); dff_pin = bspec.get('dff_pin', 'D')
                 if b is None:
-                    continue
+                    # Scalar register (e.g. `reg BlockScrubReq;`): the RTL diff carries a
+                    # single bits[] entry with bit=null (no index). Treat it as bit 0 so
+                    # the force-mux + D-pin rewire ARE emitted. Skipping it (the old
+                    # behaviour) silently dropped the entire force → the ECO's intent
+                    # (force sig=CONST under the new condition) was never implemented, and
+                    # with no FM in simple mode nothing would catch the missing logic.
+                    if is_bus:
+                        errs.append(f"priority_force {mod}: forced BUS signal {sig!r} has a "
+                                    f"bits[] entry with a null bit index — cannot place the bus "
+                                    f"force. Give an explicit bit index in the RTL diff.")
+                        continue
+                    b = 0   # scalar: single-bit force, net name is `sig` (no [bit])
                 cval = cbits[len(cbits) - 1 - b] if b < len(cbits) else '0'
                 net = f'{sig}[{b}]' if is_bus else sig     # the forced net's own name
                 drv = dmap.get(net)

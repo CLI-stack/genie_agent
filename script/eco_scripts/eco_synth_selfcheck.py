@@ -391,7 +391,7 @@ def _selector_independent_of_orig(gates, rewires):
 
 
 def run(ref_dir, module, signal, n=5000, seed=1, rename_map=None):
-    base = re.sub(r'^ddrss_\w+?_t_', '', module)
+    base = re.sub(r'^\w+?_t_', '', module)
     new_rtl = open(resolve_rtl(ref_dir=ref_dir, module=base, subdir='SynRtl'), errors='replace').read()
     old_rtl = open(resolve_rtl(ref_dir=ref_dir, module=base, subdir='PreEco/SynRtl'), errors='replace').read()
     cfg = RtlConfig(ref_dir)

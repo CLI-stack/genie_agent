@@ -63,7 +63,7 @@ def _pf_cone_leaves(change, ref_dir):
     if not (ref_dir and RtlConfig and synthesize_condition and extract_added_branch_condition):
         return []
     mod = change.get('module_name') or ''
-    base = re.sub(r'^ddrss_\w+?_t_', '', mod)
+    base = re.sub(r'^\w+?_t_', '', mod)
     anchor = next((f for f in (change.get('forced_signals') or []) if f.get('const_macro')), None)
     cond_expr = None
     if anchor:
