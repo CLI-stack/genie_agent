@@ -209,19 +209,80 @@ def _clock_drives_flops(ref_dir, stage, clock):
         return False
 
 
-def resolve_cp_per_stage(rename_map, host_scope, dff_clock, ref_dir=None):
+_CPNET_RE = re.compile(r'\.CP\s*\(\s*([A-Za-z0-9_]+)\s*\)')
+
+
+def _module_body_text(ref_dir, host_module, stage):
+    """Extract the body text of `host_module` (tolerant of _<N> uniquify) from the
+    stage's PreEco netlist. '' if not found/absent."""
+    gz = Path(ref_dir) / 'data' / 'PreEco' / f'{stage}.v.gz'
+    if not gz.is_file():
+        return ''
+    try:
+        cmd = (f"zcat {gz} | awk '/^module {re.escape(host_module)}(_[0-9]+)?[ (]/{{f=1}} "
+               f"f{{print}} /^endmodule/{{if(f)exit}}'")
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=180)
+        return r.stdout or ''
+    except Exception:
+        return ''
+
+
+def _neighbor_cp_per_stage(ref_dir, host_module, dff_clock):
+    """Region-correct per-stage CP for PP/Route via a register-instance anchor.
+    In Synthesize, collect the reg-base names of flops in `host_module` that are on
+    `.CP(dff_clock)` (same, ungated clock domain). In PP/Route, find flops whose
+    instance name contains one of those anchors and take the CLOCK NET they most
+    commonly use — that is the same domain's post-P&R/CTS net (e.g. UCLK01 -> wrp_clk_1
+    -> FxCts_ZCTSNET_*). Same-domain by construction: only Synth-dff_clock flops seed
+    the anchor set, so the new flop can never be moved onto a gated/foreign clock.
+    Returns {'PrePlace': net|None, 'Route': net|None}."""
+    import collections
+    if not (ref_dir and host_module and dff_clock):
+        return {}
+    syn = _module_body_text(ref_dir, host_module, 'Synthesize')
+    if not syn:
+        return {}
+    anchors = set()
+    for stmt in syn.split(';'):
+        m = _CPNET_RE.search(stmt)
+        if not m or m.group(1) != dff_clock:
+            continue
+        im = re.search(r'\b([A-Za-z_][A-Za-z0-9_]*_reg[0-9]*)', stmt)
+        if im:
+            anchors.add(im.group(1))
+    if not anchors:
+        return {}
+    out = {}
+    for stage in ('PrePlace', 'Route'):
+        body = _module_body_text(ref_dir, host_module, stage)
+        if not body:
+            out[stage] = None
+            continue
+        counts = collections.Counter()
+        for stmt in body.split(';'):
+            cpm = _CPNET_RE.search(stmt)
+            if cpm and any(a in stmt for a in anchors):
+                counts[cpm.group(1)] += 1
+        out[stage] = counts.most_common(1)[0][0] if counts else None
+    return out
+
+
+def resolve_cp_per_stage(rename_map, host_scope, dff_clock, ref_dir=None, host_module=''):
     """Resolve the new flop's CP net per stage. Priority:
       1. rename_map value (complete mode / fenets).
-      2. bare `dff_clock` IF it still drives flops (`.CP(<clock>)`) in that stage's
-         netlist — GUARANTEED correct because it IS the clock the RTL specifies.
-      3. else UNRESOLVED — do NOT substitute a CTS leaf or a gated variant. In
-         simple mode there is no FM to catch a wrong-clock insert, and an ungated
-         RTL flop must not be silently moved onto a gated/rebalanced clock.
-    A stage whose netlist is absent (Synth-only run) is 'stage_absent', not a flag.
-    Returns (cp_per_stage, cp_status) with cp_status[stage] in
-    {'rename_map','bare_clock_verified','bare_clock_unverified','stage_absent','UNRESOLVED'}."""
+      2. PP/Route: the REGION-CORRECT per-stage clock a same-domain neighbour flop
+         uses (register-instance anchor) — this is what fenets resolves (UCLK01 ->
+         wrp_clk_1 in PP -> FxCts_ZCTSNET_* in Route). Using the bare Synth clock name
+         in P&R stages is what fails FM PP-vs-Synth / Route-vs-PP on a new flop.
+      3. bare `dff_clock` IF it still drives flops (`.CP(<clock>)`) in that stage.
+      4. else UNRESOLVED — never substitute a gated/foreign clock (no FM in simple mode).
+    Synthesize always uses the RTL clock name. A stage whose netlist is absent is
+    'stage_absent'. Returns (cp_per_stage, cp_status) with cp_status[stage] in
+    {'rename_map','neighbor_anchor','bare_clock_verified','bare_clock_unverified',
+     'stage_absent','UNRESOLVED'}."""
     key = f'{host_scope}/{dff_clock}'
     entry = (rename_map or {}).get(key, {}) or {}
+    neigh = _neighbor_cp_per_stage(ref_dir, host_module, dff_clock) if (ref_dir and host_module) else {}
     cp, status = {}, {}
     for stage in ('Synthesize', 'PrePlace', 'Route'):
         v = entry.get(stage, '') if isinstance(entry, dict) else ''
@@ -231,6 +292,9 @@ def resolve_cp_per_stage(rename_map, host_scope, dff_clock, ref_dir=None):
         gz = Path(ref_dir) / 'data' / 'PreEco' / f'{stage}.v.gz' if ref_dir else None
         if ref_dir and gz is not None and not gz.is_file():
             cp[stage], status[stage] = dff_clock, 'stage_absent'
+            continue
+        if stage in ('PrePlace', 'Route') and neigh.get(stage):
+            cp[stage], status[stage] = neigh[stage], 'neighbor_anchor'
         elif _clock_drives_flops(ref_dir, stage, dff_clock):
             cp[stage], status[stage] = dff_clock, 'bare_clock_verified'
         elif not ref_dir:
@@ -613,7 +677,7 @@ def main():
 
     # ── Step B: per-stage CP/SI/SE ────────────────────────────────────────
     host_scope = rtl_change.get('host_scope', '') or rtl_change.get('hierarchy', '')
-    cp_per_stage, cp_status = resolve_cp_per_stage(rmap, host_scope, dff_clock, args.ref_dir)
+    cp_per_stage, cp_status = resolve_cp_per_stage(rmap, host_scope, dff_clock, args.ref_dir, host_module)
     _cp_unresolved = [st for st, s in cp_status.items() if s == 'UNRESOLVED']
     print(f'  CP per stage: '
           + ', '.join(f'{st}={cp_per_stage[st]}({cp_status[st]})' for st in
