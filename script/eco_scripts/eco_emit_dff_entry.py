@@ -227,44 +227,59 @@ def _module_body_text(ref_dir, host_module, stage):
         return ''
 
 
+def _cp_of_inst(body_stmts, anchor):
+    """Return the .CP net of the first instantiation statement whose text contains
+    `anchor` (tolerant of MB-merge: the merged cell name embeds the original reg
+    name), or None."""
+    for stmt in body_stmts:
+        if anchor in stmt:
+            cpm = _CPNET_RE.search(stmt)
+            if cpm:
+                return cpm.group(1)
+    return None
+
+
 def _neighbor_cp_per_stage(ref_dir, host_module, dff_clock):
-    """Region-correct per-stage CP for PP/Route via a register-instance anchor.
-    In Synthesize, collect the reg-base names of flops in `host_module` that are on
-    `.CP(dff_clock)` (same, ungated clock domain). In PP/Route, find flops whose
-    instance name contains one of those anchors and take the CLOCK NET they most
-    commonly use — that is the same domain's post-P&R/CTS net (e.g. UCLK01 -> wrp_clk_1
-    -> FxCts_ZCTSNET_*). Same-domain by construction: only Synth-dff_clock flops seed
-    the anchor set, so the new flop can never be moved onto a gated/foreign clock.
-    Returns {'PrePlace': net|None, 'Route': net|None}."""
-    import collections
+    """Region-correct per-stage CP for PP/Route via a SINGLE register-instance anchor
+    — the same mechanism complete mode uses (fenets runs find_equivalent_nets on a
+    neighbour flop's `clocked_on` pin). In Synthesize, collect reg-base names of flops
+    in `host_module` on `.CP(dff_clock)` (same, ungated domain). Pick the FIRST such
+    neighbour whose instance is findable in BOTH PP and Route, and use THAT one
+    neighbour's clock net in both stages — so PP and Route are provably 'clocked like
+    real flop X', which FM maps exactly as it maps X (no most-common guessing, no
+    PP/Route leaf mismatch). Same-domain by construction (only Synth-dff_clock flops
+    seed the candidates). Returns {'PrePlace': net|None, 'Route': net|None, '_anchor': inst}."""
     if not (ref_dir and host_module and dff_clock):
         return {}
     syn = _module_body_text(ref_dir, host_module, 'Synthesize')
     if not syn:
         return {}
-    anchors = set()
+    cands = []
     for stmt in syn.split(';'):
         m = _CPNET_RE.search(stmt)
         if not m or m.group(1) != dff_clock:
             continue
         im = re.search(r'\b([A-Za-z_][A-Za-z0-9_]*_reg[0-9]*)', stmt)
-        if im:
-            anchors.add(im.group(1))
-    if not anchors:
+        if im and im.group(1) not in cands:
+            cands.append(im.group(1))
+    if not cands:
         return {}
-    out = {}
-    for stage in ('PrePlace', 'Route'):
-        body = _module_body_text(ref_dir, host_module, stage)
-        if not body:
-            out[stage] = None
-            continue
-        counts = collections.Counter()
-        for stmt in body.split(';'):
-            cpm = _CPNET_RE.search(stmt)
-            if cpm and any(a in stmt for a in anchors):
-                counts[cpm.group(1)] += 1
-        out[stage] = counts.most_common(1)[0][0] if counts else None
-    return out
+    pp_stmts = _module_body_text(ref_dir, host_module, 'PrePlace').split(';')
+    rt_stmts = _module_body_text(ref_dir, host_module, 'Route').split(';')
+    pp_present = any(pp_stmts) and pp_stmts != ['']
+    rt_present = any(rt_stmts) and rt_stmts != ['']
+    # pick the first anchor whose clock resolves in EVERY present P&R stage
+    for a in cands:
+        ppc = _cp_of_inst(pp_stmts, a) if pp_present else None
+        rtc = _cp_of_inst(rt_stmts, a) if rt_present else None
+        if (not pp_present or ppc) and (not rt_present or rtc):
+            out = {'_anchor': a}
+            if ppc:
+                out['PrePlace'] = ppc
+            if rtc:
+                out['Route'] = rtc
+            return out
+    return {}
 
 
 def resolve_cp_per_stage(rename_map, host_scope, dff_clock, ref_dir=None, host_module=''):
