@@ -62,11 +62,11 @@ if ("$vf_file" == "") then
             # Detect current kernel version
             set kernel_version = `uname -r`
             if ("$kernel_version" =~ 4.18*) then
-                set kernel_dir = "linux_4.18.0_64.VCS"
+                set kernel_dir = "linux_4.18.0_64*"
             else if ("$kernel_version" =~ 3.10*) then
-                set kernel_dir = "linux_3.10.0_64.VCS"
+                set kernel_dir = "linux_3.10.0_64*"
             else
-                set kernel_dir = "linux_*.VCS"
+                set kernel_dir = "linux_*"
             endif
 
             # Search pattern for .vf file using tile name (flexible for UMC/OSS)

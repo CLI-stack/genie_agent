@@ -2690,10 +2690,10 @@ hr {{
         else:
             tile = '*'
 
-        # Pattern: out/linux_*.VCS/<ip>/config/*/pub/sim/publish/tiles/tile/<tile>/publish_rtl/manifest/*_lib.list
+        # Pattern: out/linux_*/<ip>/config/*/pub/sim/publish/tiles/tile/<tile>/publish_rtl/manifest/*_lib.list
         manifest_patterns = [
-            os.path.join(ref_dir, f'out/linux_*.VCS/{ip}/config/*/pub/sim/publish/tiles/tile/{tile}/publish_rtl/manifest/*_lib.list'),
-            os.path.join(ref_dir, f'out/linux_*.VCS/*/config/*/pub/sim/publish/tiles/tile/{tile}/publish_rtl/manifest/*_lib.list'),
+            os.path.join(ref_dir, f'out/linux_*/{ip}/config/*/pub/sim/publish/tiles/tile/{tile}/publish_rtl/manifest/*_lib.list'),
+            os.path.join(ref_dir, f'out/linux_*/*/config/*/pub/sim/publish/tiles/tile/{tile}/publish_rtl/manifest/*_lib.list'),
         ]
 
         manifest_file = None
@@ -2876,18 +2876,18 @@ hr {{
             fallback = {
                 'cdc': {
                     'umc': 'out/linux_*/*/config/*/pub/sim/publish/tiles/tile/umc_top/cad/rhea_cdc/cdc_*_output/cdc_report.rpt',
-                    'oss': 'out/linux_*.VCS/*/config/*_dc_elab/pub/sim/publish/tiles/tile/*/cad/rhea_cdc/cdc_*_output/cdc_report.rpt',
-                    'gmc': 'out/linux_*.VCS/*/config/*/pub/sim/publish/tiles/tile/gmc_*/cad/rhea_cdc/cdc_*_output/cdc_report.rpt',
+                    'oss': 'out/linux_*/*/config/*_dc_elab/pub/sim/publish/tiles/tile/*/cad/rhea_cdc/cdc_*_output/cdc_report.rpt',
+                    'gmc': 'out/linux_*/*/config/*/pub/sim/publish/tiles/tile/gmc_*/cad/rhea_cdc/cdc_*_output/cdc_report.rpt',
                 },
                 'lint': {
                     'umc': 'out/linux_*/*/config/*/pub/sim/publish/tiles/tile/umc_top/cad/rhea_lint/leda_waiver.log',
-                    'oss': 'out/linux_*.VCS/*/config/*/pub/sim/publish/tiles/tile/*/cad/rhea_lint/leda_waiver.log',
-                    'gmc': 'out/linux_*.VCS/*/config/*/pub/sim/publish/tiles/tile/gmc_*/cad/rhea_lint/leda_waiver.log',
+                    'oss': 'out/linux_*/*/config/*/pub/sim/publish/tiles/tile/*/cad/rhea_lint/leda_waiver.log',
+                    'gmc': 'out/linux_*/*/config/*/pub/sim/publish/tiles/tile/gmc_*/cad/rhea_lint/leda_waiver.log',
                 },
                 'spg_dft': {
                     'umc': 'out/linux_*/*/config/*/pub/sim/publish/tiles/tile/umc_top/cad/spg_dft/umc_top/moresimple.rpt',
-                    'oss': 'out/linux_*.VCS/*/config/*/pub/sim/publish/tiles/tile/*/cad/spg_dft/*/moresimple.rpt',
-                    'gmc': 'out/linux_*.VCS/*/config/*/pub/sim/publish/tiles/tile/gmc_*/cad/spg_dft/*/moresimple.rpt',
+                    'oss': 'out/linux_*/*/config/*/pub/sim/publish/tiles/tile/*/cad/spg_dft/*/moresimple.rpt',
+                    'gmc': 'out/linux_*/*/config/*/pub/sim/publish/tiles/tile/gmc_*/cad/spg_dft/*/moresimple.rpt',
                 },
             }
             ct = check_type if check_type in fallback else 'cdc'

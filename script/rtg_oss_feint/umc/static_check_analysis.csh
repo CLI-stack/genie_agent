@@ -10,15 +10,15 @@ echo "Tile: $tile_name"
 echo "========================================="
 
 # Detect current kernel version to match the correct output directory
-# RHEL7: linux_3.10.0_64.VCS, RHEL8: linux_4.18.0_64.VCS
+# RHEL7: linux_3.10.0_64*, RHEL8: linux_4.18.0_64*
 set kernel_version = `uname -r`
 if ("$kernel_version" =~ 4.18*) then
-    set kernel_dir = "linux_4.18.0_64.VCS"
+    set kernel_dir = "linux_4.18.0_64*"
 else if ("$kernel_version" =~ 3.10*) then
-    set kernel_dir = "linux_3.10.0_64.VCS"
+    set kernel_dir = "linux_3.10.0_64*"
 else
     # Fallback to wildcard if unknown kernel
-    set kernel_dir = "linux_*.VCS"
+    set kernel_dir = "linux_*"
 endif
 echo "Kernel detected: $kernel_version -> using $kernel_dir"
 

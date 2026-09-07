@@ -5,10 +5,10 @@
 set uname_result = `uname -r`
 if ("$uname_result" =~ *el8*) then
     set RHEL_TYPE = "RHEL8_64"
-    set out_linux_dir = "out/linux_4.18.0_64.VCS"
+    set out_linux_dir = "out/linux_4.18.0_64*"
 else
     set RHEL_TYPE = "RHEL7_64"
-    set out_linux_dir = "out/linux_3.10.0_64.VCS"
+    set out_linux_dir = "out/linux_3.10.0_64*"
 endif
 
 echo "Spyglass DFT execution started at `date`"

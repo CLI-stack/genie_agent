@@ -113,12 +113,12 @@ if (-f $content_file) then
             echo "# Detected code snippets - using smart log matching"
 
             # Find the lint log file for GMC
-            # GMC lint path: out/linux_*.VCS/$ip_name/config/gmc_leda/pub/sim/publish/tiles/tile/$tile_name/cad/rhea_lint/
+            # GMC lint path: out/linux_*/$ip_name/config/gmc_leda/pub/sim/publish/tiles/tile/$tile_name/cad/rhea_lint/
             set lint_log = `find $refdir_name/out -name "leda_waiver.log" -path "*/$ip_name/config/gmc_leda/*/tile/$tile_name/cad/rhea_lint/*" -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2`
 
             if ("$lint_log" == "") then
                 echo "ERROR: Could not find lint log file" >> $source_dir/data/${tag}_spec
-                echo "Expected path pattern: out/linux_*.VCS/$ip_name/config/gmc_leda/pub/sim/publish/tiles/tile/$tile_name/cad/rhea_lint/" >> $source_dir/data/${tag}_spec
+                echo "Expected path pattern: out/linux_*/$ip_name/config/gmc_leda/pub/sim/publish/tiles/tile/$tile_name/cad/rhea_lint/" >> $source_dir/data/${tag}_spec
                 set run_status = "failed"
                 source $source_dir/script/rtg_oss_feint/finishing_task.csh
                 exit 1

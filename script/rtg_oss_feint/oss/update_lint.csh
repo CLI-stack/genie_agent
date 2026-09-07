@@ -93,7 +93,7 @@ EOF
             echo "# Detected code snippets - using smart log matching"
             
             # Find the lint log file - use wildcard for kernel version (RHEL7: linux_3.10.0_64.VCS, RHEL8: linux_4.18.0_64.VCS)
-            set lint_log_pattern = "out/linux_*.VCS/*/config/*/pub/sim/publish/tiles/tile/*/cad/rhea_lint/leda_waiver.log"
+            set lint_log_pattern = "out/linux_*/*/config/*/pub/sim/publish/tiles/tile/*/cad/rhea_lint/leda_waiver.log"
 
             # Use find to locate the log file, sort by time (newest first) to get most recent when both RHEL versions exist
             set lint_log = `find $refdir_name/out -name "leda_waiver.log" -path "*/tile/$tile_name/cad/rhea_lint/*" -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2`

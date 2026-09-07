@@ -15,17 +15,17 @@ my $error_filter = $ARGV[2] || "";
 my $output_dir = $ARGV[3] || "";
 
 # Detect current kernel version to match the correct output directory
-# RHEL7: linux_3.10.0_64.VCS, RHEL8: linux_4.18.0_64.VCS
+# RHEL7: linux_3.10.0_64*, RHEL8: linux_4.18.0_64*
 my $kernel_version = `uname -r`;
 chomp($kernel_version);
 my $kernel_dir_pattern;
 if ($kernel_version =~ /^4\.18/) {
-    $kernel_dir_pattern = "linux_4.18.0_64.VCS";
+    $kernel_dir_pattern = "linux_4.18.0_64*";
 } elsif ($kernel_version =~ /^3\.10/) {
-    $kernel_dir_pattern = "linux_3.10.0_64.VCS";
+    $kernel_dir_pattern = "linux_3.10.0_64*";
 } else {
     # Fallback to wildcard if unknown kernel
-    $kernel_dir_pattern = "linux_*.VCS";
+    $kernel_dir_pattern = "linux_*";
 }
 
 # Extract changelist from configuration_id
