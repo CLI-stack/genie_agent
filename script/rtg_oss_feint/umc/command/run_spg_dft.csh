@@ -16,7 +16,7 @@ echo "Using RHEL type: $RHEL_TYPE"
 setenv SPGDFT_CONFIG $STEM/src/meta/tools/spgdft/variant/$ip_name
 
 # Resolve glob to actual directory (handles both .VCS and non-.VCS naming)
-set out_linux_dir = `ls -d $out_linux_pattern 2>/dev/null | head -1`
+set out_linux_dir = `sh -c "ls -d ${out_linux_pattern} 2>/dev/null | head -1"`
 if ("$out_linux_dir" == "" || ! -d "$out_linux_dir") then
     echo "ERROR: Cannot find $out_linux_pattern directory"
     exit 1
