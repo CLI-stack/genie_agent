@@ -932,7 +932,17 @@ class _MultiAgentOrchestrator_DISABLED:
 
 class GenieCLI:
     def __init__(self, base_dir=None):
-        if base_dir is None:
+        # Standalone ECO flow: when ECO_OUT_DIR is exported, ALL launch bookkeeping
+        # (runs/<tag>.log, data/<tag>_spec, _pid, _metadata, ...) is redirected into
+        # the tile's AI_ECO_FLOW_<TAG> dir, so the flow has ONE output tree and never
+        # writes back to <repo>/users/$USER/data. Falls back to the legacy layout when
+        # the var is unset. See eco_analyze.csh / ROUND_ORCHESTRATOR (Option A).
+        eco_out = os.environ.get('ECO_OUT_DIR', '').strip()
+        if eco_out:
+            self.base_dir = eco_out
+            os.makedirs(os.path.join(eco_out, 'data'), exist_ok=True)
+            os.makedirs(os.path.join(eco_out, 'runs'), exist_ok=True)
+        elif base_dir is None:
             # Default to the main_agent directory
             agent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             # Auto-detect user directory: if users/$USER exists, use it as base_dir
@@ -944,6 +954,14 @@ class GenieCLI:
                 self.base_dir = agent_dir
         else:
             self.base_dir = base_dir
+
+        # script_root: the dir that actually holds script/ + csh/ (users/$USER or agent root).
+        # base_dir may be repointed to a tile's AI_ECO_FLOW_<TAG> output dir (has only data/+runs/),
+        # so the run script must cd HERE to source script/... and csh/... .
+        _agent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        _sr_user = os.environ.get('USER', os.environ.get('LOGNAME', ''))
+        _sr_user_dir = os.path.join(_agent_dir, 'users', _sr_user)
+        self.script_root = _sr_user_dir if (_sr_user and os.path.isdir(_sr_user_dir)) else _agent_dir
 
         self.keyword = {}
         self.instruction = {}
@@ -965,6 +983,14 @@ class GenieCLI:
         self._load_assignment()
         self._load_patterns()
         self._load_project_list()
+
+        # Default notification recipient: <$USER>@amd.com. If assignment.csv provides
+        # `debugger` rows they take precedence; otherwise derive from the running user so
+        # the flow is portable with no hardcoded emails. `--to` still overrides both.
+        if not self.debugger_emails:
+            _u = os.environ.get('USER', os.environ.get('LOGNAME', '')).strip()
+            if _u:
+                self.debugger_emails = [f"{_u}@amd.com"]
 
     def _load_keyword(self):
         """Load keyword.csv and create one-hot encoding"""
@@ -1624,6 +1650,44 @@ class GenieCLI:
         tag = self.generate_tag()
         arguementInfo['tag'] = tag
 
+        # Standalone ECO — route the ECO ENTRY task's launch bookkeeping (runs/<tag>.csh,
+        # log, data/<tag>_{spec,pid,metadata,debug,analyze}) into the tile's AI_ECO_FLOW_<tag>
+        # (or AI_ECO_FLOW_SIMPLE_<tag> for simple mode) so NOTHING lands in <repo>/users/$USER/data.
+        # The FM sub-launches (find_equivalent_nets, post_eco_formality) already set ECO_OUT_DIR
+        # via the orchestrator MDs; this covers the analyze entry, where ECO_OUT_DIR is not yet
+        # known (the TAG is generated here).
+        if not os.environ.get('ECO_OUT_DIR', '').strip() and 'eco_analyze' in (script or '').lower():
+            _rd = str(arguementInfo.get('refDir', '')).replace('refDir:', '').strip(':').strip()
+            if _rd and _rd != 'refDir' and os.path.isdir(_rd):
+                _mode = os.environ.get('ECO_MODE', '').strip().lower()
+                if not _mode:
+                    if 'simple' in instruction_text.lower().split():
+                        _mode = 'simple'
+                    else:
+                        _mode = 'complete'
+                flow_prefix = 'AI_ECO_FLOW_SIMPLE_' if _mode == 'simple' else 'AI_ECO_FLOW_'
+                self.base_dir = os.path.join(_rd, f'{flow_prefix}{tag}')
+                os.makedirs(os.path.join(self.base_dir, 'data'), exist_ok=True)
+                os.makedirs(os.path.join(self.base_dir, 'runs'), exist_ok=True)
+
+        # eco_analyze is tile-AGNOSTIC — any tile may be used, not just those listed
+        # in assignment.csv. The generic parser only tags a token as `tile` when it
+        # matches a known assignment.csv tile, so an unlisted tile arrives empty. Here
+        # we derive it positionally from "... for <tile> <jira>": the non-path token
+        # immediately before the trailing JIRA integer. Scoped to eco_analyze only, so
+        # other commands' tile handling is unchanged.
+        if 'eco_analyze' in (script or '').lower() and arguementInfo.get('tile', 'tile') in ('tile', ''):
+            _toks = instruction_text.split()
+            for _k in range(len(_toks) - 1, 0, -1):
+                if re.fullmatch(r'\d+', _toks[_k].strip()):          # the JIRA integer
+                    _cand = _toks[_k - 1].strip().rstrip('/')
+                    if (_cand and not _cand.startswith('/')
+                            and _cand.lower() not in ('for', 'eco', 'at', 'analyze',
+                                'analyse', 'analysis', 'make', 'run', 'directory',
+                                'following', 'the')):
+                        arguementInfo['tile'] = 'tile:' + _cand
+                    break
+
         # Special handler: analyze_fixer_only — no script to run, just create _analyze and signal (fixer mode)
         if script.startswith('analyze_fixer_only'):
             ref_dir_raw = arguementInfo.get('refDir', '')
@@ -1913,7 +1977,11 @@ class GenieCLI:
             # Handle multi-line instructions - comment each line
             instruction_commented = instruction_text.replace('\n', '\n# ')
             f.write(f"# Instruction: {instruction_commented}\n\n")
-            f.write(f"cd {self.base_dir}\n")
+            f.write(f"cd {self.script_root}\n")
+            if self.base_dir != self.script_root:
+                # ECO: output bookkeeping lives in the tile's AI_ECO_FLOW_<TAG> dir; export it
+                # so the completion-email child genie_cli + FM csh resolve output there.
+                f.write(f"setenv ECO_OUT_DIR {self.base_dir}\n")
 
             if is_tilebuilder_cmd:
                 # TileBuilder commands need cpd.cshrc environment (conflicts with cbwa)
@@ -1934,7 +2002,7 @@ class GenieCLI:
             f.write(f"echo 'Script exit status:' $script_status\n")
             f.write(f"\n# Always send email if flag file exists (even on failure)\n")
             f.write(f"if (-f {self.base_dir}/data/{tag}_email) then\n")
-            f.write(f"    python3 {self.base_dir}/script/genie_cli.py --send-completion-email {tag}\n")
+            f.write(f"    python3 {self.script_root}/script/genie_cli.py --send-completion-email {tag}\n")
             f.write(f"endif\n")
             # Note: finishing_task.csh is called by individual scripts internally, not from here
 
@@ -2690,10 +2758,10 @@ hr {{
         else:
             tile = '*'
 
-        # Pattern: out/linux_*/<ip>/config/*/pub/sim/publish/tiles/tile/<tile>/publish_rtl/manifest/*_lib.list
+        # Pattern: out/linux_*.VCS/<ip>/config/*/pub/sim/publish/tiles/tile/<tile>/publish_rtl/manifest/*_lib.list
         manifest_patterns = [
-            os.path.join(ref_dir, f'out/linux_*/{ip}/config/*/pub/sim/publish/tiles/tile/{tile}/publish_rtl/manifest/*_lib.list'),
-            os.path.join(ref_dir, f'out/linux_*/*/config/*/pub/sim/publish/tiles/tile/{tile}/publish_rtl/manifest/*_lib.list'),
+            os.path.join(ref_dir, f'out/linux_*.VCS/{ip}/config/*/pub/sim/publish/tiles/tile/{tile}/publish_rtl/manifest/*_lib.list'),
+            os.path.join(ref_dir, f'out/linux_*.VCS/*/config/*/pub/sim/publish/tiles/tile/{tile}/publish_rtl/manifest/*_lib.list'),
         ]
 
         manifest_file = None
@@ -2876,18 +2944,18 @@ hr {{
             fallback = {
                 'cdc': {
                     'umc': 'out/linux_*/*/config/*/pub/sim/publish/tiles/tile/umc_top/cad/rhea_cdc/cdc_*_output/cdc_report.rpt',
-                    'oss': 'out/linux_*/*/config/*_dc_elab/pub/sim/publish/tiles/tile/*/cad/rhea_cdc/cdc_*_output/cdc_report.rpt',
-                    'gmc': 'out/linux_*/*/config/*/pub/sim/publish/tiles/tile/gmc_*/cad/rhea_cdc/cdc_*_output/cdc_report.rpt',
+                    'oss': 'out/linux_*.VCS/*/config/*_dc_elab/pub/sim/publish/tiles/tile/*/cad/rhea_cdc/cdc_*_output/cdc_report.rpt',
+                    'gmc': 'out/linux_*.VCS/*/config/*/pub/sim/publish/tiles/tile/gmc_*/cad/rhea_cdc/cdc_*_output/cdc_report.rpt',
                 },
                 'lint': {
                     'umc': 'out/linux_*/*/config/*/pub/sim/publish/tiles/tile/umc_top/cad/rhea_lint/leda_waiver.log',
-                    'oss': 'out/linux_*/*/config/*/pub/sim/publish/tiles/tile/*/cad/rhea_lint/leda_waiver.log',
-                    'gmc': 'out/linux_*/*/config/*/pub/sim/publish/tiles/tile/gmc_*/cad/rhea_lint/leda_waiver.log',
+                    'oss': 'out/linux_*.VCS/*/config/*/pub/sim/publish/tiles/tile/*/cad/rhea_lint/leda_waiver.log',
+                    'gmc': 'out/linux_*.VCS/*/config/*/pub/sim/publish/tiles/tile/gmc_*/cad/rhea_lint/leda_waiver.log',
                 },
                 'spg_dft': {
                     'umc': 'out/linux_*/*/config/*/pub/sim/publish/tiles/tile/umc_top/cad/spg_dft/umc_top/moresimple.rpt',
-                    'oss': 'out/linux_*/*/config/*/pub/sim/publish/tiles/tile/*/cad/spg_dft/*/moresimple.rpt',
-                    'gmc': 'out/linux_*/*/config/*/pub/sim/publish/tiles/tile/gmc_*/cad/spg_dft/*/moresimple.rpt',
+                    'oss': 'out/linux_*.VCS/*/config/*/pub/sim/publish/tiles/tile/*/cad/spg_dft/*/moresimple.rpt',
+                    'gmc': 'out/linux_*.VCS/*/config/*/pub/sim/publish/tiles/tile/gmc_*/cad/spg_dft/*/moresimple.rpt',
                 },
             }
             ct = check_type if check_type in fallback else 'cdc'
@@ -3878,14 +3946,16 @@ Content-Type: {content_type}; charset=utf-8"""
                 # Handle multi-line instructions - comment each line
                 instruction_commented = instruction_text.replace('\n', '\n# ')
                 f.write(f"# Instruction: {instruction_commented}\n\n")
-                f.write(f"cd {self.base_dir}\n")
+                f.write(f"cd {self.script_root}\n")
+                if self.base_dir != self.script_root:
+                    f.write(f"setenv ECO_OUT_DIR {self.base_dir}\n")
                 f.write(f"source csh/env.csh\n")
                 f.write(f"set tag = {tag}\n")
                 f.write(f"set tasksModelFile = tasksModelCLI.csv\n")
                 f.write(f"source script/{command}\n")
                 f.write(f"# Send email if flag file exists (use hardcoded path to avoid variable issues)\n")
                 f.write(f"if (-f {self.base_dir}/data/{tag}_email) then\n")
-                f.write(f"    python3 {self.base_dir}/script/genie_cli.py --send-completion-email {tag}\n")
+                f.write(f"    python3 {self.script_root}/script/genie_cli.py --send-completion-email {tag}\n")
                 f.write(f"endif\n")
                 f.write(f"source script/rtg_oss_feint/finishing_task.csh\n")
 
