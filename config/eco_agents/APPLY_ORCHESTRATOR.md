@@ -12,7 +12,7 @@ TILE         = <TILE>
 JIRA         = <JIRA>
 BASE_DIR     = <BASE_DIR>
 AI_ECO_FLOW_DIR = <AI_ECO_FLOW_DIR>
-HANDOFF_PATH = <BASE_DIR>/data/<TAG>_phase_a_handoff.json
+HANDOFF_PATH = <AI_ECO_FLOW_DIR>/data/<TAG>_phase_a_handoff.json
 ```
 
 ---
@@ -58,27 +58,27 @@ For Step 6 FM polling, refresh `activeForm` periodically with elapsed time + per
 
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_applier.md` prepended. Pass:
 - `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `ROUND` (current round number — 1 for initial run, 2/3/... for fixer loop), `AI_ECO_FLOW_DIR`
-- The PreEco study JSON from Step 3: `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` — this is the **fully enriched** JSON written by eco_netlist_verifier (not the initial skeleton from eco_netlist_studier). It contains `port_connections_per_stage` for all 3 stages, auto-added port_declaration and consumer rewire entries, and all GAP-15 corrections.
+- The PreEco study JSON from Step 3: `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_preeco_study.json` — this is the **fully enriched** JSON written by eco_netlist_verifier (not the initial skeleton from eco_netlist_studier). It contains `port_connections_per_stage` for all 3 stages, auto-added port_declaration and consumer rewire entries, and all GAP-15 corrections.
 - Task: For each confirmed cell, backup PostEco netlist (using `bak_<TAG>_round<ROUND>` naming), locate same cell, verify old_net on pin, replace with new_net (rewire) or auto-insert inverter (new_logic), recompress, verify
-- Output: `<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`
+- Output: `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`
 
 Wait for eco_applier sub-agent to complete.
 
-**CHECKPOINT:** Verify `data/<TAG>_eco_applied_round<ROUND>.json` exists and contains a `summary` field. Check that backup files `<REF_DIR>/data/PostEco/<Stage>.v.gz.bak_<TAG>_round<ROUND>` exist for each stage that had confirmed cells. Do NOT continue to Step 5 (Pre-FM Quality Checker) if file is missing.
+**CHECKPOINT:** Verify `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_applied_round<ROUND>.json` exists and contains a `summary` field. Check that backup files `<REF_DIR>/data/PostEco/<Stage>.v.gz.bak_<TAG>_round<ROUND>` exist for each stage that had confirmed cells. Do NOT continue to Step 5 (Pre-FM Quality Checker) if file is missing.
 
 **Generate Step 4 RPT from JSON (ORCHESTRATOR responsibility — NOT eco_applier):**
 
 ```bash
 cd <BASE_DIR> && python3 script/eco_scripts/eco_rpt_generator.py step4 \
-    --applied data/<TAG>_eco_applied_round<ROUND>.json \
+    --applied <AI_ECO_FLOW_DIR>/data/<TAG>_eco_applied_round<ROUND>.json \
     --tag <TAG> --jira <JIRA> --round <ROUND> \
-    --output  data/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt
+    --output  <AI_ECO_FLOW_DIR>/data/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt
 ```
 Output format: header with summary counts, then `[stage]` sections each listing every entry as `STATUS name type=...` plus a `→` detail line (cell_type for INSERTED, rename for rewire APPLIED, reason for ALREADY_APPLIED/SKIPPED/VERIFY_FAILED). Every entry is self-explanatory — no one-liners without context.
 
 Copy to AI_ECO_FLOW_DIR and verify:
 ```bash
-cp <BASE_DIR>/data/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt <AI_ECO_FLOW_DIR>/
+cp <AI_ECO_FLOW_DIR>/data/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt <AI_ECO_FLOW_DIR>/
 ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt
 ```
 
@@ -95,20 +95,20 @@ This is the most critical syntax gate. eco_verilog_validator.sh runs the Verilog
 
 ```bash
 cd <BASE_DIR>
-bash script/eco_scripts/eco_verilog_validator.sh \
+ECO_OUT_DIR=<AI_ECO_FLOW_DIR> bash script/eco_scripts/eco_verilog_validator.sh \
     <BASE_DIR> <REF_DIR> <TAG> 1 \
-    data/<TAG>_eco_applied_round1.json
+    <AI_ECO_FLOW_DIR>/data/<TAG>_eco_applied_round1.json
 CHECK8_EXIT=$?
 ```
 
-Read `data/<TAG>_eco_verilog_validator_round1.json`. If any stage is FAIL → **do NOT spawn eco_pre_fm_checker yet**. Fix the syntax issues first using the inline fix procedures in eco_pre_fm_checker.md, then re-run eco_verilog_validator.sh. Only proceed when all 3 stages are PASS.
+Read `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_verilog_validator_round1.json`. If any stage is FAIL → **do NOT spawn eco_pre_fm_checker yet**. Fix the syntax issues first using the inline fix procedures in eco_pre_fm_checker.md, then re-run eco_verilog_validator.sh. Only proceed when all 3 stages are PASS.
 
-Pass `CHECK8_RESULT_PATH=data/<TAG>_eco_verilog_validator_round1.json` to the eco_pre_fm_checker sub-agent — it reads this pre-computed result directly (does NOT re-run eco_verilog_validator.sh).
+Pass `CHECK8_RESULT_PATH=<AI_ECO_FLOW_DIR>/data/<TAG>_eco_verilog_validator_round1.json` to the eco_pre_fm_checker sub-agent — it reads this pre-computed result directly (does NOT re-run eco_verilog_validator.sh).
 
 **Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_pre_fm_checker.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `BASE_DIR`, `ROUND=1`, `AI_ECO_FLOW_DIR`
-- Path to applied JSON: `<BASE_DIR>/data/<TAG>_eco_applied_round1.json`
-- `CHECK8_RESULT_PATH=<BASE_DIR>/data/<TAG>_eco_verilog_validator_round1.json` (pre-computed by ORCHESTRATOR — do NOT re-run)
+- Path to applied JSON: `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_applied_round1.json`
+- `CHECK8_RESULT_PATH=<AI_ECO_FLOW_DIR>/data/<TAG>_eco_verilog_validator_round1.json` (pre-computed by ORCHESTRATOR — do NOT re-run)
 
 Wait for sub-agent to complete.
 
@@ -116,19 +116,19 @@ Wait for sub-agent to complete.
 
 **MANDATORY EXISTENCE GATE** — the per-round pre-FM json is written ONLY when Step 5 PASSED (removed on fail), so its ABSENCE means Step 5 did not pass → do NOT submit FM:
 ```bash
-ls data/<TAG>_eco_pre_fm_check_round1.json || { echo "FAIL: Step 5 pre-FM did not pass (no round json) — do NOT submit FM. Inspect the newest data/<TAG>_eco_pre_fm_check_round1_iter*.json and re-spawn eco_pre_fm_checker."; exit 1; }
+ls <AI_ECO_FLOW_DIR>/data/<TAG>_eco_pre_fm_check_round1.json || { echo "FAIL: Step 5 pre-FM did not pass (no round json) — do NOT submit FM. Inspect the newest <AI_ECO_FLOW_DIR>/data/<TAG>_eco_pre_fm_check_round1_iter*.json and re-spawn eco_pre_fm_checker."; exit 1; }
 ```
 
 **MANDATORY JSON INTEGRITY GATE** — run BEFORE schema validation. Catches `PASS_OVERRIDE` tampering by the agent (a real failure mode observed in 9868 R2):
 ```bash
 python3 script/eco_scripts/eco_validate_pre_fm_integrity.py \
-    --check-json data/<TAG>_eco_pre_fm_check_round1.json
+    --check-json <AI_ECO_FLOW_DIR>/data/<TAG>_eco_pre_fm_check_round1.json
 # exit 1 → tampered or contradictory; abort and re-spawn eco_pre_fm_checker on a fresh file
 ```
 
 **MANDATORY JSON SCHEMA VALIDATION** — verify the eco_pre_fm_checker followed the output contract:
 ```python
-check = load(f"data/{TAG}_eco_pre_fm_check_round1.json")
+check = load(f"{AI_ECO_FLOW_DIR}/data/{TAG}_eco_pre_fm_check_round1.json")
 
 # Validate required fields — if any missing, eco_pre_fm_checker did not follow the schema
 required = ["tag", "round", "passed", "attempts", "issues_found", "issues_fixed",
@@ -223,9 +223,9 @@ else:
         # After fixing, re-apply and re-validate:
         bash eco_applier --force-reapply (re-applies updated study JSON entries)
         bash eco_verilog_validator.sh (syntax check all 3 stages)
-        spawn eco_pre_fm_checker sub-agent (ROUND=1, CHECK8_RESULT_PATH=data/{TAG}_eco_verilog_validator_round1.json)
+        spawn eco_pre_fm_checker sub-agent (ROUND=1, CHECK8_RESULT_PATH={AI_ECO_FLOW_DIR}/data/{TAG}_eco_verilog_validator_round1.json)
         # canonical round json exists ONLY on pass (removed on fail) — absence == not passed
-        cj = f"data/{TAG}_eco_pre_fm_check_round1.json"
+        cj = f"{AI_ECO_FLOW_DIR}/data/{TAG}_eco_pre_fm_check_round1.json"
         check = load(cj) if os.path.exists(cj) else {"passed": False}
 
     if check["passed"]:
@@ -259,7 +259,7 @@ else:
 
 **MANDATORY pre-FM gate — verify Step 5 JSON exists and passed:**
 ```bash
-ls <BASE_DIR>/data/<TAG>_eco_pre_fm_check_round1.json
+ls <AI_ECO_FLOW_DIR>/data/<TAG>_eco_pre_fm_check_round1.json
 ```
 If this file does NOT exist → Step 5 was never run → ABORT. Re-spawn eco_pre_fm_checker. **FM must NEVER be submitted without a passing Step 5 JSON.** No exceptions.
 
@@ -272,10 +272,10 @@ Wait for the sub-agent to complete.
 
 **CHECKPOINT:** Verify ALL of the following:
 ```bash
-ls <BASE_DIR>/data/<TAG>_eco_fm_verify.json
+ls <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_verify.json
 ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step6_fm_verify_round1.rpt
 ```
-Also read `data/<TAG>_eco_fm_tag_round1.tmp` to get `eco_fm_tag` — save it to `eco_fixer_state` if FM failed.
+Also read `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_tag_round1.tmp` to get `eco_fm_tag` — save it to `eco_fixer_state` if FM failed.
 
 ---
 
@@ -304,16 +304,16 @@ EOF
 
 ```bash
 cd <BASE_DIR>
-python3 script/genie_cli.py \
+ECO_OUT_DIR=<AI_ECO_FLOW_DIR> python3 script/genie_cli.py \
   -i "run post eco formality at <REF_DIR> for <TILE>" \
   --execute --xterm
 ```
 
 The script reads `<REF_DIR>/data/eco_fm_config` automatically.
 
-**[eco_fm_runner sub-agent does this — not the ORCHESTRATOR]** eco_fm_runner reads the tag from CLI output, saves it to `<BASE_DIR>/data/<TAG>_eco_fm_tag_round<ROUND>.tmp`, polls `data/<eco_fm_tag>_spec` every 5 minutes until `OVERALL ECO FM RESULT:` appears.
+**[eco_fm_runner sub-agent does this — not the ORCHESTRATOR]** eco_fm_runner reads the tag from CLI output, saves it to `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_tag_round<ROUND>.tmp`, polls `<AI_ECO_FLOW_DIR>/data/<eco_fm_tag>_spec` every 5 minutes until `OVERALL ECO FM RESULT:` appears.
 
-**[eco_fm_runner sub-agent does this — not the ORCHESTRATOR]** eco_fm_runner parses results and writes `<BASE_DIR>/data/<TAG>_eco_fm_verify.json`. Since all 3 FM targets are always run every round, the JSON is fully updated from the current round — no "carry forward" from prior rounds. Every target has a fresh result:
+**[eco_fm_runner sub-agent does this — not the ORCHESTRATOR]** eco_fm_runner parses results and writes `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_verify.json`. Since all 3 FM targets are always run every round, the JSON is fully updated from the current round — no "carry forward" from prior rounds. Every target has a fresh result:
 ```json
 {
   "FmEqvEcoSynthesizeVsSynRtl": "PASS",
@@ -327,9 +327,9 @@ The script reads `<REF_DIR>/data/eco_fm_config` automatically.
 
 **OVERALL PASS** (as determined by the ORCHESTRATOR after the sub-agent completes) = all 3 targets show PASS in the merged `eco_fm_verify.json`.
 
-**[eco_fm_runner sub-agent does this — not the ORCHESTRATOR]** eco_fm_runner writes `data/<TAG>_eco_step6_fm_verify_round1.rpt` and copies it to `AI_ECO_FLOW_DIR/`.
+**[eco_fm_runner sub-agent does this — not the ORCHESTRATOR]** eco_fm_runner writes `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_step6_fm_verify_round1.rpt` and copies it to `AI_ECO_FLOW_DIR/`.
 
-**CHECKPOINT:** Verify both `data/<TAG>_eco_fm_verify.json` and `data/<TAG>_eco_step6_fm_verify_round<ROUND>.rpt` exist and are non-empty.
+**CHECKPOINT:** Verify both `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_verify.json` and `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_step6_fm_verify_round<ROUND>.rpt` exist and are non-empty.
 
 > **CONTEXT PRESSURE WARNING:** After eco_fm_runner completes, your context window may be near its limit. The ONLY remaining actions are: write round_handoff.json → write eco_fixer_state (if FAIL) → spawn next agent → HARD STOP. Make NO other tool calls. Do NOT read any extra files. Do NOT summarize. Do NOT generate reports. The SPAWN must happen — it is your only remaining mandatory action. If you run out of context without spawning, the RESUMPTION CHECK at the top of this file will recover the flow on the next invocation.
 
@@ -350,7 +350,7 @@ The status_collector also embeds per-target `abort_pattern` + `abort_evidence` +
 ```python
 attempt = 0
 while attempt < 10:
-    fm = read_json(f'data/{TAG}_eco_fm_verify.json')
+    fm = read_json(f'{AI_ECO_FLOW_DIR}/data/{TAG}_eco_fm_verify.json')
     verdict = fm.get('verdict', 'UNKNOWN')
 
     if verdict == 'PASS':
@@ -374,12 +374,12 @@ REF_DIR      = {REF_DIR}
 BASE_DIR     = {BASE_DIR}
 ROUND        = {ROUND}
 ATTEMPT      = {attempt}
-FM_VERIFY_PATH = {BASE_DIR}/data/{TAG}_eco_fm_verify.json
-HANDOFF_PATH = {BASE_DIR}/data/{TAG}_round_handoff.json
+FM_VERIFY_PATH = {AI_ECO_FLOW_DIR}/data/{TAG}_eco_fm_verify.json
+HANDOFF_PATH = {AI_ECO_FLOW_DIR}/data/{TAG}_round_handoff.json
 '''
     )
 
-    summary = read_json(f'data/{TAG}_abort_recovery_attempt{attempt}.json')
+    summary = read_json(f'{AI_ECO_FLOW_DIR}/data/{TAG}_abort_recovery_attempt{attempt}.json')
     # Loop continues only when a real patch landed. Anything else → exit.
     if summary.get('status') != 'PATCH_APPLIED':
         break  # PATCH_INCOMPLETE / PATCH_NOOP / REASONING_REFUSED / etc.
@@ -407,7 +407,7 @@ HANDOFF_PATH = {BASE_DIR}/data/{TAG}_round_handoff.json
     spawn_eco_fm_runner(targets=sorted(rerun_targets))
 
 # After loop:
-final = read_json(f'data/{TAG}_eco_fm_verify.json').get('verdict', 'UNKNOWN')
+final = read_json(f'{AI_ECO_FLOW_DIR}/data/{TAG}_eco_fm_verify.json').get('verdict', 'UNKNOWN')
 
 # ── Auto-grow YAML pattern library on PASS ─────────────────────────────────
 # When reasoning-mode patches led to FM PASS, append validated suggestions to
@@ -436,7 +436,7 @@ def grow_auto_yaml_from_attempts(TAG, BASE_DIR, attempt_count):
 
     new_entries = {}
     for n in range(1, attempt_count + 1):
-        summary_path = f'{BASE_DIR}/data/{TAG}_abort_recovery_attempt{n}.json'
+        summary_path = f'{AI_ECO_FLOW_DIR}/data/{TAG}_abort_recovery_attempt{n}.json'
         if not Path(summary_path).is_file():
             continue
         summary = read_json(summary_path)
@@ -563,7 +563,7 @@ Decide `next_phase` from the FM verdict:
 | FM verdict = `ABORT_*` AND recovery_agent returned `PATCH_INCOMPLETE` | `STOP` |
 | FM verdict = `NOT_RUN` / `PARTIAL` / `UNKNOWN` | `STOP` |
 
-Write `<BASE_DIR>/data/<TAG>_round_handoff.json` **before any signal/spawn**:
+Write `<AI_ECO_FLOW_DIR>/data/<TAG>_round_handoff.json` **before any signal/spawn**:
 
 ```json
 {
@@ -585,7 +585,7 @@ Write `<BASE_DIR>/data/<TAG>_round_handoff.json` **before any signal/spawn**:
 
 **CHECKPOINT — MANDATORY:** Verify the file exists and is non-empty:
 ```bash
-ls -la <BASE_DIR>/data/<TAG>_round_handoff.json
+ls -la <AI_ECO_FLOW_DIR>/data/<TAG>_round_handoff.json
 ```
 If missing or empty — write it again. Do NOT proceed until confirmed on disk.
 
@@ -599,7 +599,7 @@ If missing or empty — write it again. Do NOT proceed until confirmed on disk.
 
 **Spawn a sub-agent (general-purpose)** with content of `config/eco_agents/FINAL_ORCHESTRATOR.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`
-- `ROUND_HANDOFF_PATH`: `<BASE_DIR>/data/<TAG>_round_handoff.json`
+- `ROUND_HANDOFF_PATH`: `<AI_ECO_FLOW_DIR>/data/<TAG>_round_handoff.json`
 - `TOTAL_ROUNDS`: 1
 
 Wait for the sub-agent to complete before writing the exit sentinel.
@@ -620,10 +620,10 @@ AI_ECO_FLOW_DIR=<REF_DIR>/AI_ECO_FLOW_<TAG>
 LOG_FILE=<LOG_FILE>
 SPEC_FILE=<SPEC_FILE>
 ROUND=2
-HANDOFF_PATH=<BASE_DIR>/data/<TAG>_round_handoff.json
+HANDOFF_PATH=<AI_ECO_FLOW_DIR>/data/<TAG>_round_handoff.json
 ```
 
-Then write `<BASE_DIR>/data/<TAG>_eco_fixer_state`:
+Then write `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fixer_state`:
 ```json
 {
   "round": 1,
@@ -656,8 +656,8 @@ Write a one-line note to SPEC_FILE describing why (e.g., `STOP: ABORT loop exhau
 The main session uses this marker to verify you honored the EXIT CONTRACT (per CLAUDE.md ECO Apply Mode block).
 
 ```bash
-date -Iseconds | xargs -I{} echo "exited {}" > <BASE_DIR>/data/<TAG>_apply_phase_exited.marker
-ls -la <BASE_DIR>/data/<TAG>_apply_phase_exited.marker
+date -Iseconds | xargs -I{} echo "exited {}" > <AI_ECO_FLOW_DIR>/data/<TAG>_apply_phase_exited.marker
+ls -la <AI_ECO_FLOW_DIR>/data/<TAG>_apply_phase_exited.marker
 ```
 
 This is the LAST file you write. After this:
@@ -681,18 +681,18 @@ You MUST stop after writing the sentinel. Do not:
 
 | File | Content |
 |------|---------|
-| `data/<TAG>_eco_analyze` | Metadata: tile, ref_dir, tag, jira |
-| `data/<TAG>_eco_rtl_diff.json` | RTL diff analysis + nets to query |
-| `data/<fenets_tag>_find_equivalent_nets_raw.rpt` | Raw FM output — all 3 targets concatenated |
-| `data/<TAG>_eco_step2_fenets.rpt` | Step 2 RPT — find_equivalent_nets results |
-| `data/<TAG>_eco_preeco_study.json` | PreEco netlist confirmation |
-| `data/<TAG>_eco_applied_round1.json` | ECO changes applied/inserted/skipped (Round 1) |
+| `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_analyze` | Metadata: tile, ref_dir, tag, jira |
+| `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json` | RTL diff analysis + nets to query |
+| `<AI_ECO_FLOW_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt` | Raw FM output — all 3 targets concatenated |
+| `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_step2_fenets.rpt` | Step 2 RPT — find_equivalent_nets results |
+| `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_preeco_study.json` | PreEco netlist confirmation |
+| `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_applied_round1.json` | ECO changes applied/inserted/skipped (Round 1) |
 | `<REF_DIR>/data/eco_fm_config` | FM run config (fixed filename) |
-| `data/<TAG>_eco_fm_verify.json` | PostEco FM verification results (Round 1) |
-| `data/<TAG>_eco_fixer_state` | Round tracking (if FM fails) |
-| `data/<TAG>_eco_step1_rtl_diff.rpt` | Step 1 RPT (written by rtl_diff_analyzer) |
-| `data/<TAG>_eco_step3_netlist_study_round1.rpt` | Step 3 RPT (written by eco_netlist_studier) |
-| `data/<TAG>_eco_step4_eco_applied_round1.rpt` | Step 4 RPT Round 1 (written by eco_applier) |
-| `data/<TAG>_eco_step6_fm_verify_round1.rpt` | Step 6 RPT Round 1 |
-| `data/<TAG>_round_handoff.json` | Handoff with `next_phase` (ROUND→signal main session; FINAL→spawned inline; STOP→no spawn) |
-| `data/<TAG>_apply_phase_exited.marker` | EXIT sentinel — main session polls for this to confirm clean exit |
+| `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_verify.json` | PostEco FM verification results (Round 1) |
+| `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fixer_state` | Round tracking (if FM fails) |
+| `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_step1_rtl_diff.rpt` | Step 1 RPT (written by rtl_diff_analyzer) |
+| `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_step3_netlist_study_round1.rpt` | Step 3 RPT (written by eco_netlist_studier) |
+| `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_step4_eco_applied_round1.rpt` | Step 4 RPT Round 1 (written by eco_applier) |
+| `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_step6_fm_verify_round1.rpt` | Step 6 RPT Round 1 |
+| `<AI_ECO_FLOW_DIR>/data/<TAG>_round_handoff.json` | Handoff with `next_phase` (ROUND→signal main session; FINAL→spawned inline; STOP→no spawn) |
+| `<AI_ECO_FLOW_DIR>/data/<TAG>_apply_phase_exited.marker` | EXIT sentinel — main session polls for this to confirm clean exit |

@@ -109,7 +109,7 @@ Those files and actions belong to FINAL_ORCHESTRATOR. If you produce them yourse
 
 ```bash
 # Always verify after writing:
-ls -la <BASE_DIR>/data/<TAG>_round_handoff.json
+ls -la <AI_ECO_FLOW_DIR>/data/<TAG>_round_handoff.json
 ```
 
 If the file does not exist or is empty after writing — write it again. Do NOT spawn any agent until this file is confirmed on disk.
@@ -288,15 +288,15 @@ This prevents context pressure from causing sub-agents to exit before completing
 
 | Before entering... | Verify on disk (JSON + RPT) |
 |--------------------|---------------------------|
-| Step 2 | `data/<TAG>_eco_rtl_diff.json` ✓ + `AI_ECO_FLOW_DIR/<TAG>_eco_step1_rtl_diff.rpt` ✓ |
-| Step 3 | `data/<TAG>_eco_step2_fenets.rpt` ✓ + all fenets raw RPTs in AI_ECO_FLOW_DIR ✓ |
-| Step 4 | `data/<TAG>_eco_preeco_study.json` ✓ + `AI_ECO_FLOW_DIR/<TAG>_eco_step3_netlist_study.rpt` ✓ |
-| Step 4b | `data/<TAG>_eco_applied_round<N>.json` ✓ + `AI_ECO_FLOW_DIR/<TAG>_eco_step4_eco_applied_round<N>.rpt` ✓ + all 3 stages md5-differ from backup ✓ |
-| Step 5 | `data/<TAG>_eco_pre_fm_check_round<N>.json` ✓ — pre-FM checks passed |
-| Step 6 | `data/<TAG>_eco_svf_entries.tcl` ✓ only if pre-existing FM failures exist — otherwise `svf_update_needed=false`, no TCL file |
-| After Step 6 | `data/<TAG>_round_handoff.json` ✓ — then spawn — then STOP |
-| Step 7b | `data/<TAG>_eco_summary.rpt` ✓ |
-| Step 8 | `data/<TAG>_eco_report.html` ✓ |
+| Step 2 | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json` ✓ + `AI_ECO_FLOW_DIR/<TAG>_eco_step1_rtl_diff.rpt` ✓ |
+| Step 3 | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_step2_fenets.rpt` ✓ + all fenets raw RPTs in AI_ECO_FLOW_DIR ✓ |
+| Step 4 | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_preeco_study.json` ✓ + `AI_ECO_FLOW_DIR/<TAG>_eco_step3_netlist_study.rpt` ✓ |
+| Step 4b | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_applied_round<N>.json` ✓ + `AI_ECO_FLOW_DIR/<TAG>_eco_step4_eco_applied_round<N>.rpt` ✓ + all 3 stages md5-differ from backup ✓ |
+| Step 5 | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_pre_fm_check_round<N>.json` ✓ — pre-FM checks passed |
+| Step 6 | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_svf_entries.tcl` ✓ only if pre-existing FM failures exist — otherwise `svf_update_needed=false`, no TCL file |
+| After Step 6 | `<AI_ECO_FLOW_DIR>/data/<TAG>_round_handoff.json` ✓ — then spawn — then STOP |
+| Step 7b | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_summary.rpt` ✓ |
+| Step 8 | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_report.html` ✓ |
 
 ---
 
@@ -593,7 +593,7 @@ When selecting a net to write into any `port_connections_per_stage` entry, **pre
 
 | Net type | How to identify | Preference |
 |----------|----------------|-----------|
-| **Real net (polarity ✓)** | Matches `old_token`/`new_token` from RTL diff. Found in `data/PreEco/SynRtl/*.v` as `reg`/`wire`/port. **AND** inverter parity from the bare wire to a registered driver matches FM's resolution. | **USE FIRST** |
+| **Real net (polarity ✓)** | Matches `old_token`/`new_token` from RTL diff. Found in `<REF_DIR>/data/PreEco/SynRtl/*.v` as `reg`/`wire`/port. **AND** inverter parity from the bare wire to a registered driver matches FM's resolution. | **USE FIRST** |
 | **Real net (polarity ✗)** | RTL-named wire exists in stage BUT P&R added odd INVs between the bare wire and the registered driver — bare wire is INVERTED value. | **DO NOT USE** — use FM's actual wire instead |
 | **P&R alias** | Does NOT appear in RTL source. Created by P&R tools. May change name between rounds. | Fall back when no polarity-correct real net |
 

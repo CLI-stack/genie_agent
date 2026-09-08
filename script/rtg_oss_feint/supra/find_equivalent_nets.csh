@@ -18,8 +18,16 @@ set target    = $3
 set netName   = $4
 set tile      = $5
 set source_dir = `pwd`
+# Standalone ECO flow (Option A): when ECO_OUT_DIR is exported, task spec/data land
+# under the tile's AI_ECO_FLOW_<TAG> tree instead of <repo>/users/$USER/data.
+if ( ${?ECO_OUT_DIR} ) then
+    set data_dir = "${ECO_OUT_DIR}/data"
+else
+    set data_dir = "$source_dir/data"
+endif
+mkdir -p $data_dir
 set target_run_dir = ":"
-touch $source_dir/data/${tag}_spec
+touch $data_dir/${tag}_spec
 
 # Strip "refDir:" prefix and any leading colons
 set refdir_name = `echo $refDir | sed 's/refDir://' | sed 's/^://g'`
@@ -66,37 +74,37 @@ set net_full_list = `echo $net_full_list`
 # --- Phase 1: Validate inputs ---
 
 if ("$refdir_name" == "" || "$refdir_name" == " ") then
-    echo "ERROR: refDir is empty or invalid" >> $source_dir/data/${tag}_spec
+    echo "ERROR: refDir is empty or invalid" >> $data_dir/${tag}_spec
     set run_status = "failed"
     source $source_dir/script/rtg_oss_feint/finishing_task.csh
     exit 1
 endif
 
 if (! -d $refdir_name) then
-    echo "ERROR: Directory not found: $refdir_name" >> $source_dir/data/${tag}_spec
+    echo "ERROR: Directory not found: $refdir_name" >> $data_dir/${tag}_spec
     set run_status = "failed"
     source $source_dir/script/rtg_oss_feint/finishing_task.csh
     exit 1
 endif
 
 if (! -f "$refdir_name/revrc.main") then
-    echo "ERROR: Not a TileBuilder directory (revrc.main not found)" >> $source_dir/data/${tag}_spec
-    echo "Directory: $refdir_name" >> $source_dir/data/${tag}_spec
+    echo "ERROR: Not a TileBuilder directory (revrc.main not found)" >> $data_dir/${tag}_spec
+    echo "Directory: $refdir_name" >> $data_dir/${tag}_spec
     set run_status = "failed"
     source $source_dir/script/rtg_oss_feint/finishing_task.csh
     exit 1
 endif
 
 if ($target_count == 0) then
-    echo "ERROR: FM target list is empty after parsing" >> $source_dir/data/${tag}_spec
+    echo "ERROR: FM target list is empty after parsing" >> $data_dir/${tag}_spec
     set run_status = "failed"
     source $source_dir/script/rtg_oss_feint/finishing_task.csh
     exit 1
 endif
 
 if ("$net_raw" == "" || "$net_raw" == "netName") then
-    echo "ERROR: NetName not specified. Use format: NetName: <net> or NetName: <net1>, <net2>, ..." >> $source_dir/data/${tag}_spec
-    echo "Example: NetName: ARB_BEQ_Cmd1Vld, ARB_BEQ_Cmd1Bank" >> $source_dir/data/${tag}_spec
+    echo "ERROR: NetName not specified. Use format: NetName: <net> or NetName: <net1>, <net2>, ..." >> $data_dir/${tag}_spec
+    echo "Example: NetName: ARB_BEQ_Cmd1Vld, ARB_BEQ_Cmd1Bank" >> $data_dir/${tag}_spec
     set run_status = "failed"
     source $source_dir/script/rtg_oss_feint/finishing_task.csh
     exit 1
@@ -136,10 +144,10 @@ foreach tgt ($target_list)
     echo "FM target '$tgt' status: $fm_status"
 
     if ("$fm_status" == "NOTRUN" || "$fm_status" == "RUNNING" || "$fm_status" == "UNKNOWN" || "$fm_status" == "NOT_FOUND") then
-        echo "#text#" >> $source_dir/data/${tag}_spec
-        echo "ERROR: FM target '$tgt' status is '$fm_status'" >> $source_dir/data/${tag}_spec
-        echo "Please ensure the Formality run has completed before running this command." >> $source_dir/data/${tag}_spec
-        echo "#text end#" >> $source_dir/data/${tag}_spec
+        echo "#text#" >> $data_dir/${tag}_spec
+        echo "ERROR: FM target '$tgt' status is '$fm_status'" >> $data_dir/${tag}_spec
+        echo "Please ensure the Formality run has completed before running this command." >> $data_dir/${tag}_spec
+        echo "#text end#" >> $data_dir/${tag}_spec
         rm -f $tb_status_log
         cd $source_dir
         set run_status = "failed"
@@ -285,9 +293,9 @@ foreach rf ($result_files)
     set sentinel_found = 0
     if (-f "$rf") set sentinel_found = `grep -c "FIND_EQUIVALENT_NETS_COMPLETE" $rf`
     if (! -f "$rf" || $sentinel_found == 0) then
-        echo "#text#" >> $source_dir/data/${tag}_spec
-        echo "ERROR: find_equivalent_nets timed out for: $rf" >> $source_dir/data/${tag}_spec
-        echo "#text end#" >> $source_dir/data/${tag}_spec
+        echo "#text#" >> $data_dir/${tag}_spec
+        echo "ERROR: find_equivalent_nets timed out for: $rf" >> $data_dir/${tag}_spec
+        echo "#text end#" >> $data_dir/${tag}_spec
         set all_ok = 0
     endif
 end
@@ -303,22 +311,22 @@ if ($all_ok == 0) then
 endif
 
 # --- Phase 7: Write results for all targets and finish ---
-echo "#table#" >> $source_dir/data/${tag}_spec
-echo "Field,Value" >> $source_dir/data/${tag}_spec
+echo "#table#" >> $data_dir/${tag}_spec
+echo "Field,Value" >> $data_dir/${tag}_spec
 set net_value = `echo $net_full_list | sed 's/  */ | /g'`
-echo "Net(s),$net_value" >> $source_dir/data/${tag}_spec
-echo "Targets Run,$target_raw" >> $source_dir/data/${tag}_spec
-echo "#table end#" >> $source_dir/data/${tag}_spec
+echo "Net(s),$net_value" >> $data_dir/${tag}_spec
+echo "Targets Run,$target_raw" >> $data_dir/${tag}_spec
+echo "#table end#" >> $data_dir/${tag}_spec
 
 # Write results per target with clear header
 foreach tgt ($target_list)
     set rf = "${refdir_name}/rpts/${tgt}/find_equivalent_nets_${tag}.txt"
-    echo "#text#" >> $source_dir/data/${tag}_spec
-    echo "===========================================" >> $source_dir/data/${tag}_spec
-    echo "TARGET: $tgt" >> $source_dir/data/${tag}_spec
-    echo "===========================================" >> $source_dir/data/${tag}_spec
-    grep -v "FIND_EQUIVALENT_NETS_COMPLETE" $rf >> $source_dir/data/${tag}_spec
-    echo "#text end#" >> $source_dir/data/${tag}_spec
+    echo "#text#" >> $data_dir/${tag}_spec
+    echo "===========================================" >> $data_dir/${tag}_spec
+    echo "TARGET: $tgt" >> $data_dir/${tag}_spec
+    echo "===========================================" >> $data_dir/${tag}_spec
+    grep -v "FIND_EQUIVALENT_NETS_COMPLETE" $rf >> $data_dir/${tag}_spec
+    echo "#text end#" >> $data_dir/${tag}_spec
 end
 
 # Cleanup TCL scripts

@@ -21,7 +21,15 @@ set tile   = $1
 set refDir = $2
 set tag    = $3
 set source_dir = `pwd`
-touch $source_dir/data/${tag}_spec
+# Standalone ECO flow (Option A): when ECO_OUT_DIR is exported, task spec/data land
+# under the tile's AI_ECO_FLOW_<TAG> tree instead of <repo>/users/$USER/data.
+if ( ${?ECO_OUT_DIR} ) then
+    set data_dir = "${ECO_OUT_DIR}/data"
+else
+    set data_dir = "$source_dir/data"
+endif
+mkdir -p $data_dir
+touch $data_dir/${tag}_spec
 
 # Parse tile (format: tile:umccmd or tile:umcdat)
 set tile_name = `echo $tile | sed 's/:/ /g' | awk '{$1="";print $0}' | sed 's/^ //'`
@@ -31,7 +39,7 @@ set refdir_name = `echo $refDir | sed 's/:/ /g' | awk '{$1="";print $0}' | sed '
 
 # Validate tile_name
 if ("$tile_name" == "" || "$tile_name" == " ") then
-    echo "ERROR: tile_name is empty or invalid" >> $source_dir/data/${tag}_spec
+    echo "ERROR: tile_name is empty or invalid" >> $data_dir/${tag}_spec
     set run_status = "failed"
     source $source_dir/script/rtg_oss_feint/finishing_task.csh
     exit 1
@@ -39,21 +47,21 @@ endif
 
 # Validate refdir_name
 if ("$refdir_name" == "" || "$refdir_name" == " ") then
-    echo "ERROR: refdir_name is empty or invalid" >> $source_dir/data/${tag}_spec
+    echo "ERROR: refdir_name is empty or invalid" >> $data_dir/${tag}_spec
     set run_status = "failed"
     source $source_dir/script/rtg_oss_feint/finishing_task.csh
     exit 1
 endif
 
 if (! -d "$refdir_name") then
-    echo "ERROR: Directory not found: $refdir_name" >> $source_dir/data/${tag}_spec
+    echo "ERROR: Directory not found: $refdir_name" >> $data_dir/${tag}_spec
     set run_status = "failed"
     source $source_dir/script/rtg_oss_feint/finishing_task.csh
     exit 1
 endif
 
 if (! -f "$refdir_name/revrc.main") then
-    echo "ERROR: Not a TileBuilder directory (revrc.main not found): $refdir_name" >> $source_dir/data/${tag}_spec
+    echo "ERROR: Not a TileBuilder directory (revrc.main not found): $refdir_name" >> $data_dir/${tag}_spec
     set run_status = "failed"
     source $source_dir/script/rtg_oss_feint/finishing_task.csh
     exit 1
@@ -61,7 +69,7 @@ endif
 
 set tile_dir      = "$refdir_name"
 set tile_dir_name = `basename $tile_dir`
-set out           = "$source_dir/data/${tag}_spec"
+set out           = "$data_dir/${tag}_spec"
 
 #------------------------------------------------------------------------------
 # READ CONFIG FILE (if exists)
@@ -489,7 +497,7 @@ echo "#table end#" >> $out
 #     but per-target was ABORT → 3 rounds of wrong fixes (5 hours wasted). Now fixed
 #     by replacing the old classifier CLI with eco_fm_status_collector.py which owns
 #     the canonical verdict end-to-end.
-set fm_verify_path = "$source_dir/data/${tag}_eco_fm_verify.json"
+set fm_verify_path = "$data_dir/${tag}_eco_fm_verify.json"
 set logs_dir       = "$refdir_name/logs"
 # Read PREV_VERIFY_JSON from config for carry-forward of skipped targets
 set prev_verify_arg = ""

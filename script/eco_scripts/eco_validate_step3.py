@@ -1931,7 +1931,11 @@ def main():
             if not e.get('confirmed', True): continue
             inst = e.get('instance_name') or e.get('cell_name') or e.get('signal_name', '?')
             ct = e.get('change_type', '?')
-            missing = [k for k in REQUIRED_CTX if not (e.get(k) or '').strip()]
+            def _ctx_empty(v):
+                if isinstance(v, list):
+                    return not any(str(x).strip() for x in v)
+                return not str(v or '').strip()
+            missing = [k for k in REQUIRED_CTX if _ctx_empty(e.get(k))]
             if missing:
                 issues.append(f"MEDIUM: {ct} {inst} missing context field(s) {missing} — studier must populate `reason`/`notes`/`source` per eco_netlist_studier.md 0e.")
 

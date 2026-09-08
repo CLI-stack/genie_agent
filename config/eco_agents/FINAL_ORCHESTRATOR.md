@@ -34,14 +34,14 @@ Set `AI_ECO_FLOW_DIR = ai_eco_flow_dir` from handoff.
 
 ## STEP 0 — Sync all per-tag artifacts to AI_ECO_FLOW_DIR (MANDATORY FIRST ACTION)
 
-Before generating any summary RPT, HTML, or email, copy every JSON / RPT / TXT artifact for this run from `<BASE_DIR>/data/` to `<AI_ECO_FLOW_DIR>/`. The flow dir is the engineer-facing handoff — anything left only in `data/` is invisible to whoever inherits the run.
+Before generating any summary RPT, HTML, or email, copy every JSON / RPT / TXT artifact for this run from `<AI_ECO_FLOW_DIR>/data/` to `<AI_ECO_FLOW_DIR>/`. The flow dir is the engineer-facing handoff — anything left only in `data/` is invisible to whoever inherits the run.
 
 ```bash
 # Sync all artifacts: JSON (machine), RPT (human), TXT (logs), HTML (per-round reports)
-for f in <BASE_DIR>/data/<TAG>_*.json \
-         <BASE_DIR>/data/<TAG>_*.rpt \
-         <BASE_DIR>/data/<TAG>_*.txt \
-         <BASE_DIR>/data/<TAG>_*.html ; do
+for f in <AI_ECO_FLOW_DIR>/data/<TAG>_*.json \
+         <AI_ECO_FLOW_DIR>/data/<TAG>_*.rpt \
+         <AI_ECO_FLOW_DIR>/data/<TAG>_*.txt \
+         <AI_ECO_FLOW_DIR>/data/<TAG>_*.html ; do
     [ -f "$f" ] && cp -n "$f" <AI_ECO_FLOW_DIR>/
 done
 ls <AI_ECO_FLOW_DIR>/<TAG>_*.json <AI_ECO_FLOW_DIR>/<TAG>_*.rpt | wc -l
@@ -53,7 +53,7 @@ The `cp -n` flag preserves anything earlier orchestrators already copied (don't 
 
 ## STEP 7a — Write Summary RPT
 
-Read all `data/<TAG>_eco_applied_round<ROUND>.json` files (ROUND = 1 to TOTAL_ROUNDS) and combine statistics.
+Read all `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_applied_round<ROUND>.json` files (ROUND = 1 to TOTAL_ROUNDS) and combine statistics.
 
 **Statistics calculation — concrete algorithm:**
 ```python
@@ -62,7 +62,7 @@ cells_removed = set()  # deduplicated by instance_name
 pins_rewired = 0       # cumulative across all rounds and stages
 
 for round_n in range(1, TOTAL_ROUNDS + 1):
-    data = json.load(open(f"data/{TAG}_eco_applied_round{round_n}.json"))
+    data = json.load(open(f"{AI_ECO_FLOW_DIR}/data/{TAG}_eco_applied_round{round_n}.json"))
     for stage_entries in data.values():       # each top-level key = stage name
         if not isinstance(stage_entries, list): continue
         for entry in stage_entries:
@@ -76,7 +76,7 @@ for round_n in range(1, TOTAL_ROUNDS + 1):
 ```
 Use `len(cells_added)`, `len(cells_removed)`, `pins_rewired` in summary.
 
-Write `<BASE_DIR>/data/<TAG>_eco_summary.rpt`:
+Write `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_summary.rpt`:
 
 ```
 ================================================================================
@@ -158,11 +158,11 @@ ECO STATISTICS
 LEVELS OF LOGIC (LOL) IMPACT  (deterministic — from eco_lol_impact.py, Synthesize PreEco)
   LOL = Levels of Logic: combinational gate levels in series feeding a register D-pin.
   Inverters/buffers are EXCLUDED. Measured BEFORE vs AFTER the ECO. Advisory only.
-  SOURCE (canonical): data/<TAG>_eco_lol_impact.json  — DO NOT hand-estimate.
+  SOURCE (canonical): <AI_ECO_FLOW_DIR>/data/<TAG>_eco_lol_impact.json  — DO NOT hand-estimate.
   If the JSON is missing, print "LOL Impact — not available" (STUDY/ROUND should have written it).
 --------------------------------------------------------------------------------
 
-  Read data/<TAG>_eco_lol_impact.json and render its `summary` then a row per `endpoints[]`:
+  Read <AI_ECO_FLOW_DIR>/data/<TAG>_eco_lol_impact.json and render its `summary` then a row per `endpoints[]`:
 
   Summary:
     Stage            : <summary.stage>   ns/level: <summary.ns_per_level>   inv/buf excluded: yes
@@ -212,27 +212,27 @@ Per-Step Reports  (all at: <AI_ECO_FLOW_DIR>/)
 ================================================================================
 ```
 
-After writing `data/<TAG>_eco_summary.rpt`, copy to AI_ECO_FLOW_DIR:
+After writing `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_summary.rpt`, copy to AI_ECO_FLOW_DIR:
 ```bash
-cp <BASE_DIR>/data/<TAG>_eco_summary.rpt <AI_ECO_FLOW_DIR>/
+cp <AI_ECO_FLOW_DIR>/data/<TAG>_eco_summary.rpt <AI_ECO_FLOW_DIR>/
 ```
 
-**CHECKPOINT:** Verify `data/<TAG>_eco_summary.rpt` written and non-empty before proceeding.
+**CHECKPOINT:** Verify `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_summary.rpt` written and non-empty before proceeding.
 
 ---
 
 ## STEP 7b — Write Final HTML Report
 
-Write `<BASE_DIR>/data/<TAG>_eco_report.html` **using the deterministic script — do NOT write HTML manually**:
+Write `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_report.html` **using the deterministic script — do NOT write HTML manually**:
 
 ```bash
 cd <BASE_DIR>
 python3 script/eco_scripts/eco_build_final_html.py \
     --tag <TAG> --jira <JIRA> --tile <TILE> \
-    --base-dir <BASE_DIR> \
+    --base-dir <AI_ECO_FLOW_DIR> \
     --total-rounds <TOTAL_ROUNDS> \
     --ai-eco-flow-dir <AI_ECO_FLOW_DIR>
-# → writes data/<TAG>_eco_report.html with correct CSS/structure
+# → writes <AI_ECO_FLOW_DIR>/data/<TAG>_eco_report.html with correct CSS/structure
 # → syncs to AI_ECO_FLOW_DIR automatically
 ```
 
@@ -263,7 +263,7 @@ and eco_fm_analysis_round<N>.json automatically.
 | Step 5 — Pre-FM Check | eco_step5_pre_fm_check_roundN.rpt (all rounds) |
 | Step 6 — FM Results | eco_step6_fm_verify_roundN.rpt + eco_fm_analysis_roundN.json (all rounds) |
 | Statistics | eco_applied_roundN.json aggregated |
-| Levels of Logic (LOL) | data/<TAG>_eco_lol_impact.json (deterministic — eco_lol_impact.py; summary + endpoints[]) |
+| Levels of Logic (LOL) | <AI_ECO_FLOW_DIR>/data/<TAG>_eco_lol_impact.json (deterministic — eco_lol_impact.py; summary + endpoints[]) |
 | Step Reports | file paths to AI_ECO_FLOW_DIR |
 
 **HTML structure — produce all sections below with full detail:**
@@ -522,7 +522,7 @@ LOL = combinational gate levels feeding a register D-pin | inverters/buffers exc
 - Round loop sections (Steps 3-6): repeat sub-sections for each round that ran
 - Failing points: show up to 10 sample paths; if more, show count and note "(see Step 6 RPT for full list)"
 
-**CHECKPOINT:** Verify `data/<TAG>_eco_report.html` written and non-empty before proceeding to Step 8.
+**CHECKPOINT:** Verify `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_report.html` written and non-empty before proceeding to Step 8.
 
 ---
 
@@ -536,19 +536,19 @@ cd <BASE_DIR>
 
 - If `status = "FM_PASSED"`:
   ```bash
-  python3 script/genie_cli.py --send-eco-email <TAG> --eco-result PASS
+  ECO_OUT_DIR=<AI_ECO_FLOW_DIR> python3 script/genie_cli.py --send-eco-email <TAG> --eco-result PASS
   ```
 - If `status = "MAX_ROUNDS"` (5 rounds attempted, FM still failing):
   ```bash
-  python3 script/genie_cli.py --send-eco-email <TAG> --eco-result MAX_ROUNDS_REACHED
+  ECO_OUT_DIR=<AI_ECO_FLOW_DIR> python3 script/genie_cli.py --send-eco-email <TAG> --eco-result MAX_ROUNDS_REACHED
   ```
 - If `status = "MANUAL_LIMIT"` (all remaining failing points are manual_only):
   ```bash
-  python3 script/genie_cli.py --send-eco-email <TAG> --eco-result MAX_ROUNDS_REACHED
+  ECO_OUT_DIR=<AI_ECO_FLOW_DIR> python3 script/genie_cli.py --send-eco-email <TAG> --eco-result MAX_ROUNDS_REACHED
   ```
 - If `status` is absent or `"FM_FAILED"` (unexpected — should not reach FINAL_ORCHESTRATOR in this state):
   ```bash
-  python3 script/genie_cli.py --send-eco-email <TAG>
+  ECO_OUT_DIR=<AI_ECO_FLOW_DIR> python3 script/genie_cli.py --send-eco-email <TAG>
   ```
 
 **MANDATORY CHECKPOINT — Do NOT proceed to cleanup until this succeeds.**
@@ -558,7 +558,7 @@ If it fails, retry once. Never skip the final email.
 **Cleanup:**
 ```bash
 rm -f <REF_DIR>/data/eco_fm_config
-rm -f <BASE_DIR>/data/<TAG>_round_handoff.json
+rm -f <AI_ECO_FLOW_DIR>/data/<TAG>_round_handoff.json
 ```
 
 ---
@@ -567,5 +567,5 @@ rm -f <BASE_DIR>/data/<TAG>_round_handoff.json
 
 | File | Content |
 |------|---------|
-| `data/<TAG>_eco_summary.rpt` | Summary RPT — statistics + per-step report index |
-| `data/<TAG>_eco_report.html` | Final HTML report (all rounds) |
+| `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_summary.rpt` | Summary RPT — statistics + per-step report index |
+| `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_report.html` | Final HTML report (all rounds) |

@@ -18,12 +18,12 @@ Step 2 scripts that MUST run in this order. Skipping any one means downstream st
 
 | Order | Script | Purpose | Output |
 |---|---|---|---|
-| 1 | `eco_fenets_derive_queries.py` | Walk rtl_diff and emit complete query list, incl. Cat-4d comb_net_force selector conditions (deterministic — replaces hand-picked agent reasoning) | `data/<TAG>_eco_fenets_queries_raw.json` |
-| 2 | `eco_fenets_sanitize_queries.py` | Collapse duplicate `<scope>/<scope>/` segments (rule-based clean-up) | `data/<TAG>_eco_fenets_queries.json` |
-| 3 | *(agent submits FM via TileBuilder)* | Run find_equivalent_nets per target, handle FM-036 retries, copy raw rpts | `data/<TAG>_find_equivalent_nets_raw*.rpt` |
-| 4 | `eco_fenets_rename_map.py` | Parse all raw rpts → emit per-stage rename map JSON (Step 3 reads this FIRST) | `data/<TAG>_eco_fenets_rename_map.json` |
-| 5 | `eco_fenets_chain.py` **(ONLY if rtl_diff has `comb_net_force`)** | Per-stage chaining (STEP D-CHAIN): resolve PP then Route selector conditions off the Synth net (survival shortcut + FM). Without it PP/Route stay FM-036 and C10 fails. | updates `data/<TAG>_eco_fenets_rename_map.json` |
-| 6 | `eco_validate_step2.py` | Final step2→step3 gate; **C10** hard-fails if any comb_net_force selector condition is unresolved in any stage | `data/<TAG>_eco_validate_step2.json` |
+| 1 | `eco_fenets_derive_queries.py` | Walk rtl_diff and emit complete query list, incl. Cat-4d comb_net_force selector conditions (deterministic — replaces hand-picked agent reasoning) | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_queries_raw.json` |
+| 2 | `eco_fenets_sanitize_queries.py` | Collapse duplicate `<scope>/<scope>/` segments (rule-based clean-up) | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_queries.json` |
+| 3 | *(agent submits FM via TileBuilder)* | Run find_equivalent_nets per target, handle FM-036 retries, copy raw rpts | `<AI_ECO_FLOW_DIR>/data/<TAG>_find_equivalent_nets_raw*.rpt` |
+| 4 | `eco_fenets_rename_map.py` | Parse all raw rpts → emit per-stage rename map JSON (Step 3 reads this FIRST) | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_rename_map.json` |
+| 5 | `eco_fenets_chain.py` **(ONLY if rtl_diff has `comb_net_force`)** | Per-stage chaining (STEP D-CHAIN): resolve PP then Route selector conditions off the Synth net (survival shortcut + FM). Without it PP/Route stay FM-036 and C10 fails. | updates `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_rename_map.json` |
+| 6 | `eco_validate_step2.py` | Final step2→step3 gate; **C10** hard-fails if any comb_net_force selector condition is unresolved in any stage | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_validate_step2.json` |
 
 **Do not start Step 2 work until you have read and acknowledged this script chain.** Each script is the authoritative implementation for its phase — do NOT replace any with manual reasoning. **Step 5 (chaining) runs between STEP D-MAP and the STEP F validator — see STEP D-CHAIN.**
 
@@ -31,7 +31,7 @@ Step 2 scripts that MUST run in this order. Skipping any one means downstream st
 
 ## STEP A — Derive comprehensive nets_to_query from changes[]
 
-Load `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json`. **Build `nets_to_query` from scratch** by walking `changes[]`. The goal: query EVERY net whose per-stage rename matters for the studier — clock, reset, chain leaves, port_promotion targets, Mode I candidates. This catches Mode J (per-stage rename divergence) and Mode I (undriven internal port pin) at Step 2 instead of waiting for Step 5/6.
+Load `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json`. **Build `nets_to_query` from scratch** by walking `changes[]`. The goal: query EVERY net whose per-stage rename matters for the studier — clock, reset, chain leaves, port_promotion targets, Mode I candidates. This catches Mode J (per-stage rename divergence) and Mode I (undriven internal port pin) at Step 2 instead of waiting for Step 5/6.
 
 **Per-change derivation (7 categories):**
 
@@ -112,8 +112,8 @@ for n in nets_to_query:
 **MANDATORY FIRST ACTION — invoke the deterministic sanitize script:**
 ```bash
 python3 script/eco_scripts/eco_fenets_sanitize_queries.py \
-    --queries-in  data/<TAG>_eco_fenets_queries_raw.json \
-    --queries-out data/<TAG>_eco_fenets_queries.json
+    --queries-in  <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_queries_raw.json \
+    --queries-out <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_queries.json
 ```
 The script writes `queries.json` plus a sibling marker file `queries_sanitize_marker.txt` proving it ran. Step 2 validator FAILs if the marker is missing.
 
@@ -124,10 +124,10 @@ The script writes `queries.json` plus a sibling marker file `queries_sanitize_ma
 If FM returns FM-036 on entries:
 - **DO NOT manually edit `queries.json` to "fix" paths.** This bypasses the deterministic sanitize step and silently drops queries.
 - Use FM-side scope adjustments via the retry rpts (let FM handle scope reconciliation through its built-in fallbacks).
-- If retries exhaust, write the failing entries to `data/<TAG>_eco_fenets_unresolved.json` for escalation.
+- If retries exhaust, write the failing entries to `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_unresolved.json` for escalation.
 
 If you discover additional queries you believe should be added (e.g. agent-side analysis surfaces a signal not in the canonical list):
-- **DO NOT add to `queries.json`.** Append to `data/<TAG>_eco_fenets_agent_added.json` with explicit `category: 99` + `source: "agent_added: <reason>"`. Submit those separately.
+- **DO NOT add to `queries.json`.** Append to `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_agent_added.json` with explicit `category: 99` + `source: "agent_added: <reason>"`. Submit those separately.
 
 Step 2 validator (`eco_validate_step2.py`) compares the SANITIZED queries.json against the deriver's raw output and FAILs if any category lost entries. Manual queries.json edits will be detected and the flow will block.
 
@@ -148,7 +148,7 @@ NEW LOGIC DFF ENTRIES — NO FM QUERY ON TARGET (queries on its dependencies onl
 **B1. Submit:**
 ```bash
 cd <BASE_DIR>
-python3 script/genie_cli.py \
+ECO_OUT_DIR=<AI_ECO_FLOW_DIR> python3 script/genie_cli.py \
   -i "find equivalent nets at <REF_DIR> for <TILE> netName:<net1>,<net2>,..." \
   --execute --xterm
 ```
@@ -179,9 +179,9 @@ grep -c "FIND_EQUIVALENT_NETS_COMPLETE" \
 - If all 3 counts = 1 → proceed to B3
 - If not → wait 5 minutes (`sleep 300` in one Bash call) then repeat
 - Max 12 retries (60 min total timeout)
-- Do NOT poll `data/<fenets_tag>_spec` — rpt files are authoritative
+- Do NOT poll `<AI_ECO_FLOW_DIR>/data/<fenets_tag>_spec` — rpt files are authoritative
 
-**B3. Read:** `cat <BASE_DIR>/data/<fenets_tag>_spec`
+**B3. Read:** `cat <AI_ECO_FLOW_DIR>/data/<fenets_tag>_spec`
 
 **B4. Write and copy raw rpt immediately:**
 ```bash
@@ -194,8 +194,8 @@ grep -c "FIND_EQUIVALENT_NETS_COMPLETE" \
   cat <REF_DIR>/rpts/FmEqvPreEcoPrePlaceVsPreEcoSynthesize/find_equivalent_nets_<fenets_tag>.txt
   echo "TARGET: FmEqvPreEcoRouteVsPreEcoPrePlace"
   cat <REF_DIR>/rpts/FmEqvPreEcoRouteVsPreEcoPrePlace/find_equivalent_nets_<fenets_tag>.txt
-} > <BASE_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt
-cp <BASE_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt <AI_ECO_FLOW_DIR>/
+} > <AI_ECO_FLOW_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt
+cp <AI_ECO_FLOW_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt <AI_ECO_FLOW_DIR>/
 ls <AI_ECO_FLOW_DIR>/<fenets_tag>_find_equivalent_nets_raw.rpt
 ```
 
@@ -235,7 +235,7 @@ Read `eco_rtl_diff.json` for this net's `change_type`. If `change_type = "wire_s
 
 **Step 2b — Pivot to target register query (when net is an internal wire):**
 ```bash
-python3 script/genie_cli.py \
+ECO_OUT_DIR=<AI_ECO_FLOW_DIR> python3 script/genie_cli.py \
   -i "find equivalent nets at <REF_DIR> for <TILE> netName:<hierarchy_path>/<target_register>" \
   --execute --xterm
 ```
@@ -320,13 +320,13 @@ After all FM queries complete, generate the per-stage rename map by running:
 ```bash
 cd <BASE_DIR>
 python3 script/eco_scripts/eco_fenets_rename_map.py \
-    --rtl-diff  data/<TAG>_eco_rtl_diff.json \
-    --raw-files data/<fenets_tag>_find_equivalent_nets_raw.rpt \
-                data/<retry_tag>_find_equivalent_nets_raw_*.rpt \
+    --rtl-diff  <AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json \
+    --raw-files <AI_ECO_FLOW_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt \
+                <AI_ECO_FLOW_DIR>/data/<retry_tag>_find_equivalent_nets_raw_*.rpt \
     --tag       <TAG> \
     --tile      <TILE> \
     --ref-dir   <REF_DIR> \
-    --output    data/<TAG>_eco_fenets_rename_map.json
+    --output    <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_rename_map.json
 ```
 
 **MANDATORY — pass `--ref-dir`** so rename_map emits `actual_wire_<stage>` (polarity-correct wire-on-pin) for each query. Without it, downstream Rule 32 polarity check loses its main data source and Mode J defenses are disabled.
@@ -351,7 +351,7 @@ The human-review `<TAG>_eco_step2_fenets.rpt` is unchanged — keep writing it i
 
 > **Scope note (wire_swap condition inputs):** rtl_diff records their scope as an RTL MODULE name. `eco_fenets_rename_map.derive_queries` (Cat 9) and `eco_fenets_chain._conditions` both resolve it to the gate-level INSTANCE path (incl. uniquified modules → each of their instance copies) via `eco_module_inst_path.inst_paths` — do NOT hand-patch these to the bare RTL name (that reintroduces the `_d<N>`-fallback bug).
 
-**Skip this step entirely ONLY if the rtl_diff has NONE of `comb_net_force`, a register-guard `and_term`, NOR a `wire_swap` with `condition_inputs_to_query`.** (Grep: `grep -qE 'comb_net_force|"target_register"|condition_inputs_to_query' data/<TAG>_eco_rtl_diff.json`.)
+**Skip this step entirely ONLY if the rtl_diff has NONE of `comb_net_force`, a register-guard `and_term`, NOR a `wire_swap` with `condition_inputs_to_query`.** (Grep: `grep -qE 'comb_net_force|"target_register"|condition_inputs_to_query' <AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json`.)
 
 Run the two stages **in order** (PrePlace uses Synthesize nets; Route uses the PrePlace nets just resolved). For each stage do emit-nets → (FM if needed) → merge:
 
@@ -360,18 +360,18 @@ Run the two stages **in order** (PrePlace uses Synthesize nets; Route uses the P
 cd <BASE_DIR>
 python3 script/eco_scripts/eco_fenets_chain.py \
     --mode emit-nets --stage PrePlace \
-    --rename-map data/<TAG>_eco_fenets_rename_map.json \
-    --rtl-diff   data/<TAG>_eco_rtl_diff.json \
+    --rename-map <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_rename_map.json \
+    --rtl-diff   <AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json \
     --ref-dir    <REF_DIR> \
-    --output     data/<TAG>_eco_fenets_rename_map.json \
-    > data/<TAG>_chain_PrePlace_queries.txt
+    --output     <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_rename_map.json \
+    > <AI_ECO_FLOW_DIR>/data/<TAG>_chain_PrePlace_queries.txt
 ```
 - The printed lines (stdout, captured to the `.txt`) are the scope-relative nets to query. **Empty file → every condition survived → skip D-CHAIN.2/.3 for PrePlace, go to Route.**
 
 **D-CHAIN.2 — PrePlace FM (BLOCKING, only if the query file is non-empty):**
 ```bash
-python3 script/genie_cli.py \
-  -i "find equivalent nets at <REF_DIR> for <TILE> netName:<comma-joined lines from data/<TAG>_chain_PrePlace_queries.txt>" \
+ECO_OUT_DIR=<AI_ECO_FLOW_DIR> python3 script/genie_cli.py \
+  -i "find equivalent nets at <REF_DIR> for <TILE> netName:<comma-joined lines from <AI_ECO_FLOW_DIR>/data/<TAG>_chain_PrePlace_queries.txt>" \
   --execute --xterm
 ```
 Poll every 5 minutes (same pattern as STEP B2) on the **PrePlace** target only:
@@ -381,33 +381,33 @@ When complete, write the raw rpt:
 {
   echo "TARGET: FmEqvPreEcoPrePlaceVsPreEcoSynthesize"
   cat <REF_DIR>/rpts/FmEqvPreEcoPrePlaceVsPreEcoSynthesize/find_equivalent_nets_<chain_tag>.txt
-} > data/<chain_tag>_find_equivalent_nets_raw_chain_PrePlace.rpt
-cp data/<chain_tag>_find_equivalent_nets_raw_chain_PrePlace.rpt <AI_ECO_FLOW_DIR>/
+} > <AI_ECO_FLOW_DIR>/data/<chain_tag>_find_equivalent_nets_raw_chain_PrePlace.rpt
+cp <AI_ECO_FLOW_DIR>/data/<chain_tag>_find_equivalent_nets_raw_chain_PrePlace.rpt <AI_ECO_FLOW_DIR>/
 ```
 
 **D-CHAIN.3 — PrePlace merge** (parse FM, pick same-phase `+` net-form equivalent, merge per-stage):
 ```bash
 python3 script/eco_scripts/eco_fenets_chain.py \
     --mode merge --stage PrePlace \
-    --rename-map data/<TAG>_eco_fenets_rename_map.json \
-    --rtl-diff   data/<TAG>_eco_rtl_diff.json \
+    --rename-map <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_rename_map.json \
+    --rtl-diff   <AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json \
     --ref-dir    <REF_DIR> \
-    --raw-rpt    data/<chain_tag>_find_equivalent_nets_raw_chain_PrePlace.rpt \
-    --output     data/<TAG>_eco_fenets_rename_map.json
+    --raw-rpt    <AI_ECO_FLOW_DIR>/data/<chain_tag>_find_equivalent_nets_raw_chain_PrePlace.rpt \
+    --output     <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_rename_map.json
 ```
 Exit 1 (`CHAIN PrePlace: UNRESOLVED`) → a condition had no `+` equivalent → escalate (do not silently proceed).
 
 **D-CHAIN.4-.6 — Route** (identical to .1/.2/.3 but `--stage Route`, PrePlace-target → **Route** target `FmEqvPreEcoRouteVsPreEcoPrePlace`, and file suffix `_chain_Route`). The emit-nets for Route reads the **PrePlace** values just merged and chains them forward:
 ```bash
 python3 script/eco_scripts/eco_fenets_chain.py --mode emit-nets --stage Route \
-    --rename-map data/<TAG>_eco_fenets_rename_map.json --rtl-diff data/<TAG>_eco_rtl_diff.json \
-    --ref-dir <REF_DIR> --output data/<TAG>_eco_fenets_rename_map.json \
-    > data/<TAG>_chain_Route_queries.txt
+    --rename-map <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_rename_map.json --rtl-diff <AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json \
+    --ref-dir <REF_DIR> --output <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_rename_map.json \
+    > <AI_ECO_FLOW_DIR>/data/<TAG>_chain_Route_queries.txt
 # → FM on FmEqvPreEcoRouteVsPreEcoPrePlace with those nets (if non-empty) →
 python3 script/eco_scripts/eco_fenets_chain.py --mode merge --stage Route \
-    --rename-map data/<TAG>_eco_fenets_rename_map.json --rtl-diff data/<TAG>_eco_rtl_diff.json \
-    --ref-dir <REF_DIR> --raw-rpt data/<chain_tag2>_find_equivalent_nets_raw_chain_Route.rpt \
-    --output data/<TAG>_eco_fenets_rename_map.json
+    --rename-map <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_rename_map.json --rtl-diff <AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json \
+    --ref-dir <REF_DIR> --raw-rpt <AI_ECO_FLOW_DIR>/data/<chain_tag2>_find_equivalent_nets_raw_chain_Route.rpt \
+    --output <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_rename_map.json
 ```
 
 **After D-CHAIN, the rename_map has all three stages resolved for every selector condition.** The Step 2 validator (STEP F) gate **C10** hard-fails if any comb_net_force selector condition is still unresolved in Synthesize/PrePlace/Route — so this step is what makes STEP F pass for comb_net_force ECOs.
@@ -420,9 +420,9 @@ After all initial + retry runs complete, determine which spec file resolved each
 
 ```python
 spec_sources = {
-    "Synthesize": f"{BASE_DIR}/data/{fenets_tag}_spec",
-    "PrePlace":   f"{BASE_DIR}/data/{fenets_tag}_spec",
-    "Route":      f"{BASE_DIR}/data/{fenets_tag}_spec",
+    "Synthesize": f"{AI_ECO_FLOW_DIR}/data/{fenets_tag}_spec",
+    "PrePlace":   f"{AI_ECO_FLOW_DIR}/data/{fenets_tag}_spec",
+    "Route":      f"{AI_ECO_FLOW_DIR}/data/{fenets_tag}_spec",
 }
 # Update per stage if a retry resolved it:
 # if noequiv_retry1 resolved PrePlace: spec_sources["PrePlace"] = f".../{noequiv_retry1_tag}_spec"
@@ -436,7 +436,7 @@ spec_sources = {
 
 **ECO type reclassification (GAP-9):** Before writing the per-net summary, check each `wire_swap` change for a non-null `mux_select_gate_function` (set by rtl_diff_analyzer Step D-MUX). When present, the ECO requires BOTH a new gate insertion AND a pin rewire — classify as `new_logic_gate_with_rewire` in the RPT (not `wire_swap`). Include in the per-net description: "Requires new `<gate_function>` gate insertion AND rewire of `<target_register>` MUX select pin." This prevents eco_netlist_studier from treating it as a simple net substitution.
 
-Write `<BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt` using this exact format:
+Write `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_step2_fenets.rpt` using this exact format:
 
 ```
 ================================================================================
@@ -496,7 +496,7 @@ SPEC_SOURCES:
 Where `FALLBACK` means no FM results — eco_netlist_studier will use the Stage Fallback method for that stage.
 
 ```bash
-cp <BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt <AI_ECO_FLOW_DIR>/
+cp <AI_ECO_FLOW_DIR>/data/<TAG>_eco_step2_fenets.rpt <AI_ECO_FLOW_DIR>/
 ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step2_fenets.rpt
 ```
 
@@ -525,7 +525,7 @@ ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step2_fenets.rpt
 
 If any submitted run's raw rpt is missing — copy before exiting:
 ```bash
-cp <BASE_DIR>/data/<tag>_find_equivalent_nets_raw*.rpt <AI_ECO_FLOW_DIR>/
+cp <AI_ECO_FLOW_DIR>/data/<tag>_find_equivalent_nets_raw*.rpt <AI_ECO_FLOW_DIR>/
 ```
 A missing file means either the copy was skipped or the run did not complete — investigate before proceeding to Step 3.
 
@@ -539,13 +539,13 @@ A missing file means either the copy was skipped or the run did not complete —
 
 ```bash
 python3 script/eco_scripts/eco_validate_step2.py \
-    --queries     data/<TAG>_eco_fenets_queries.json \
-    --queries-raw data/<TAG>_eco_fenets_queries_raw.json \
-    --raw-rpts    data/<FENETS_TAG>_find_equivalent_nets_raw*.rpt \
-    --rename-map  data/<TAG>_eco_fenets_rename_map.json \
-    --rtl-diff    data/<TAG>_eco_rtl_diff.json \
+    --queries     <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_queries.json \
+    --queries-raw <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_queries_raw.json \
+    --raw-rpts    <AI_ECO_FLOW_DIR>/data/<FENETS_TAG>_find_equivalent_nets_raw*.rpt \
+    --rename-map  <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_rename_map.json \
+    --rtl-diff    <AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json \
     --ref-dir     <REF_DIR> \
-    --output      data/<TAG>_eco_validate_step2.json
+    --output      <AI_ECO_FLOW_DIR>/data/<TAG>_eco_validate_step2.json
 ```
 
 `--ref-dir` is REQUIRED for the C6 preserved-name auto-classification (greps PreEco/PrePlace.v.gz + PreEco/Route.v.gz to verify echo'd signals are real preserved names, not FM failures). Without it, C6 over-fires on legitimate bus signals like `BeqCtrlPeSrc_*` or `RegRdbRspCredits` that survive P&R unchanged.
@@ -555,14 +555,14 @@ python3 script/eco_scripts/eco_validate_step2.py \
 
 ### STEP F-2 — Classify issues and build fix batch
 
-Read `data/<TAG>_eco_validate_step2.json` issues list. For each issue, build a targeted re-query:
+Read `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_validate_step2.json` issues list. For each issue, build a targeted re-query:
 
 **C9 — Mode H recovery (condition gate input FM-036 in PP/Route):**
 - Extract: `signal`, Synth resolved net (e.g. `phfnn_2405075`), scope
 - In the PreEco Synth netlist, find the driver cell of the resolved net:
   ```bash
   zgrep -n "\.ZN ( <synth_net> )\|\.Z ( <synth_net> )\|\.Q ( <synth_net> )" \
-      data/PreEco/Synthesize.v.gz | head -3
+      <REF_DIR>/data/PreEco/Synthesize.v.gz | head -3
   ```
 - Extract the cell instance name from the grep result
 - Build fallback query: `<scope>/<driver_cell_instance>` for PP and Route stages
@@ -578,7 +578,7 @@ For each echo'd signal: if the same name exists as a wire in `PreEco/<stage>.v.g
 ### STEP F-3 — Re-submit FM for fix batch (BLOCKING)
 
 ```bash
-python3 script/genie_cli.py \
+ECO_OUT_DIR=<AI_ECO_FLOW_DIR> python3 script/genie_cli.py \
   -i "find equivalent nets at <REF_DIR> for <TILE> netName:<net1>,<net2>,..." \
   --execute --xterm
 ```
@@ -593,12 +593,12 @@ Copy to `AI_ECO_FLOW_DIR/`. Verify copy exists.
 
 ```bash
 python3 script/eco_scripts/eco_fenets_rename_map.py \
-    --rtl-diff  data/<TAG>_eco_rtl_diff.json \
-    --raw-files data/<fenets_tag>_find_equivalent_nets_raw*.rpt \
+    --rtl-diff  <AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json \
+    --raw-files <AI_ECO_FLOW_DIR>/data/<fenets_tag>_find_equivalent_nets_raw*.rpt \
     --tag       <TAG> \
     --tile      <TILE> \
     --ref-dir   <REF_DIR> \
-    --output    data/<TAG>_eco_fenets_rename_map.json
+    --output    <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_rename_map.json
 ```
 
 Then re-run validator (STEP F-1). If still failing and iterations < 3 → go back to STEP F-2. If iterations = 3 and still failing → STEP F-5 with failure.
@@ -654,7 +654,7 @@ Do NOT re-query nets from the original Step 2 run. Only submit the signals liste
 Submit exactly as Step B but with only the rerun nets:
 ```bash
 cd <BASE_DIR>
-python3 script/genie_cli.py \
+ECO_OUT_DIR=<AI_ECO_FLOW_DIR> python3 script/genie_cli.py \
   -i "find equivalent nets at <REF_DIR> for <TILE> netName:<net1>,<net2>,..." \
   --execute --xterm
 ```
@@ -690,7 +690,7 @@ for s in rerun_signals:
 
 ### RERUN Step D — Write output
 
-Write `<BASE_DIR>/data/<TAG>_eco_step2_fenets_rerun_round<ROUND>.rpt`:
+Write `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_step2_fenets_rerun_round<ROUND>.rpt`:
 - List each queried signal, FM result, resolved net name
 - Include `condition_input_resolutions` section with same format as Step C2
 - Note `needs_named_wire: true` for any signal where FM only found port-bus-driven nets
@@ -702,7 +702,7 @@ CONDITION_INPUT_RESOLUTIONS (Round <ROUND> Rerun):
 
 Copy to `AI_ECO_FLOW_DIR/`. Verify copy.
 
-Write `<BASE_DIR>/data/<TAG>_eco_fenets_rerun_round<ROUND>.json`:
+Write `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_rerun_round<ROUND>.json`:
 ```json
 {
   "round": <ROUND>,

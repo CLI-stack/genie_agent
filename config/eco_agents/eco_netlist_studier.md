@@ -21,8 +21,8 @@ SPEC_SOURCES:
 
 | Path | When I write it | Format |
 |---|---|---|
-| `data/<TAG>_eco_preeco_study.json` | end of Phase 1 | JSON (skeleton — verifier enriches) |
-| `data/<TAG>_eco_step3_collect.rpt`  | last action before exit | RPT (summary) |
+| `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_preeco_study.json` | end of Phase 1 | JSON (skeleton — verifier enriches) |
+| `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_step3_collect.rpt`  | last action before exit | RPT (summary) |
 | Copy of both → `AI_ECO_FLOW_DIR/`   | last action before exit | mirror |
 
 Verifier (next agent) re-writes `eco_preeco_study.json` in-place with `port_connections_per_stage`, GAP checks, auto-added entries, and cone verification.
@@ -31,8 +31,8 @@ Verifier (next agent) re-writes `eco_preeco_study.json` in-place with `port_conn
 
 - `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `AI_ECO_FLOW_DIR`
 - `SPEC_SOURCES` — per-stage map: Synthesize / PrePlace / Route → fenets spec path
-- `data/<TAG>_eco_rtl_diff.json` — Step 1 RTL diff classification
-- `data/<TAG>_eco_fenets_rename_map.json` — Step 2 FM-resolved per-stage map (SOURCE OF TRUTH for Rule 32)
+- `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json` — Step 1 RTL diff classification
+- `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_rename_map.json` — Step 2 FM-resolved per-stage map (SOURCE OF TRUTH for Rule 32)
 - `GAP15_CHECK_PATH` — pre-computed module-port-direct-gating decisions
 
 ## EXECUTION ORDER — flat checklist (process in this order)
@@ -309,7 +309,7 @@ P&R renames DFF outputs (CTS/optimization in Route). A wire may exist in scope b
    grep "<driver_inst>" PreEco/<Stage>.v.gz | grep "\.Q\b\|\.ZN\b\|\.Z\b" | head -1
    ```
 
-2. **`<BASE_DIR>/data/<TAG>_eco_fenets_rename_map.json`** — use when Priorities 0 and 1
+2. **`<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_rename_map.json`** — use when Priorities 0 and 1
    both failed. Read `actual_wire_<stage>` if present (it is `(+)` polarity-correct by
    construction — fenets only accepts `(+)` impl lines); **otherwise read the plain
    `<stage>` field** (`Synthesize`/`PrePlace`/`Route`). USE THE VALUE VERBATIM.
@@ -462,7 +462,7 @@ python3 script/eco_scripts/eco_resolve_bus_width.py \
     --signal        <target_register>                   \
     --rtl-dir       <REF_DIR>/data/SynRtl               \
     --preeco-synth  <REF_DIR>/data/PreEco/Synthesize.v.gz \
-    --output        data/<TAG>_eco_bus_width_<target>.json
+    --output        <AI_ECO_FLOW_DIR>/data/<TAG>_eco_bus_width_<target>.json
 ```
 Read `width` (integer N) from output. If `resolved: false` → log `BUS_WIDTH_UNRESOLVABLE` and emit a CRITICAL issue for the orchestrator. Record `bus_width_resolved: N` on the change entry in the study JSON.
 
@@ -470,12 +470,12 @@ Read `width` (integer N) from output. If `resolved: false` → log `BUS_WIDTH_UN
 ```bash
 python3 script/eco_scripts/eco_emit_dff_entry.py \
     --rtl-change <change_json> --ref-dir <REF_DIR>      \
-    --rename-map data/<TAG>_eco_fenets_rename_map.json  \
+    --rename-map <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_rename_map.json  \
     --tag <TAG> --jira <JIRA> --tile-module ddrss_<TILE>_t \
-    --base-dir <BASE_DIR>                               \
+    --base-dir <AI_ECO_FLOW_DIR>                               \
     --bus-width N                                       \
     [--shadow-cp-net <shadow_gate_Q_net>]               \
-    --output data/<TAG>_eco_dff_entry_<target>.json
+    --output <AI_ECO_FLOW_DIR>/data/<TAG>_eco_dff_entry_<target>.json
 ```
 The wrapper emits N entries (`<target>_reg_<bit>_`) with per-bit D (`<d_src>[bit]`) and Q (`<target>[bit]`) nets, plus shared CP/SI/SE derived from a sibling DFF in the same clock domain.
 
@@ -498,7 +498,7 @@ Verify each per-stage form exists in the corresponding PreEco netlist: `zgrep -c
 
 **Step 3 — Splice all N entries per stage:**
 ```python
-out = json.load(open(f'data/{TAG}_eco_dff_entry_{target}.json'))
+out = json.load(open(f'{AI_ECO_FLOW_DIR}/data/{TAG}_eco_dff_entry_{target}.json'))
 for stage in ('Synthesize', 'PrePlace', 'Route'):
     study[stage].extend(out[stage])   # N entries per stage, no chain gates
 ```
@@ -517,7 +517,7 @@ python3 script/eco_scripts/eco_resolve_bus_width.py \
     --macro <bus_width_expr> --signal <output_net_base> \
     --rtl-dir <REF_DIR>/data/SynRtl \
     --preeco-synth <REF_DIR>/data/PreEco/Synthesize.v.gz \
-    --output data/<TAG>_eco_bus_width_<output_net>.json
+    --output <AI_ECO_FLOW_DIR>/data/<TAG>_eco_bus_width_<output_net>.json
 ```
 
 **Step 2 — Emit N gate entries.** For each bit 0..N-1:
@@ -547,22 +547,22 @@ After expansion, check each bit entry's input pins. If any input matches `UNCONN
 For EVERY `new_logic` DFF change, invoke `eco_emit_dff_entry.py` ONCE and splice its per-stage output verbatim into `eco_preeco_study.json`. Do NOT call `eco_synth_chain.py` directly — the wrapper invokes it with the correct per-DFF prefix.
 
 ```bash
-python3 -c "import json; d=json.load(open('data/<TAG>_eco_rtl_diff.json')); \
+python3 -c "import json; d=json.load(open('<AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json')); \
     print(json.dumps([c for c in d['changes'] if c.get('target_register')=='<TARGET_REG>'][0]))" \
     > /tmp/<TARGET_REG>_change.json
 
 python3 script/eco_scripts/eco_emit_dff_entry.py \
     --rtl-change /tmp/<TARGET_REG>_change.json --ref-dir <REF_DIR> \
-    --rename-map data/<TAG>_eco_fenets_rename_map.json \
+    --rename-map <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_rename_map.json \
     --tag <TAG> --jira <JIRA> --tile-module ddrss_<tile>_t \
-    --base-dir <BASE_DIR> --output data/<TAG>_eco_dff_entry_<TARGET_REG>.json
+    --base-dir <AI_ECO_FLOW_DIR> --output <AI_ECO_FLOW_DIR>/data/<TAG>_eco_dff_entry_<TARGET_REG>.json
 ```
 
 Wrapper handles: D-input chain via `eco_synth_chain.py` from `d_input_expected_function` (engineer-style topology + per-DFF prefix); per-stage CP from rename map; DFF entry with `SE=SI=1'b0` in all 3 stages; **per-chain-leaf Mode-I detection via `eco_modei_chain_input_check.py`** (auto-emits `unconnected_rewires` + child-scope `port_connection` when a chain leaf bus-bit lands on UNCONNECTED at the parent's child-instance port-bus connection — no manual grep/walk needed); self-validation against Step 3 invariants. Diagnostics in output JSON: `diagnostics.modei_check[]` lists per-leaf status, `diagnostics.modei_entries_added` counts spliced child port_connections.
 
 Splice per stage:
 ```python
-out = json.load(open(f'data/{TAG}_eco_dff_entry_{target}.json'))
+out = json.load(open(f'{AI_ECO_FLOW_DIR}/data/{TAG}_eco_dff_entry_{target}.json'))
 for stage in ('Synthesize', 'PrePlace', 'Route'):
     study[stage].extend(out[stage])
 ```
@@ -794,7 +794,7 @@ python3 script/eco_scripts/eco_emit_shadow_gate.py \
   --new-cp-net ECO_<jira>_<dff_cp_net> \
   --d-map "0:<ECO_net_bit0>,1:<ECO_net_bit1>,..." \
   --module    <module_name> \
-  --output    data/<TAG>_eco_shadow_gate_rewires.json
+  --output    <AI_ECO_FLOW_DIR>/data/<TAG>_eco_shadow_gate_rewires.json
 ```
 The script greps PreEco Synthesize, finds all MB DFF cells on that CP net, resolves D-pin→bit mapping via Q-pin nets, and emits CP + D-input rewires with correct bit ordering. Merge `rewires[]` from the output JSON into all 3 stage lists in the study JSON. Do NOT construct these entries manually — MB DFF MSB-first bit ordering makes manual mapping error-prone.
 
@@ -833,12 +833,12 @@ A `compare_fold` is an OR-fold inside an equality-compare operand feeding a regi
 Run ONCE (it processes all compare_fold changes and all uniquified copies internally):
 ```bash
 python3 script/eco_scripts/eco_emit_compare_fold.py \
-  --rtl-diff   data/<TAG>_eco_rtl_diff.json \
-  --study      data/<TAG>_eco_preeco_study.json \
+  --rtl-diff   <AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json \
+  --study      <AI_ECO_FLOW_DIR>/data/<TAG>_eco_preeco_study.json \
   --jira       <JIRA> \
   --ref-dir    <REF_DIR> \
-  --rename-map data/<TAG>_eco_fenets_rename_map.json \
-  --output     data/<TAG>_eco_preeco_study.json
+  --rename-map <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_rename_map.json \
+  --output     <AI_ECO_FLOW_DIR>/data/<TAG>_eco_preeco_study.json
 ```
 Exit 0 = emitted (marker `<TAG>_eco_preeco_study_compare_fold_marker.txt`); exit 2 = ABORT (study untouched; read the marker for the fail-closed reason and fix Step-1/Step-2). It splices `rewire` + `new_logic_gate` entries (with `port_connections_per_stage` and `module_name_per_stage`) into all 3 stage lists itself. **It also handles uniquified replication itself** — `eco_emit_uniquify.py` explicitly skips `source: eco_emit_compare_fold` entries, so do NOT expect (or force) uniquify to clone them.
 
@@ -920,7 +920,7 @@ rm -f /tmp/eco_study_<TAG>_Synthesize.v /tmp/eco_study_<TAG>_PrePlace.v /tmp/eco
 
 ## Output JSON
 
-Write `<BASE_DIR>/data/<TAG>_eco_preeco_study.json`.
+Write `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_preeco_study.json`.
 
 **`change_type` translation:** `wire_swap` → `rewire`; `new_logic` → `new_logic_dff` or `new_logic_gate`.
 
@@ -938,7 +938,7 @@ for stage in ["Synthesize", "PrePlace", "Route"]:
 
 Verify output is non-empty with at least one confirmed entry.
 
-**Write collect RPT** to `<BASE_DIR>/data/<TAG>_eco_step3_collect.rpt`:
+**Write collect RPT** to `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_step3_collect.rpt`:
 ```
 ECO NETLIST STUDIER — COLLECT PASS
 TAG=<TAG>  |  JIRA=<JIRA>  |  TILE=<TILE>

@@ -215,14 +215,24 @@ _CPNET_RE = re.compile(r'\.CP\s*\(\s*([A-Za-z0-9_]+)\s*\)')
 def _module_body_text(ref_dir, host_module, stage):
     """Extract the body text of `host_module` (tolerant of _<N> uniquify) from the
     stage's PreEco netlist. '' if not found/absent."""
-    gz = Path(ref_dir) / 'data' / 'PreEco' / f'{stage}.v.gz'
-    if not gz.is_file():
+    gz = Path(ref_dir) / 'data' / 'PreEco' / f'{stage}.v.gz' if ref_dir else None
+    if not (gz and gz.is_file()):
         return ''
     try:
-        cmd = (f"zcat {gz} | awk '/^module {re.escape(host_module)}(_[0-9]+)?[ (]/{{f=1}} "
-               f"f{{print}} /^endmodule/{{if(f)exit}}'")
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=180)
-        return r.stdout or ''
+        mod_pat = re.compile(rf'^\s*module\s+{re.escape(host_module)}(?:_[0-9]+)?\b')
+        lines = []
+        in_mod = False
+        with gzip.open(gz, 'rt') as f:
+            for line in f:
+                if not in_mod:
+                    if mod_pat.match(line):
+                        in_mod = True
+                        lines.append(line)
+                else:
+                    lines.append(line)
+                    if line.startswith('endmodule'):
+                        break
+        return ''.join(lines)
     except Exception:
         return ''
 

@@ -26,7 +26,7 @@
 
 ```bash
 cd <REF_DIR>
-diff -rqw --exclude="*.vf" --exclude="*.vfe" --exclude="*.d" data/PreEco/SynRtl/ data/SynRtl/
+diff -rqw --exclude="*.vf" --exclude="*.vfe" --exclude="*.d" <REF_DIR>/data/PreEco/SynRtl/ data/SynRtl/
 ```
 
 For each file that differs, run full diff:
@@ -157,7 +157,7 @@ Emit with:
   3. Emit `new_port` (declaration_type=input, correct width) on `module_name` for `X`, plus a `port_connection` on the instance of `module_name` in its PARENT connecting the new port to the parent-scope net that carries `X` (walk it down one hierarchy level at a time if the parent doesn't have it either). This is the same port-threading pattern used for a new register/CSR input.
 - `condition_gate_chain` (build `<cond>` as real gates — NEVER leave it as `PENDING_FM_RESOLUTION`/a synthetic net to query; the LAST gate's output is the condition net)
 - `forced_signals: [{signal, const, const_macro, assignment_evidence, bits: [{bit, old_net, dff_cell, dff_pin}]}]` — one entry per driven signal (do NOT drop any forced signal). `const` is the resolved Verilog literal. **`const_macro`** is the RTL macro/parameter name the branch forces the signal to, when it is a named opcode/enum (e.g. an all-caps `"AN_OPCODE"`); set it whenever the RHS is a macro so the value can be verified. **MANDATORY for any MULTI-BIT constant:** if `const` is wider than 1 bit (an opcode/enum), `const_macro` is REQUIRED — Step 1 hard-fails and the builder aborts without it, because the value can't be verified against the RTL `` `define `` and the condition can't be anchored to the correct RTL branch (the builder would otherwise trust the stored `condition_expr`, which may be the wrong branch). Trivial 1-bit forces (`1'b0`/`1'b1`) don't need it. **`assignment_evidence`** is the verbatim RTL RHS text you read (e.g. `"1'b1"` or the macro name) — CLASSIFICATION PROOF, validated constant-like. Per bit: `old_net` is that bit's PRE-ECO D-input net, `dff_cell`/`dff_pin` identify the flop to rewire (pin defaults to `D`).
-  - **Resolve `const` from `const_macro` correctly:** `const` MUST equal the macro's RTL `` `define `` value (e.g. an opcode macro → its N-bit `` `define `` literal). `eco_emit_priority_force.py` (with `--ref-dir`) resolves `const_macro` from `data/PreEco/SynRtl/**` and ABORTS the build (exit 2) if `const` does not match — a wrong opcode is otherwise a still-valid constant that no schema check catches (a real corruption once turned a correct opcode into a different, valid-but-wrong value). Step 1 validator enforces the same when `--ref-dir` is given.
+  - **Resolve `const` from `const_macro` correctly:** `const` MUST equal the macro's RTL `` `define `` value (e.g. an opcode macro → its N-bit `` `define `` literal). `eco_emit_priority_force.py` (with `--ref-dir`) resolves `const_macro` from `<REF_DIR>/data/PreEco/SynRtl/**` and ABORTS the build (exit 2) if `const` does not match — a wrong opcode is otherwise a still-valid constant that no schema check catches (a real corruption once turned a correct opcode into a different, valid-but-wrong value). Step 1 validator enforces the same when `--ref-dir` is given.
 
 Step 3 does NOT hand-build this — the deterministic helper **`eco_emit_priority_force.py`** builds `<cond>` as real gates from the RTL condition (with `--ref-dir` it re-extracts `condition_expr` from the RTL, anchored on the `const_macro` forced signal, and PREFERS that over any stored `condition_expr`, which may have captured the wrong branch) and then, per bit, emits the const via GATE CHOICE (const-1 bit → `OR2(A1=cond, A2=old_bit)`; const-0 bit → `INR2(A1=old_bit, B1=cond)` = `old & ~cond`) — the muxes take `cond` directly, no inverted copy is emitted — then a DFF-pin rewire repointing that bit's flop `.D` from `old_net` to the fresh `n_eco_<jira>_pf_*` net (never a driver-rename, never a constant left dangling). Validators: **Step 1** requires `condition_gate_chain` + each `forced_signals[].const` a valid constant + `assignment_evidence` present AND constant-like (an operator here = misclassified → fatal) + non-empty `bits[]` where each bit has `old_net`+`dff_cell`; it ALSO flags the reverse — an `and_term` whose `assignment_evidence` is a bare constant is really a priority_force. **eco_emit_priority_force.py** (fail-closed, `--ref-dir`) grounds every bit against the PreEco netlist and ABORTS if `dff_cell`/`old_net` don't match. **Step 3** requires, per forced signal, force-mux gate(s) AND a `.D` rewire onto EVERY force-mux output.
 
@@ -674,7 +674,7 @@ The most FM-friendly strategy: never touches the pivot path, no new intermediate
 ```bash
 python3 script/eco_scripts/eco_find_drvsub_target.py \
     --ref-dir <REF_DIR> --register <target_register> --jira <JIRA> \
-    --output  data/<TAG>_eco_drvsub_target.json
+    --output  <AI_ECO_FLOW_DIR>/data/<TAG>_eco_drvsub_target.json
 ```
 
 Read `driver_sub_target_net` + `driver_sub_target_cell_type` directly. The script walks pivot → MUX → compound consumers → first stage-stable simple-driver net. Script error (no DFF / no candidate) → fall through to E4c.
@@ -919,7 +919,7 @@ Add `d_input_gate_chain`, `d_input_net`, `d_input_decompose_failed`, `fallback_s
 
 ## Output JSON
 
-Write to `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json` (always use the full absolute path — the agent may be cd'd to REF_DIR for diffs, but output always goes to BASE_DIR/data/):
+Write to `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json` (always use the full absolute path — the agent may be cd'd to REF_DIR for diffs, but output always goes to BASE_DIR/data/):
 
 ```json
 {
@@ -1050,7 +1050,7 @@ This writes `<REF_DIR>/data/eco_cell_library.json` — the authoritative cell tr
 **Then: run the Step 1 validator:**
 ```bash
 cd <BASE_DIR> && python3 script/eco_scripts/eco_validate_step1.py \
-    --rtl-diff data/<TAG>_eco_rtl_diff.json --ref-dir <REF_DIR> --output data/<TAG>_eco_validate_step1.json
+    --rtl-diff <AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json --ref-dir <REF_DIR> --output <AI_ECO_FLOW_DIR>/data/<TAG>_eco_validate_step1.json
 ```
 If the output JSON's `overall_pass` is `false`: read every issue list (`entries[].issues[]` for MUX polarity, plus the top-level `phantom_wire_issues`, `new_port_issues`, `port_conn_issues`, `truth_table_issues`), correct the affected entries in `eco_rtl_diff.json`, and re-invoke. Do NOT write the RPT until `overall_pass: true`.
 
@@ -1058,9 +1058,9 @@ If the output JSON's `overall_pass` is `false`: read every issue list (`entries[
 
 ## Output RPT
 
-Write `<BASE_DIR>/data/<TAG>_eco_step1_rtl_diff.rpt` then copy to `AI_ECO_FLOW_DIR`:
+Write `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_step1_rtl_diff.rpt` then copy to `AI_ECO_FLOW_DIR`:
 ```bash
-cp <BASE_DIR>/data/<TAG>_eco_step1_rtl_diff.rpt <AI_ECO_FLOW_DIR>/
+cp <AI_ECO_FLOW_DIR>/data/<TAG>_eco_step1_rtl_diff.rpt <AI_ECO_FLOW_DIR>/
 ```
 
 ```
