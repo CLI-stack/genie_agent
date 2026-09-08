@@ -338,10 +338,104 @@ def _cleanup_orphan_wire_and_add_new_decl(lines, mod_start, mod_end, old_net, ne
     return lines, removed_orphan, added_decl
 
 
+def _strip_v_comments(s):
+    """Remove Verilog // line and /* */ block comments (module-level so both the
+    bus-rename apply path and the post-apply guardrails share one definition)."""
+    s = re.sub(r'/\*.*?\*/', '', s, flags=re.DOTALL)
+    s = re.sub(r'//[^\n]*', '', s)
+    return s
+
+
+def _find_active_concat(lines, inst_start, inst_close, port_name):
+    """Locate the ACTIVE (comment-stripped) `.port_name({...})` concat of an
+    instance and return (open_line, end_line, elements). elements is MSB-first.
+    Returns (None, None, None) if the active port/concat cannot be found. This is
+    the single source of truth used by both the rename and the verify guardrail —
+    it never lands on a previous-ECO commented-out `//.port(...)` artifact."""
+    port_pat = re.compile(rf'\.\s*{re.escape(port_name)}\s*\(')
+    open_line = -1
+    for i in range(inst_start, inst_close + 1):
+        if port_pat.search(_strip_v_comments(lines[i])):
+            open_line = i
+            break
+    if open_line < 0:
+        return None, None, None
+    joined_clean = _strip_v_comments(''.join(lines[open_line:inst_close + 1]))
+    end_off, depth, started = -1, 0, False
+    for off, ch in enumerate(joined_clean):
+        if ch == '{':
+            started = True; depth += 1
+        elif ch == '}' and started:
+            depth -= 1
+            if depth == 0:
+                end_off = off; break
+    if end_off < 0:
+        return open_line, None, None
+    nl = joined_clean.count('\n', 0, end_off + 1)
+    end_line = min(open_line + nl, inst_close)
+    full_clean = _strip_v_comments(''.join(lines[open_line:end_line + 1]))
+    m = re.search(r'\{([^{}]*)\}', full_clean, re.DOTALL)
+    if not m:
+        return open_line, end_line, None
+    elems = [e.strip() for e in m.group(1).split(',') if e.strip()]
+    return open_line, end_line, elems
+
+
+def _reverify_active_concat(lines, inst_name, port_name, new_net,
+                            bus_bit_index=None, old_net=None):
+    """Layer-2 guardrail: after a bus_rename edit, re-read the ACTIVE concat from
+    the in-memory lines and confirm the edit really landed on the active line
+    (not on a commented-out artifact). Returns (ok: bool, detail: str).
+      - bus_bit_index given → the element at MSB-first position must == new_net.
+      - else                → new_net must be present AND old_net (if given) absent."""
+    inst_start = -1
+    for i, l in enumerate(lines):
+        if re.search(rf'\b{re.escape(inst_name)}\s*\(', l):
+            inst_start = i; break
+    if inst_start < 0:
+        return False, f'reverify: instance {inst_name} not found'
+    depth, inst_close = 0, -1
+    for i in range(inst_start, len(lines)):
+        for ch in _strip_v_comments(lines[i]):
+            if ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth -= 1
+                if depth == 0:
+                    inst_close = i; break
+        if inst_close >= 0:
+            break
+    if inst_close < 0:
+        return False, f'reverify: cannot close {inst_name}'
+    _, _, elems = _find_active_concat(lines, inst_start, inst_close, port_name)
+    if not elems:
+        return False, f'reverify: no active {port_name} concat'
+    if bus_bit_index is not None:
+        width = len(elems)
+        pos = width - 1 - bus_bit_index
+        if pos < 0 or pos >= width:
+            return False, f'reverify: bit {bus_bit_index} out of range (width={width})'
+        if elems[pos] != new_net:
+            return False, f'reverify: active[{bus_bit_index}]={elems[pos]} (expected {new_net})'
+        return True, f'active[{bus_bit_index}]={new_net}'
+    # No bit index: presence/absence check
+    if new_net not in elems:
+        return False, f'reverify: {new_net} absent from active {port_name} concat'
+    if old_net and old_net in elems:
+        return False, f'reverify: old {old_net} still in active {port_name} concat'
+    return True, f'active concat has {new_net}'
+
+
 def _apply_bus_rename(lines, gz_path, inst_name, port_name, old_net, new_net, bus_bit_index=None):
     """Replace a single net in .port_name({...}) bus concatenation.
+    Dispatch priority (fixed): when bus_bit_index is available use the robust
+    position-based, comment-aware, self-verifying path (b); fall back to the
+    name-based path (a) ONLY when no bit index is given. Previously (a) ran
+    whenever old_net was truthy, shadowing (b) even when the study supplied a
+    bit index — that let a naive replace land on a commented-out artifact line
+    and still report APPLIED (9868 REG_UmcCfgEco_1_ undriven in Synth/PP).
     Two modes:
-      (a) old_net given → scope-search inside .port_name(...) region, replace by name.
+      (a) old_net given, NO bit index → scope-search inside .port_name(...) region, replace by name.
       (b) old_net=None + bus_bit_index given → parse the {...} concat, identify the
           net at MSB-first position (width - 1 - bus_bit_index), replace it.
     """
@@ -375,13 +469,18 @@ def _apply_bus_rename(lines, gz_path, inst_name, port_name, old_net, new_net, bu
     if inst_close < 0:
         return lines, 'SKIPPED', f'bus_rename: cannot find close of {inst_name}'
 
-    # Mode (a): old_net given → simple scoped replace
-    if old_net:
+    # Mode (a): old_net given AND no bit index → simple scoped replace.
+    # LAYER 1: gated on `bus_bit_index is None` so a study entry that supplies a
+    # bit index always takes the robust position-based path (b) below — old_net
+    # no longer shadows it.
+    if bus_bit_index is None and old_net:
         in_port = False
         for i in range(inst_start, inst_close + 1):
-            if not in_port and re.search(rf'\.\s*{re.escape(port_name)}\s*\(', lines[i]):
+            # comment-strip so we never match old_net on a commented-out artifact
+            clean_i = _strip_v_comments(lines[i])
+            if not in_port and re.search(rf'\.\s*{re.escape(port_name)}\s*\(', clean_i):
                 in_port = True
-            if in_port and re.search(rf'\b{re.escape(old_net)}\b', lines[i]):
+            if in_port and re.search(rf'\b{re.escape(old_net)}\b', clean_i):
                 lines[i] = re.sub(rf'\b{re.escape(old_net)}\b', new_net, lines[i], count=1)
                 # GAP-2 cleanup: remove orphan UNCONNECTED decl + add new wire decl in same module
                 ms, me = _module_bounds(lines, inst_start)
@@ -392,6 +491,12 @@ def _apply_bus_rename(lines, gz_path, inst_name, port_name, old_net, new_net, bu
                 if rm: tag.append('removed_orphan')
                 if ad: tag.append('added_decl')
                 suffix = (' [' + ','.join(tag) + ']') if tag else ''
+                # LAYER 2: mode-agnostic post-apply verify — confirm the edit
+                # actually landed on the ACTIVE concat, not a commented artifact.
+                ok, detail = _reverify_active_concat(
+                    lines, inst_name, port_name, new_net, None, old_net)
+                if not ok:
+                    return lines, 'VERIFY_FAILED', f'bus_rename VERIFY: {detail}'
                 return lines, 'APPLIED', f'bus_rename: {inst_name}.{port_name} {old_net}→{new_net}{suffix}'
         return lines, 'SKIPPED', f'bus_rename: {old_net} not found in {inst_name}.{port_name}'
 
@@ -401,7 +506,8 @@ def _apply_bus_rename(lines, gz_path, inst_name, port_name, old_net, new_net, bu
 
     # Comment-aware: strip Verilog //... and /*...*/ comments before brace tracking
     # and content extraction. Critical for handling comment-mess corruption from
-    # prior agent inline-fix attempts.
+    # prior agent inline-fix attempts. (module-level _strip_v_comments; local
+    # alias kept for the existing body below.)
     def _strip_v_comments(s):
         s = re.sub(r'/\*.*?\*/', '', s, flags=re.DOTALL)
         s = re.sub(r'//[^\n]*', '', s)
@@ -472,7 +578,9 @@ def _apply_bus_rename(lines, gz_path, inst_name, port_name, old_net, new_net, bu
     cand_m = re.search(r'\{([^{}]*)\}', ''.join(candidate), re.DOTALL)
     cand_elems = [e.strip() for e in cand_m.group(1).split(',')] if cand_m else []
     if not cand_elems or cand_elems[pos] != new_net:
-        return lines, 'SKIPPED', f'bus_rename verify FAILED: position {pos} = {cand_elems[pos] if cand_elems else "?"} (expected {new_net}) — likely matched wrong instance'
+        # LAYER 2: pre-commit position verify failed → hard VERIFY_FAILED (was SKIPPED,
+        # which let the flow proceed as if nothing needed doing).
+        return lines, 'VERIFY_FAILED', f'bus_rename VERIFY: position {pos} = {cand_elems[pos] if cand_elems else "?"} (expected {new_net}) — likely matched wrong instance'
     lines[open_line:end_line + 1] = candidate
     # GAP-2 cleanup: remove orphan UNCONNECTED decl + add new wire decl in same module
     ms, me = _module_bounds(lines, inst_start)
@@ -483,6 +591,12 @@ def _apply_bus_rename(lines, gz_path, inst_name, port_name, old_net, new_net, bu
     if rm: tag.append('removed_orphan')
     if ad: tag.append('added_decl')
     suffix = (' [' + ','.join(tag) + ']') if tag else ''
+    # LAYER 2: mode-agnostic post-commit reverify against the in-memory netlist —
+    # confirms the position edit is present on the ACTIVE concat after write-in.
+    ok, detail = _reverify_active_concat(
+        lines, inst_name, port_name, new_net, bus_bit_index, None)
+    if not ok:
+        return lines, 'VERIFY_FAILED', f'bus_rename VERIFY: {detail}'
     return lines, 'APPLIED', f'bus_rename: {inst_name}.{port_name}[{bus_bit_index}] {old_at_pos}→{new_net}{suffix}'
 
 
@@ -1087,6 +1201,50 @@ def ensure_bitselect_bus_decls(lines, entries, stage):
     return lines, added
 
 
+def dangling_net_sweep(lines, entries, stage):
+    """LAYER 3 — post-apply guardrail (mode-independent catch-all).
+
+    For every NEW internal flat wire the study introduces (port_declaration with
+    declaration_type=='wire'), confirm it has at least one DRIVER *and* one
+    CONSUMER on the ACTIVE (comment-stripped, non-decl) netlist of its module.
+    A wire that is declared + consumed by a new ECO gate but never driven (its
+    concat bus-tap edit landed only on a commented-out line) has < 2 active refs
+    — exactly the 9868 REG_UmcCfgEco_1_ failure. Such a net is functionally
+    floating and would fail Formality, so we flag it as VERIFY_FAILED instead of
+    silently shipping a broken netlist.
+
+    Returns list of (module, net, active_ref_count) that fail the >=2 check.
+    Only internal `wire` decls are checked; module `input`/`output` ports are
+    skipped (their counterpart driver/consumer legitimately lives in the parent)."""
+    fails = []
+    seen = set()
+    for e in entries:
+        if e.get('change_type') not in ('port_declaration', 'new_port', 'port_promotion'):
+            continue
+        if e.get('declaration_type') != 'wire':
+            continue
+        net = (e.get('signal_name') or '').strip()
+        mod = (e.get('module_name') or '').strip()
+        if not net or not mod or (mod, net) in seen:
+            continue
+        seen.add((mod, net))
+        ms, me = _find_module_range(lines, mod)
+        if ms is None:
+            continue
+        body_clean = _strip_v_comments(''.join(lines[ms:me + 1]))
+        net_re  = re.compile(rf'\b{re.escape(net)}\b')
+        decl_re = re.compile(rf'^\s*(?:wire|tri|reg)\b[^;]*\b{re.escape(net)}\b')
+        refs = 0
+        for bl in body_clean.splitlines():
+            if decl_re.match(bl):
+                continue  # declaration line is not a driver/consumer
+            if net_re.search(bl):
+                refs += 1
+        if refs < 2:
+            fails.append((mod, net, refs))
+    return fails
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1170,6 +1328,17 @@ def main():
                          'reason': f'SVR-14 guardrail: inserted `wire [{mx}:0] {bus}` in {mod} '
                                    f'(bit-selected bus was undeclared in its own module)'})
         print(f"  GUARDRAIL        wire [{mx}:0] {bus:28} → {mod}")
+
+    # LAYER 3 — dangling new-wire sweep. Runs after ALL edits so it sees the final
+    # active netlist. Any new internal wire that is not both driven and consumed
+    # is flagged VERIFY_FAILED (mode-independent catch-all for dropped bus taps).
+    for (mod, net, nref) in dangling_net_sweep(lines, entries, args.stage):
+        statuses.append({'name': net, 'ct': 'dangling_net_guardrail', 'status': 'VERIFY_FAILED',
+                         'reason': f'new wire {net} in {mod} has {nref} active ref(s) (<2): '
+                                   f'declared+consumed but no driver on the active netlist '
+                                   f'(likely a bus-tap edit that landed only on a commented line)'})
+        verify_failed += 1
+        print(f"  DANGLING         {net:35} in {mod} — {nref} active ref(s) (<2)")
 
     # Write back if any changes were made
     applied = sum(1 for s in statuses if s['status'] == 'APPLIED')
