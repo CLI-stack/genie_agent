@@ -792,10 +792,11 @@ python3 script/eco_scripts/eco_emit_shadow_gate.py \
   --target    <target_register> \
   --dff-cp-net <dff_cp_net> \
   --new-cp-net ECO_<jira>_<dff_cp_net> \
-  --d-map "0:<ECO_net_bit0>,1:<ECO_net_bit1>,..." \
+  --d-map "0:<ECO_net_bit0_scalar>,1:<ECO_net_bit1_scalar>,..." \
   --module    <module_name> \
   --output    <AI_ECO_FLOW_DIR>/data/<TAG>_eco_shadow_gate_rewires.json
 ```
+**MANDATORY**: in `--d-map`, pass **1-bit scalar net names** (e.g. `0:n_eco_<jira>_nxtd_0_,1:n_eco_<jira>_nxtd_1_,...`), NEVER bracketed vector syntax like `[0]`, `[1]`. (Vector bracket syntax causes Formality LEC `read_verilog` FM-599 parse failures).
 The script greps PreEco Synthesize, finds all MB DFF cells on that CP net, resolves D-pin→bit mapping via Q-pin nets, and emits CP + D-input rewires with correct bit ordering. Merge `rewires[]` from the output JSON into all 3 stage lists in the study JSON. Do NOT construct these entries manually — MB DFF MSB-first bit ordering makes manual mapping error-prone.
 
 5. **New enable logic gates** — emit `new_logic_gate` entries for `new_enable_gate_chain[]` (AO22/INV etc.) that produce the new enable net feeding into the OR gate (step 2).

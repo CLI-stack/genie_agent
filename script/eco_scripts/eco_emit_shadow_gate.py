@@ -199,8 +199,13 @@ def main():
             item = item.strip()
             if ':' in item:
                 bit_s, net = item.split(':', 1)
+                net = net.strip()
+                # Defensive scalar normalization: convert bracketed bus syntax foo[N] -> foo_N_
+                # to guarantee valid Verilog scalar net parsing in Formality LEC and P&R
+                if re.search(r'\[\d+\]$', net):
+                    net = re.sub(r'\[(\d+)\]$', r'_\1_', net)
                 try:
-                    d_map[int(bit_s.strip())] = net.strip()
+                    d_map[int(bit_s.strip())] = net
                 except ValueError:
                     pass
 
