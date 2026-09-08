@@ -40,6 +40,8 @@ def sync_tree(src_dir: Path, dst_dir: Path, rel_paths: list) -> tuple:
         d_path = dst_dir / rel
 
         if s_path.is_file():
+            if s_path.name.endswith(".pyc") or "__pycache__" in str(s_path):
+                continue
             d_path.parent.mkdir(parents=True, exist_ok=True)
             if file_md5(s_path) != file_md5(d_path):
                 shutil.copy2(s_path, d_path)
@@ -48,7 +50,11 @@ def sync_tree(src_dir: Path, dst_dir: Path, rel_paths: list) -> tuple:
                 identical.append(str(rel))
         elif s_path.is_dir():
             for root, _, files in os.walk(s_path):
+                if "__pycache__" in root:
+                    continue
                 for file in files:
+                    if file.endswith(".pyc"):
+                        continue
                     s_file = Path(root) / file
                     r_file = s_file.relative_to(src_dir)
                     d_file = dst_dir / r_file
