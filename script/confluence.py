@@ -43,16 +43,16 @@ def load_credentials():
         ))
         env_file = local_env if os.path.exists(local_env) else fallback_env
         if os.path.exists(env_file):
-            result = subprocess.run(
-                ["bash", "-c", f"source {env_file} 2>/dev/null && "
-                               "echo $CONFLUENCE_URL && echo $CONFLUENCE_USERNAME && echo $CONFLUENCE_API_TOKEN"],
-                capture_output=True, text=True
-            )
-            lines = result.stdout.strip().split("\n")
-            if len(lines) >= 3:
-                url   = url   or lines[0].strip()
-                user  = user  or lines[1].strip()
-                token = token or lines[2].strip()
+            try:
+                for line in open(env_file):
+                    m = re.match(r'^\s*setenv\s+(\w+)\s+["\']?([^"\'\n]+)["\']?', line)
+                    if m:
+                        k, v = m.group(1), m.group(2).strip()
+                        if k == "CONFLUENCE_URL" and not url: url = v
+                        elif k == "CONFLUENCE_USERNAME" and not user: user = v
+                        elif k == "CONFLUENCE_API_TOKEN" and not token: token = v
+            except Exception:
+                pass
 
     if not all([url, user, token]):
         sys.exit("ERROR: Missing Confluence credentials. Set CONFLUENCE_URL, CONFLUENCE_USERNAME, CONFLUENCE_API_TOKEN.")
