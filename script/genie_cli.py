@@ -948,10 +948,16 @@ class GenieCLI:
             # Auto-detect user directory: if users/$USER exists, use it as base_dir
             username = os.environ.get('USER', os.environ.get('LOGNAME', ''))
             user_dir = os.path.join(agent_dir, 'users', username)
-            if username and os.path.isdir(user_dir):
+            if username and os.path.isdir(user_dir) and os.access(user_dir, os.W_OK):
                 self.base_dir = user_dir
-            else:
+            elif os.access(agent_dir, os.W_OK):
                 self.base_dir = agent_dir
+            else:
+                # Read-only shared repo (e.g. running from /home/abinbaba/eco_flow as another user):
+                # Never attempt to write into the shared repo — use user-isolated /tmp scratch dir
+                tmp_user_dir = f"/tmp/genie_agent_{username}" if username else "/tmp/genie_agent"
+                os.makedirs(tmp_user_dir, exist_ok=True)
+                self.base_dir = tmp_user_dir
         else:
             self.base_dir = base_dir
 
@@ -1658,7 +1664,19 @@ class GenieCLI:
         # known (the TAG is generated here).
         if not os.environ.get('ECO_OUT_DIR', '').strip() and 'eco_analyze' in (script or '').lower():
             _rd = str(arguementInfo.get('refDir', '')).replace('refDir:', '').strip(':').strip()
+            if not _rd or _rd == 'refDir':
+                for tok in instruction_text.split():
+                    if tok.startswith('/') and os.path.exists(tok):
+                        _rd = tok
+                        break
             if _rd and _rd != 'refDir' and os.path.isdir(_rd):
+                # Auto-resolve if nested under data/PreEco or data/ up to TileBuilder root (revrc.main)
+                _cur = os.path.abspath(_rd)
+                while _cur and _cur != os.path.dirname(_cur):
+                    if os.path.isfile(os.path.join(_cur, 'revrc.main')):
+                        _rd = _cur
+                        break
+                    _cur = os.path.dirname(_cur)
                 _mode = os.environ.get('ECO_MODE', '').strip().lower()
                 if not _mode:
                     if 'simple' in instruction_text.lower().split():
