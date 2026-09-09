@@ -273,6 +273,9 @@ Algorithm:
                                     // null when not applicable (combinational, port_connection, etc.)
 ```
 
+**MANDATORY — Exhaustive Extraction of ALL New Registers in Modified `always` Blocks:**
+When an existing or new `always @(posedge clk)` block in RTL is modified to add new register assignments (e.g. `reg_new <= expr;` or `reg_new <= 0;`), **EVERY newly added register MUST be extracted as an individual `new_logic` / `new_logic_dff` change entry** in `eco_rtl_diff.json`. Never omit a register thinking it is only a pipeline/delay stage. If downstream multiplexers, enable expressions, or other logic reference `reg_new`, omitting its `new_logic_dff` entry causes downstream steps to falsely mark the condition as UNRESOLVABLE because its driver was never inserted into the study.
+
 Failure mode if missing: studier has to infer the clock from neighboring DFFs in the netlist; in P&R stages the inferred clock may be a CTS-rebalanced antenna-fix net from the wrong clock tree. The new DFF then ends up on a different clock domain in Route vs Synth → FM logical mismatch.
 
 **`module_name`** = the module that **declares** the changed signals as `reg` or `wire` — NOT necessarily the module in the changed file. The changed file's module is only the starting candidate. Step C will verify whether the signals are truly declared (`reg`/`wire`) in that module or merely passed through as input/output ports. If they are only ports, `module_name` must be updated to the parent module where the `reg`/`wire` declaration lives. Leave this field as the changed file's module initially — Step C is responsible for correcting it if needed.
