@@ -1498,9 +1498,12 @@ class GenieCLI:
                 arguementInfo['p4File'] = arguementInfo['p4File'] + ":" + word
                 continue
 
-            # Tile names (check against known tiles)
+            # Tile names (check against known tiles or any *_t pattern)
             for tile in self.vtoInfo['tile'].split(':'):
                 if tile and word == tile:
+                    arguementInfo['tile'] = arguementInfo['tile'] + ":" + word
+            if re.search(r'^[a-zA-Z][a-zA-Z0-9_]*_t$', word):
+                if (":" + word) not in arguementInfo['tile']:
                     arguementInfo['tile'] = arguementInfo['tile'] + ":" + word
 
             # Check arguement.csv for target, params, tune, etc.
