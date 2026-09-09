@@ -937,6 +937,9 @@ class GenieCLI:
         # the tile's AI_ECO_FLOW_<TAG> dir, so the flow has ONE output tree and never
         # writes back to <repo>/users/$USER/data. Falls back to the legacy layout when
         # the var is unset. See eco_analyze.csh / ROUND_ORCHESTRATOR (Option A).
+        _agent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.repo_root = _agent_dir
+
         eco_out = os.environ.get('ECO_OUT_DIR', '').strip()
         if eco_out:
             self.base_dir = eco_out
@@ -944,27 +947,18 @@ class GenieCLI:
             os.makedirs(os.path.join(eco_out, 'runs'), exist_ok=True)
         elif base_dir is None:
             # Default to the main_agent directory
-            agent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            # Auto-detect user directory: if users/$USER exists, use it as base_dir
             username = os.environ.get('USER', os.environ.get('LOGNAME', ''))
-            user_dir = os.path.join(agent_dir, 'users', username)
-            if username and os.path.isdir(user_dir) and os.access(user_dir, os.W_OK):
+            user_dir = os.path.join(_agent_dir, 'users', username)
+            if username and os.path.isdir(user_dir):
                 self.base_dir = user_dir
-            elif os.access(agent_dir, os.W_OK):
-                self.base_dir = agent_dir
             else:
-                # Read-only shared repo (e.g. running from /home/abinbaba/eco_flow as another user):
-                # Never attempt to write into the shared repo — use user-isolated /tmp scratch dir
-                tmp_user_dir = f"/tmp/genie_agent_{username}" if username else "/tmp/genie_agent"
-                os.makedirs(tmp_user_dir, exist_ok=True)
-                self.base_dir = tmp_user_dir
+                self.base_dir = _agent_dir
         else:
             self.base_dir = base_dir
 
         # script_root: the dir that actually holds script/ + csh/ (users/$USER or agent root).
         # base_dir may be repointed to a tile's AI_ECO_FLOW_<TAG> output dir (has only data/+runs/),
         # so the run script must cd HERE to source script/... and csh/... .
-        _agent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         _sr_user = os.environ.get('USER', os.environ.get('LOGNAME', ''))
         _sr_user_dir = os.path.join(_agent_dir, 'users', _sr_user)
         self.script_root = _sr_user_dir if (_sr_user and os.path.isdir(_sr_user_dir)) else _agent_dir
@@ -998,9 +992,18 @@ class GenieCLI:
             if _u:
                 self.debugger_emails = [f"{_u}@amd.com"]
 
+    def _find_config_file(self, filename):
+        """Find a configuration CSV or resource in self.base_dir, self.script_root, or repo_root."""
+        for candidate_dir in [self.base_dir, self.script_root, self.repo_root]:
+            if candidate_dir:
+                p = os.path.join(candidate_dir, filename)
+                if os.path.isfile(p):
+                    return p
+        return os.path.join(self.repo_root, filename)
+
     def _load_keyword(self):
         """Load keyword.csv and create one-hot encoding"""
-        keyword_file = os.path.join(self.base_dir, 'keyword.csv')
+        keyword_file = self._find_config_file('keyword.csv')
         if not os.path.exists(keyword_file):
             print(f"ERROR: keyword.csv not found at {keyword_file}")
             return
@@ -1025,7 +1028,7 @@ class GenieCLI:
 
     def _load_instruction(self):
         """Load instruction.csv and map to scripts"""
-        instruction_file = os.path.join(self.base_dir, 'instruction.csv')
+        instruction_file = self._find_config_file('instruction.csv')
         if not os.path.exists(instruction_file):
             print(f"ERROR: instruction.csv not found at {instruction_file}")
             return
@@ -1075,7 +1078,7 @@ class GenieCLI:
 
     def _load_arguement(self):
         """Load arguement.csv for parameter mapping"""
-        arguement_file = os.path.join(self.base_dir, 'arguement.csv')
+        arguement_file = self._find_config_file('arguement.csv')
         if not os.path.exists(arguement_file):
             return
 
@@ -1092,7 +1095,7 @@ class GenieCLI:
 
     def _load_assignment(self):
         """Load assignment.csv for tile/project info"""
-        assignment_file = os.path.join(self.base_dir, 'assignment.csv')
+        assignment_file = self._find_config_file('assignment.csv')
         if not os.path.exists(assignment_file):
             return
 
@@ -1116,7 +1119,7 @@ class GenieCLI:
 
     def get_llm_key(self):
         """Return AMD LLM gateway key (llmKey row in assignment.csv)."""
-        assignment_file = os.path.join(self.base_dir, 'assignment.csv')
+        assignment_file = self._find_config_file('assignment.csv')
         if os.path.exists(assignment_file):
             with open(assignment_file, encoding='utf-8-sig') as fh:
                 reader = csv.reader(fh)
@@ -1136,7 +1139,7 @@ class GenieCLI:
         key = os.environ.get('ANTHROPIC_API_KEY', '').strip()
         if key and not key.startswith('dummy'):
             return key
-        assignment_file = os.path.join(self.base_dir, 'assignment.csv')
+        assignment_file = self._find_config_file('assignment.csv')
         if os.path.exists(assignment_file):
             with open(assignment_file, encoding='utf-8-sig') as fh:
                 reader = csv.reader(fh)
@@ -1147,7 +1150,7 @@ class GenieCLI:
 
     def _load_patterns(self):
         """Load patterns.csv for regex matching"""
-        patterns_file = os.path.join(self.base_dir, 'patterns.csv')
+        patterns_file = self._find_config_file('patterns.csv')
         if not os.path.exists(patterns_file):
             return
 
@@ -1172,7 +1175,7 @@ class GenieCLI:
 
     def _load_project_list(self):
         """Load project.list to map IP to project name (e.g., umc17_0 -> grimlock)"""
-        project_file = os.path.join(self.base_dir, 'script', 'rtg_oss_feint', 'project.list')
+        project_file = self._find_config_file(os.path.join('script', 'rtg_oss_feint', 'project.list'))
         if not os.path.exists(project_file):
             return
 
