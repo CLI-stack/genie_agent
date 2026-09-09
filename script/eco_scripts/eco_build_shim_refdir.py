@@ -58,6 +58,26 @@ def _link_rtl(src, dest_dir, shared_name):
         _abort(f"RTL path is neither file nor dir: {src}")
 
 
+def _find_base_workdir(workdir: str) -> str:
+    """Find the top-level tile/project base directory rather than a nested data/PreEco subfolder."""
+    cur = os.path.abspath(workdir)
+    # 1. If any parent directory has revrc.main (TileBuilder root), use that as base
+    p = cur
+    while p and p != os.path.dirname(p):
+        if os.path.isfile(os.path.join(p, 'revrc.main')):
+            return p
+        p = os.path.dirname(p)
+    # 2. If inside data/PreEco or data/, strip those nested subfolders
+    norm = cur.rstrip('/')
+    if norm.endswith('/data/PreEco'):
+        return norm[:-len('/data/PreEco')]
+    if norm.endswith('/PreEco') and os.path.basename(os.path.dirname(norm)) == 'data':
+        return os.path.dirname(os.path.dirname(norm))
+    if norm.endswith('/data'):
+        return norm[:-len('/data')]
+    return cur
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument('--rtl-before',      required=True)
@@ -69,7 +89,7 @@ def main():
                    help='optional — omit for a Synthesize-only run')
     p.add_argument('--tag',             required=True)
     p.add_argument('--workdir',         required=True,
-                   help='parent dir for the shim (usually the dir of the Synthesize netlist)')
+                   help='parent dir for the shim (auto-resolves to base directory if nested inside data/PreEco)')
     args = p.parse_args()
 
     # ---- validate inputs exist ----
@@ -91,8 +111,9 @@ def main():
     after_is_file = os.path.isfile(args.rtl_after)
     shared_name = os.path.basename(os.path.abspath(args.rtl_after)) if after_is_file else 'rtl.v'
 
-    # ---- build the shim ----
-    shim = os.path.abspath(os.path.join(args.workdir, f'ECO_SIMPLE_{args.tag}'))
+    # ---- build the shim at the resolved base directory ----
+    base_dir = _find_base_workdir(args.workdir)
+    shim = os.path.abspath(os.path.join(base_dir, f'ECO_SIMPLE_{args.tag}'))
     if os.path.exists(shim):
         _abort(f"shim dir already exists (pick a fresh tag/workdir): {shim}")
     os.makedirs(os.path.join(shim, 'data', 'PreEco'), exist_ok=True)

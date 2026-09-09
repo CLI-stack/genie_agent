@@ -51,6 +51,15 @@ if (! -d $refdir_name) then
     exit 1
 endif
 
+# If passed a nested subfolder like data/PreEco or data/, auto-resolve up to TileBuilder root
+if (! -f "$refdir_name/revrc.main") then
+    if (-f "$refdir_name/../../revrc.main") then
+        set refdir_name = `cd "$refdir_name/../.." && pwd`
+    else if (-f "$refdir_name/../revrc.main") then
+        set refdir_name = `cd "$refdir_name/.." && pwd`
+    endif
+endif
+
 if (! -f "$refdir_name/revrc.main") then
     echo "#text#" >> $specfile
     echo "ERROR: Not a TileBuilder directory (revrc.main not found): $refdir_name" >> $specfile
