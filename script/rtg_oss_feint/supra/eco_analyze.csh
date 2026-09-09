@@ -1,6 +1,6 @@
 #!/bin/tcsh
 # Validate ECO TileBuilder directory and emit ECO_ANALYZE_MODE_ENABLED signal
-# Parameters: refDir tag tile integer(jira_number)
+# Parameters: refDir tag tile integer(jira_number) [mode]
 # Called by genie_cli.py — runs synchronously (thin wrapper, seconds)
 
 set refDir    = $1
@@ -8,10 +8,45 @@ set tag       = $2
 set tile      = $3
 set jira_raw  = $4
 set source_dir = `pwd`
-set specfile = "$source_dir/data/${tag}_spec"
 
-# Extract JIRA number (strip integer: prefix if present)
-set jira_num = `echo $jira_raw | sed 's/integer://' | sed 's/^://g' | xargs`
+# Strip prefixes
+set refdir_name = `echo $refDir | sed 's/refDir://' | sed 's/^://g'`
+set tile_name   = `echo $tile   | sed 's/tile://'   | sed 's/^://g' | xargs`
+set jira_num    = `echo $jira_raw | sed 's/integer://' | sed 's/^://g' | xargs`
+
+# If passed a nested subfolder like data/PreEco or data/, auto-resolve up to TileBuilder root (revrc.main)
+if (-d "$refdir_name") then
+    if (! -f "$refdir_name/revrc.main") then
+        if (-f "$refdir_name/../../revrc.main") then
+            set refdir_name = `cd "$refdir_name/../.." && pwd`
+        else if (-f "$refdir_name/../revrc.main") then
+            set refdir_name = `cd "$refdir_name/.." && pwd`
+        endif
+    endif
+endif
+
+# Determine mode
+set mode_val = "complete"
+if ( "$5" != "" ) then
+    set mode_val = `echo "$5" | sed 's/mode://' | sed 's/^://g' | xargs`
+endif
+if ( "$?ECO_MODE" ) then
+    if ( "$ECO_MODE" == "simple" ) set mode_val = "simple"
+endif
+
+# Determine output directory — ALWAYS under the tile directory, NEVER in source_dir (read-only shared repo)
+if (-d "$refdir_name") then
+    if ( "$mode_val" == "simple" ) then
+        set eco_flow_dir = "$refdir_name/AI_ECO_FLOW_SIMPLE_${tag}"
+    else
+        set eco_flow_dir = "$refdir_name/AI_ECO_FLOW_${tag}"
+    endif
+else
+    set eco_flow_dir = "/tmp/genie_agent_${tag}"
+endif
+
+mkdir -p "$eco_flow_dir/data" "$eco_flow_dir/runs"
+set specfile = "$eco_flow_dir/data/${tag}_spec"
 
 # Validate JIRA number
 if ("$jira_num" == "" || "$jira_num" == " ") then
@@ -20,14 +55,8 @@ if ("$jira_num" == "" || "$jira_num" == " ") then
     echo "Example: run eco analysis at /proj/xxx/tiles/... for umccmd 9874" >> $specfile
     echo "#text end#" >> $specfile
     set run_status = "failed"
-    source $source_dir/script/rtg_oss_feint/finishing_task.csh
     exit 1
 endif
-
-
-# Strip prefixes
-set refdir_name = `echo $refDir | sed 's/refDir://' | sed 's/^://g'`
-set tile_name   = `echo $tile   | sed 's/tile://'   | sed 's/^://g' | xargs`
 
 echo "ECO Analyze: validating $tile_name at $refdir_name (JIRA: $jira_num)"
 
@@ -38,26 +67,15 @@ if ("$refdir_name" == "" || "$refdir_name" == " ") then
     echo "ERROR: refDir is empty or invalid" >> $specfile
     echo "#text end#" >> $specfile
     set run_status = "failed"
-    source $source_dir/script/rtg_oss_feint/finishing_task.csh
     exit 1
 endif
 
-if (! -d $refdir_name) then
+if (! -d "$refdir_name") then
     echo "#text#" >> $specfile
     echo "ERROR: Directory not found: $refdir_name" >> $specfile
     echo "#text end#" >> $specfile
     set run_status = "failed"
-    source $source_dir/script/rtg_oss_feint/finishing_task.csh
     exit 1
-endif
-
-# If passed a nested subfolder like data/PreEco or data/, auto-resolve up to TileBuilder root
-if (! -f "$refdir_name/revrc.main") then
-    if (-f "$refdir_name/../../revrc.main") then
-        set refdir_name = `cd "$refdir_name/../.." && pwd`
-    else if (-f "$refdir_name/../revrc.main") then
-        set refdir_name = `cd "$refdir_name/.." && pwd`
-    endif
 endif
 
 if (! -f "$refdir_name/revrc.main") then
@@ -65,29 +83,8 @@ if (! -f "$refdir_name/revrc.main") then
     echo "ERROR: Not a TileBuilder directory (revrc.main not found): $refdir_name" >> $specfile
     echo "#text end#" >> $specfile
     set run_status = "failed"
-    source $source_dir/script/rtg_oss_feint/finishing_task.csh
     exit 1
 endif
-
-# Option 2 single-output: ref dir is a valid TileBuilder dir -> from here every
-# artifact (incl. this analyze spec) lands under the tile AI_ECO_FLOW_<TAG> tree.
-# Simple mode uses AI_ECO_FLOW_SIMPLE_<TAG>; Complete mode uses AI_ECO_FLOW_<TAG>.
-set mode_val = "complete"
-if ( "$5" != "" ) then
-    set mode_val = `echo "$5" | sed 's/mode://' | sed 's/^://g' | xargs`
-endif
-if ( "$?ECO_MODE" ) then
-    if ( "$ECO_MODE" == "simple" ) set mode_val = "simple"
-endif
-
-if ( "$mode_val" == "simple" ) then
-    set eco_flow_dir = "$refdir_name/AI_ECO_FLOW_SIMPLE_${tag}"
-else
-    set eco_flow_dir = "$refdir_name/AI_ECO_FLOW_${tag}"
-endif
-mkdir -p $eco_flow_dir/data $eco_flow_dir/runs
-if ( -f $specfile ) cp $specfile $eco_flow_dir/data/${tag}_spec >& /dev/null
-set specfile = "$eco_flow_dir/data/${tag}_spec"
 
 # --- Validation: RTL directories ---
 
@@ -97,7 +94,6 @@ foreach rtl_dir ("data/PreEco/SynRtl" "data/SynRtl")
         echo "ERROR: RTL directory not found: $refdir_name/$rtl_dir" >> $specfile
         echo "#text end#" >> $specfile
         set run_status = "failed"
-        source $source_dir/script/rtg_oss_feint/finishing_task.csh
         exit 1
     endif
 end
@@ -114,7 +110,6 @@ if (! -f "$refdir_name/data/PreEco/Synthesize.v.gz") then
     echo "ERROR: Required PreEco netlist not found: $refdir_name/data/PreEco/Synthesize.v.gz" >> $specfile
     echo "#text end#" >> $specfile
     set run_status = "failed"
-    source $source_dir/script/rtg_oss_feint/finishing_task.csh
     exit 1
 endif
 
@@ -136,7 +131,6 @@ if (! -d "$refdir_name/data/PostEco") then
     echo "ERROR: PostEco directory not found: $refdir_name/data/PostEco" >> $specfile
     echo "#text end#" >> $specfile
     set run_status = "failed"
-    source $source_dir/script/rtg_oss_feint/finishing_task.csh
     exit 1
 endif
 
@@ -151,7 +145,6 @@ foreach stage ($stages_present)
             echo "ERROR: Failed to copy PreEco/${stage}.v.gz to PostEco/" >> $specfile
             echo "#text end#" >> $specfile
             set run_status = "failed"
-            source $source_dir/script/rtg_oss_feint/finishing_task.csh
             exit 1
         endif
     endif
@@ -172,10 +165,8 @@ echo "PostEco Netlists,$stages_present (verified or copied from PreEco)" >> $spe
 echo "Status,Validation PASSED — ECO orchestrator launching" >> $specfile
 echo "#table end#" >> $specfile
 
-# --- Single output tree (Option 2): all ECO working artifacts (data/<TAG>_*) live
-#     under the tile's AI_ECO_FLOW_<TAG>/data. The flow still RUNS from BASE_DIR (the
-#     repo user dir — where script/ lives), but every output path in the MDs points at
-#     <AI_ECO_FLOW_DIR>/data instead of the repo's data/. Nothing lands in <repo> data.
+# --- Single output tree: all ECO working artifacts live under the tile's
+#     AI_ECO_FLOW_<TAG>/data. Nothing lands in <repo> data/.
 # --- Emit signal (captured by genie_cli.py) ---
 
 echo ""
@@ -187,13 +178,10 @@ echo "TILE=$tile_name"
 echo "JIRA=$jira_num"
 echo "BASE_DIR=$source_dir"
 echo "AI_ECO_FLOW_DIR=$eco_flow_dir"
-echo "LOG_FILE=$source_dir/runs/${tag}.log"
+echo "LOG_FILE=$eco_flow_dir/runs/${tag}.log"
 echo "SPEC_FILE=$eco_flow_dir/data/${tag}_spec"
 echo "========================================================================"
 echo ""
 
-# Record task as finished (for task tracking)
-cd $source_dir
 set run_status = "finished"
-source csh/env.csh
-source csh/updateTask.csh
+exit 0
