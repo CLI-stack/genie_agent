@@ -252,9 +252,10 @@ def compare_dff(inst_name: str, stage_texts: dict[str, str], depth: int = 2,
         }
 
     # Compute pin deltas across stages (fast — only uses already-extracted pin dict)
-    if all(per_stage.get(s, {}).get("present") for s in STAGES):
+    active_present = [s for s in STAGES if per_stage.get(s, {}).get("present")]
+    if len(active_present) >= 2:
         for pin in PIN_PATTERNS:
-            vals = {s: per_stage[s]["pins"].get(pin, "") for s in STAGES}
+            vals = {s: per_stage[s]["pins"].get(pin, "") for s in active_present}
             if len(set(vals.values())) > 1:
                 pin_changes.append(
                     f"{pin} differs: " + " vs ".join(f"{s}={v}" for s, v in vals.items())

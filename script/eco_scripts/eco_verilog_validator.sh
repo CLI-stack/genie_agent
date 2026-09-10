@@ -91,11 +91,16 @@ if [ -n "$MODS" ]; then
 fi
 
 # ── Run validator on PostEco ─────────────────────────────────────────────────
-python3 "${SCRIPT}" --strict "${MODS_ARGS[@]}" -- \
-    "${REF_DIR}/data/PostEco/Synthesize.v.gz" \
-    "${REF_DIR}/data/PostEco/PrePlace.v.gz" \
-    "${REF_DIR}/data/PostEco/Route.v.gz" \
-    2>&1 | tee "${TMP_LOG}"
+POSTECO_FILES=()
+for S in Synthesize PrePlace Route; do
+    if [ -f "${REF_DIR}/data/PostEco/${S}.v.gz" ]; then
+        POSTECO_FILES+=("${REF_DIR}/data/PostEco/${S}.v.gz")
+    fi
+done
+
+if [ ${#POSTECO_FILES[@]} -gt 0 ]; then
+    python3 "${SCRIPT}" --strict "${MODS_ARGS[@]}" -- "${POSTECO_FILES[@]}" 2>&1 | tee "${TMP_LOG}"
+fi
 
 # ── Per-stage PASS/FAIL: only SVR4_bare_paren and SVR9_dup_wire cause FAIL ──
 parse_stage() {
@@ -144,19 +149,30 @@ print("PASS")
 PYEOF
 }
 
-SYNTH=$(parse_stage "Synthesize" "${TMP_LOG}")
-PPLACE=$(parse_stage "PrePlace"   "${TMP_LOG}")
-ROUTE=$(parse_stage  "Route"      "${TMP_LOG}")
+if [ -f "${REF_DIR}/data/PostEco/Synthesize.v.gz" ]; then
+    SYNTH=$(parse_stage "Synthesize" "${TMP_LOG}")
+    [ -z "$SYNTH" ] && SYNTH="FAIL"
+else
+    SYNTH="N/A"
+fi
 
-[ -z "$SYNTH"  ] && SYNTH="FAIL"
-[ -z "$PPLACE" ] && PPLACE="FAIL"
-[ -z "$ROUTE"  ] && ROUTE="FAIL"
+if [ -f "${REF_DIR}/data/PostEco/PrePlace.v.gz" ]; then
+    PPLACE=$(parse_stage "PrePlace" "${TMP_LOG}")
+    [ -z "$PPLACE" ] && PPLACE="FAIL"
+else
+    PPLACE="N/A"
+fi
+
+if [ -f "${REF_DIR}/data/PostEco/Route.v.gz" ]; then
+    ROUTE=$(parse_stage "Route" "${TMP_LOG}")
+    [ -z "$ROUTE" ] && ROUTE="FAIL"
+else
+    ROUTE="N/A"
+fi
 
 # ── SVR4 inline fix — bare ')' without ';' (introduced by eco_netlist_port_rewire.py) ─
 if grep -q "SVR4_bare_paren" "${TMP_LOG}" 2>/dev/null; then
-    for STAGE_GZ in "${REF_DIR}/data/PostEco/Synthesize.v.gz" \
-                    "${REF_DIR}/data/PostEco/PrePlace.v.gz" \
-                    "${REF_DIR}/data/PostEco/Route.v.gz"; do
+    for STAGE_GZ in "${POSTECO_FILES[@]}"; do
         TMP_FIX="/tmp/eco_svr4fix_$(basename ${STAGE_GZ} .v.gz).v"
         zcat "${STAGE_GZ}" | awk '{
             if(/^\s*\)\s*$/ && prev_was_port){print ") ;"}
@@ -167,17 +183,19 @@ if grep -q "SVR4_bare_paren" "${TMP_LOG}" 2>/dev/null; then
         rm -f "${TMP_FIX}"
         echo "SVR4_bare_paren: fixed in $(basename ${STAGE_GZ})"
     done
-    python3 "${SCRIPT}" --strict "${MODS_ARGS[@]}" -- \
-        "${REF_DIR}/data/PostEco/Synthesize.v.gz" \
-        "${REF_DIR}/data/PostEco/PrePlace.v.gz" \
-        "${REF_DIR}/data/PostEco/Route.v.gz" \
-        > "${TMP_LOG}" 2>&1
-    SYNTH=$(parse_stage "Synthesize" "${TMP_LOG}")
-    PPLACE=$(parse_stage "PrePlace"   "${TMP_LOG}")
-    ROUTE=$(parse_stage  "Route"      "${TMP_LOG}")
-    [ -z "$SYNTH"  ] && SYNTH="FAIL"
-    [ -z "$PPLACE" ] && PPLACE="FAIL"
-    [ -z "$ROUTE"  ] && ROUTE="FAIL"
+    python3 "${SCRIPT}" --strict "${MODS_ARGS[@]}" -- "${POSTECO_FILES[@]}" > "${TMP_LOG}" 2>&1
+    if [ -f "${REF_DIR}/data/PostEco/Synthesize.v.gz" ]; then
+        SYNTH=$(parse_stage "Synthesize" "${TMP_LOG}")
+        [ -z "$SYNTH" ] && SYNTH="FAIL"
+    fi
+    if [ -f "${REF_DIR}/data/PostEco/PrePlace.v.gz" ]; then
+        PPLACE=$(parse_stage "PrePlace" "${TMP_LOG}")
+        [ -z "$PPLACE" ] && PPLACE="FAIL"
+    fi
+    if [ -f "${REF_DIR}/data/PostEco/Route.v.gz" ]; then
+        ROUTE=$(parse_stage "Route" "${TMP_LOG}")
+        [ -z "$ROUTE" ] && ROUTE="FAIL"
+    fi
 fi
 
 # ── ECO net GROUND-TRUTH gate: undriven / multiply-driven output nets ─────────
@@ -191,7 +209,9 @@ python3 - "$BASE_DIR" "$REF_DIR" "$STUDY_JSON" "$GATE_JSON" <<'PYEOF'
 import json, os, sys
 base_dir, ref_dir, study_json, gate_json = sys.argv[1:5]
 sys.path.insert(0, os.path.join(base_dir, 'script', 'eco_scripts'))
-STAGES = ('Synthesize', 'PrePlace', 'Route')
+STAGES = [s for s in ('Synthesize', 'PrePlace', 'Route') if os.path.isfile(os.path.join(ref_dir, 'data', 'PostEco', f'{s}.v.gz'))]
+if not STAGES:
+    STAGES = ['Synthesize']
 def _dump(d): json.dump(d, open(gate_json, 'w'))
 try:
     import eco_validate_step4 as v4
@@ -233,9 +253,9 @@ gate_stage_verdict() {
     python3 -c "import json,sys; d=json.load(open('${GATE_JSON}')); \
 print('FAIL' if d.get('stage_fail',{}).get(sys.argv[1]) else 'PASS')" "$1" 2>/dev/null
 }
-[ "$(gate_stage_verdict Synthesize)" = "FAIL" ] && SYNTH="FAIL"
-[ "$(gate_stage_verdict PrePlace)"   = "FAIL" ] && PPLACE="FAIL"
-[ "$(gate_stage_verdict Route)"      = "FAIL" ] && ROUTE="FAIL"
+[ "$SYNTH" != "N/A" ] && [ "$(gate_stage_verdict Synthesize)" = "FAIL" ] && SYNTH="FAIL"
+[ "$PPLACE" != "N/A" ] && [ "$(gate_stage_verdict PrePlace)"   = "FAIL" ] && PPLACE="FAIL"
+[ "$ROUTE" != "N/A" ] && [ "$(gate_stage_verdict Route)"      = "FAIL" ] && ROUTE="FAIL"
 
 # ── Collect FM-aborting error lines for JSON ──────────────────────────────────
 ERRORS_JSON=$(grep -E "SVR4_bare_paren|SVR9_dup_wire|F1_dup_wire|SVR4_double_comma|\
