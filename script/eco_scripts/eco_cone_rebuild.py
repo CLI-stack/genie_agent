@@ -1293,6 +1293,42 @@ def emit_reg_guard_delta_batch(ref_dir, module, changes, jira='eco', rename_map=
     return _finalize_study(ref_dir, module, synth, rewires, jira, rename_map, tech_map, summ, roots, errs)
 
 
+def _is_reg_guard_already_studied(change, study, active_stages):
+    """Return True if Step 3a or an earlier pass has already emitted study entries
+    (gates or rewires) for this register guard change, avoiding redundant double implementation."""
+    reg = change.get('target_register')
+    old_tok = change.get('old_token')
+    old_guard = change.get('old_guard_net')
+    new_tok = change.get('new_token')
+
+    if not reg:
+        return False
+
+    for st in active_stages:
+        entries = study.get(st, [])
+        for e in entries:
+            # Check explicit target_register tag
+            if e.get('target_register') == reg:
+                return True
+            # Check if any rewire already repoints the guard input or the D-net
+            if e.get('change_type') == 'rewire':
+                old_net = e.get('old_net')
+                notes = e.get('notes', '') or ''
+                reason = e.get('reason', '') or ''
+                if old_tok and old_net == old_tok:
+                    return True
+                if new_tok and (old_net == new_tok or new_tok in notes or new_tok in reason):
+                    if reg in notes or reg in reason or (old_guard and old_guard in notes):
+                        return True
+            # Check if any new gate notes/reason indicate this register's guard was already handled
+            if e.get('change_type') == 'new_logic_gate':
+                notes = e.get('notes', '') or ''
+                reason = e.get('reason', '') or ''
+                if (reg in notes or reg in reason) and (new_tok in notes or new_tok in reason):
+                    return True
+    return False
+
+
 def emit_reg_guard_delta_into_study(rtl_diff, study, jira, ref_dir, rename_map=None):
     """Splice every register guard-change `and_term` (change with `target_register`+`branch_assigns`)
     into `study` (all stages) via the deterministic builder. Mirrors emit_into_study; on ANY builder
@@ -1301,7 +1337,8 @@ def emit_reg_guard_delta_into_study(rtl_diff, study, jira, ref_dir, rename_map=N
     import collections
     changes = [c for c in rtl_diff.get('changes', [])
                if c.get('change_type') == 'and_term' and c.get('target_register')
-               and (c.get('branch_assigns') is not None or c.get('branch_loads') is not None)]
+               and (c.get('branch_assigns') is not None or c.get('branch_loads') is not None)
+               and not _is_reg_guard_already_studied(c, study, active_stages)]
     if not changes:
         return 0, []
     by_mod = collections.OrderedDict()
