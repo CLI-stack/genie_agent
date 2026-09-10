@@ -75,7 +75,7 @@ Do NOT check `eco_fm_verify.json` to classify failures yourself — the eco_fm_a
 
 ## STEP 1 — Read Entries from eco_fm_analyzer Output
 
-Read `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND_FAILED>.json`. Extract all entries from `revised_changes` where `action` is `"set_dont_verify"` or `"set_user_match"`. These are the ONLY entries you will act on.
+Read `<AI_ECO_FLOW_DIR>/<TAG>_eco_fm_analysis_round<ROUND_FAILED>.json`. Extract all entries from `revised_changes` where `action` is `"set_dont_verify"` or `"set_user_match"`. These are the ONLY entries you will act on.
 
 Do NOT re-read `eco_fm_verify.json` to re-classify failures — the eco_fm_analyzer has already done this classification and its `revised_changes` entries are authoritative. Re-classifying from raw FM output risks contradicting the analyzer's diagnosis.
 
@@ -122,7 +122,7 @@ assert len(entries) == len(set(entries))
 ```
 
 **If cmd-031 occurs anyway:** The eco_svf_updater wrote entries that were already present in EcoChange.svf from a previous round. The eco_fm_analyzer ABORT_SVF handler must:
-1. Delete the TCL file: `rm -f <AI_ECO_FLOW_DIR>/data/<TAG>_eco_svf_entries.tcl`
+1. Delete the TCL file: `rm -f <AI_ECO_FLOW_DIR>/<TAG>_eco_svf_entries.tcl`
 2. Set `svf_update_needed=false` for the next round
 3. Do NOT re-run eco_svf_updater until the root cause (duplicate/malformed entries) is fixed
 
@@ -140,7 +140,7 @@ set_user_match /rtl/hierarchy/signal_name /impl/instance/path
 
 ## STEP 3 — Write TCL File
 
-Write (or append) to `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_svf_entries.tcl`:
+Write (or append) to `<AI_ECO_FLOW_DIR>/<TAG>_eco_svf_entries.tcl`:
 
 ```tcl
 # ECO FM setup commands — TAG=<TAG> JIRA=<JIRA> Round=<ROUND>
@@ -161,7 +161,7 @@ set_dont_verify -type { register } /path/to/preexisting/failing/point
 
 **Duplicate check** — before writing any command, verify it does not already exist in the TCL file:
 ```bash
-grep -c "set_dont_verify.*<point_name>" <AI_ECO_FLOW_DIR>/data/<TAG>_eco_svf_entries.tcl 2>/dev/null
+grep -c "set_dont_verify.*<point_name>" <AI_ECO_FLOW_DIR>/<TAG>_eco_svf_entries.tcl 2>/dev/null
 ```
 Skip if count > 0 (safe for retries).
 
@@ -169,11 +169,11 @@ Skip if count > 0 (safe for retries).
 
 ## Output JSON
 
-Write `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_svf_update.json`:
+Write `<AI_ECO_FLOW_DIR>/<TAG>_eco_svf_update.json`:
 
 ```json
 {
-  "tcl_file": "<AI_ECO_FLOW_DIR>/data/<TAG>_eco_svf_entries.tcl",
+  "tcl_file": "<AI_ECO_FLOW_DIR>/<TAG>_eco_svf_entries.tcl",
   "svf_file": "<REF_DIR>/data/svf/EcoChange.svf",
   "note": "Setup partition commands written — appended by post_eco_formality.csh after FmEcoSvfGen",
   "svf_update_needed": true,
@@ -205,9 +205,9 @@ Possible entry statuses: `WRITTEN`, `ALREADY_PRESENT`, `SKIPPED`.
 
 ## Output RPT
 
-Write `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_step4b_svf.rpt` then copy to `AI_ECO_FLOW_DIR`:
+Write `<AI_ECO_FLOW_DIR>/<TAG>_eco_step4b_svf.rpt` then copy to `AI_ECO_FLOW_DIR`:
 ```bash
-cp <AI_ECO_FLOW_DIR>/data/<TAG>_eco_step4b_svf.rpt <AI_ECO_FLOW_DIR>/
+cp <AI_ECO_FLOW_DIR>/<TAG>_eco_step4b_svf.rpt <AI_ECO_FLOW_DIR>/
 ```
 
 ```
@@ -216,7 +216,7 @@ STEP 4b — SVF SETUP COMMANDS
 Tag: <TAG>  |  JIRA: <JIRA>
 ================================================================================
 
-TCL File : <AI_ECO_FLOW_DIR>/data/<TAG>_eco_svf_entries.tcl  [or: not created]
+TCL File : <AI_ECO_FLOW_DIR>/<TAG>_eco_svf_entries.tcl  [or: not created]
 SVF File : <REF_DIR>/data/svf/EcoChange.svf  (appended by post_eco_formality.csh)
 
 NOTE: guide_eco_change -type insert_cell is NOT valid SVF — never written here.

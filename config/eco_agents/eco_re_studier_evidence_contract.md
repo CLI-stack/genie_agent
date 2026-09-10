@@ -241,8 +241,8 @@ Each action verb has additional REQUIRED fields beyond the universal block. The 
 
 ```bash
 python3 script/eco_scripts/eco_validate_analyzer_evidence_contract.py \
-    --analysis-json <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_analysis_round<N>.json \
-    --output        <AI_ECO_FLOW_DIR>/data/<TAG>_eco_evidence_contract_check_round<N>.json
+    --analysis-json <AI_ECO_FLOW_DIR>/<TAG>_eco_fm_analysis_round<N>.json \
+    --output        <AI_ECO_FLOW_DIR>/<TAG>_eco_evidence_contract_check_round<N>.json
 ```
 
 Exit code:

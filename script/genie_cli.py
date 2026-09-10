@@ -943,8 +943,7 @@ class GenieCLI:
         eco_out = os.environ.get('ECO_OUT_DIR', '').strip()
         if eco_out:
             self.base_dir = eco_out
-            os.makedirs(os.path.join(eco_out, 'data'), exist_ok=True)
-            os.makedirs(os.path.join(eco_out, 'runs'), exist_ok=True)
+            os.makedirs(eco_out, exist_ok=True)
         elif base_dir is None:
             # Default to the main_agent directory
             username = os.environ.get('USER', os.environ.get('LOGNAME', ''))
@@ -4556,16 +4555,23 @@ Examples:
         eco_round   = getattr(args, 'eco_round', None)
         eco_result  = getattr(args, 'eco_result', None)
 
-        eco_analyze_file = os.path.join(cli.base_dir, 'data', f'{tag}_eco_analyze')
-        email_flag_file  = os.path.join(cli.base_dir, 'data', f'{tag}_email')
+        def _resolve_eco_file(name):
+            p1 = os.path.join(cli.base_dir, name)
+            if os.path.exists(p1): return p1
+            p2 = os.path.join(cli.base_dir, 'data', name)
+            if os.path.exists(p2): return p2
+            return p1
+
+        eco_analyze_file = _resolve_eco_file(f'{tag}_eco_analyze')
+        email_flag_file  = _resolve_eco_file(f'{tag}_email')
 
         # Choose HTML file: per-round report or final report
         if eco_round is not None:
-            html_file = os.path.join(cli.base_dir, 'data', f'{tag}_eco_report_round{eco_round}.html')
+            html_file = _resolve_eco_file(f'{tag}_eco_report_round{eco_round}.html')
             if not os.path.exists(html_file):
-                html_file = os.path.join(cli.base_dir, 'data', f'{tag}_eco_report.html')
+                html_file = _resolve_eco_file(f'{tag}_eco_report.html')
         else:
-            html_file = os.path.join(cli.base_dir, 'data', f'{tag}_eco_report.html')
+            html_file = _resolve_eco_file(f'{tag}_eco_report.html')
 
         if not os.path.exists(html_file):
             print(f"Error: ECO HTML report not found: {html_file}")

@@ -24,7 +24,7 @@ set source_dir = `pwd`
 # Standalone ECO flow (Option A): when ECO_OUT_DIR is exported, task spec/data land
 # under the tile's AI_ECO_FLOW_<TAG> tree instead of <repo>/users/$USER/data.
 if ( ${?ECO_OUT_DIR} ) then
-    set data_dir = "${ECO_OUT_DIR}/data"
+    set data_dir = "${ECO_OUT_DIR}"
 else
     set data_dir = "$source_dir/data"
 endif

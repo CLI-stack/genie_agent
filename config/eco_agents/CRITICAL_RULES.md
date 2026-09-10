@@ -109,7 +109,7 @@ Those files and actions belong to FINAL_ORCHESTRATOR. If you produce them yourse
 
 ```bash
 # Always verify after writing:
-ls -la <AI_ECO_FLOW_DIR>/data/<TAG>_round_handoff.json
+ls -la <AI_ECO_FLOW_DIR>/<TAG>_round_handoff.json
 ```
 
 If the file does not exist or is empty after writing — write it again. Do NOT spawn any agent until this file is confirmed on disk.
@@ -288,15 +288,15 @@ This prevents context pressure from causing sub-agents to exit before completing
 
 | Before entering... | Verify on disk (JSON + RPT) |
 |--------------------|---------------------------|
-| Step 2 | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json` ✓ + `AI_ECO_FLOW_DIR/<TAG>_eco_step1_rtl_diff.rpt` ✓ |
-| Step 3 | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_step2_fenets.rpt` ✓ + all fenets raw RPTs in AI_ECO_FLOW_DIR ✓ |
-| Step 4 | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_preeco_study.json` ✓ + `AI_ECO_FLOW_DIR/<TAG>_eco_step3_netlist_study.rpt` ✓ |
-| Step 4b | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_applied_round<N>.json` ✓ + `AI_ECO_FLOW_DIR/<TAG>_eco_step4_eco_applied_round<N>.rpt` ✓ + all 3 stages md5-differ from backup ✓ |
-| Step 5 | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_pre_fm_check_round<N>.json` ✓ — pre-FM checks passed |
-| Step 6 | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_svf_entries.tcl` ✓ only if pre-existing FM failures exist — otherwise `svf_update_needed=false`, no TCL file |
-| After Step 6 | `<AI_ECO_FLOW_DIR>/data/<TAG>_round_handoff.json` ✓ — then spawn — then STOP |
-| Step 7b | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_summary.rpt` ✓ |
-| Step 8 | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_report.html` ✓ |
+| Step 2 | `<AI_ECO_FLOW_DIR>/<TAG>_eco_rtl_diff.json` ✓ + `AI_ECO_FLOW_DIR/<TAG>_eco_step1_rtl_diff.rpt` ✓ |
+| Step 3 | `<AI_ECO_FLOW_DIR>/<TAG>_eco_step2_fenets.rpt` ✓ + all fenets raw RPTs in AI_ECO_FLOW_DIR ✓ |
+| Step 4 | `<AI_ECO_FLOW_DIR>/<TAG>_eco_preeco_study.json` ✓ + `AI_ECO_FLOW_DIR/<TAG>_eco_step3_netlist_study.rpt` ✓ |
+| Step 4b | `<AI_ECO_FLOW_DIR>/<TAG>_eco_applied_round<N>.json` ✓ + `AI_ECO_FLOW_DIR/<TAG>_eco_step4_eco_applied_round<N>.rpt` ✓ + all 3 stages md5-differ from backup ✓ |
+| Step 5 | `<AI_ECO_FLOW_DIR>/<TAG>_eco_pre_fm_check_round<N>.json` ✓ — pre-FM checks passed |
+| Step 6 | `<AI_ECO_FLOW_DIR>/<TAG>_eco_svf_entries.tcl` ✓ only if pre-existing FM failures exist — otherwise `svf_update_needed=false`, no TCL file |
+| After Step 6 | `<AI_ECO_FLOW_DIR>/<TAG>_round_handoff.json` ✓ — then spawn — then STOP |
+| Step 7b | `<AI_ECO_FLOW_DIR>/<TAG>_eco_summary.rpt` ✓ |
+| Step 8 | `<AI_ECO_FLOW_DIR>/<TAG>_eco_report.html` ✓ |
 
 ---
 

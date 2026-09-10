@@ -1767,11 +1767,22 @@ def main():
     rnd   = args.round
     jira  = args.jira
 
-    applied_path  = f'{base}/data/{tag}_eco_applied_round{rnd}.json'
-    check8_path   = f'{base}/data/{tag}_eco_verilog_validator_round{rnd}.json'
-    out_json_path = f'{base}/data/{tag}_eco_pre_fm_check_round{rnd}.json'
-    out_rpt_path  = f'{base}/data/{tag}_eco_step5_pre_fm_check_round{rnd}.rpt'
-    marker_path   = f'{base}/data/{tag}_eco_step5_pre_fm_check_round{rnd}_marker.txt'
+    def _find_path(p_flat, p_sub):
+        if os.path.exists(p_flat): return p_flat
+        if os.path.exists(p_sub): return p_sub
+        return p_flat
+
+    applied_path  = _find_path(f'{base}/{tag}_eco_applied_round{rnd}.json', f'{base}/data/{tag}_eco_applied_round{rnd}.json')
+    check8_path   = _find_path(f'{base}/{tag}_eco_verilog_validator_round{rnd}.json', f'{base}/data/{tag}_eco_verilog_validator_round{rnd}.json')
+
+    if os.path.isdir(f'{base}/data') and any(os.path.isfile(os.path.join(base, 'data', f)) for f in os.listdir(f'{base}/data') if f.startswith(tag)):
+        out_dir = f'{base}/data'
+    else:
+        out_dir = base
+
+    out_json_path = f'{out_dir}/{tag}_eco_pre_fm_check_round{rnd}.json'
+    out_rpt_path  = f'{out_dir}/{tag}_eco_step5_pre_fm_check_round{rnd}.rpt'
+    marker_path   = f'{out_dir}/{tag}_eco_step5_pre_fm_check_round{rnd}_marker.txt'
 
     applied = load_json(applied_path) or {}
 
@@ -1836,7 +1847,7 @@ def main():
     #   (b) WRONG_MODULE — cell landed in netlist but in a different module
     #       than study's `module_name`. Run 20260526225832 R1 root cause was
     #       (a); the legacy global-grep would have missed (b).
-    study_path_check7 = f'{base}/data/{tag}_eco_preeco_study.json'
+    study_path_check7 = _find_path(f'{base}/{tag}_eco_preeco_study.json', f'{base}/data/{tag}_eco_preeco_study.json')
     fails = check_cells_in_netlist(applied, args.ref_dir, study_path=study_path_check7)
     results['cells_in_netlist'] = 'PASS' if not fails else 'FAIL'
     all_fails.extend(fails)
@@ -1873,7 +1884,7 @@ def main():
     # verifies every confirmed study entry's intent is physically present.
     # Catches comment-masked edits, bit-position errors, wrong-instance
     # matches that regex spot checks (Checks 8/9/10/11) can miss.
-    study_path = f'{base}/data/{tag}_eco_preeco_study.json'
+    study_path = _find_path(f'{base}/{tag}_eco_preeco_study.json', f'{base}/data/{tag}_eco_preeco_study.json')
     fails = check_semantic_verify(study_path, args.ref_dir)
     results['semantic_verify'] = 'PASS' if not fails else 'FAIL'
     all_fails.extend(fails)

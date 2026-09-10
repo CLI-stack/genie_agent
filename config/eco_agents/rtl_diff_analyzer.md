@@ -677,7 +677,7 @@ The most FM-friendly strategy: never touches the pivot path, no new intermediate
 ```bash
 python3 script/eco_scripts/eco_find_drvsub_target.py \
     --ref-dir <REF_DIR> --register <target_register> --jira <JIRA> \
-    --output  <AI_ECO_FLOW_DIR>/data/<TAG>_eco_drvsub_target.json
+    --output  <AI_ECO_FLOW_DIR>/<TAG>_eco_drvsub_target.json
 ```
 
 Read `driver_sub_target_net` + `driver_sub_target_cell_type` directly. The script walks pivot → MUX → compound consumers → first stage-stable simple-driver net. Script error (no DFF / no candidate) → fall through to E4c.
@@ -922,7 +922,7 @@ Add `d_input_gate_chain`, `d_input_net`, `d_input_decompose_failed`, `fallback_s
 
 ## Output JSON
 
-Write to `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json` (always use the full absolute path — the agent may be cd'd to REF_DIR for diffs, but output always goes to BASE_DIR/data/):
+Write to `<AI_ECO_FLOW_DIR>/<TAG>_eco_rtl_diff.json` (always use the full absolute path — the agent may be cd'd to REF_DIR for diffs, but output always goes to BASE_DIR/data/):
 
 ```json
 {
@@ -1053,7 +1053,7 @@ This writes `<REF_DIR>/data/eco_cell_library.json` — the authoritative cell tr
 **Then: run the Step 1 validator:**
 ```bash
 cd <BASE_DIR> && python3 script/eco_scripts/eco_validate_step1.py \
-    --rtl-diff <AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json --ref-dir <REF_DIR> --output <AI_ECO_FLOW_DIR>/data/<TAG>_eco_validate_step1.json
+    --rtl-diff <AI_ECO_FLOW_DIR>/<TAG>_eco_rtl_diff.json --ref-dir <REF_DIR> --output <AI_ECO_FLOW_DIR>/<TAG>_eco_validate_step1.json
 ```
 If the output JSON's `overall_pass` is `false`: read every issue list (`entries[].issues[]` for MUX polarity, plus the top-level `phantom_wire_issues`, `new_port_issues`, `port_conn_issues`, `truth_table_issues`), correct the affected entries in `eco_rtl_diff.json`, and re-invoke. Do NOT write the RPT until `overall_pass: true`.
 
@@ -1061,9 +1061,9 @@ If the output JSON's `overall_pass` is `false`: read every issue list (`entries[
 
 ## Output RPT
 
-Write `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_step1_rtl_diff.rpt` then copy to `AI_ECO_FLOW_DIR`:
+Write `<AI_ECO_FLOW_DIR>/<TAG>_eco_step1_rtl_diff.rpt` then copy to `AI_ECO_FLOW_DIR`:
 ```bash
-cp <AI_ECO_FLOW_DIR>/data/<TAG>_eco_step1_rtl_diff.rpt <AI_ECO_FLOW_DIR>/
+cp <AI_ECO_FLOW_DIR>/<TAG>_eco_step1_rtl_diff.rpt <AI_ECO_FLOW_DIR>/
 ```
 
 ```

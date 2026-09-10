@@ -53,16 +53,28 @@ if [ ! -d "$REF_DIR/data/PostEco" ]; then
     exit 2
 fi
 
-# Standalone ECO (Option 2): the SCRIPT lives under BASE_DIR (repo), but the DATA
+# Standalone ECO: the SCRIPT lives under BASE_DIR (repo), but the DATA
 # (study input + validator output) lives under the tile's AI_ECO_FLOW_<TAG> tree.
-# Honor ECO_OUT_DIR for the data dir; fall back to BASE_DIR/data when unset.
-DATA_DIR="${ECO_OUT_DIR:-$BASE_DIR}/data"
+# Honor ECO_OUT_DIR for the flat output dir; fall back to BASE_DIR when unset.
+if [ -n "${ECO_OUT_DIR}" ]; then
+    DATA_DIR="${ECO_OUT_DIR}"
+elif [ -d "${BASE_DIR}/data" ]; then
+    DATA_DIR="${BASE_DIR}/data"
+else
+    DATA_DIR="${BASE_DIR}"
+fi
 mkdir -p "$DATA_DIR"
 
 SCRIPT="${BASE_DIR}/script/eco_scripts/validate_verilog_netlist.py"
 OUT_JSON="${DATA_DIR}/${TAG}_eco_verilog_validator_round${ROUND}.json"
 TMP_LOG="/tmp/eco_verilog_validator_${TAG}_${ROUND}.txt"
-STUDY_JSON="${DATA_DIR}/${TAG}_eco_preeco_study.json"
+if [ -f "${DATA_DIR}/${TAG}_eco_preeco_study.json" ]; then
+    STUDY_JSON="${DATA_DIR}/${TAG}_eco_preeco_study.json"
+elif [ -f "${DATA_DIR}/data/${TAG}_eco_preeco_study.json" ]; then
+    STUDY_JSON="${DATA_DIR}/data/${TAG}_eco_preeco_study.json"
+else
+    STUDY_JSON="${DATA_DIR}/${TAG}_eco_preeco_study.json"
+fi
 
 # ── Extract touched module names ─────────────────────────────────────────────
 MODS=$(python3 -c "

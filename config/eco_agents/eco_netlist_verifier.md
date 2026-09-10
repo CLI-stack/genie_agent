@@ -17,7 +17,7 @@ SPEC_SOURCES:
 ```
 If a stage has `SPEC_SOURCES[stage] = "FALLBACK"` → no FM results exist for that stage → apply Stage Fallback (GAP-5) in Check 10 instead of reading the spec.
 
-**Input file:** `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_preeco_study.json` (written by eco_netlist_studier)
+**Input file:** `<AI_ECO_FLOW_DIR>/<TAG>_eco_preeco_study.json` (written by eco_netlist_studier)
 
 ---
 
@@ -25,8 +25,8 @@ If a stage has `SPEC_SOURCES[stage] = "FALLBACK"` → no FM results exist for th
 
 | Path | When I write it | Format |
 |---|---|---|
-| `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_preeco_study.json` | Step Final | JSON (in-place enriched — wc -l ≥ input count) |
-| `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_step3_netlist_verify.rpt` | Step Final | RPT (per-check counts) |
+| `<AI_ECO_FLOW_DIR>/<TAG>_eco_preeco_study.json` | Step Final | JSON (in-place enriched — wc -l ≥ input count) |
+| `<AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_verify.rpt` | Step Final | RPT (per-check counts) |
 | Copy of both → `AI_ECO_FLOW_DIR/` | Step Final | mirror (ORCHESTRATOR checkpoints) |
 
 ## INPUTS — what the orchestrator gives me
@@ -34,9 +34,9 @@ If a stage has `SPEC_SOURCES[stage] = "FALLBACK"` → no FM results exist for th
 - `REF_DIR`, `TAG`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
 - `SPEC_SOURCES` — per-stage fenets spec map (Check 2 + Check 10 use it)
 - `GAP15_CHECK_PATH` — pre-computed `is_output_port` per old_token
-- `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_preeco_study.json` — studier's skeleton (I enrich in place)
-- `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json` — Step 1 RTL diff (cross-reference for Check 5/6)
-- `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_rename_map.json` — for Check 2 cell_name_per_stage resolution
+- `<AI_ECO_FLOW_DIR>/<TAG>_eco_preeco_study.json` — studier's skeleton (I enrich in place)
+- `<AI_ECO_FLOW_DIR>/<TAG>_eco_rtl_diff.json` — Step 1 RTL diff (cross-reference for Check 5/6)
+- `<AI_ECO_FLOW_DIR>/<TAG>_eco_fenets_rename_map.json` — for Check 2 cell_name_per_stage resolution
 
 ## CHECK EXECUTION ORDER — dependency table
 
@@ -85,7 +85,7 @@ Read `eco_preeco_study.json`. Build working lists:
 - `port_conn_entries[]` — all `port_connection` entries
 - `and_term_entries[]` — all entries where `and_term_strategy` is set
 
-Extract `rtl_diff` from `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json` for cross-reference.
+Extract `rtl_diff` from `<AI_ECO_FLOW_DIR>/<TAG>_eco_rtl_diff.json` for cross-reference.
 
 For each stage, extract the PreEco netlist once (reuse across all checks):
 ```bash
@@ -759,7 +759,7 @@ If found → set `driven_by_submodule: true`, `driver_type: "submodule_bus_outpu
 
 For every entry where any input net is still `PENDING_FM_RESOLUTION:<signal>`:
 
-1. **Check condition_input_resolutions first** — read `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_rerun_round<ROUND>.json` if it exists. For any entry whose `original_signal` matches the PENDING signal, immediately set `port_connections_per_stage[Synthesize][pin] = resolved_gate_level_net`. This avoids waiting for a re_study round. If file absent, fall through to step 2.
+1. **Check condition_input_resolutions first** — read `<AI_ECO_FLOW_DIR>/<TAG>_eco_fenets_rerun_round<ROUND>.json` if it exists. For any entry whose `original_signal` matches the PENDING signal, immediately set `port_connections_per_stage[Synthesize][pin] = resolved_gate_level_net`. This avoids waiting for a re_study round. If file absent, fall through to step 2.
 2. **For Synthesize stage**: use the `condition_input_resolutions` resolved net **directly** — do NOT trace one level deeper to its source. The resolved net is the correct gate-level name with the correct polarity; tracing to its driver input changes polarity (e.g. an INV output used as a gate input ≠ the INV input). Verify it exists (`zgrep -cw <resolved_net> PreEco/Synthesize.v.gz ≥ 1`) then use it verbatim.
 
    **For P&R stages** (not Synthesize): trace each PENDING_FM_RESOLUTION signal **independently** from its own Synth driver chain. **NEVER copy or reuse the P&R result from a different PENDING_FM_RESOLUTION signal** — different synthesis-internal signals come from different driver cells and must resolve to different P&R nets.
@@ -893,10 +893,10 @@ for stage in ["Synthesize", "PrePlace", "Route"]:
 ```
 **NOTE:** Auto-added `port_declaration` entries (Check 7) sort before `rewire` entries (Check 8) by design — eco_applier must declare ports before applying rewires that reference them. The PASS_ORDER guarantees this.
 
-Write enriched JSON back to `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_preeco_study.json`.
+Write enriched JSON back to `<AI_ECO_FLOW_DIR>/<TAG>_eco_preeco_study.json`.
 Verify `wc -l` ≥ original line count.
 
-**Write verification RPT** to `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_step3_netlist_verify.rpt`:
+**Write verification RPT** to `<AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_verify.rpt`:
 ```
 ECO NETLIST VERIFIER REPORT — TAG=<TAG>
 ========================================
@@ -926,8 +926,8 @@ WARNINGS:        <list any remaining UNRESOLVED or UNRESOLVABLE nets>
 
 **Copy BOTH outputs to AI_ECO_FLOW_DIR (MANDATORY — ORCHESTRATOR checkpoints both):**
 ```bash
-cp <AI_ECO_FLOW_DIR>/data/<TAG>_eco_preeco_study.json      <AI_ECO_FLOW_DIR>/
-cp <AI_ECO_FLOW_DIR>/data/<TAG>_eco_step3_netlist_verify.rpt <AI_ECO_FLOW_DIR>/
+cp <AI_ECO_FLOW_DIR>/<TAG>_eco_preeco_study.json      <AI_ECO_FLOW_DIR>/
+cp <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_verify.rpt <AI_ECO_FLOW_DIR>/
 ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_verify.rpt  # verify copy succeeded
 ```
 

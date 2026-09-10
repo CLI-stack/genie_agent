@@ -33,9 +33,9 @@ Do NOT read other STEP sections; they belong to other agents.
 
 | File | Location | Purpose |
 |------|----------|---------|
-| `<TAG>_eco_fm_tag_round<ROUND>.tmp` | `<AI_ECO_FLOW_DIR>/data/` | eco_fm_tag for orchestrator handoff |
-| `<TAG>_eco_fm_verify.json` | `<AI_ECO_FLOW_DIR>/data/` | Per-target equivalence results (cumulative) |
-| `<TAG>_eco_step6_fm_verify_round<ROUND>.rpt` | `<AI_ECO_FLOW_DIR>/data/` + `<AI_ECO_FLOW_DIR>/` | Human-readable summary |
+| `<TAG>_eco_fm_tag_round<ROUND>.tmp` | `<AI_ECO_FLOW_DIR>/` | eco_fm_tag for orchestrator handoff |
+| `<TAG>_eco_fm_verify.json` | `<AI_ECO_FLOW_DIR>/` | Per-target equivalence results (cumulative) |
+| `<TAG>_eco_step6_fm_verify_round<ROUND>.rpt` | `<AI_ECO_FLOW_DIR>/` + `<AI_ECO_FLOW_DIR>/` | Human-readable summary |
 
 **Working Directory:** Always `cd <BASE_DIR>` before any file operations.
 
@@ -43,7 +43,7 @@ Do NOT read other STEP sections; they belong to other agents.
 
 ## 2. STEP A — Guard Check
 
-Read `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`. If both `summary.applied == 0` and `summary.inserted == 0`:
+Read `<AI_ECO_FLOW_DIR>/<TAG>_eco_applied_round<ROUND>.json`. If both `summary.applied == 0` and `summary.inserted == 0`:
 - Write `<TAG>_eco_fm_verify.json` with `skipped: true`, `reason`, `round`, and `"NOT_RUN"` status for every target.
 - Write the step5 RPT and copy to `AI_ECO_FLOW_DIR`.
 - EXIT 0. (Orchestrator treats "skipped" as FM FAIL — no progress made.)
@@ -97,8 +97,8 @@ EOF
   **Implementation:**
   ```python
   import json
-  applied = json.load(open(f'{AI_ECO_FLOW_DIR}/data/{TAG}_eco_applied_round{ROUND}.json'))
-  prev    = json.load(open(f'{AI_ECO_FLOW_DIR}/data/{TAG}_eco_fm_verify.json')) if round > 1 else {}
+  applied = json.load(open(f'{AI_ECO_FLOW_DIR}/{TAG}_eco_applied_round{ROUND}.json'))
+  prev    = json.load(open(f'{AI_ECO_FLOW_DIR}/{TAG}_eco_fm_verify.json')) if round > 1 else {}
 
   def changed(stage):
       return sum(1 for e in applied.get(stage, [])
@@ -136,8 +136,8 @@ EOF
   **Round 2+ — use SMART_TARGETS (recommended, agent does NOT decide targets):**
   ```
   SMART_TARGETS=1
-  APPLIED_JSON=<AI_ECO_FLOW_DIR>/data/<TAG>_eco_applied_round<N>.json
-  PREV_VERIFY_JSON=<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_verify.json
+  APPLIED_JSON=<AI_ECO_FLOW_DIR>/<TAG>_eco_applied_round<N>.json
+  PREV_VERIFY_JSON=<AI_ECO_FLOW_DIR>/<TAG>_eco_fm_verify.json
   RUN_SVF_GEN=0
   ```
   `post_eco_formality.csh` reads the applied JSON (which stages changed) and the previous
@@ -167,7 +167,7 @@ ECO_OUT_DIR=<AI_ECO_FLOW_DIR> python3 script/genie_cli.py \
 
 - Extract `eco_fm_tag` from CLI stdout: match `Tag:\s*(\d{14})`.
 - **Validate format:** Must match `^\d{14}$`. On failure, check existing `.tmp` file as fallback. If still invalid, abort (exit 1).
-- Save to `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_tag_round<ROUND>.tmp`. Re-read and verify content matches; retry once on mismatch; abort (exit 1) on second failure.
+- Save to `<AI_ECO_FLOW_DIR>/<TAG>_eco_fm_tag_round<ROUND>.tmp`. Re-read and verify content matches; retry once on mismatch; abort (exit 1) on second failure.
 
 ---
 
@@ -175,7 +175,7 @@ ECO_OUT_DIR=<AI_ECO_FLOW_DIR> python3 script/genie_cli.py \
 
 FM is complete when **either** signal fires first:
 
-- **Signal 1 — Spec sentinel:** `<AI_ECO_FLOW_DIR>/data/<eco_fm_tag>_spec` contains `"OVERALL ECO FM RESULT:"`.
+- **Signal 1 — Spec sentinel:** `<AI_ECO_FLOW_DIR>/<eco_fm_tag>_spec` contains `"OVERALL ECO FM RESULT:"`.
 - **Signal 2 — rpt.gz:** Every target in `ECO_TARGETS` has `<REF_DIR>/rpts/<target>/runtime.rpt.gz` with a non-empty `Overall` column (any value including `"error"` means FM completed for that target).
 
 **Parameters:** `MAX_POLLS = 360`, `POLL_INTERVAL = 300s` (30 hours max). This is a
@@ -196,7 +196,7 @@ runtime = 24h) so it never preempts a legitimately long queue-wait; 30h leaves h
 
 ## 6. STEP E — Read Canonical Verdict (DO NOT CLASSIFY MANUALLY)
 
-**MANDATORY: read `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_verify.json` and act on its `verdict` field. Do NOT classify FM output yourself. Do NOT invoke `eco_fm_status_collector.py` — `post_eco_formality.csh` already ran it for you.**
+**MANDATORY: read `<AI_ECO_FLOW_DIR>/<TAG>_eco_fm_verify.json` and act on its `verdict` field. Do NOT classify FM output yourself. Do NOT invoke `eco_fm_status_collector.py` — `post_eco_formality.csh` already ran it for you.**
 
 Known failure mode (now closed): when the agent was permitted to free-form classify FM output here, status-field naming inconsistency (e.g. `overall_status: "FM_FAILED"` vs `"ABORT"`) broke downstream classifier matching, causing rounds of misdiagnosis. The agent classification path is removed — `post_eco_formality.csh` invokes the deterministic `eco_fm_status_collector.py` which owns this layer end-to-end.
 
@@ -211,7 +211,7 @@ Known failure mode (now closed): when the agent was permitted to free-form class
 ### What the agent does
 
 ```python
-fm = read_json(f'{AI_ECO_FLOW_DIR}/data/{TAG}_eco_fm_verify.json')
+fm = read_json(f'{AI_ECO_FLOW_DIR}/{TAG}_eco_fm_verify.json')
 verdict = fm['verdict']                      # canonical field — single source of truth
 
 if verdict == 'PASS':
@@ -274,7 +274,7 @@ Top-level verdict aggregation: any per-target `ABORT_*` → top is the most-seve
 
 ### Load Previous Round Results
 
-On ROUND > 1, you MAY load prior `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_verify.json` for cross-round comparison (e.g. "did the same target ABORT again?") — but the per-round status MUST be re-computed by `eco_fm_status_collector.py`, never carried forward.
+On ROUND > 1, you MAY load prior `<AI_ECO_FLOW_DIR>/<TAG>_eco_fm_verify.json` for cross-round comparison (e.g. "did the same target ABORT again?") — but the per-round status MUST be re-computed by `eco_fm_status_collector.py`, never carried forward.
 
 ### CRITICAL EXIT RULE
 
@@ -291,7 +291,7 @@ After `eco_fm_status_collector.py` has produced `eco_fm_verify.json`, write the 
 ## 7. STEP F — Write Output Files
 
 1. **Ensure `data/` exists:** `os.makedirs(os.path.join(BASE_DIR, "data"), exist_ok=True)`.
-2. **Write `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_verify.json`** with cumulative per-target results. Verify the file exists after write; abort (exit 1) if not.
+2. **Write `<AI_ECO_FLOW_DIR>/<TAG>_eco_fm_verify.json`** with cumulative per-target results. Verify the file exists after write; abort (exit 1) if not.
 3. **Write step6 RPT** in this format:
    ```
    ================================================================================

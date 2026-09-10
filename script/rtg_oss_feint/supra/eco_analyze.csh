@@ -45,8 +45,8 @@ else
     set eco_flow_dir = "/tmp/genie_agent_${tag}"
 endif
 
-mkdir -p "$eco_flow_dir/data" "$eco_flow_dir/runs"
-set specfile = "$eco_flow_dir/data/${tag}_spec"
+mkdir -p "$eco_flow_dir"
+set specfile = "$eco_flow_dir/${tag}_spec"
 
 # Validate JIRA number
 if ("$jira_num" == "" || "$jira_num" == " ") then
@@ -179,8 +179,8 @@ echo "JIRA=$jira_num"
 echo "STAGES_PRESENT=$stages_present"
 echo "BASE_DIR=$source_dir"
 echo "AI_ECO_FLOW_DIR=$eco_flow_dir"
-echo "LOG_FILE=$eco_flow_dir/runs/${tag}.log"
-echo "SPEC_FILE=$eco_flow_dir/data/${tag}_spec"
+echo "LOG_FILE=$eco_flow_dir/${tag}.log"
+echo "SPEC_FILE=$eco_flow_dir/${tag}_spec"
 echo "========================================================================"
 echo ""
 

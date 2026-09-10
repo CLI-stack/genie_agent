@@ -62,7 +62,10 @@ def build_html(args):
     tile  = args.tile
     base  = Path(args.base_dir)
     total = args.total_rounds
-    data  = base / "data"
+    if (base / f"{tag}_round_handoff.json").is_file() or not (base / "data").is_dir():
+        data = base
+    else:
+        data = base / "data"
     ai_flow = Path(args.ai_eco_flow_dir) if args.ai_eco_flow_dir else None
 
     handoff     = readj(data / f"{tag}_round_handoff.json") or {}
@@ -315,8 +318,10 @@ def main():
     args = ap.parse_args()
 
     html_out, subject = build_html(args)
+    base_path = Path(args.base_dir)
+    default_dir = base_path if (base_path / f"{args.tag}_round_handoff.json").is_file() or not (base_path / "data").is_dir() else (base_path / "data")
     out_path = Path(args.output) if args.output else (
-        Path(args.base_dir) / "data" / f"{args.tag}_eco_report.html")
+        default_dir / f"{args.tag}_eco_report.html")
     out_path.write_text(html_out)
     print(f"ECO_RPT_GENERATED: final HTML → {out_path}")
 

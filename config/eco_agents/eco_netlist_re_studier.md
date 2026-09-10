@@ -22,7 +22,7 @@ fixes were intentional in previous rounds (verified by passing FM). If a gate ap
 Log: `PROTECTED_SKIP: {instance_name} — intentionally fixed in prior round, preserving.`
 Step 3 validator Check 66 will catch if an unprotected gate has the wrong value.
 
-**Inputs:** REF_DIR, TAG, BASE_DIR, FM_ANALYSIS_PATH, ROUND, RE_STUDY_MODE=true, FENETS_RERUN_PATH (or null), SPEC_SOURCES_JSON (path to `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_spec_sources_round<ROUND>.json` written by `eco_resolve_spec_sources.py` — supersedes legacy raw SPEC_SOURCES dict; required when FENETS_RERUN_PATH is set, optional otherwise).
+**Inputs:** REF_DIR, TAG, BASE_DIR, FM_ANALYSIS_PATH, ROUND, RE_STUDY_MODE=true, FENETS_RERUN_PATH (or null), SPEC_SOURCES_JSON (path to `<AI_ECO_FLOW_DIR>/<TAG>_eco_spec_sources_round<ROUND>.json` written by `eco_resolve_spec_sources.py` — supersedes legacy raw SPEC_SOURCES dict; required when FENETS_RERUN_PATH is set, optional otherwise).
 
 ---
 
@@ -30,8 +30,8 @@ Step 3 validator Check 66 will catch if an unprotected gate has the wrong value.
 
 | Path | When I write it | Format |
 |---|---|---|
-| `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_preeco_study.json` | Step 4 | JSON (in-place patched — only failing entries modified) |
-| `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt` | Step 4 | RPT (per-change summary) |
+| `<AI_ECO_FLOW_DIR>/<TAG>_eco_preeco_study.json` | Step 4 | JSON (in-place patched — only failing entries modified) |
+| `<AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt` | Step 4 | RPT (per-change summary) |
 | Copy of RPT → `AI_ECO_FLOW_DIR/` | Step 4 | mirror |
 
 ## INPUTS — what the orchestrator gives me
@@ -41,8 +41,8 @@ Step 3 validator Check 66 will catch if an unprotected gate has the wrong value.
 - `RE_STUDY_MODE=true` (signals re-study, not initial study)
 - `FENETS_RERUN_PATH` (optional) — `condition_input_resolutions[]` from rerun
 - `SPEC_SOURCES_JSON` — per-stage spec map (required when FENETS_RERUN_PATH set)
-- `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_preeco_study.json` — current study to patch (do NOT wipe)
-- `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json` — for cross-reference
+- `<AI_ECO_FLOW_DIR>/<TAG>_eco_preeco_study.json` — current study to patch (do NOT wipe)
+- `<AI_ECO_FLOW_DIR>/<TAG>_eco_rtl_diff.json` — for cross-reference
 
 ## EXECUTION ORDER — flat checklist
 
@@ -608,10 +608,10 @@ For each `target_register`: trace full forward/backward cone from DFF in PostEco
 
 ## Step 4 — Save Updated Study JSON
 
-Write back `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_preeco_study.json` with ONLY modified entries changed.
+Write back `<AI_ECO_FLOW_DIR>/<TAG>_eco_preeco_study.json` with ONLY modified entries changed.
 Verify `wc -l` ≥ original line count.
 
-Write `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt` with:
+Write `<AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt` with:
 - Per change-type format (from STUDY_ORCHESTRATOR.md Step 3)
 - Identifier per entry type, old→new for rewires, gate_function/output_net/cell_type for new_logic
 - Direction for port_declaration, parent/port/net for port_connection
@@ -619,7 +619,7 @@ Write `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rp
 - SUMMARY of all `force_reapply` entries set
 
 ```bash
-cp <AI_ECO_FLOW_DIR>/data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt <AI_ECO_FLOW_DIR>/
+cp <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt <AI_ECO_FLOW_DIR>/
 ```
 
 **When making DIRECT PostEco netlist edits** (removing lines from PostEco stages), always check and fix trailing comma:

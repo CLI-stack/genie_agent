@@ -71,7 +71,7 @@ Search the log for these patterns:
 | `set_constant` (output line) | Whether `set_constant` actually executed (look for the line, then check `before_verify_constants.rpt.gz`) |
 | `set_dont_reverse`, `set_user_match` (output) | Same — was the directive issued? |
 
-### Per-tag JSON artifacts (`<AI_ECO_FLOW_DIR>/data/`)
+### Per-tag JSON artifacts (`<AI_ECO_FLOW_DIR>/`)
 
 | File | Tells you |
 |------|-----------|
@@ -418,7 +418,7 @@ Run Check D (polarity) on ALL c_mux gates in chain. Try progressive fixes (updat
 
 **Persistent DFF0X check — MANDATORY before prescribing `fix_named_wire`:**
 ```python
-prev_analysis = load(f"{AI_ECO_FLOW_DIR}/data/{TAG}_eco_fm_analysis_round{ROUND-1}.json") if ROUND > 1 else None
+prev_analysis = load(f"{AI_ECO_FLOW_DIR}/{TAG}_eco_fm_analysis_round{ROUND-1}.json") if ROUND > 1 else None
 rename_already_tried = (prev_analysis and any(
     c.action == "fix_named_wire" and c.rename_wire and c.gate_instance == gate_instance
     for c in prev_analysis.revised_changes))
@@ -888,7 +888,7 @@ done
 
 ## §F — Output JSON Schema
 
-Path: `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json`
+Path: `<AI_ECO_FLOW_DIR>/<TAG>_eco_fm_analysis_round<ROUND>.json`
 
 > **MANDATORY:** Every `revised_changes[i]` (except `cascade_verified_skip` and `manual_only`) MUST carry an `evidence_for_studier` block per **`config/eco_agents/eco_re_studier_evidence_contract.md`**. The block is the structured handoff to `eco_netlist_re_studier` — without it, the studier cannot apply the recipe. Validator `script/eco_scripts/eco_validate_analyzer_evidence_contract.py` enforces compliance as a pre-FM gate.
 
@@ -900,8 +900,8 @@ Path: `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json`
   "next_round": <ROUND or ROUND+1>,
 
   "evidence_summary": {
-    "evidence_walk_json": "<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_evidence_round<N>.json",
-    "xstage_compare_json": "<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_xstage_round<N>.json"
+    "evidence_walk_json": "<AI_ECO_FLOW_DIR>/<TAG>_eco_fm_evidence_round<N>.json",
+    "xstage_compare_json": "<AI_ECO_FLOW_DIR>/<TAG>_eco_fm_xstage_round<N>.json"
   },
 
   "failure_mode": "ABORT_SVF|ABORT_LINK|ABORT_LINK_CELL|ABORT_NETLIST|ABORT_OTHER|A|B|C|D|E|F|G|H|I|S|T|INTENTIONAL_CASCADE|INCOMPLETE_AND_TERM|WRONG_GATE_STRUCTURE|CTS_CLOCK_RENAMED|CTS_BBNET_INPUT|SCAN_CHAIN_MISMATCH|UNKNOWN",

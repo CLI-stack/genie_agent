@@ -5,7 +5,7 @@
 **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES_FAST.md`. Then read this file end-to-end.
 
 **Scope (do ONE thing only):**
-- Read `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_verify.json` (canonical v1 schema — produced by `eco_fm_status_collector.py`)
+- Read `<AI_ECO_FLOW_DIR>/<TAG>_eco_fm_verify.json` (canonical v1 schema — produced by `eco_fm_status_collector.py`)
 - For each per_target entry whose `verdict` starts with `ABORT_`:
   - **MECHANICAL MODE** — if `abort_pattern` is in the YAML-derived whitelist (`recovery.whitelist=true`): apply the literal `recovery.action` patch
   - **REASONING MODE** — if `abort_pattern` is `unknown` OR not whitelisted: open the FM log at `log_path`, grep for the actual error lines, open the relevant netlist + study, propose ONE direct fix, apply it
@@ -29,8 +29,8 @@ REF_DIR         = <full path>
 BASE_DIR        = <BASE_DIR for this user>
 ROUND           = <orchestrator round, almost always 1 — does not increment for ABORT>
 ATTEMPT         = <abort recovery attempt number, 1-10>
-FM_VERIFY_PATH  = <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_verify.json
-HANDOFF_PATH    = <AI_ECO_FLOW_DIR>/data/<TAG>_round_handoff.json
+FM_VERIFY_PATH  = <AI_ECO_FLOW_DIR>/<TAG>_eco_fm_verify.json
+HANDOFF_PATH    = <AI_ECO_FLOW_DIR>/<TAG>_round_handoff.json
 ```
 
 ---
@@ -184,7 +184,7 @@ Rules:
 - If unsure / patch scope was broad (whole-study edit, file-level invariant) → list all 3 targets to force a full rerun (safe fallback).
 - Empty list (`[]`) is treated as "unknown scope → rerun all 3" by the orchestrator.
 
-Save to `<AI_ECO_FLOW_DIR>/data/<TAG>_abort_recovery_attempt<ATTEMPT>.json`. Print summary. EXIT.
+Save to `<AI_ECO_FLOW_DIR>/<TAG>_abort_recovery_attempt<ATTEMPT>.json`. Print summary. EXIT.
 
 ---
 

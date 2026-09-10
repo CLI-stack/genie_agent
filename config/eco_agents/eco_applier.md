@@ -20,7 +20,7 @@ You handle exactly what is documented in the relevant section — no more, no le
 
 **Outputs:**
 - Edited `<REF_DIR>/data/PostEco/{Synthesize,PrePlace,Route}.v.gz`
-- `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`
+- `<AI_ECO_FLOW_DIR>/<TAG>_eco_applied_round<ROUND>.json`
 
 **Working directory:** `<BASE_DIR>` (parent of `runs/`). No hardcoded signal/port/module names anywhere — all `<placeholder>` style.
 
@@ -94,9 +94,9 @@ Instance naming: DFF → use `<target_register>_reg` (instance) / `<target_regis
 
 ### 3c — UNDO Logic (Surgical Patch Mode Only)
 
-**Prior-round SKIPPED entries are NEVER ALREADY_APPLIED:** In Surgical Patch mode, before marking any entry ALREADY_APPLIED, read its status from `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_applied_round<ROUND-1>.json`. If `prior_status == "SKIPPED"` → the change was never applied → mark as SKIPPED (carry forward the prior reason). Only run the standard ALREADY_APPLIED checks when `prior_status` was APPLIED, INSERTED, or ALREADY_APPLIED.
+**Prior-round SKIPPED entries are NEVER ALREADY_APPLIED:** In Surgical Patch mode, before marking any entry ALREADY_APPLIED, read its status from `<AI_ECO_FLOW_DIR>/<TAG>_eco_applied_round<ROUND-1>.json`. If `prior_status == "SKIPPED"` → the change was never applied → mark as SKIPPED (carry forward the prior reason). Only run the standard ALREADY_APPLIED checks when `prior_status` was APPLIED, INSERTED, or ALREADY_APPLIED.
 
-Before re-applying a `force_reapply: true` entry: check prior status in `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_applied_round<ROUND-1>.json`. If prior status = `SKIPPED` → skip UNDO entirely, go straight to RE-APPLY. If prior status = `APPLIED`/`INSERTED` → verify element exists before removing; if not found → log and skip UNDO, proceed to RE-APPLY.
+Before re-applying a `force_reapply: true` entry: check prior status in `<AI_ECO_FLOW_DIR>/<TAG>_eco_applied_round<ROUND-1>.json`. If prior status = `SKIPPED` → skip UNDO entirely, go straight to RE-APPLY. If prior status = `APPLIED`/`INSERTED` → verify element exists before removing; if not found → log and skip UNDO, proceed to RE-APPLY.
 
 | change_type | Undo action |
 |-------------|-------------|
@@ -165,15 +165,15 @@ for STAGE in Synthesize PrePlace Route; do
         continue
     fi
     python3 script/eco_scripts/eco_perl_spec.py \
-        --study      <AI_ECO_FLOW_DIR>/data/<TAG>_eco_preeco_study.json \
+        --study      <AI_ECO_FLOW_DIR>/<TAG>_eco_preeco_study.json \
         --ref-dir    <REF_DIR> \
         --tag        <TAG> \
         --jira       <JIRA> \
         --tile       <TILE> \
         --stage      ${STAGE} \
         --round      <ROUND> \
-        --output     <AI_ECO_FLOW_DIR>/runs/eco_apply_<TAG>_${STAGE}.pl \
-        --status     <AI_ECO_FLOW_DIR>/data/<TAG>_eco_perl_spec_${STAGE}.json \
+        --output     <AI_ECO_FLOW_DIR>/eco_apply_<TAG>_${STAGE}.pl \
+        --status     <AI_ECO_FLOW_DIR>/<TAG>_eco_perl_spec_${STAGE}.json \
         --apply \
         ${PREV_APPLIED:+--prev-applied $PREV_APPLIED}
     echo "Exit: $?"
@@ -182,9 +182,9 @@ done
 
 **MANDATORY `--apply` flag** — without it, `eco_perl_spec.py` only GENERATES the .pl file but does NOT execute it against the PostEco netlist. Cells get listed as INSERTED in the status JSON but never actually appear in `<Stage>.v.gz`. Result: new_logic_gate/new_logic_dff entries silently never materialize — Step 5 (or worse, FM) catches the gap when downstream nets are undriven.
 
-Where `PREV_APPLIED=<AI_ECO_FLOW_DIR>/data/<TAG>_eco_applied_round<ROUND-1>.json` for Round 2+ (omit for Round 1).
+Where `PREV_APPLIED=<AI_ECO_FLOW_DIR>/<TAG>_eco_applied_round<ROUND-1>.json` for Round 2+ (omit for Round 1).
 
-Read each `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_perl_spec_<Stage>.json` to see INSERTED/SKIPPED/ALREADY_APPLIED decisions.
+Read each `<AI_ECO_FLOW_DIR>/<TAG>_eco_perl_spec_<Stage>.json` to see INSERTED/SKIPPED/ALREADY_APPLIED decisions.
 
 **Verify script ran:** Each script run prints `ECO_SCRIPT_LAUNCHED: eco_perl_spec.py` and writes a `_marker.txt` sidecar. The Step 4 RPT MUST contain `ECO_SCRIPT_LAUNCHED: eco_perl_spec.py` for each stage. If absent — script was NOT called — re-run before proceeding to Passes 2-4.
 
@@ -192,10 +192,10 @@ Read each `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_perl_spec_<Stage>.json` to see INSER
 ```bash
 cd <BASE_DIR>
 python3 script/eco_scripts/eco_validate_step4.py \
-    --applied  <AI_ECO_FLOW_DIR>/data/<TAG>_eco_applied_round<ROUND>.json \
-    --study    <AI_ECO_FLOW_DIR>/data/<TAG>_eco_preeco_study.json \
+    --applied  <AI_ECO_FLOW_DIR>/<TAG>_eco_applied_round<ROUND>.json \
+    --study    <AI_ECO_FLOW_DIR>/<TAG>_eco_preeco_study.json \
     --ref-dir  <REF_DIR> --tag <TAG> --round <ROUND> \
-    --output   <AI_ECO_FLOW_DIR>/data/<TAG>_eco_validate_step4_round<ROUND>.json
+    --output   <AI_ECO_FLOW_DIR>/<TAG>_eco_validate_step4_round<ROUND>.json
 ```
 If exit code = 1 → VERIFY_FAILED entries or PostEco MD5 unchanged → do NOT proceed to Step 5. Fix the issue first. Check `eco_validate_step4_round<ROUND>.json` for specific problems.
 
@@ -216,12 +216,12 @@ for STAGE in Synthesize PrePlace Route; do
         continue
     fi
     python3 script/eco_scripts/eco_netlist_port_rewire.py \
-        --study    <AI_ECO_FLOW_DIR>/data/<TAG>_eco_preeco_study.json \
+        --study    <AI_ECO_FLOW_DIR>/<TAG>_eco_preeco_study.json \
         --ref-dir  <REF_DIR> \
         --tag      <TAG> \
         --stage    ${STAGE} \
         --round    <ROUND> \
-        --status   <AI_ECO_FLOW_DIR>/data/<TAG>_eco_netlist_port_rewire_${STAGE}.json
+        --status   <AI_ECO_FLOW_DIR>/<TAG>_eco_netlist_port_rewire_${STAGE}.json
     echo "Exit: $?"
 done
 ```
@@ -591,7 +591,7 @@ Run ALL checks against the ORIGINAL module buffer (pre-snapshot from S4), never 
 
 | change_type | ALREADY_APPLIED condition |
 |-------------|--------------------------|
-| Pre-check (ALL types, Surgical Patch mode only) | Read `prior_status` from prior round JSON (`<AI_ECO_FLOW_DIR>/data/<TAG>_eco_applied_round<ROUND-1>.json`). If `"SKIPPED"` → skip ALREADY_APPLIED check; mark SKIPPED with `reason: "Carried from Round <N>: <prior_reason>"`. Only proceed to type-specific ALREADY_APPLIED checks when prior_status ∈ {APPLIED, INSERTED, ALREADY_APPLIED}. |
+| Pre-check (ALL types, Surgical Patch mode only) | Read `prior_status` from prior round JSON (`<AI_ECO_FLOW_DIR>/<TAG>_eco_applied_round<ROUND-1>.json`). If `"SKIPPED"` → skip ALREADY_APPLIED check; mark SKIPPED with `reason: "Carried from Round <N>: <prior_reason>"`. Only proceed to type-specific ALREADY_APPLIED checks when prior_status ∈ {APPLIED, INSERTED, ALREADY_APPLIED}. |
 | `new_logic_dff` / `new_logic_gate` / `new_logic` | **Step 1:** instance exists: `grep -c "^\s*<cell_type>\s*<instance_name>\s*("` >= 1. **Step 2 (MANDATORY):** for each input pin in `port_connections_per_stage[stage]`, verify expected net is on that pin using `\.<pin>\s*\(\s*<expected_net>\s*\)`. Step 1 passes but Step 2 fails for ANY pin → NOT ALREADY_APPLIED; set `force_reapply: true`. |
 | `rewire` | `re.search(r'\.<pin>\s*\(\s*<new_net>\s*\)', cell_block)` — found = ALREADY_APPLIED. Still on old_net → `force_reapply: true`. |
 | `port_declaration` (`input`/`output`) | Signal in MODULE PORT LIST (not just body). Parse from `mod_idx` to `port_list_close_idx`. Signal only in body as wire/DFF output does NOT count. |
@@ -605,7 +605,7 @@ Always record `already_applied_reason` in JSON with exactly what was checked and
 
 ## 12. Applied JSON Schema
 
-Write `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`. Every entry MUST include `reason` or `already_applied_reason` (used by ORCHESTRATOR to generate RPT).
+Write `<AI_ECO_FLOW_DIR>/<TAG>_eco_applied_round<ROUND>.json`. Every entry MUST include `reason` or `already_applied_reason` (used by ORCHESTRATOR to generate RPT).
 
 ```json
 {
@@ -701,4 +701,4 @@ Write `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`. Every entry 
 
 19. **`unconnected_rewires` on `is_bus_gate_bit` entries require per-stage originals** — when Phase 0.6 expands a bus gate to N per-bit entries and any bit's `.I` pin reads `UNCONNECTED_*`, the studier MUST add `unconnected_rewires` to that per-bit entry in Phase 0.6 Step 4. Phase 0.4 ran before expansion and never saw these inputs. Without `unconnected_rewires`, `eco_perl_spec.py` skips the bus-slot rename → INV gate reads UNCONNECTED (undriven) → FM sees gate input as 0/X → DFF0X. Validator Check 43 (`HIGH/43-BUS-GATE-BIT-UNCONN-NO-REWIRE`) enforces this.
 
-**Final output:** `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`. After writing, verify it is non-empty and contains a `summary` field, then exit. The calling orchestrator reads the applied JSON and generates the RPT — eco_applier writes JSON only, not RPT.
+**Final output:** `<AI_ECO_FLOW_DIR>/<TAG>_eco_applied_round<ROUND>.json`. After writing, verify it is non-empty and contains a `summary` field, then exit. The calling orchestrator reads the applied JSON and generates the RPT — eco_applier writes JSON only, not RPT.

@@ -46,16 +46,16 @@ python3 script/eco_scripts/eco_pre_fm_check.py \
 
 **MANDATORY COPY — always copy BOTH files to AI_ECO_FLOW_DIR regardless of PASS/FAIL:**
 ```bash
-cp <AI_ECO_FLOW_DIR>/data/<TAG>_eco_step5_pre_fm_check_round<ROUND>.rpt <AI_ECO_FLOW_DIR>/
-cp <AI_ECO_FLOW_DIR>/data/<TAG>_eco_pre_fm_check_round<ROUND>.json      <AI_ECO_FLOW_DIR>/
+cp <AI_ECO_FLOW_DIR>/<TAG>_eco_step5_pre_fm_check_round<ROUND>.rpt <AI_ECO_FLOW_DIR>/
+cp <AI_ECO_FLOW_DIR>/<TAG>_eco_pre_fm_check_round<ROUND>.json      <AI_ECO_FLOW_DIR>/
 ```
 Do this BEFORE exiting. Failure to copy means ROUND_ORCHESTRATOR and FINAL_ORCHESTRATOR cannot read Step 5 results.
 
 **Inputs:** TAG, REF_DIR, BASE_DIR, ROUND, JIRA, AI_ECO_FLOW_DIR
 
 **Outputs (BOTH required before exiting):**
-- `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_step5_pre_fm_check_round<ROUND>.rpt` → copied to `AI_ECO_FLOW_DIR/`
-- `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_pre_fm_check_round<ROUND>.json`
+- `<AI_ECO_FLOW_DIR>/<TAG>_eco_step5_pre_fm_check_round<ROUND>.rpt` → copied to `AI_ECO_FLOW_DIR/`
+- `<AI_ECO_FLOW_DIR>/<TAG>_eco_pre_fm_check_round<ROUND>.json`
 
 ---
 
@@ -133,7 +133,7 @@ Check 8 runs regardless of any other check results. A FAIL in Check 8 always blo
 
 **Before any netlist scanning, read the applied JSON for this round:**
 ```python
-applied = load(f"{AI_ECO_FLOW_DIR}/data/{TAG}_eco_applied_round{ROUND}.json")
+applied = load(f"{AI_ECO_FLOW_DIR}/{TAG}_eco_applied_round{ROUND}.json")
 verify_failed = [
     e for stage_entries in applied.values() if isinstance(stage_entries, list)
     for e in stage_entries if e.get("status") == "VERIFY_FAILED"
@@ -157,8 +157,8 @@ if verify_failed:
 ## STEP 1 — Load Data
 
 ```python
-applied = load(f"{AI_ECO_FLOW_DIR}/data/{TAG}_eco_applied_round{ROUND}.json")
-study   = load(f"{AI_ECO_FLOW_DIR}/data/{TAG}_eco_preeco_study.json")
+applied = load(f"{AI_ECO_FLOW_DIR}/{TAG}_eco_applied_round{ROUND}.json")
+study   = load(f"{AI_ECO_FLOW_DIR}/{TAG}_eco_preeco_study.json")
 
 # Build cross-stage map: {change_name → {stage → {status, change_type, reason}}}
 change_map = {}

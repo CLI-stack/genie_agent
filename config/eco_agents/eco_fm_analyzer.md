@@ -22,11 +22,11 @@ You handle exactly what is documented in those three sections. Do NOT read other
 ### Mandatory loads (once per round)
 
 ```python
-rtl_diff   = json.load(open(f"{AI_ECO_FLOW_DIR}/data/{TAG}_eco_rtl_diff.json"))
-study      = json.load(open(f"{AI_ECO_FLOW_DIR}/data/{TAG}_eco_preeco_study.json"))
-eco_appl   = json.load(open(f"{AI_ECO_FLOW_DIR}/data/{TAG}_eco_applied_round{ROUND}.json"))
-fm_verify  = json.load(open(f"{AI_ECO_FLOW_DIR}/data/{TAG}_eco_fm_verify.json"))
-fixer_state = json.load(open(f"{AI_ECO_FLOW_DIR}/data/{TAG}_eco_fixer_state"))
+rtl_diff   = json.load(open(f"{AI_ECO_FLOW_DIR}/{TAG}_eco_rtl_diff.json"))
+study      = json.load(open(f"{AI_ECO_FLOW_DIR}/{TAG}_eco_preeco_study.json"))
+eco_appl   = json.load(open(f"{AI_ECO_FLOW_DIR}/{TAG}_eco_applied_round{ROUND}.json"))
+fm_verify  = json.load(open(f"{AI_ECO_FLOW_DIR}/{TAG}_eco_fm_verify.json"))
+fixer_state = json.load(open(f"{AI_ECO_FLOW_DIR}/{TAG}_eco_fixer_state"))
 ```
 
 These four files are the source of truth for ALL prior-state decisions. Keep them in working memory throughout the analysis.
@@ -64,13 +64,13 @@ Run the evidence-walker helper script. It does the deterministic part (greping, 
 python3 script/eco_scripts/eco_fm_evidence_walk.py \
     --tag <TAG> --round <ROUND> \
     --ref-dir <REF_DIR> --base-dir <AI_ECO_FLOW_DIR>
-# → writes <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_evidence_round<ROUND>.json
+# → writes <AI_ECO_FLOW_DIR>/<TAG>_eco_fm_evidence_round<ROUND>.json
 ```
 
 Then load and read the output:
 
 ```python
-evidence = json.load(open(f"{AI_ECO_FLOW_DIR}/data/{TAG}_eco_fm_evidence_round{ROUND}.json"))
+evidence = json.load(open(f"{AI_ECO_FLOW_DIR}/{TAG}_eco_fm_evidence_round{ROUND}.json"))
 verdict  = evidence["loop_verdict"]   # RERUN_SAME_ROUND | ADVANCE_NEXT_ROUND | CONVERGED
 ```
 
@@ -91,7 +91,7 @@ Before proceeding, sanity-check that the walker produced what you expect AND tha
 
 ```python
 assert evidence.get("loop_verdict") in ("RERUN_SAME_ROUND", "ADVANCE_NEXT_ROUND", "CONVERGED")
-fm_verify = json.load(open(f"{AI_ECO_FLOW_DIR}/data/{TAG}_eco_fm_verify.json"))
+fm_verify = json.load(open(f"{AI_ECO_FLOW_DIR}/{TAG}_eco_fm_verify.json"))
 expected_verdict = derive_verdict_from(fm_verify)   # mirror §A0 rules
 assert evidence["loop_verdict"] == expected_verdict, \
     f"verdict drift: walker says {evidence['loop_verdict']!r} but §A0 says {expected_verdict!r}"
@@ -111,7 +111,7 @@ For FAIL verdicts, run the cross-stage comparator. It walks each failing DFF's D
 python3 script/eco_scripts/eco_fm_xstage_compare.py \
     --tag <TAG> --round <ROUND> \
     --ref-dir <REF_DIR> --base-dir <AI_ECO_FLOW_DIR>
-# → writes <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_xstage_round<ROUND>.json
+# → writes <AI_ECO_FLOW_DIR>/<TAG>_eco_fm_xstage_round<ROUND>.json
 # Auto-skips if evidence verdict != ADVANCE_NEXT_ROUND
 ```
 
@@ -121,7 +121,7 @@ python3 script/eco_scripts/eco_fm_xstage_compare.py \
 > FAIL validation with SCRIPT_NOT_RUN violation.
 
 ```python
-xstage = json.load(open(f"{AI_ECO_FLOW_DIR}/data/{TAG}_eco_fm_xstage_round{ROUND}.json"))
+xstage = json.load(open(f"{AI_ECO_FLOW_DIR}/{TAG}_eco_fm_xstage_round{ROUND}.json"))
 ```
 
 ### What the xstage JSON contains
@@ -294,7 +294,7 @@ These are quick disqualifications/confirmations that cut investigation time. App
 - **`xstage.deltas.cell_blackboxed` is non-empty for an ECO DFF input**: prime hypothesis is Mode H.
 - **FENETS ACTUAL_WIRE GUARD (MANDATORY before any Mode H `rename_to_named_wire` recipe):**
   Before emitting `fix_named_wire` that replaces a CTS signal (e.g. `FxPrePlace_HFSNET_933`) with
-  a bare RTL name (e.g. `IReset`), check the fenets rename map (`<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fenets_rename_map.json`):
+  a bare RTL name (e.g. `IReset`), check the fenets rename map (`<AI_ECO_FLOW_DIR>/<TAG>_eco_fenets_rename_map.json`):
   if the CTS signal IS the `actual_wire_<stage>` for the signal's scope in the map, it is the
   `(+)` polarity-correct authoritative value — do NOT suggest replacing it with the bare name.
   The bare name in PP/Route scope may refer to a DIFFERENT DFF source (Rule 66).
@@ -372,7 +372,7 @@ Write **TWO** companion files (matches existing eco_step<N>_*.json + .rpt conven
 
 ### §6.1 — JSON (machine-readable, mandatory)
 
-`<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json` per the schema in pattern library §F.
+`<AI_ECO_FLOW_DIR>/<TAG>_eco_fm_analysis_round<ROUND>.json` per the schema in pattern library §F.
 
 Mandatory fields:
 
@@ -383,8 +383,8 @@ Mandatory fields:
   "verdict_reason": "<one-line reason from evidence walk>",
   "next_round": <ROUND or ROUND+1>,
   "evidence_summary": {
-    "evidence_walk_json": "<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_evidence_round<N>.json",
-    "xstage_compare_json": "<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_xstage_round<N>.json"
+    "evidence_walk_json": "<AI_ECO_FLOW_DIR>/<TAG>_eco_fm_evidence_round<N>.json",
+    "xstage_compare_json": "<AI_ECO_FLOW_DIR>/<TAG>_eco_fm_xstage_round<N>.json"
   },
   "failure_mode": "<one of pattern library entries>",
   "diagnosis": "<specific>",
@@ -453,9 +453,9 @@ Failing points:  Synth=<N|PASS|ABORT>  PP=<N|PASS|ABORT>  Route=<N|PASS|ABORT>
     constraints.do_not_modify: <list>
 
 --- Companion artifacts ---
-  evidence walk JSON:    <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_evidence_round<N>.json
-  xstage compare JSON:   <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_xstage_round<N>.json
-  contract check JSON:   <AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_analysis_round<N>.contract_check.json
+  evidence walk JSON:    <AI_ECO_FLOW_DIR>/<TAG>_eco_fm_evidence_round<N>.json
+  xstage compare JSON:   <AI_ECO_FLOW_DIR>/<TAG>_eco_fm_xstage_round<N>.json
+  contract check JSON:   <AI_ECO_FLOW_DIR>/<TAG>_eco_fm_analysis_round<N>.contract_check.json
   evidence walk RPT:     <TAG>_eco_step6_evidence_walk_round<N>.rpt
   xstage compare RPT:    <TAG>_eco_step6_xstage_compare_round<N>.rpt
   contract check RPT:    <TAG>_eco_step6_evidence_contract_check_round<N>.rpt
@@ -497,12 +497,12 @@ If any check fails: fix the issue before writing. Do NOT emit a JSON that violat
 
 | Phase | Output |
 |-------|--------|
-| §1 Evidence Walk | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_evidence_round<N>.json` (helper script) |
-| §2 Cross-Stage Compare | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_xstage_round<N>.json` (helper script) |
+| §1 Evidence Walk | `<AI_ECO_FLOW_DIR>/<TAG>_eco_fm_evidence_round<N>.json` (helper script) |
+| §2 Cross-Stage Compare | `<AI_ECO_FLOW_DIR>/<TAG>_eco_fm_xstage_round<N>.json` (helper script) |
 | §3 Hypotheses | In-memory list of hypothesis records |
 | §4 Library Consultation | Mapped recipes per hypothesis |
 | §5 Progressive Fix | `revised_changes[]` |
-| §6 Output JSON | `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_analysis_round<N>.json` |
+| §6 Output JSON | `<AI_ECO_FLOW_DIR>/<TAG>_eco_fm_analysis_round<N>.json` |
 | §7 Self-Audit | Pass/fail check before emit |
 
 ---

@@ -528,12 +528,13 @@ def contract_section(contract: dict | None) -> str:
 # -----------------------------------------------------------------------------
 def companion_files_section(base_dir: Path, ai_eco_flow_dir: Path | None,
                             tag: str, round_n: int) -> str:
+    data_dir = base_dir if (base_dir / f"{tag}_round_handoff.json").is_file() or not (base_dir / "data").is_dir() else (base_dir / "data")
     items = [
-        ("evidence walk JSON",          base_dir / "data" / f"{tag}_eco_fm_evidence_round{round_n}.json"),
-        ("xstage compare JSON",         base_dir / "data" / f"{tag}_eco_fm_xstage_round{round_n}.json"),
-        ("FM analysis JSON",            base_dir / "data" / f"{tag}_eco_fm_analysis_round{round_n}.json"),
-        ("contract check JSON",         base_dir / "data" / f"{tag}_eco_fm_analysis_round{round_n}.contract_check.json"),
-        ("eco_applied JSON",            base_dir / "data" / f"{tag}_eco_applied_round{round_n}.json"),
+        ("evidence walk JSON",          data_dir / f"{tag}_eco_fm_evidence_round{round_n}.json"),
+        ("xstage compare JSON",         data_dir / f"{tag}_eco_fm_xstage_round{round_n}.json"),
+        ("FM analysis JSON",            data_dir / f"{tag}_eco_fm_analysis_round{round_n}.json"),
+        ("contract check JSON",         data_dir / f"{tag}_eco_fm_analysis_round{round_n}.contract_check.json"),
+        ("eco_applied JSON",            data_dir / f"{tag}_eco_applied_round{round_n}.json"),
     ]
     if ai_eco_flow_dir:
         items += [
@@ -626,7 +627,7 @@ def _build_fm_verify_from_json(evidence_path: Path, verify_path: Path,
 def build_html(args) -> str:
     base_dir = Path(args.base_dir)
     tag, round_n = args.tag, args.round
-    data_dir = base_dir / "data"
+    data_dir = base_dir if (base_dir / f"{tag}_round_handoff.json").is_file() or not (base_dir / "data").is_dir() else (base_dir / "data")
 
     ai_eco_flow_dir = Path(args.ai_eco_flow_dir) if args.ai_eco_flow_dir else None
 
@@ -717,8 +718,10 @@ def main() -> int:
         global ECO_TARGETS
         ECO_TARGETS = tuple(detect_targets(args.ref_dir, "Eco"))
 
+    base_path = Path(args.base_dir)
+    default_dir = base_path if (base_path / f"{args.tag}_round_handoff.json").is_file() or not (base_path / "data").is_dir() else (base_path / "data")
     out_path = Path(args.output) if args.output else (
-        Path(args.base_dir) / "data" / f"{args.tag}_eco_report_round{args.round}.html"
+        default_dir / f"{args.tag}_eco_report_round{args.round}.html"
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(build_html(args))
