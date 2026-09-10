@@ -1947,25 +1947,41 @@ def main():
             overall_pass = False
 
         # Check 9c-v2: per-stage reuse verification — if reuse_existing_wire=true is
-        # claimed, BOTH PrePlace AND Route must have use_existing_wire=true in
-        # inputs_per_stage. Synth-only reuse doesn't count (Synth has no CTS-renamed
-        # wires; the cell still needs to be inserted, and PP/Route are where cone
-        # divergence happens). Catches the bypass pattern where the agent sets
+        # claimed, all present stages (PrePlace/Route when present) must have use_existing_wire=true in
+        # inputs_per_stage. Catches the bypass pattern where the agent sets
         # reuse=true on a flag basis without backing per-stage data.
+        present_stages = ['Synthesize']
+        if args.ref_dir and os.path.isdir(args.ref_dir):
+            _preeco_d = os.path.join(args.ref_dir, 'data', 'PreEco')
+            if os.path.isfile(os.path.join(_preeco_d, 'PrePlace.v.gz')) or os.path.isfile(os.path.join(_preeco_d, 'PrePlace.v')):
+                present_stages.append('PrePlace')
+            if os.path.isfile(os.path.join(_preeco_d, 'Route.v.gz')) or os.path.isfile(os.path.join(_preeco_d, 'Route.v')):
+                present_stages.append('Route')
+        else:
+            present_stages = ['Synthesize', 'PrePlace', 'Route']
+
         for inv in inv_cells:
             if inv.get('reuse_existing_wire') is not True:
                 continue
             ips = inv.get('inputs_per_stage') or {}
             pp_ok = (ips.get('PrePlace') or {}).get('use_existing_wire') is True
             rt_ok = (ips.get('Route') or {}).get('use_existing_wire') is True
-            if not (pp_ok and rt_ok):
+            syn_ok = (ips.get('Synthesize') or {}).get('use_existing_wire') is True
+
+            missing_stages = []
+            if 'PrePlace' in present_stages and not pp_ok:
+                missing_stages.append('PrePlace')
+            if 'Route' in present_stages and not rt_ok:
+                missing_stages.append('Route')
+            if present_stages == ['Synthesize'] and not syn_ok:
+                missing_stages.append('Synthesize')
+
+            if missing_stages:
                 chain_compact_issues.append(
                     f"changes[{idx}] target={tgt} [FAIL/9c-FAKE-REUSE] "
                     f"seq={inv.get('seq','?')}: reuse_existing_wire=true claimed but "
-                    f"inputs_per_stage shows PP.use_existing_wire={pp_ok}, "
-                    f"Route.use_existing_wire={rt_ok}. Reuse claim must be backed "
-                    f"by existing wires in BOTH PP AND Route (the stages where "
-                    f"FM cone divergence happens). Synth-only reuse is NOT enough.")
+                    f"inputs_per_stage missing use_existing_wire=true in active stages {missing_stages}. "
+                    f"Reuse claim must be backed by existing wires in active stages (PP/Route when present).")
                 overall_pass = False
 
         # Check 11 — DEMORGAN-MISSED: structural detection of the forbidden pattern

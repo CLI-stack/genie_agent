@@ -156,10 +156,12 @@ If it fails, retry once. If still fails, log the error — but never skip the at
 
 Backup current PostEco as the rollback point for this round:
 ```bash
-for stage in Synthesize PrePlace Route:
+for stage in Synthesize PrePlace Route; do
+    [ -f "<REF_DIR>/data/PostEco/${stage}.v.gz" ] || continue
     # Tag the backup with NEXT_ROUND so each round has its own rollback point
-    cp <REF_DIR>/data/PostEco/<Stage>.v.gz \
-       <REF_DIR>/data/PostEco/<Stage>.v.gz.bak_<TAG>_round<NEXT_ROUND>
+    cp <REF_DIR>/data/PostEco/${stage}.v.gz \
+       <REF_DIR>/data/PostEco/${stage}.v.gz.bak_<TAG>_round<NEXT_ROUND>
+done
 ```
 
 **Also snapshot the study JSON for this round — MANDATORY.** At this point

@@ -12,7 +12,7 @@
 5. **Never skip a step** — context/token pressure is NOT a valid reason. Each step writes its file → checkpoint → only then next step. [Rule 4]
 6. **Instance names, not module names** — all paths use instance hierarchy (e.g. `ARB/DCQARB`), never module-type names. Wrong → FM-036 on every query. [Rule 7]
 7. **DFF naming convention** — instance = `<target_register>_reg`, Q output net = `<target_register>`. FM auto-matches by name; any other naming breaks `FmEqvEcoSynthesizeVsSynRtl`. [Rule 10b]
-8. **All 3 stages must change** — verify md5 of each PostEco stage differs from `.bak_<TAG>_round<N>`. Only-Synth = partial ECO = FM fail. [Rule 12]
+8. **All active stages must change** — verify md5 of each active PostEco stage differs from `.bak_<TAG>_round<N>`. Missing an active stage = partial ECO = FM fail. [Rule 12]
 9. **Sub-agents write JSON only; orchestrator writes RPTs** — sub-agent context pressure must not block the RPT. [Rule 14]
 10. **FM ABORT → next ROUND_ORCHESTRATOR, never self-fix** — write `eco_fm_verify.json` → EXIT. Don't re-submit FM, don't patch inline, don't loop. [Rule 26]
 

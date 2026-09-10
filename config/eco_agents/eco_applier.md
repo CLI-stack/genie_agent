@@ -34,6 +34,7 @@ Run ONCE before decompressing any stage. Defends against concurrent agents corru
 
 ```bash
 for stage in Synthesize PrePlace Route; do
+    [ -f "<REF_DIR>/data/PreEco/${stage}.v.gz" ] || continue
     preeco_md5=$(md5sum <REF_DIR>/data/PreEco/${stage}.v.gz | awk '{print $1}')
     posteco_md5=$(md5sum <REF_DIR>/data/PostEco/${stage}.v.gz | awk '{print $1}')
     if [ "$preeco_md5" != "$posteco_md5" ]; then
@@ -50,6 +51,7 @@ done
 ```bash
 for stage in Synthesize PrePlace Route; do
     bak=<REF_DIR>/data/PostEco/${stage}.v.gz.bak_<TAG>_round<ROUND>
+    [ -f "$bak" ] || [ -f "<REF_DIR>/data/PostEco/${stage}.v.gz" ] || continue
     posteco_md5=$(md5sum <REF_DIR>/data/PostEco/${stage}.v.gz | awk '{print $1}')
     backup_md5=$(md5sum ${bak} | awk '{print $1}')
     if [ "$posteco_md5" != "$backup_md5" ]; then
@@ -159,6 +161,9 @@ Process ALL changes for a stage in 4 passes. Never mix order.
 ```bash
 cd <BASE_DIR>
 for STAGE in Synthesize PrePlace Route; do
+    if [ ! -f "<REF_DIR>/data/PreEco/${STAGE}.v.gz" ] && [ ! -f "<REF_DIR>/data/PreEco/${STAGE}.v" ]; then
+        continue
+    fi
     python3 script/eco_scripts/eco_perl_spec.py \
         --study      <AI_ECO_FLOW_DIR>/data/<TAG>_eco_preeco_study.json \
         --ref-dir    <REF_DIR> \

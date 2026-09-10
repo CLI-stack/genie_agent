@@ -23,7 +23,19 @@ Importable:
     from eco_cone_rebuild import parse_always, _CErr
     tree = parse_always(open(rtl).read(), 'recdsp_c0mop')
 """
-import re
+import os, re
+
+
+def _active_stages(ref_dir=None):
+    if not ref_dir:
+        return ('Synthesize', 'PrePlace', 'Route')
+    preeco = os.path.join(str(ref_dir), 'data', 'PreEco')
+    stages = ['Synthesize']
+    if os.path.exists(os.path.join(preeco, 'PrePlace.v.gz')) or os.path.exists(os.path.join(preeco, 'PrePlace.v')):
+        stages.append('PrePlace')
+    if os.path.exists(os.path.join(preeco, 'Route.v.gz')) or os.path.exists(os.path.join(preeco, 'Route.v')):
+        stages.append('Route')
+    return tuple(stages)
 
 
 class _CErr(Exception):
@@ -803,11 +815,12 @@ def lower_delta(ref_dir, module, signal, jira='eco'):
     return r
 
 
-def _emit_signal_muxes(synth, mk, r, module, signal, dmaps):
+def _emit_signal_muxes(synth, mk, r, module, signal, dmaps, active_stages=None):
     """Build `signal`'s per-bit force-muxes + driver rewires INTO the given synth (shared
     across signals in a batch). Returns (rewires, errs). The region logic is already in the
     synth (from _region_of); this adds the orig-comparator selector + muxes + rewires."""
-    from eco_emit_priority_force import STAGES
+    if active_stages is None:
+        active_stages = ('Synthesize', 'PrePlace', 'Route')
     width = r['width']
     old_vals = r.get('old_region_values') or []
     is_bus = width > 1
@@ -818,7 +831,7 @@ def _emit_signal_muxes(synth, mk, r, module, signal, dmaps):
     for b in range(width):
         net = _net(b)
         cps, pps, ok = {}, {}, True
-        for st in STAGES:
+        for st in active_stages:
             sd = dmaps[st].get(net)
             if not sd:
                 errs.append(f"{net}: no driver in {st} netlist — cannot re-drive."); ok = False; break
@@ -874,7 +887,8 @@ def _finalize_study(ref_dir, module, synth, rewires, jira, rename_map, tech_map,
     Factored out of emit_comb_net_force_batch so the register-D-cone builder reuses the IDENTICAL
     per-stage resolution (no divergence between Intent-A and Intent-B net grounding)."""
     from eco_emit_priority_force import (_stage_net_tokens, _stage_net, _map_stage_net,
-                                         _pcstage, STAGES, _module_netlist_body)
+                                         _pcstage, _module_netlist_body)
+    active_stages = _active_stages(ref_dir)
     gates = synth.gates
     # PRUNE dead gates: _Synth emits gates eagerly, then _and/_or/_inv fold constants and
     # discard subtrees; the discarded gates linger dangling. Keep ONLY the fan-in cone of the
@@ -898,8 +912,8 @@ def _finalize_study(ref_dir, module, synth, rewires, jira, rename_map, tech_map,
     for k in (rename_map or {}):
         if k != '_metadata':
             leaf2key.setdefault(k.rsplit('/', 1)[-1], k)
-    toks = {st: _stage_net_tokens(ref_dir, module, st) for st in STAGES}
-    bodies = {st: _module_netlist_body(ref_dir, module, st) for st in STAGES}
+    toks = {st: _stage_net_tokens(ref_dir, module, st) for st in active_stages}
+    bodies = {st: _module_netlist_body(ref_dir, module, st) for st in active_stages}
     def _exists(v, st):
         return isinstance(v, str) and (v in toks[st] or v.split('/')[0] in toks[st])
     def _pin_wire_in_cell(cell, pin, st):
@@ -949,7 +963,7 @@ def _finalize_study(ref_dir, module, synth, rewires, jira, rename_map, tech_map,
         return flat
     for g in gates:
         pcs = g.get('port_connections_per_stage') or _pcstage(g['port_connections'])
-        for st in STAGES:
+        for st in active_stages:
             if isinstance(pcs.get(st), dict):
                 pcs[st] = {p: _resolve(v, st) for p, v in pcs[st].items()}
         g['port_connections_per_stage'] = pcs
@@ -960,7 +974,7 @@ def _finalize_study(ref_dir, module, synth, rewires, jira, rename_map, tech_map,
             else:
                 g['instance_name'] = 'eco_cr_redrive_' + re.sub(r'\W+', '_', _on).strip('_')
     for rw in rewires:
-        ops = {st: _resolve(rw['old_net'], st) for st in STAGES}
+        ops = {st: _resolve(rw['old_net'], st) for st in active_stages}
         rw['old_net_per_stage'] = ops
     for _e in gates + rewires:
         _e.setdefault('source', 'eco_cone_rebuild')
@@ -972,11 +986,6 @@ def _finalize_study(ref_dir, module, synth, rewires, jira, rename_map, tech_map,
     return {'gates': gates, 'rewires': rewires, 'errors': errs, 'summary': summ}
 
 
-def emit_comb_net_force(ref_dir, module, signal, jira='eco', rename_map=None, tech_map=True):
-    """Single-signal comb net-force ECO (wrapper around the batch emitter)."""
-    return emit_comb_net_force_batch(ref_dir, module, [signal], jira, rename_map, tech_map=tech_map)
-
-
 def emit_comb_net_force_batch(ref_dir, module, signals, jira='eco', rename_map=None, tech_map=True):
     """Emit comb net-force for one OR MORE signals in the SAME module through a SHARED synth,
     so common logic (e.g. the WCK-sync guard on recdsp_c0mop AND recdsp_c0vld) is built once
@@ -984,10 +993,11 @@ def emit_comb_net_force_batch(ref_dir, module, signals, jira='eco', rename_map=N
     : net_orig[b], with the original comb driver's output pin renamed per stage. Returns
       {'gates','rewires','errors','summary'} (study-shaped, per-stage resolved once)."""
     from eco_emit_priority_force import (_driver_map, _stage_net_tokens, _stage_net,
-                                         _map_stage_net, _pcstage, STAGES,
+                                         _map_stage_net, _pcstage,
                                          _module_netlist_body)
+    active_stages = _active_stages(ref_dir)
     synth, mk, rtl_text, old_text, wm = _synth_setup(ref_dir, module, jira, rename_map=rename_map)
-    dmaps = {st: _driver_map(ref_dir, module, st) for st in STAGES}
+    dmaps = {st: _driver_map(ref_dir, module, st) for st in active_stages}
     rewires, errs, summ = [], [], {}
     for signal in signals:
         r = _region_of(synth, rtl_text, old_text, signal, wm)
@@ -996,7 +1006,7 @@ def emit_comb_net_force_batch(ref_dir, module, signals, jira='eco', rename_map=N
         summ[signal] = r['summary']
         # synth.module is the FULL netlist name (resolved in _synth_setup) — use it for the
         # rewires so they match the studier/other emitters + netlist.
-        rw, e = _emit_signal_muxes(synth, mk, r, synth.module, signal, dmaps)
+        rw, e = _emit_signal_muxes(synth, mk, r, synth.module, signal, dmaps, active_stages=active_stages)
         rewires.extend(rw); errs.extend(e)
     if errs:
         return {'gates': synth.gates, 'rewires': [], 'errors': errs, 'summary': summ}
@@ -1021,14 +1031,15 @@ def _reg_dpin_per_stage(ref_dir, module, reg, old_tok, rename_map):
     rename-map '<cell>/<pin>' address (authoritative, carries the Route MB-merge cell + pin, e.g.
     postcas_reg→..._MB_..._0_ , D→D2); else locate the flop in the stage netlist by the D-net, or
     default to '<reg>_reg'/'D'."""
-    from eco_emit_priority_force import STAGES, _module_netlist_body
+    from eco_emit_priority_force import _module_netlist_body
+    active_stages = _active_stages(ref_dir)
     entry = None
     for k, v in (rename_map or {}).items():
         if k != '_metadata' and isinstance(v, dict) and k.rsplit('/', 1)[-1] == old_tok:
             entry = v
             break
     cellps, pinps, oldps = {}, {}, {}
-    for st in STAGES:
+    for st in active_stages:
         val = (entry or {}).get(st) if isinstance(entry, dict) else None
         aw = (entry or {}).get(f'actual_wire_{st}') if isinstance(entry, dict) else None
         cell = pin = None
@@ -1068,9 +1079,10 @@ def _reg_clockgate(ref_dir, module, reg):
     {stage: (cg_cell_inst, E_pin, E_net)} (read from the PreEco netlist of each stage — the
     clean base the study is applied to); else None. Handles Route MB re-banking (each stage
     parsed independently)."""
-    from eco_emit_priority_force import STAGES, _module_netlist_body
+    from eco_emit_priority_force import _module_netlist_body
+    active_stages = _active_stages(ref_dir)
     out = {}
-    for st in STAGES:
+    for st in active_stages:
         body = _module_netlist_body(ref_dir, module, st) or ''
         # find reg's flop (first bit) → CP net
         fm = re.search(r'\S*' + re.escape(reg) + r'_reg\S*\s*\(([^;]*)\)\s*;', body)
@@ -1095,13 +1107,14 @@ def _flop_dpins_per_bit(ref_dir, module, reg, width):
     """Per bit b, per stage: (flop_cell_inst, D_pin, D_net) — the register's own flop .D pin,
     read from each stage's PreEco netlist (handles single-bit flops and MB banks incl. Route
     re-banking). Returns {b: {stage: (cell, pin, dnet)}} or None if any bit/stage unresolved."""
-    from eco_emit_priority_force import STAGES, _module_netlist_body
-    bodies = {st: (_module_netlist_body(ref_dir, module, st) or '') for st in STAGES}
+    from eco_emit_priority_force import _module_netlist_body
+    active_stages = _active_stages(ref_dir)
+    bodies = {st: (_module_netlist_body(ref_dir, module, st) or '') for st in active_stages}
     res = {}
     for b in range(width):
         cons = f'{reg}_reg_{b}_' if width > 1 else f'{reg}_reg'
         res[b] = {}
-        for st in STAGES:
+        for st in active_stages:
             body = bodies[st]
             found = None
             for m in re.finditer(r'([A-Za-z0-9_]+)\s+(\S*' + re.escape(cons) + r'\S*)\s*\(([^;]*)\)\s*;', body):
@@ -1137,19 +1150,14 @@ def emit_reg_guard_delta_batch(ref_dir, module, changes, jira='eco', rename_map=
     # OWN _synth_setup (independent per-synth `seq` counters), so without a namespace their low-seq
     # 'cr_and_<n>'/'cr_or_<n>' names would overlap when both run in one --emit-into-study.
     synth, mk, rtl_text, old_text, wm = _synth_setup(ref_dir, module, f'{jira}rg', rename_map=rename_map)
-    # DRIVER-SIDE net-force (engineer methodology): instead of rewiring the flop's .D pin to a new
-    # net (which re-maps the MB-bank D connectivity and breaks FM's multibit/reg register mapping —
-    # the JIRA-9666 "logic correct but FM fails" cascade), we KEEP the flop pin on its original .D
-    # net and fold the delta UPSTREAM at the net's combinational driver: rename the driver's output
-    # <Dnet>-><Dnet>_orig and re-drive <Dnet> through the fold. This is the SAME driver-side pattern
-    # comb_net_force (Intent B) + the engineer's Conformal ECO use, and leaves every flop pin intact.
-    from eco_emit_priority_force import _driver_map, STAGES
-    dmaps = {st: _driver_map(ref_dir, module, st) for st in STAGES}
+    from eco_emit_priority_force import _driver_map
+    active_stages = _active_stages(ref_dir)
+    dmaps = {st: _driver_map(ref_dir, module, st) for st in active_stages}
     def _dnet_driver_ps(net_ps):
         """net_ps: {stage: Dnet}. Return (cps, pps, ok): per-stage combinational driver cell/pin of
         the D-net. ok=False if any stage's D-net is missing or driven by a flop (.Q) — fail-closed."""
         cps, pps = {}, {}
-        for st in STAGES:
+        for st in active_stages:
             dnet = net_ps.get(st)
             sd = dmaps[st].get(dnet) if dnet else None
             if not sd or sd[2]:
@@ -1164,11 +1172,6 @@ def emit_reg_guard_delta_batch(ref_dir, module, changes, jira='eco', rename_map=
         if not reg or not old_tok:
             errs.append(f"reg_guard_delta: change missing target_register/old_token ({c.get('new_token')!r}).")
             continue
-        # Rebuild the register's next-state region from the RTL priority tree (correct-by-construction
-        # for constant-assign postcas AND data-load counters). _region_of now handles shift/subtract
-        # (added to the synth), so a clock-gated counter's full next-state (incl. the decrement) folds
-        # correctly. NOTE: a slimmer "surgical loaded-value only" region was tried but proved logically
-        # wrong (11/2500 mismatch) for the shallow-prefix counter delta, so the correct full fold is used.
         try:
             r = _region_of(synth, rtl_text, old_text, reg, wm)
         except Exception as e:
@@ -1183,34 +1186,12 @@ def emit_reg_guard_delta_batch(ref_dir, module, changes, jira='eco', rename_map=
         sel = r['sel']
         region_get = (lambda b, _rb=r['region_bits']: _rb.get(b, "1'b0"))
         nsel = synth._inv(sel)
-        # ── CLOCK-GATED register (e.g. a counter) — needs BOTH .D re-drive AND E widen ──
-        # For a simple flop `old_token` is the .D net; for a clock-gated flop it is the clock-gate
-        # E net. The old flow OR'd the new term into E ONLY (enable) and left the .D data-select
-        # untouched → on the new region the flop enabled but loaded the WRONG value (JIRA-9666
-        # WckSyncCtr0: enabled on ==MRR but loaded decrement instead of rdwcksyncclks).
-        #
-        # SLIM (physical-net hold-mux) fix — do NOT rebuild the whole region from RTL (the earlier
-        # full `region_bits` fold pulled in the counter's `cnt-1` ripple subtractor + `==7f` load +
-        # hold → ~270 gates, all of which already exist CORRECTLY in silicon). Instead reuse the
-        # flop's EXISTING physical .D driver net as the else-leg and only add the widened branch:
-        #       new_D[b] = load_active ? load_val[b] : orig-.D[b]
-        #       new_E    = old_E | load_active
-        # where load_active = _path_scalar(the widened branch's FULL path_cond) — the branch's own
-        # priority-correct active mask (path_cond already accumulates higher-priority else-negations,
-        # e.g. ~IReset & ~==7f), and load_val = its RHS (e.g. rdwcksyncclks; bit b is just a leaf).
-        # This is correct-by-construction: the else-leg IS the FM-passing silicon (already handles the
-        # OLD ==RD load + decrement + hold), and where the old narrower guard fired orig-.D already
-        # equals load_val, so widening the mux selector never regresses those vectors. (An earlier
-        # attempt using the priority-only branch GUARD without the higher-priority negations, or an
-        # RTL re-fold of the old state as the else-leg, mismatched 11/2500 — both avoided here.)
         cg = _reg_clockgate(ref_dir, module, reg)
         if cg:
             dbits = _flop_dpins_per_bit(ref_dir, module, reg, width)
             if not dbits:
                 errs.append(f"reg_guard_delta {reg}: clock-gated but per-bit .D pins unresolved.")
                 continue
-            # Locate the widened branch via the SHARED helper (same branch the step-2 deriver +
-            # step-3 validator key on — cannot drift).
             tgt = c.get('branch_loads') if c.get('branch_loads') is not None else c.get('branch_assigns')
             load_cond, load_val = _rg_widened_branch(synth, rtl_text, old_text, reg, tgt)
             if load_cond is None:
@@ -1227,7 +1208,7 @@ def emit_reg_guard_delta_batch(ref_dir, module, changes, jira='eco', rename_map=
             bad = False
             for b in range(width):
                 inst0, pin0, oldD = dbits[b]['Synthesize']
-                dnet_ps = {st: dbits[b][st][2] for st in dbits[b]}
+                dnet_ps = {st: dbits[b][st][2] for st in active_stages}
                 dcps, dpps, ok = _dnet_driver_ps(dnet_ps)
                 if not ok:
                     errs.append(f"reg_guard_delta {reg}[{b}]: D-net {oldD} has no combinational driver "
@@ -1254,10 +1235,7 @@ def emit_reg_guard_delta_batch(ref_dir, module, changes, jira='eco', rename_map=
                 })
             if bad:
                 continue
-            # widen the clock-gate enable so the flop clocks in the changed region — DRIVER-SIDE:
-            # keep the clock-gate .E pin on its original net (old_tok, e.g. N294); rename that net's
-            # driver output old_tok->old_tok_orig and re-drive old_tok = old_tok_orig | load_active.
-            en_ps = {st: cg[st][2] for st in cg}      # the E net per stage (e.g. N294)
+            en_ps = {st: cg[st][2] for st in active_stages}      # the E net per stage (e.g. N294)
             edcps, edpps, eok = _dnet_driver_ps(en_ps)
             if not eok:
                 errs.append(f"reg_guard_delta {reg}: clock-gate E-net {old_tok} has no combinational "
@@ -1279,16 +1257,13 @@ def emit_reg_guard_delta_batch(ref_dir, module, changes, jira='eco', rename_map=
             })
             continue
         # ── SIMPLE (non-clock-gated) flop path — DRIVER-SIDE ──
-        # Keep the flop .D pin on old_tok (e.g. SEQMAP_NET_1235); rename old_tok's combinational
-        # driver output old_tok->old_tok_orig and re-drive old_tok through the region mux. Flop pin
-        # unchanged (engineer methodology) — preserves the register's D-connectivity for FM mapping.
         _, _, oldps = _reg_dpin_per_stage(ref_dir, module, reg, old_tok, rename_map)
         is_bus = width > 1
         for b in range(width):
             region = region_get(b)
             old_leaf = (f'{old_tok}[{b}]' if is_bus else old_tok)
             leaf_ps = {st: (f'{oldps.get(st, old_tok)}[{b}]' if is_bus else oldps.get(st, old_tok))
-                       for st in STAGES}
+                       for st in active_stages}
             dcps, dpps, ok = _dnet_driver_ps(leaf_ps)
             if not ok:
                 errs.append(f"reg_guard_delta {reg}[{b}]: D-net {old_leaf} has no combinational driver "
@@ -1322,7 +1297,7 @@ def emit_reg_guard_delta_into_study(rtl_diff, study, jira, ref_dir, rename_map=N
     """Splice every register guard-change `and_term` (change with `target_register`+`branch_assigns`)
     into `study` (all stages) via the deterministic builder. Mirrors emit_into_study; on ANY builder
     error returns (0, errors) with study UNTOUCHED (caller aborts fail-closed)."""
-    from eco_emit_priority_force import STAGES
+    active_stages = _active_stages(ref_dir)
     import collections
     changes = [c for c in rtl_diff.get('changes', [])
                if c.get('change_type') == 'and_term' and c.get('target_register')
@@ -1350,7 +1325,7 @@ def emit_reg_guard_delta_into_study(rtl_diff, study, jira, ref_dir, rename_map=N
         return 0, errs
     added = 0
     for entries in pending:
-        for st in STAGES:
+        for st in active_stages:
             study.setdefault(st, []).extend(dict(e) for e in entries)
             added += len(entries)
     return added, []
@@ -1419,7 +1394,7 @@ def emit_into_study(rtl_diff, study, jira, ref_dir, rename_map=None):
     aborts fail-closed). Each comb_net_force change needs only {module_name, signal} — the
     delta, region, selector, gates and per-stage driver rewires are all derived from RTL +
     netlist deterministically."""
-    from eco_emit_priority_force import STAGES
+    active_stages = _active_stages(ref_dir)
     changes = [c for c in rtl_diff.get('changes', []) if c.get('change_type') == 'comb_net_force']
     if not changes:
         return 0, []
@@ -1452,7 +1427,7 @@ def emit_into_study(rtl_diff, study, jira, ref_dir, rename_map=None):
         return 0, errs                              # fail-closed: study untouched
     added = 0
     for entries in pending:
-        for st in STAGES:
+        for st in active_stages:
             study.setdefault(st, []).extend(dict(e) for e in entries)
             added += len(entries)
     return added, []

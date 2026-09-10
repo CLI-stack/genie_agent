@@ -230,20 +230,21 @@ def main():
                               if sig.rsplit('/', 1)[-1] not in expected_echo]
 
             # Auto-classify preserved-name echoes: if the bare signal name
-            # exists as a wire/port in BOTH PP and Route netlists, the echo
+            # exists as a wire/port in all active stages netlists, the echo
             # is legitimate (P&R preserved the name unchanged — no FM-036).
-            # Only flag echoes that are genuinely missing in PP or Route.
+            # Only flag echoes that are genuinely missing in active stages.
             # Closes the false-positive class observed in run 20260514070341
             # where 5 of 6 C6 entries (BeqCtrlPeSrc bits, REG_UmcCfgEco_1_)
             # were preserved-name bus signals, not FM failures.
             if real_fallbacks and args.ref_dir:
-                syn_gz = Path(args.ref_dir) / 'data' / 'PreEco' / 'Synthesize.v.gz'
-                pp_gz = Path(args.ref_dir) / 'data' / 'PreEco' / 'PrePlace.v.gz'
-                rt_gz = Path(args.ref_dir) / 'data' / 'PreEco' / 'Route.v.gz'
+                present_files = {st: Path(args.ref_dir) / 'data' / 'PreEco' / f'{st}.v.gz'
+                                 for st in active_stages}
                 accepted = set()
                 # Match BOTH the bracket form (foo[3]) and the bit-blasted netlist
                 # form (foo_3_) — synthesis renames bus bits to underscores.
                 def _present(gz, bare):
+                    if not gz.is_file():
+                        return False
                     m = re.match(r'^(.*)\[(\d+)\]$', bare)
                     if m:
                         b, i = re.escape(m.group(1)), m.group(2)
@@ -256,26 +257,15 @@ def main():
                         return int((r.stdout or '0').strip() or '0') > 0
                     except Exception:
                         return False
-                if syn_gz.is_file() and pp_gz.is_file() and rt_gz.is_file():
+
+                if all(gz.is_file() for gz in present_files.values()):
                     for sig in real_fallbacks:
                         bare = sig.rsplit('/', 1)[-1]
-                        in_syn = _present(syn_gz, bare)
-                        in_pp  = _present(pp_gz, bare)
-                        in_rt  = _present(rt_gz, bare)
-                        # (a) PRESERVED name: survives PP+Route unchanged -> legit echo.
-                        # (b) GENUINELY DISSOLVED: absent in ALL stages (incl Synthesize)
-                        #     -> synthesis eliminated it (behavioral always@* local like
-                        #     dsp_condsok[1-7,9-11], or a dissolved internal reg like
-                        #     recdsp_c0cs). FM correctly returns FM-036; Step-3 REBUILDS it
-                        #     from real surviving leaves (eco_cone_rebuild _sig_bit->_rebuild)
-                        #     or it folds out of the delta region entirely. Echo is expected
-                        #     and the emitted study never wires the dissolved name (proven:
-                        #     passing study 20260711182702 has zero dsp_condsok/recdsp_c0cs
-                        #     references). This matches the reg_guard C10b advisory treatment.
-                        # FLAG ONLY (c): present in Synthesize but optimized away in PP/Route
-                        #     -> a REAL net that needs per-stage fenets binding (the
-                        #     dsp_cmd_msc[0]/[3] NET-ABSENT class) — genuine C6 failure.
-                        if (in_pp and in_rt) or (not in_syn and not in_pp and not in_rt):
+                        in_st = {st: _present(present_files[st], bare) for st in active_stages}
+                        # (a) PRESERVED name: survives all active stages unchanged -> legit echo.
+                        # (b) GENUINELY DISSOLVED: absent in ALL active stages
+                        #     -> synthesis eliminated it. FM correctly returns FM-036; Step-3 REBUILDS it.
+                        if all(in_st.values()) or (not any(in_st.values())):
                             accepted.add(sig)
                 real_fallbacks = [s for s in real_fallbacks if s not in accepted]
 
@@ -446,13 +436,13 @@ def main():
                 return False
 
             synth_resolved = synth_val and not _is_unresolved(synth_val, signal)
-            pp_fm036       = _is_unresolved(pp_val, signal)
-            rt_fm036       = _is_unresolved(rt_val, signal)
+            pp_fm036       = _is_unresolved(pp_val, signal) if 'PrePlace' in active_stages else False
+            rt_fm036       = _is_unresolved(rt_val, signal) if 'Route' in active_stages else False
 
             if not synth_resolved:
                 continue  # Synth also failed — not a Mode H case
             if not (pp_fm036 or rt_fm036):
-                continue  # PP and Route both resolved — no issue
+                continue  # PP and Route both resolved (or inactive) — no issue
 
             # Synth resolved but PP/Route FM-036 — check for fallback query
             # A fallback query uses the Synth driver cell name as the net_path.

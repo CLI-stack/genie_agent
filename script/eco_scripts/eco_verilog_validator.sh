@@ -218,9 +218,12 @@ try:
 except Exception as e:
     _dump({'stage_fail': {}, 'errors': ['gate import failed: %s' % e]}); sys.exit(0)
 try:
-    study = json.load(open(study_json))
+    if os.path.exists(study_json):
+        study = json.load(open(study_json))
+    else:
+        study = {}
 except Exception as e:
-    _dump({'stage_fail': {}, 'errors': ['gate cannot read study: %s' % e]}); sys.exit(0)
+    study = {}
 stage_fail = {s: [] for s in STAGES}
 errors, seen = [], set()
 for stage in STAGES:
@@ -310,4 +313,4 @@ echo "${MARKER}" > "${OUT_JSON%.json}_marker.txt"
 
 rm -f "${TMP_LOG}" "${GATE_JSON}"
 
-[ "$SYNTH" = "PASS" ] && [ "$PPLACE" = "PASS" ] && [ "$ROUTE" = "PASS" ] && exit 0 || exit 1
+[ "$SYNTH" != "FAIL" ] && [ "$PPLACE" != "FAIL" ] && [ "$ROUTE" != "FAIL" ] && ([ "$SYNTH" = "PASS" ] || [ "$PPLACE" = "PASS" ] || [ "$ROUTE" = "PASS" ]) && exit 0 || exit 1

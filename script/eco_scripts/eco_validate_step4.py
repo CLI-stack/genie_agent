@@ -303,7 +303,7 @@ def main():
     # Both were real on tag 20260707090807 (recdsp_c0mop[*] undriven; ctmn_917 x40
     # double-driven in PP/Route) yet slipped past the status checks.
     drv_issues = []
-    for stage in ['Synthesize', 'PrePlace', 'Route']:
+    for stage in active_stages:
         for e in study.get(stage, []):
             if e.get('change_type') not in ('new_logic_gate', 'new_logic'):
                 continue
@@ -328,7 +328,7 @@ def main():
             seen_d.add(m); issues.append(m)
 
     # ── 6. Backup files exist for stages with changes ────────────────────────
-    for stage in ['Synthesize', 'PrePlace', 'Route']:
+    for stage in active_stages:
         bak = f"{args.ref_dir}/data/PostEco/{stage}.v.gz.bak_{tag}_round{args.round}"
         if applied.get(stage) and not Path(bak).exists():
             issues.append(f"MEDIUM: Backup {stage}.v.gz.bak_{tag}_round{args.round} not found — revert protection missing")
@@ -336,7 +336,7 @@ def main():
     # ── 7. GAP-2 enforcement: bus_rename APPLIED entries should carry cleanup
     # tags ([removed_orphan] / [added_decl]) when the old net was an UNCONNECTED.
     # The applier prints these in the status `reason` string — verify presence.
-    for stage in ['Synthesize', 'PrePlace', 'Route']:
+    for stage in active_stages:
         for e in applied.get(stage, []):
             if e.get('status') != 'APPLIED':
                 continue
@@ -354,7 +354,7 @@ def main():
     # Studier marks bridge plumbing entries with bridge_port_role; applier
     # skips them when stage==Synthesize. Audit by cross-referencing study JSON.
     bridge_role_insts = set()
-    for s in ('Synthesize', 'PrePlace', 'Route'):
+    for s in active_stages:
         for e in study.get(s, []):
             if e.get('bridge_port_role'):
                 key = e.get('instance_name') or e.get('signal_name') or e.get('cell_name', '')
@@ -388,7 +388,7 @@ def main():
     # ── 10. CROSS-STAGE-EDIT-PARITY (G4) ─────────────────────────────────────
     # For high-risk per-stage edit types (unconnected_rewires, port_connection,
     # wire_swap, port_promotion), the same logical edit MUST be applied to all
-    # 3 stages. Silent stage-skip produces a stage-divergent netlist where the
+    # active stages. Silent stage-skip produces a stage-divergent netlist where the
     # rewired bit creates a real cone path in only one stage — FM cones diverge
     # on apparently-unrelated DFFs that walk through the modified region.
     HIGH_RISK_TYPES = {'unconnected_rewires', 'port_connection',
@@ -406,7 +406,7 @@ def main():
         return status in ('APPLIED', 'INSERTED', 'QUEUED', 'AUTO_SANITIZED', 'ALREADY_APPLIED')
 
     per_edit = {}  # key → { stage → status }
-    for stage in ('Synthesize', 'PrePlace', 'Route'):
+    for stage in active_stages:
         for e in applied.get(stage, []):
             ct = e.get('change_type', '')
             # Also catch carried-with-other-types entries: any entry whose
@@ -426,16 +426,16 @@ def main():
     for key, by_stage in per_edit.items():
         success_stages = {s for s, st in by_stage.items() if _is_success(st)}
         failed_stages  = {s: st for s, st in by_stage.items() if not _is_success(st)}
-        # If the edit succeeded in some stages but not all 3 → cross-stage divergence
-        if 0 < len(success_stages) < 3:
-            missing = sorted({'Synthesize','PrePlace','Route'} - success_stages)
+        # If the edit succeeded in some stages but not all active stages → cross-stage divergence
+        if 0 < len(success_stages) < len(active_stages):
+            missing = sorted(set(active_stages) - success_stages)
             issues.append(
                 f"CRITICAL/10-CROSS-STAGE-EDIT-PARITY: edit {key!r} (high-risk "
                 f"per-stage type) applied successfully in {sorted(success_stages)} "
                 f"but missing/failed in {missing}. by_stage_status={by_stage}. "
                 f"Stage-divergent edits cause FM cone walks to reach different "
                 f"physical wires per stage on apparently-unrelated DFFs. The "
-                f"applier MUST apply the same edit to all 3 stages or HARD ERROR.")
+                f"applier MUST apply the same edit to all active stages or HARD ERROR.")
 
     # ── 11. GAP-2: PENDING_STAGE_RESOLUTION wrong-signal substitution check ─────
     # When a condition gate input was PENDING_STAGE_RESOLUTION, the applier must
@@ -443,13 +443,13 @@ def main():
     # change type. Detect when a resolved net name matches a signal from a
     # port_declaration or port_promotion entry (wrong change type substitution).
     port_decl_names = set()
-    for s in ('Synthesize', 'PrePlace', 'Route'):
+    for s in active_stages:
         for e in study.get(s, []):
             if e.get('change_type') in ('port_declaration', 'new_port', 'port_promotion'):
                 sig = e.get('signal_name') or e.get('port_name') or e.get('new_token', '')
                 if sig:
                     port_decl_names.add(sig)
-    for stage in ('Synthesize', 'PrePlace', 'Route'):
+    for stage in active_stages:
         for e in applied.get(stage, []):
             if e.get('status') not in ('APPLIED', 'INSERTED'):
                 continue
@@ -474,7 +474,7 @@ def main():
                     f"signal from a different change type. Applier substituted wrong signal. "
                     f"Must mark confirmed: false and SKIP when no valid Mode H recovery found.")
 
-    # ── 12. GAP-4: port_declaration applied in Synth must exist in PP/Route ────
+    # ── 12. GAP-4: port_declaration applied in Synth must exist in active PP/Route ────
     # Every new port added in Synthesize must also be declared in PrePlace and Route.
     # Silently missing port decls in PP/Route cause FE-LINK-7 ABORT or SVR-8.
     synth_port_decls = {}  # signal_name → entry
@@ -485,7 +485,7 @@ def main():
             if sig:
                 synth_port_decls[sig] = e
     for sig in synth_port_decls:
-        for stage in ('PrePlace', 'Route'):
+        for stage in [s for s in ('PrePlace', 'Route') if s in active_stages]:
             found = any(
                 (e.get('signal_name') == sig or e.get('port_name') == sig or
                  e.get('instance_name') == sig) and
@@ -498,7 +498,7 @@ def main():
                     f"HIGH: GAP-4 — port_declaration {sig!r} APPLIED in Synthesize "
                     f"but missing in {stage}. Gates using this port in {stage} will "
                     f"trigger FE-LINK-7 ABORT or SVR-8 in FM. eco_netlist_port_rewire.py must "
-                    f"apply port_declaration entries to all 3 stages.")
+                    f"apply port_declaration entries to all active stages.")
 
     # ── 13. wire_swap + intermediate_net_insertion: pivot net must be driven ─
     # When new_condition_gate_chain was applied, the last gate must drive

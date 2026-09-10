@@ -257,18 +257,31 @@ def _pf_condition_completeness(study, rtl_diff, ref_dir):
     return issues
 
 
+def get_active_stages(ref_dir=None):
+    if not ref_dir or not Path(ref_dir).is_dir():
+        return ['Synthesize', 'PrePlace', 'Route']
+    preeco_dir = Path(ref_dir) / 'data' / 'PreEco'
+    stages = ['Synthesize']
+    if (preeco_dir / 'PrePlace.v.gz').is_file() or (preeco_dir / 'PrePlace.v').is_file():
+        stages.append('PrePlace')
+    if (preeco_dir / 'Route.v.gz').is_file() or (preeco_dir / 'Route.v').is_file():
+        stages.append('Route')
+    return stages
+
+
 def _cnf_completeness(study, rtl_diff, ref_dir):
     """Validate every `comb_net_force` change was actually BUILT (not left a placeholder)
     and is well-formed. Per change {module_name, signal}, in the Synthesize stage:
       - ≥1 driver-side net-force rewire from eco_cone_rebuild whose old_net is signal/signal[b]
         (absence ⇒ the deterministic builder did not run ⇒ placeholder ⇒ CRITICAL);
       - each such rewire carries cell_name_per_stage + pin_per_stage + old_net_per_stage for
-        all 3 stages;
+        all active stages;
       - the original net (old_net) is re-driven by a mux gate (a gate whose output_net ==
         old_net), so all fanout sees the forced value.
     The builder itself fails closed on ungrounded leaves / missing comb driver, so a PRESENT
     well-formed emission is grounded by construction; this check guards the wiring."""
     issues = []
+    active_stages = get_active_stages(ref_dir)
     changes = [c for c in rtl_diff.get('changes', []) if c.get('change_type') == 'comb_net_force']
     if not changes:
         return issues
@@ -291,8 +304,8 @@ def _cnf_completeness(study, rtl_diff, ref_dir):
             on = rw.get('old_net')
             for fld in ('cell_name_per_stage', 'pin_per_stage', 'old_net_per_stage'):
                 d = rw.get(fld)
-                if not (isinstance(d, dict) and all(d.get(s) for s in ('Synthesize', 'PrePlace', 'Route'))):
-                    issues.append(f"HIGH: comb_net_force {sig} rewire {on} missing {fld} for all stages.")
+                if not (isinstance(d, dict) and all(d.get(s) for s in active_stages)):
+                    issues.append(f"HIGH: comb_net_force {sig} rewire {on} missing {fld} for active stages {active_stages}.")
             if on not in gate_outs:
                 issues.append(f"CRITICAL: comb_net_force {sig} — original net {on} renamed to "
                               f"{rw.get('new_net')} but no mux gate re-drives {on}; fanout would "
@@ -308,6 +321,7 @@ def _compare_fold_completeness(study, rtl_diff, ref_dir):
     the fold function exhaustively, so a PRESENT well-formed emission is correct by
     construction; this guards the wiring + that the wrong builder was not used."""
     issues = []
+    active_stages = get_active_stages(ref_dir)
     changes = [c for c in rtl_diff.get('changes', []) if c.get('change_type') == 'compare_fold']
     if not changes:
         return issues
@@ -326,8 +340,8 @@ def _compare_fold_completeness(study, rtl_diff, ref_dir):
         on = rw.get('old_net')
         for fld in ('cell_name_per_stage', 'pin_per_stage', 'old_net_per_stage'):
             d = rw.get(fld)
-            if not (isinstance(d, dict) and all(d.get(s) for s in ('Synthesize', 'PrePlace', 'Route'))):
-                issues.append(f"HIGH: compare_fold rewire {on} missing {fld} for all stages.")
+            if not (isinstance(d, dict) and all(d.get(s) for s in active_stages)):
+                issues.append(f"HIGH: compare_fold rewire {on} missing {fld} for active stages {active_stages}.")
         if on not in gate_outs:
             issues.append(f"CRITICAL: compare_fold — mismatch net {on} renamed to "
                           f"{rw.get('new_net')} but no compare_fold gate re-drives {on}; "
@@ -708,7 +722,7 @@ def main():
             for pin in pcps.get('Synthesize', {}):
                 if pin in _OUT_CHECK:
                     continue
-                vals = {s: pcps.get(s, {}).get(pin, '') for s in ('Synthesize', 'PrePlace', 'Route')}
+                vals = {s: pcps.get(s, {}).get(pin, '') for s in active_stages}
                 if len(set(vals.values())) != 1:
                     continue  # already different per-stage — OK
                 bare = vals['Synthesize']
@@ -723,13 +737,11 @@ def main():
                     # here false-flagged a correct bare net and triggered a bad "fix" that
                     # DROPPED the pin. actual_wire_<stage> reflects the true net name.
                     rmap_vals = {s: (entry.get('actual_wire_' + s) or entry.get(s, bare))
-                                 for s in ('Synthesize', 'PrePlace', 'Route')}
+                                 for s in active_stages}
                     if len(set(rmap_vals.values())) > 1:
                         issues.append(
-                            f"HIGH: gate '{inst}' pin={pin!r} uses bare '{bare}' for ALL stages "
-                            f"but rename map shows per-stage values "
-                            f"(Syn={rmap_vals['Synthesize']!r} PP={rmap_vals['PrePlace']!r} "
-                            f"Route={rmap_vals['Route']!r}). "
+                            f"HIGH: gate '{inst}' pin={pin!r} uses bare '{bare}' for ALL active stages "
+                            f"but rename map shows per-stage values ({rmap_vals}). "
                             f"eco_emit_dff_entry.py must resolve this pin per-stage from rename map "
                             f"to avoid DFF0X/cone-mismatch in PP/Route stages.")
 
