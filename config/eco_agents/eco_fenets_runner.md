@@ -170,13 +170,13 @@ Read `<fenets_tag>` from CLI output.
 **B2. Poll every 5 minutes with individual Bash tool calls** (keeps main session responsive and showing progress):
 ```bash
 # Each poll = one tool call = one "Running..." update visible in the session
-grep -c "FIND_EQUIVALENT_NETS_COMPLETE" \
-  <REF_DIR>/rpts/FmEqvPreEcoSynthesizeVsPreEcoSynRtl/find_equivalent_nets_<fenets_tag>.txt \
-  <REF_DIR>/rpts/FmEqvPreEcoPrePlaceVsPreEcoSynthesize/find_equivalent_nets_<fenets_tag>.txt \
-  <REF_DIR>/rpts/FmEqvPreEcoRouteVsPreEcoPrePlace/find_equivalent_nets_<fenets_tag>.txt \
-  2>/dev/null || echo "0 0 0"
+# Auto-detect real active PreEco targets (Synthesize only, Synth+PP, or all 3):
+set targets = `python3 script/eco_scripts/eco_fm_targets.py --detect <REF_DIR> PreEco | tr ',' ' '`
+foreach tgt ($targets)
+  grep -c "FIND_EQUIVALENT_NETS_COMPLETE" <REF_DIR>/rpts/${tgt}/find_equivalent_nets_<fenets_tag>.txt 2>/dev/null || echo "0"
+end
 ```
-- If all 3 counts = 1 → proceed to B3
+- If all active target counts = 1 → proceed to B3
 - If not → wait 5 minutes (`sleep 300` in one Bash call) then repeat
 - Max 12 retries (60 min total timeout)
 - Do NOT poll `<AI_ECO_FLOW_DIR>/data/<fenets_tag>_spec` — rpt files are authoritative
@@ -185,15 +185,15 @@ grep -c "FIND_EQUIVALENT_NETS_COMPLETE" \
 
 **B4. Write and copy raw rpt immediately:**
 ```bash
+# Concatenate raw output from each active target:
+set targets = `python3 script/eco_scripts/eco_fm_targets.py --detect <REF_DIR> PreEco | tr ',' ' '`
 {
   echo "FIND EQUIVALENT NETS — RAW FM OUTPUT"
   echo "fenets_tag: <fenets_tag>  |  TAG: <TAG>  |  Tile: <TILE>"
-  echo "TARGET: FmEqvPreEcoSynthesizeVsPreEcoSynRtl"
-  cat <REF_DIR>/rpts/FmEqvPreEcoSynthesizeVsPreEcoSynRtl/find_equivalent_nets_<fenets_tag>.txt
-  echo "TARGET: FmEqvPreEcoPrePlaceVsPreEcoSynthesize"
-  cat <REF_DIR>/rpts/FmEqvPreEcoPrePlaceVsPreEcoSynthesize/find_equivalent_nets_<fenets_tag>.txt
-  echo "TARGET: FmEqvPreEcoRouteVsPreEcoPrePlace"
-  cat <REF_DIR>/rpts/FmEqvPreEcoRouteVsPreEcoPrePlace/find_equivalent_nets_<fenets_tag>.txt
+  foreach tgt ($targets)
+    echo "TARGET: $tgt"
+    cat <REF_DIR>/rpts/${tgt}/find_equivalent_nets_<fenets_tag>.txt
+  end
 } > <AI_ECO_FLOW_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt
 cp <AI_ECO_FLOW_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt <AI_ECO_FLOW_DIR>/
 ls <AI_ECO_FLOW_DIR>/<fenets_tag>_find_equivalent_nets_raw.rpt
