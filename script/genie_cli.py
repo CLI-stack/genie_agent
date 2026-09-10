@@ -1690,8 +1690,7 @@ class GenieCLI:
                         _mode = 'complete'
                 flow_prefix = 'AI_ECO_FLOW_SIMPLE_' if _mode == 'simple' else 'AI_ECO_FLOW_'
                 self.base_dir = os.path.join(_rd, f'{flow_prefix}{tag}')
-                os.makedirs(os.path.join(self.base_dir, 'data'), exist_ok=True)
-                os.makedirs(os.path.join(self.base_dir, 'runs'), exist_ok=True)
+                os.makedirs(self.base_dir, exist_ok=True)
 
         # eco_analyze is tile-AGNOSTIC — any tile may be used, not just those listed
         # in assignment.csv. The generic parser only tags a token as `tile` when it
@@ -1820,13 +1819,18 @@ class GenieCLI:
             print("[DRY RUN] Command not executed")
             return {'tag': tag, 'command': command, 'script': script, 'args': arguementInfo, 'special_content': special_content}
 
-        # Create data directory for this tag
-        data_dir = os.path.join(self.base_dir, 'data', tag)
-        os.makedirs(data_dir, exist_ok=True)
+        is_eco_flow = ('AI_ECO_FLOW_' in self.base_dir) or bool(os.environ.get('ECO_OUT_DIR'))
+
+        if not is_eco_flow:
+            # Create data directory for this tag
+            data_dir = os.path.join(self.base_dir, 'data', tag)
+            os.makedirs(data_dir, exist_ok=True)
+
+        target_data_dir = self.base_dir if is_eco_flow else os.path.join(self.base_dir, 'data')
 
         # Write params file if we have params
         if params_list:
-            params_file = os.path.join(self.base_dir, 'data', f'{tag}.params')
+            params_file = os.path.join(target_data_dir, f'{tag}.params')
             with open(params_file, 'w') as f:
                 for param in params_list:
                     f.write(param + '\n')
@@ -1834,7 +1838,7 @@ class GenieCLI:
 
         # Write config file if we have config entries
         if config_list:
-            config_file = os.path.join(self.base_dir, 'data', f'{tag}.cdc_rdc_config')
+            config_file = os.path.join(target_data_dir, f'{tag}.cdc_rdc_config')
             with open(config_file, 'w') as f:
                 for config in config_list:
                     f.write(config + '\n')
@@ -1842,7 +1846,7 @@ class GenieCLI:
 
         # Write waiver file if we have waiver entries
         if waiver_list:
-            waiver_file = os.path.join(self.base_dir, 'data', f'{tag}.cdc_rdc_waiver')
+            waiver_file = os.path.join(target_data_dir, f'{tag}.cdc_rdc_waiver')
             with open(waiver_file, 'w') as f:
                 for waiver in waiver_list:
                     f.write(waiver + '\n')
@@ -1850,7 +1854,7 @@ class GenieCLI:
 
         # Write constraint file if we have constraint entries
         if constraint_list:
-            constraint_file = os.path.join(self.base_dir, 'data', f'{tag}.cdc_rdc_constraint')
+            constraint_file = os.path.join(target_data_dir, f'{tag}.cdc_rdc_constraint')
             with open(constraint_file, 'w') as f:
                 for constraint in constraint_list:
                     f.write(constraint + '\n')
@@ -1858,7 +1862,7 @@ class GenieCLI:
 
         # Write lint waiver file if we have lint waiver entries
         if lint_waiver_list:
-            lint_waiver_file = os.path.join(self.base_dir, 'data', f'{tag}.lint_waiver')
+            lint_waiver_file = os.path.join(target_data_dir, f'{tag}.lint_waiver')
             with open(lint_waiver_file, 'w') as f:
                 for lint_waiver in lint_waiver_list:
                     f.write(lint_waiver + '\n')
@@ -1866,7 +1870,7 @@ class GenieCLI:
 
         # Write controls file if we have controls
         if controls_list:
-            controls_file = os.path.join(self.base_dir, 'data', f'{tag}.controls')
+            controls_file = os.path.join(target_data_dir, f'{tag}.controls')
             with open(controls_file, 'w') as f:
                 for control in controls_list:
                     f.write(control + '\n')
@@ -1874,7 +1878,7 @@ class GenieCLI:
 
         # Write version file if we have version entries
         if version_list:
-            version_file = os.path.join(self.base_dir, 'data', f'{tag}.cdc_rdc_version')
+            version_file = os.path.join(target_data_dir, f'{tag}.cdc_rdc_version')
             with open(version_file, 'w') as f:
                 for version in version_list:
                     f.write(version + '\n')
@@ -1882,7 +1886,7 @@ class GenieCLI:
 
         # Write SPG_DFT params file if we have spg_dft_params entries
         if spg_dft_params_list:
-            spg_dft_file = os.path.join(self.base_dir, 'data', f'{tag}.spg_dft_params')
+            spg_dft_file = os.path.join(target_data_dir, f'{tag}.spg_dft_params')
             with open(spg_dft_file, 'w') as f:
                 for spg_param in spg_dft_params_list:
                     f.write(spg_param + '\n')
@@ -1890,7 +1894,7 @@ class GenieCLI:
 
         # Write P4 files list if we have p4_file entries
         if p4_file_list:
-            p4_files_file = os.path.join(self.base_dir, 'data', f'{tag}.p4_files')
+            p4_files_file = os.path.join(target_data_dir, f'{tag}.p4_files')
             with open(p4_files_file, 'w') as f:
                 for p4_file in p4_file_list:
                     f.write(p4_file + '\n')
@@ -1898,18 +1902,18 @@ class GenieCLI:
 
         # Write P4 description if we have one
         if p4_description:
-            p4_desc_file = os.path.join(self.base_dir, 'data', f'{tag}.p4_description')
+            p4_desc_file = os.path.join(target_data_dir, f'{tag}.p4_description')
             with open(p4_desc_file, 'w') as f:
                 f.write(p4_description + '\n')
             print(f"Created P4 description file: {p4_desc_file}")
 
         # Create spec file (empty - will be populated by script)
-        spec_file = os.path.join(self.base_dir, 'data', f'{tag}_spec')
+        spec_file = os.path.join(target_data_dir, f'{tag}_spec')
         with open(spec_file, 'w') as f:
             pass  # Create empty file, script will populate with results
 
         # Create metadata file for email subject
-        metadata_file = os.path.join(self.base_dir, 'data', f'{tag}_metadata')
+        metadata_file = os.path.join(target_data_dir, f'{tag}_metadata')
         with open(metadata_file, 'w') as f:
             # Extract meaningful info for email subject
             # Handle cases where value equals the key name (placeholder)
@@ -1984,8 +1988,13 @@ class GenieCLI:
             f.write(f"instruction={matched_instruction}\n")
 
         # Create run script
-        run_script = os.path.join(self.base_dir, 'runs', f'{tag}.csh')
-        os.makedirs(os.path.dirname(run_script), exist_ok=True)
+        if is_eco_flow:
+            run_script = os.path.join(self.base_dir, f'{tag}.csh')
+            target_runs_dir = self.base_dir
+        else:
+            run_script = os.path.join(self.base_dir, 'runs', f'{tag}.csh')
+            target_runs_dir = os.path.join(self.base_dir, 'runs')
+            os.makedirs(target_runs_dir, exist_ok=True)
 
         # Detect if this is a TileBuilder/supra command that needs different environment
         is_tilebuilder_cmd = any(keyword in script.lower() for keyword in [
@@ -2024,27 +2033,28 @@ class GenieCLI:
             f.write(f"set script_status = $status\n")
             f.write(f"echo 'Script exit status:' $script_status\n")
             f.write(f"\n# Always send email if flag file exists (even on failure)\n")
-            f.write(f"if (-f {self.base_dir}/data/{tag}_email) then\n")
+            email_check_path = f"{target_data_dir}/{tag}_email"
+            f.write(f"if (-f {email_check_path}) then\n")
             f.write(f"    python3 {self.script_root}/script/genie_cli.py --send-completion-email {tag}\n")
             f.write(f"endif\n")
             # Note: finishing_task.csh is called by individual scripts internally, not from here
 
         # Create email flag file if email is requested
         if send_email and self.debugger_emails:
-            email_flag_file = os.path.join(self.base_dir, 'data', f'{tag}_email')
+            email_flag_file = os.path.join(target_data_dir, f'{tag}_email')
             with open(email_flag_file, 'w') as f:
                 f.write(','.join(self.debugger_emails))
             print(f"Email will be sent to: {', '.join(self.debugger_emails)}")
             # Also save analysis email recipients separately — _email is deleted after
             # completion email is sent, so _analysis_email persists for --send-analysis-email
             if analyze_mode:
-                analysis_email_file = os.path.join(self.base_dir, 'data', f'{tag}_analysis_email')
+                analysis_email_file = os.path.join(target_data_dir, f'{tag}_analysis_email')
                 with open(analysis_email_file, 'w') as f:
                     f.write(','.join(self.debugger_emails))
 
         # Create analyze flag file if analyze mode is requested
         if analyze_mode:
-            analyze_flag_file = os.path.join(self.base_dir, 'data', f'{tag}_analyze')
+            analyze_flag_file = os.path.join(target_data_dir, f'{tag}_analyze')
             check_type_raw = arguementInfo.get('checkType', '')
             check_type = check_type_raw.replace('checkType:', '').strip(':') if check_type_raw != 'checkType' else ''
             ref_dir_raw = arguementInfo.get('refDir', '')
@@ -2055,14 +2065,14 @@ class GenieCLI:
                 f.write(f"check_type={check_type or 'full_static_check'}\n")
                 f.write(f"ref_dir={ref_dir}\n")
                 f.write(f"ip={ip}\n")
-                f.write(f"log_file={self.base_dir}/runs/{tag}.log\n")
-                f.write(f"spec_file={self.base_dir}/data/{tag}_spec\n")
+                f.write(f"log_file={target_runs_dir}/{tag}.log\n")
+                f.write(f"spec_file={target_data_dir}/{tag}_spec\n")
                 if fixer_mode:
                     f.write(f"fixer_mode=true\n")
 
             # Write fixer state file if in fixer mode
             if fixer_mode:
-                fixer_state_file = os.path.join(self.base_dir, 'data', f'{tag}_fixer_state')
+                fixer_state_file = os.path.join(target_data_dir, f'{tag}_fixer_state')
                 with open(fixer_state_file, 'w') as f:
                     f.write(f"original_ref_dir={ref_dir}\n")
                     f.write(f"original_ip={ip}\n")
@@ -2077,7 +2087,7 @@ class GenieCLI:
             print(f"Analyze mode enabled: Claude Code will monitor and analyze results")
 
         # Write debug info file — records all execution parameters for diagnosis
-        debug_file = os.path.join(self.base_dir, 'data', f'{tag}_debug')
+        debug_file = os.path.join(target_data_dir, f'{tag}_debug')
         with open(debug_file, 'w') as f:
             f.write(f"=== Genie CLI Debug Info ===\n")
             f.write(f"timestamp={datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -2128,7 +2138,7 @@ class GenieCLI:
             print(f"  xterm -e 'cd {self.base_dir} && source {run_script}' &")
         elif 'eco_analyze' in script.lower() and not dry_run:
             # eco_analyze runs synchronously (thin wrapper, seconds) to capture the signal
-            log_file = os.path.join(self.base_dir, 'runs', f'{tag}.log')
+            log_file = os.path.join(target_runs_dir, f'{tag}.log')
             import subprocess as _sp
             run_output = _sp.run(
                 f"cd {self.base_dir} && tcsh -f {run_script}",
@@ -2160,8 +2170,8 @@ class GenieCLI:
 
         elif use_xterm:
             # Execute in xterm popup window
-            log_file = os.path.join(self.base_dir, 'runs', f'{tag}.log')
-            pid_file = os.path.join(self.base_dir, 'data', f'{tag}_pid')
+            log_file = os.path.join(target_runs_dir, f'{tag}.log')
+            pid_file = os.path.join(target_data_dir, f'{tag}_pid')
 
             # Make script executable
             os.chmod(run_script, 0o755)
@@ -2189,8 +2199,8 @@ class GenieCLI:
 
         else:
             # Execute the script in background and capture PID
-            log_file = os.path.join(self.base_dir, 'runs', f'{tag}.log')
-            pid_file = os.path.join(self.base_dir, 'data', f'{tag}_pid')
+            log_file = os.path.join(target_runs_dir, f'{tag}.log')
+            pid_file = os.path.join(target_data_dir, f'{tag}_pid')
 
             # Start the process and get PID
             # For TileBuilder commands, use env -i to start with completely clean environment
