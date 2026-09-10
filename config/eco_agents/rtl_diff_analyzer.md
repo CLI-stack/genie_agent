@@ -29,10 +29,15 @@ cd <REF_DIR>
 diff -rqw --exclude="*.vf" --exclude="*.vfe" --exclude="*.d" <REF_DIR>/data/PreEco/SynRtl/ data/SynRtl/
 ```
 
-For each file that differs, run full diff:
+**MANDATORY MULTI-FILE EXHAUSTION & ZERO-ASSUMPTION RULE:**
+For **EVERY SINGLE FILE** reported as differing by `diff -rqw`, you **MUST run individual `diff -u`**:
 ```bash
-diff -w <REF_DIR>/data/PreEco/SynRtl/<file> <REF_DIR>/data/SynRtl/<file>
+diff -u -w <REF_DIR>/data/PreEco/SynRtl/<file> <REF_DIR>/data/SynRtl/<file>
 ```
+
+> **CRITICAL:** NEVER skip or assume a file is non-functional or a report header based on its name or prefix (e.g. `gmc_gmcch_0_t_*`, `*_top.v`, `*_ctrl.v`, `*_rep.v`).
+> A file may ONLY be listed in `excluded_non_changes[]` if its `diff -u` contains **zero Verilog statements** (only comment timestamps or tool execution headers).
+> If a file contains ANY `wire`, `reg`, `assign`, `always`, port, or mux/logic changes, it **MUST be extracted into `changes[]`**.
 
 > **Use `-w` (ignore whitespace) — Verilog whitespace is never functional.** A hunk whose two
 > sides carry the SAME tokens and differ ONLY in whitespace/indentation/formatting (e.g.
