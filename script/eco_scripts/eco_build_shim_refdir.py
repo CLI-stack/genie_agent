@@ -59,7 +59,7 @@ def _link_rtl(src, dest_dir, shared_name):
 
 
 def _find_base_workdir(workdir: str) -> str:
-    """Find the top-level tile/project base directory rather than a nested data/PreEco subfolder."""
+    """Find the top-level tile/project base directory rather than a nested subfolder (e.g. netlist/, data/PreEco, rtl/)."""
     cur = os.path.abspath(workdir)
     # 1. If any parent directory has revrc.main (TileBuilder root), use that as base
     p = cur
@@ -67,14 +67,18 @@ def _find_base_workdir(workdir: str) -> str:
         if os.path.isfile(os.path.join(p, 'revrc.main')):
             return p
         p = os.path.dirname(p)
-    # 2. If inside data/PreEco or data/, strip those nested subfolders
+    # 2. Strip common nested leaf subfolders so shim lands at the project root
     norm = cur.rstrip('/')
-    if norm.endswith('/data/PreEco'):
-        return norm[:-len('/data/PreEco')]
-    if norm.endswith('/PreEco') and os.path.basename(os.path.dirname(norm)) == 'data':
-        return os.path.dirname(os.path.dirname(norm))
-    if norm.endswith('/data'):
-        return norm[:-len('/data')]
+    leaf_subfolders = (
+        '/data/PreEco', '/PreEco', '/data/PostEco', '/PostEco', '/data',
+        '/netlist', '/netlists', '/nl',
+        '/rtl_before', '/rtl_after', '/rtl', '/src', '/ws'
+    )
+    for sub in leaf_subfolders:
+        if norm.endswith(sub):
+            candidate = norm[:-len(sub)]
+            if os.path.isdir(candidate):
+                return candidate
     return cur
 
 
