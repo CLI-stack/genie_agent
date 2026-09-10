@@ -1825,6 +1825,8 @@ class GenieCLI:
             # Create data directory for this tag
             data_dir = os.path.join(self.base_dir, 'data', tag)
             os.makedirs(data_dir, exist_ok=True)
+        else:
+            data_dir = self.base_dir
 
         target_data_dir = self.base_dir if is_eco_flow else os.path.join(self.base_dir, 'data')
 
