@@ -242,10 +242,14 @@ def check_stage_consistency(applied):
                 continue
             per_edit.setdefault(_edit_key(e), {})[stage] = e.get('status', '?')
 
+    active_applied_stages = [s for s in ('Synthesize', 'PrePlace', 'Route') if s in applied and applied[s]]
+    if not active_applied_stages:
+        active_applied_stages = ['Synthesize', 'PrePlace', 'Route']
+
     for key, by_stage in per_edit.items():
-        succeeded = {s for s, st in by_stage.items() if st in SUCCESS_STATUS}
-        if 0 < len(succeeded) < 3:
-            missing = sorted({'Synthesize','PrePlace','Route'} - succeeded)
+        succeeded = {s for s, st in by_stage.items() if st in SUCCESS_STATUS and s in active_applied_stages}
+        if 0 < len(succeeded) < len(active_applied_stages):
+            missing = sorted(set(active_applied_stages) - succeeded)
             failures.append(
                 f'high-risk-edit {key!r} stage-divergent: succeeded in '
                 f'{sorted(succeeded)}, missing/failed in {missing}, '
@@ -292,17 +296,19 @@ def check_no_unhandled(applied):
     return failures
 
 
-def check_check8(check8_json_path):
+def check_check8(check8_json_path, active_stages=None):
     """
-    Read pre-computed eco_verilog_validator result. FAIL if any stage is not PASS.
+    Read pre-computed eco_verilog_validator result. FAIL if any active stage is not PASS.
     """
     d = load_json(check8_json_path)
     if d is None:
         return ['eco_verilog_validator result not found — cannot validate Verilog syntax']
+    if active_stages is None:
+        active_stages = ('Synthesize', 'PrePlace', 'Route')
     failures = []
-    for stage in ('Synthesize', 'PrePlace', 'Route'):
+    for stage in active_stages:
         result = d.get(stage, 'MISSING')
-        if result != 'PASS':
+        if result not in ('PASS', 'N/A'):
             failures.append(f'eco_verilog_validator {stage}: {result}')
     return failures
 
@@ -1793,8 +1799,19 @@ def main():
     results['no_unhandled'] = 'PASS' if not fails else 'FAIL'
     all_fails.extend([f'[UNHANDLED] {f}' for f in fails])
 
+    # Determine active stages from ref_dir
+    active_stages = ['Synthesize']
+    if args.ref_dir and os.path.isdir(args.ref_dir):
+        preeco = os.path.join(args.ref_dir, 'data', 'PreEco')
+        if os.path.isfile(os.path.join(preeco, 'PrePlace.v.gz')) or os.path.isfile(os.path.join(preeco, 'PrePlace.v')):
+            active_stages.append('PrePlace')
+        if os.path.isfile(os.path.join(preeco, 'Route.v.gz')) or os.path.isfile(os.path.join(preeco, 'Route.v')):
+            active_stages.append('Route')
+    else:
+        active_stages = ['Synthesize', 'PrePlace', 'Route']
+
     # Check 5 — eco_verilog_validator Verilog validator (runs eco_verilog_validator.sh externally)
-    fails = check_check8(check8_path)
+    fails = check_check8(check8_path, active_stages=active_stages)
     # Build nested per-stage structure as required by mandatory output contract
     chk8_json = load_json(check8_path) or {}
     results['check8_verilog_validator'] = {

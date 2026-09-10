@@ -36,7 +36,16 @@ def lint_postEco_grammar(ref_dir):
     eco_perl_spec.py SHOULD have flattened these — this validator is the
     safety net catching anything that slipped through."""
     failures = []
-    for stage in ('Synthesize', 'PrePlace', 'Route'):
+    active = ['Synthesize']
+    if ref_dir and Path(ref_dir).is_dir():
+        preeco = Path(ref_dir) / 'data' / 'PreEco'
+        if (preeco / 'PrePlace.v.gz').is_file() or (preeco / 'PrePlace.v').is_file():
+            active.append('PrePlace')
+        if (preeco / 'Route.v.gz').is_file() or (preeco / 'Route.v').is_file():
+            active.append('Route')
+    else:
+        active = ['Synthesize', 'PrePlace', 'Route']
+    for stage in active:
         path = Path(ref_dir) / 'data' / 'PostEco' / f'{stage}.v.gz'
         if not path.is_file():
             continue
@@ -188,6 +197,16 @@ def main():
     study   = json.loads(Path(args.study).read_text())
     issues  = []
 
+    active_stages = ['Synthesize']
+    if args.ref_dir and Path(args.ref_dir).is_dir():
+        preeco_dir = Path(args.ref_dir) / 'data' / 'PreEco'
+        if (preeco_dir / 'PrePlace.v.gz').is_file() or (preeco_dir / 'PrePlace.v').is_file():
+            active_stages.append('PrePlace')
+        if (preeco_dir / 'Route.v.gz').is_file() or (preeco_dir / 'Route.v').is_file():
+            active_stages.append('Route')
+    else:
+        active_stages = ['Synthesize', 'PrePlace', 'Route']
+
     summary = applied.get('summary', {})
 
     # ── 1. No VERIFY_FAILED entries ──────────────────────────────────────────
@@ -210,7 +229,7 @@ def main():
         'GAP-4c: si_consumer_replace',              # legacy Mode-S Synth skip
         'ALREADY_APPLIED',                          # idempotent re-run
     )
-    for stage in ['Synthesize', 'PrePlace', 'Route']:
+    for stage in active_stages:
         for e in applied.get(stage, []):
             if e.get('status') != 'SKIPPED':
                 continue
@@ -232,16 +251,16 @@ def main():
                 f"net_per_stage; applier MUST recover via cell_type+pin grep "
                 f"or backward-trace from target_register.D before SKIP.")
 
-    # ── 2. eco_perl_spec markers exist for all 3 stages ────────────────────
+    # ── 2. eco_perl_spec markers exist for all active stages ────────────────────
     data_dir = Path(args.applied).parent
     tag = args.tag
-    for stage in ['Synthesize', 'PrePlace', 'Route']:
+    for stage in active_stages:
         m = data_dir / f"{tag}_eco_perl_spec_{stage}_marker.txt"
         if not m.exists():
             issues.append(f"HIGH: eco_perl_spec_{stage}_marker.txt missing — eco_perl_spec.py did not run for {stage}")
 
     # ── 3. PostEco actually changed from PreEco (for stages with insertions) ─
-    for stage in ['Synthesize', 'PrePlace', 'Route']:
+    for stage in active_stages:
         stage_entries = applied.get(stage, [])
         has_changes = any(e.get('status') in ('APPLIED','INSERTED') for e in stage_entries)
         if has_changes:
@@ -255,7 +274,7 @@ def main():
                 issues.append(f"CRITICAL: {stage} PostEco MD5 unchanged from PreEco despite {sum(1 for e in stage_entries if e.get('status') in ('APPLIED','INSERTED'))} applied changes — writes may have failed")
 
     # ── 4. Every INSERTED entry has instance_name populated ─────────────────
-    for stage in ['Synthesize', 'PrePlace', 'Route']:
+    for stage in active_stages:
         for e in applied.get(stage, []):
             if e.get('status') == 'INSERTED':
                 if not (e.get('instance_name') or e.get('cell_name') or e.get('signal_name')):

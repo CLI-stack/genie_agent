@@ -532,6 +532,7 @@ cat > <AI_ECO_FLOW_DIR>/data/<TAG>_phase_a_handoff.json <<JSON_EOF
   "base_dir":        "<BASE_DIR>",
   "ai_eco_flow_dir": "<AI_ECO_FLOW_DIR>",
   "fenets_tag":      "<FENETS_TAG from Step 2>",
+  "stages_present":  ["Synthesize"],
   "phase_a_status":  "READY_FOR_PHASE_B",
   "artifacts": {
     "rtl_diff":          "<AI_ECO_FLOW_DIR>/data/<TAG>_eco_rtl_diff.json",

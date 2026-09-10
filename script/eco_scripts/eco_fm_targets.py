@@ -105,9 +105,10 @@ def _scan_targets(dir_path, phase, strip_suffix=""):
     return found
 
 
-def detect_targets(ref_dir, phase):
+def detect_targets(ref_dir, phase, stages=None):
     """Return the [Synthesize, PrePlace, Route] FM target NAMES for `phase`
     ('PreEco' | 'Eco'), infix-tolerant (picks up UPF-named targets).
+    If `stages` is None, auto-detects active stages from <ref_dir>/data/PreEco.
 
     Source priority:
       1. <ref_dir>/cmds/*.cmd  — authoritative, present for ALL targets from
@@ -120,6 +121,17 @@ def detect_targets(ref_dir, phase):
     if phase not in ("PreEco", "Eco"):
         raise ValueError(f"phase must be 'PreEco' or 'Eco', got {phase!r}")
 
+    if stages is None:
+        stages = ["Synthesize"]
+        preeco = os.path.join(str(ref_dir), "data", "PreEco")
+        if os.path.isdir(preeco):
+            if os.path.isfile(os.path.join(preeco, "PrePlace.v.gz")) or os.path.isfile(os.path.join(preeco, "PrePlace.v")):
+                stages.append("PrePlace")
+            if os.path.isfile(os.path.join(preeco, "Route.v.gz")) or os.path.isfile(os.path.join(preeco, "Route.v")):
+                stages.append("Route")
+        else:
+            stages = list(_STAGE_ORDER)
+
     found = _scan_targets(os.path.join(str(ref_dir), "cmds"), phase, strip_suffix=".cmd")
     # Fill any stages cmds/ missed from rpts/.
     if len(found) < len(_STAGE_ORDER):
@@ -127,7 +139,7 @@ def detect_targets(ref_dir, phase):
             found.setdefault(stage, name)
 
     fb = dict(zip(_STAGE_ORDER, _FALLBACK[phase]))
-    return [found.get(stage, fb[stage]) for stage in _STAGE_ORDER]
+    return [found.get(stage, fb[stage]) for stage in stages if stage in found or stage in fb]
 
 
 def smart_eco_targets(ref_dir, applied_json, prev_verify_json):
@@ -155,12 +167,16 @@ def smart_eco_targets(ref_dir, applied_json, prev_verify_json):
     except Exception:
         pass
     targets = []
-    if changed["Synthesize"] > 0 or not prev.get(T[0], False):
-        targets.append(T[0])
-    if changed["PrePlace"] > 0 or changed["Synthesize"] > 0 or not prev.get(T[1], False):
-        targets.append(T[1])
-    if changed["Route"] > 0 or changed["PrePlace"] > 0:
-        targets.append(T[2])
+    t_syn = next((t for t in T if target_to_stage(t) == "Synthesize"), None)
+    t_pp = next((t for t in T if target_to_stage(t) == "PrePlace"), None)
+    t_rt = next((t for t in T if target_to_stage(t) == "Route"), None)
+
+    if t_syn and (changed["Synthesize"] > 0 or not prev.get(t_syn, False)):
+        targets.append(t_syn)
+    if t_pp and (changed["PrePlace"] > 0 or changed["Synthesize"] > 0 or not prev.get(t_pp, False)):
+        targets.append(t_pp)
+    if t_rt and (changed["Route"] > 0 or changed["PrePlace"] > 0):
+        targets.append(t_rt)
     return targets if targets else T
 
 

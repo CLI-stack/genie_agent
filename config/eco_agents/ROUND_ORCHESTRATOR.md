@@ -879,7 +879,7 @@ If this file does NOT exist → Step 5 was never run → ABORT. Re-spawn eco_pre
 
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_fm_runner.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `TILE`, `BASE_DIR`, `AI_ECO_FLOW_DIR`, `ROUND=<NEXT_ROUND>`
-- `ECO_TARGETS=<all 3 targets>` — **ALWAYS run all 3 FM targets every round, regardless of prior PASS/FAIL status.** eco_applier modifies ALL 3 PostEco stages in every round (even for passing targets). Skipping FM on a "passing" stage that was modified risks silent regression — a previously-passing stage could now FAIL after the applier touched it, and we would never detect it until several rounds later. The cost of re-running a passing target is ~30 min FM time; the cost of missing a regression is wasted rounds and incorrect final result.
+- `ECO_TARGETS=$(python3 script/eco_scripts/eco_fm_targets.py --detect <REF_DIR> Eco | tr ',' ' ')` — **ALWAYS run all active FM targets every round, regardless of prior PASS/FAIL status.** eco_applier modifies all active PostEco stages in every round (even for passing targets). Skipping FM on an active stage that was modified risks silent regression.
 - Path to existing `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_verify.json` (for merge with previous round results)
 - Task: write FM config, submit FM, block until complete, parse+merge results, write verify JSON + RPT
 

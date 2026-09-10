@@ -528,8 +528,18 @@ def main():
     rtl_diff = json.loads(Path(args.rtl_diff).read_text())
     issues   = []
 
-    # ── 1. All 3 stages present and non-empty ────────────────────────────────
-    for stage in ['Synthesize', 'PrePlace', 'Route']:
+    active_stages = ['Synthesize']
+    if args.ref_dir and Path(args.ref_dir).is_dir():
+        preeco_dir = Path(args.ref_dir) / 'data' / 'PreEco'
+        if (preeco_dir / 'PrePlace.v.gz').is_file() or (preeco_dir / 'PrePlace.v').is_file():
+            active_stages.append('PrePlace')
+        if (preeco_dir / 'Route.v.gz').is_file() or (preeco_dir / 'Route.v').is_file():
+            active_stages.append('Route')
+    else:
+        active_stages = ['Synthesize', 'PrePlace', 'Route']
+
+    # ── 1. All active stages present and non-empty ────────────────────────────
+    for stage in active_stages:
         entries = study.get(stage, [])
         if not entries:
             issues.append(f"CRITICAL: {stage} entries empty — eco_netlist_studier produced no output for this stage")
@@ -544,7 +554,7 @@ def main():
             continue
         target = change.get('target_register', '') or change.get('new_token', '')
         chain_inst_names = {g.get('instance_name','') for g in chain if g.get('instance_name')}
-        for stage in ['Synthesize', 'PrePlace', 'Route']:
+        for stage in active_stages:
             existing = {e.get('instance_name','') for e in study.get(stage,[])
                        if e.get('change_type') in ('new_logic_gate','new_logic_dff','new_logic')}
             missing = chain_inst_names - existing

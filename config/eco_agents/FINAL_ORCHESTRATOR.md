@@ -100,13 +100,14 @@ FINAL STATUS : <PASS / FAIL — MANUAL FIX NEEDED / MAX ROUNDS REACHED>
   MAX_ROUNDS (any fail)           → FAIL — MAX ROUNDS REACHED. <N> rounds attempted, failures persist.
   Partial pass (1-2 targets PASS) → FAIL — PARTIAL. List which targets pass/fail.
 
-<If PASS:>  All 3 Formality targets passed. ECO is clean.
+<If PASS:>  All active Formality targets passed. ECO is clean.
 <If FAIL:>  Manual fix required. See step5 RPT for failing points.
 <If MAX:>   Rounds attempted. See per-round step5 RPTs for details.
 
+  <List active targets from eco_fm_verify.json, e.g.:>
   FmEqvEcoSynthesizeVsSynRtl      : <PASS/FAIL>  (<timestamp> — <N> equiv points, <M> failing)
-  FmEqvEcoPrePlaceVsEcoSynthesize : <PASS/FAIL>  (<timestamp> — <N> equiv points, <M> failing)
-  FmEqvEcoRouteVsEcoPrePlace      : <PASS/FAIL>  (<timestamp> — <N> equiv points, <M> failing)
+  FmEqvEcoPrePlaceVsEcoSynthesize : <PASS/FAIL>  (<timestamp> — <N> equiv points, <M> failing; if active)
+  FmEqvEcoRouteVsEcoPrePlace      : <PASS/FAIL>  (<timestamp> — <N> equiv points, <M> failing; if active)
 
 <If any FAIL — list failing points:>
   Failing Points:

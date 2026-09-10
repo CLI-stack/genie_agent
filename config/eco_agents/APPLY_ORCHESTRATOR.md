@@ -265,7 +265,7 @@ If this file does NOT exist → Step 5 was never run → ABORT. Re-spawn eco_pre
 
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_fm_runner.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `TILE`, `BASE_DIR`, `AI_ECO_FLOW_DIR`, `ROUND=1`
-- `ECO_TARGETS=FmEqvEcoSynthesizeVsSynRtl FmEqvEcoPrePlaceVsEcoSynthesize FmEqvEcoRouteVsEcoPrePlace`
+- `ECO_TARGETS=$(python3 script/eco_scripts/eco_fm_targets.py --detect <REF_DIR> Eco | tr ',' ' ')`
 - Task: write FM config, submit FM, block until complete, parse results, write verify JSON + RPT
 
 Wait for the sub-agent to complete.
@@ -281,19 +281,21 @@ Also read `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_fm_tag_round1.tmp` to get `eco_fm_ta
 
 ### Step 6 Notes (reference — do NOT execute yourself)
 
-> **HARD RULE: ORCHESTRATOR runs PostEco FM EXACTLY ONCE — Round 1 only, all 3 targets.**
+> **HARD RULE: ORCHESTRATOR runs PostEco FM EXACTLY ONCE — Round 1 only, across all active targets.**
 > If FM fails after Round 1: do NOT re-run FM. Do NOT write a new eco_fm_config. Do NOT call genie_cli again.
 > Instead: write round_handoff.json with `next_phase: ROUND` → emit `ROUND_PHASE_READY` signal block → write exit sentinel → HARD STOP. The main session spawns ROUND_ORCHESTRATOR for round 2.
 > Subsequent rounds (Round 2+) are spawned by the main session per `ROUND_PHASE_READY` signal. Each ROUND_ORCHESTRATOR instance runs FM exactly once for its round and then emits its own `ROUND_PHASE_READY` (for round N+1) or spawns FINAL_ORCHESTRATOR.
 
-Full implementation is in `eco_fm_runner.md`. Key rules for the Round 1 sub-agent: write eco_fm_config with ALL 3 targets (fixed filename, not tag-based), poll every 5 minutes with individual Bash tool calls (max 72 polls = 6h), write tmp file with eco_fm_tag.
+Full implementation is in `eco_fm_runner.md`. Key rules for the Round 1 sub-agent: write eco_fm_config with active targets detected via `eco_fm_targets.py` (fixed filename, not tag-based), poll every 5 minutes with individual Bash tool calls (max 72 polls = 6h), write tmp file with eco_fm_tag.
 
-### Step 6a — Write FM config file (Round 1 only — all 3 targets)
+### Step 6a — Write FM config file (Round 1 only — all active targets)
 
 Write to `<REF_DIR>/data/eco_fm_config` — **fixed filename inside refDir** (NOT tag-based):
 ```bash
+# Auto-detect real active targets (plain or UPF naming, Synthesize/PrePlace/Route present)
+set targets = `python3 script/eco_scripts/eco_fm_targets.py --detect <REF_DIR> Eco | tr ',' ' '`
 cat > <REF_DIR>/data/eco_fm_config << EOF
-ECO_TARGETS=FmEqvEcoSynthesizeVsSynRtl FmEqvEcoPrePlaceVsEcoSynthesize FmEqvEcoRouteVsEcoPrePlace
+ECO_TARGETS=$targets
 RUN_SVF_GEN=0
 EOF
 ```

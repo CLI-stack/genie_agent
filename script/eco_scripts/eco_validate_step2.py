@@ -76,6 +76,16 @@ def main():
 
     raw_text = _load_raw_rpts(args.raw_rpts) if args.raw_rpts else ''
 
+    active_stages = ['Synthesize']
+    if args.ref_dir and Path(args.ref_dir).is_dir():
+        preeco_dir = Path(args.ref_dir) / 'data' / 'PreEco'
+        if (preeco_dir / 'PrePlace.v.gz').is_file() or (preeco_dir / 'PrePlace.v').is_file():
+            active_stages.append('PrePlace')
+        if (preeco_dir / 'Route.v.gz').is_file() or (preeco_dir / 'Route.v').is_file():
+            active_stages.append('Route')
+    else:
+        active_stages = ['Synthesize', 'PrePlace', 'Route']
+
     # C4-marker: sanitize script MUST have produced its marker file. Without the
     # marker, queries.json may have been written by some other mechanism (agent
     # or manual copy) — defeats the deterministic-sanitize guarantee.
@@ -341,12 +351,14 @@ def main():
             if not entry:
                 issues.append(f"C3: bridge_candidates missing entry for {key}/{pin}")
                 continue
-            ok = any(set(c.get('stages_available') or []) >= {'PrePlace', 'Route'} for c in entry)
-            if not ok:
-                issues.append(f"C3: no candidate covers PrePlace+Route for {key}/{pin}")
+            required_cand_stages = set(active_stages) - {'Synthesize'}
+            if required_cand_stages:
+                ok = any(set(c.get('stages_available') or []) >= required_cand_stages for c in entry)
+                if not ok:
+                    issues.append(f"C3: no candidate covers {'+'.join(required_cand_stages)} for {key}/{pin}")
 
     # C8: rename-map polarity stage-consistency. For each rename_map entry,
-    # verify all 3 stages (Synthesize / PrePlace / Route) reference wires of
+    # verify all active stages reference wires of
     # the SAME polarity class (input pin / output pin / scalar wire). Mixed
     # polarity (e.g. PP=<inv>/ZN, Route=<inv>/I) means the same logical signal
     # is being read with opposite sign in different stages — silently inverts
@@ -373,7 +385,7 @@ def main():
         for sig_key, stages in rmap.items():
             if sig_key == '_metadata' or not isinstance(stages, dict):
                 continue
-            kinds = {st: _polarity(stages.get(st, '')) for st in ('Synthesize','PrePlace','Route')}
+            kinds = {st: _polarity(stages.get(st, '')) for st in active_stages}
             distinct = set(k for k in kinds.values() if k)
             # Mixed = both 'input' AND 'output' present → silent polarity flip
             if 'input' in distinct and 'output' in distinct:
@@ -569,7 +581,7 @@ def main():
                             f"apply). FIX: Step 2 must emit a Cat-4d find_equivalent_nets query "
                             f"for {cond!r} and resolve it per-stage (chain Synth net -> PP -> Route).")
                         continue
-                    for st in ('Synthesize', 'PrePlace', 'Route'):
+                    for st in active_stages:
                         v = entry.get(st, '')
                         if _c10_unres(v, cond):
                             issues.append(
@@ -611,9 +623,9 @@ def main():
                     entry = _rmap_c10b.get(key)
                     unres_stages = []
                     if not isinstance(entry, dict):
-                        unres_stages = ['Synthesize', 'PrePlace', 'Route']
+                        unres_stages = list(active_stages)
                     else:
-                        unres_stages = [st for st in ('Synthesize', 'PrePlace', 'Route')
+                        unres_stages = [st for st in active_stages
                                         if _c10b_unres(entry.get(st, ''), cond)]
                     if unres_stages:
                         warnings.append(
@@ -651,7 +663,7 @@ def main():
                     f"resolves it per-stage. Without it the input-pin-rewire builder cannot find "
                     f"the correct consumer cell in PP/Route → fails closed.")
             else:
-                unres = [st for st in ('Synthesize', 'PrePlace', 'Route')
+                unres = [st for st in active_stages
                          if _c10c_unres(entry.get(st, ''), ogn)
                          and entry.get(f'actual_wire_{st}') is None]
                 if unres:

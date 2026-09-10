@@ -183,7 +183,7 @@ Read each `<AI_ECO_FLOW_DIR>/data/<TAG>_eco_perl_spec_<Stage>.json` to see INSER
 
 **Verify script ran:** Each script run prints `ECO_SCRIPT_LAUNCHED: eco_perl_spec.py` and writes a `_marker.txt` sidecar. The Step 4 RPT MUST contain `ECO_SCRIPT_LAUNCHED: eco_perl_spec.py` for each stage. If absent — script was NOT called — re-run before proceeding to Passes 2-4.
 
-**MANDATORY after all 3 stages complete: Run eco_validate_step4.py:**
+**MANDATORY after all active stages complete: Run eco_validate_step4.py:**
 ```bash
 cd <BASE_DIR>
 python3 script/eco_scripts/eco_validate_step4.py \
@@ -201,11 +201,15 @@ The script handles:
 - wire_removes for remove_wire_decl entries
 - Gate line building from study JSON port_connections_per_stage
 
-After running eco_perl_spec.py for all 3 stages, run eco_netlist_port_rewire.py for Passes 2-4:
+After running eco_perl_spec.py for all active stages, run eco_netlist_port_rewire.py for Passes 2-4 across each active stage:
 
 ```bash
 cd <BASE_DIR>
+# Run for each active stage present in <REF_DIR>/data/PreEco (Synthesize is mandatory; PrePlace/Route if present)
 for STAGE in Synthesize PrePlace Route; do
+    if [ ! -f "<REF_DIR>/data/PreEco/${STAGE}.v.gz" ] && [ ! -f "<REF_DIR>/data/PreEco/${STAGE}.v" ]; then
+        continue
+    fi
     python3 script/eco_scripts/eco_netlist_port_rewire.py \
         --study    <AI_ECO_FLOW_DIR>/data/<TAG>_eco_preeco_study.json \
         --ref-dir  <REF_DIR> \

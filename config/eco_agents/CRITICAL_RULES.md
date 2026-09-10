@@ -229,21 +229,21 @@ For pure new_logic cell insertions with no pre-existing failures: `svf_update_ne
 
 ---
 
-## RULE 12 — All 3 Stages Must Be Modified (ECO Applier)
+## RULE 12 — All Active Stages Must Be Modified (ECO Applier)
 
-ECO changes MUST be applied to all 3 stages: **Synthesize, PrePlace, and Route**. Applying only to Synthesize and leaving PrePlace and Route unchanged is a partial ECO that FM will fail.
+ECO changes MUST be applied to all active stages: **Synthesize** is mandatory; **PrePlace** and **Route** are modified whenever present in `data/PreEco/`. Applying to one active stage and leaving other active stages unchanged is a partial ECO that FM will fail.
 
-After eco_applier completes, verify:
+After eco_applier completes, verify for each active stage:
 ```bash
-# Each modified stage must differ from its backup:
+# Each modified active stage must differ from its backup:
 md5sum <REF_DIR>/data/PostEco/Synthesize.v.gz
 md5sum <REF_DIR>/data/PostEco/Synthesize.v.gz.bak_<TAG>_round<ROUND>
 # (hashes must differ)
 ```
 
-If any stage's md5 matches its backup — the ECO was not applied to that stage. Do NOT proceed to Step 5 (Pre-FM Quality Checker).
+If any active stage's md5 matches its backup — the ECO was not applied to that stage. Do NOT proceed to Step 5 (Pre-FM Quality Checker).
 
-> **This rule prevents:** applying the ECO only to Synthesize while leaving PrePlace and Route unchanged, which causes FM stage-to-stage comparison to fail because the PostEco netlists diverge from each other.
+> **This rule prevents:** applying the ECO only to Synthesize while leaving other active stages unchanged, which causes FM stage-to-stage comparison to fail because the PostEco netlists diverge from each other.
 
 ---
 
