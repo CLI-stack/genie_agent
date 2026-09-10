@@ -405,7 +405,7 @@ for i in 1 2 3; do
       --issues  <AI_ECO_FLOW_DIR>/<TAG>_eco_validate_step3_iter$i.json \
       --rtl-diff <AI_ECO_FLOW_DIR>/<TAG>_eco_rtl_diff.json \
       --ref-dir <REF_DIR> \
-      --raw-rpts data/*_find_equivalent_nets_raw*.rpt \
+      --raw-rpts <AI_ECO_FLOW_DIR>/*_find_equivalent_nets_raw*.rpt \
       --step2-rpt <AI_ECO_FLOW_DIR>/<TAG>_eco_step2_fenets.rpt \
       --output  <AI_ECO_FLOW_DIR>/<TAG>_eco_preeco_study.json
 done

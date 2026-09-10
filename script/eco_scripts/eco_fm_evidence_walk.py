@@ -848,24 +848,36 @@ def main() -> int:
     p.add_argument("--jira-pattern", default=r"eco_\d+_",
                    help="Regex matching ECO-inserted instance names")
     p.add_argument("--output", default=None,
-                   help="Output path (default: <BASE_DIR>/data/<TAG>_eco_fm_evidence_round<N>.json)")
+                   help="Output path (default: <BASE_DIR>/<TAG>_eco_fm_evidence_round<N>.json)")
     p.add_argument("--ai-eco-flow-dir", default=None,
                    help="If set, also write a companion .rpt summary to this dir")
     args = p.parse_args()
 
     ref_dir = Path(args.ref_dir)
     base_dir = Path(args.base_dir)
-    out_path = Path(args.output) if args.output else (
-        base_dir / "data" / f"{args.tag}_eco_fm_evidence_round{args.round}.json"
-    )
+    if args.output:
+        out_path = Path(args.output)
+    else:
+        out_path = (
+            base_dir / f"{args.tag}_eco_fm_evidence_round{args.round}.json"
+            if (base_dir / f"{args.tag}_eco_fm_verify.json").exists() or not (base_dir / "data").is_dir()
+            else base_dir / "data" / f"{args.tag}_eco_fm_evidence_round{args.round}.json"
+        )
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Resolve the project's real Eco target triple (plain or UPF) from the tile.
     expected_targets = detect_targets(ref_dir, "Eco")
 
-    # Load eco_fm_verify.json + eco_applied for triage
-    fm_verify = read_json(base_dir / "data" / f"{args.tag}_eco_fm_verify.json")
-    eco_applied = read_json(base_dir / "data" / f"{args.tag}_eco_applied_round{args.round}.json")
+    # Load eco_fm_verify.json + eco_applied for triage (flat first, fallback to data/)
+    fm_verify_path = base_dir / f"{args.tag}_eco_fm_verify.json"
+    if not fm_verify_path.exists():
+        fm_verify_path = base_dir / "data" / f"{args.tag}_eco_fm_verify.json"
+    fm_verify = read_json(fm_verify_path)
+
+    eco_applied_path = base_dir / f"{args.tag}_eco_applied_round{args.round}.json"
+    if not eco_applied_path.exists():
+        eco_applied_path = base_dir / "data" / f"{args.tag}_eco_applied_round{args.round}.json"
+    eco_applied = read_json(eco_applied_path)
 
     verdict, reason, per_target_status = initial_verdict(
         fm_verify if isinstance(fm_verify, dict) else None, expected_targets)
@@ -904,8 +916,8 @@ def main() -> int:
         "summary_signals": summary_signals,
         "input_artifacts": {
             "ref_dir": str(ref_dir),
-            "fm_verify_json": str(base_dir / "data" / f"{args.tag}_eco_fm_verify.json"),
-            "eco_applied_json": str(base_dir / "data" / f"{args.tag}_eco_applied_round{args.round}.json"),
+            "fm_verify_json": str(fm_verify_path),
+            "eco_applied_json": str(eco_applied_path),
         },
     }
 

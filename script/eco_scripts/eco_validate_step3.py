@@ -604,7 +604,7 @@ def main():
                 f"cannot derive width from bus_width_expr={change.get('bus_width_expr')!r} — "
                 f"eco_netlist_studier must call eco_resolve_bus_width.py")
             continue
-        for stage in ['Synthesize', 'PrePlace', 'Route']:
+        for stage in active_stages:
             bit_entries = [
                 e for e in study.get(stage, [])
                 if e.get('is_bus_dff_bit') and
@@ -617,7 +617,7 @@ def main():
 
     # ── 2d. Bus gate: verify consistent N entries per stage ──────────────────
     # When is_bus_gate=true, the studier expands one RTL gate into N per-bit
-    # entries (is_bus_gate_bit=true).  Check that all 3 stages have the same
+    # entries (is_bus_gate_bit=true).  Check that all active stages have the same
     # count and that the count is > 0.  We validate consistency rather than an
     # exact expected_n (the studier records bus_width_resolved on each entry).
     for change in rtl_diff.get('changes', []):
@@ -629,7 +629,7 @@ def main():
         import re as _re
         target_base = _re.sub(r'\[\d+\]$', '', target)
         counts = {}
-        for stage in ['Synthesize', 'PrePlace', 'Route']:
+        for stage in active_stages:
             counts[stage] = sum(
                 1 for e in study.get(stage, [])
                 if e.get('is_bus_gate_bit') and
@@ -637,12 +637,12 @@ def main():
             )
         if any(c == 0 for c in counts.values()):
             issues.append(
-                f"CRITICAL: bus gate '{target_base}' has zero entries in one or more stages "
+                f"CRITICAL: bus gate '{target_base}' has zero entries in one or more active stages "
                 f"({counts}) — eco_netlist_studier must expand to N per-bit gate entries")
         elif len(set(counts.values())) > 1:
             issues.append(
-                f"CRITICAL: bus gate '{target_base}' has inconsistent entry counts across stages "
-                f"({counts}) — all 3 stages must have the same N bit entries")
+                f"CRITICAL: bus gate '{target_base}' has inconsistent entry counts across active stages "
+                f"({counts}) — all active stages must have the same N bit entries")
 
     # ── 2e-pre00. Bus bit output port SYNOPSYS_UNCONNECTED used as gate input ──
     # When a gate chain uses a bus bit in flat form (e.g. signal_N_) as input,
@@ -884,7 +884,7 @@ def main():
     #   - bridge buffer cells (bridge_port_role ends in '_driver') — these are
     #     Route-only single-stage BUF cells with .I/.Z only, no per-stage variants
     #   - combinational gates without DFF semantics (no Q output pin)
-    for stage in ['Synthesize', 'PrePlace', 'Route']:
+    for stage in active_stages:
         for e in study.get(stage, []):
             if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
                 continue
@@ -902,7 +902,7 @@ def main():
                 continue
             inst = e.get('instance_name', '?')
             pcs = e.get('port_connections_per_stage', {})
-            for chk_stage in ['Synthesize', 'PrePlace', 'Route']:
+            for chk_stage in active_stages:
                 if not pcs.get(chk_stage):
                     issues.append(f"HIGH: DFF {inst} in {stage} missing port_connections_per_stage[{chk_stage}] — eco_netlist_studier Phase 0b-STAGE-NETS incomplete")
 
@@ -914,7 +914,7 @@ def main():
     #        for stale fields leaking through.
     _mode_s_active = any(
         e.get('mode_S_applied') or e.get('requires_scan_stitching')
-        for stage in ('Synthesize', 'PrePlace', 'Route')
+        for stage in active_stages
         for e in study.get(stage, [])
         if e.get('change_type') in ('new_logic_dff', 'new_logic')
     )
@@ -931,7 +931,7 @@ def main():
     #        was the Route-stage entry overriding its own SE/SI to neighbor-DFF
     #        nets while Synthesize/PrePlace entries used the bridge port names.
     by_inst = {}
-    for stage in ['Synthesize', 'PrePlace', 'Route']:
+    for stage in active_stages:
         for e in study.get(stage, []):
             if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
                 continue
@@ -948,7 +948,7 @@ def main():
         for stage_entry, (pcs, strat) in per_entry.items():
             if stage_entry == ref_stage:
                 continue
-            for chk_stage in ('Synthesize', 'PrePlace', 'Route'):
+            for chk_stage in active_stages:
                 # Asymmetric Mode S: a stage entry can legitimately use a
                 # different strategy (neighbor_dff vs bridge_port) per stage
                 # — engineer's own pattern. Only flag mismatch when BOTH
@@ -1376,8 +1376,11 @@ def main():
         issues.append(f"HIGH: and_term changes present but eco_and_term_port_check.json missing — eco_and_term_port_check.py was not run")
 
     # ── 7. eco_expand_chains must have run ───────────────────────────────────
-    marker = Path(args.study).parent / f"{args.tag}_eco_preeco_study_eco_expand_chains_marker.txt"
-    if not marker.exists():
+    study_stem = Path(args.study).stem
+    m1 = Path(args.study).parent / f"{study_stem}_eco_expand_chains_marker.txt"
+    m2 = Path(args.study).parent / f"{args.tag}_eco_expand_chains_marker.txt"
+    m3 = Path(args.study).parent / "eco_expand_chains_marker.txt"
+    if not (m1.exists() or m2.exists() or m3.exists()):
         issues.append(f"MEDIUM: eco_expand_chains_marker.txt not found — eco_expand_chains.py may not have run")
 
     # ── 8. Each rewire entry has old_net, new_net, AND a resolvable cell_name ─
@@ -2347,18 +2350,18 @@ def main():
     }
     # Collect (for_dff, mode_S_strategy_per_stage) for every DFF that picked bridge_port
     bridge_dffs = []
-    for stage in ('Synthesize', 'PrePlace', 'Route'):
+    for stage in active_stages:
         for e in study.get(stage, []):
             if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
                 continue
             strat = e.get('mode_S_strategy_per_stage') or {}
-            stages_using_bridge = [s for s in ('PrePlace', 'Route') if strat.get(s) == 'bridge_port']
+            stages_using_bridge = [s for s in ('PrePlace', 'Route') if s in active_stages and strat.get(s) == 'bridge_port']
             if stages_using_bridge:
                 bridge_dffs.append({
                     'inst':   e.get('instance_name') or e.get('dff_instance_name', '?'),
                     'stages': stages_using_bridge,
                 })
-    # Dedupe (same DFF appears in all 3 stage entries)
+    # Dedupe (same DFF appears in all active stage entries)
     seen = set(); uniq_bridge_dffs = []
     for b in bridge_dffs:
         if b['inst'] in seen: continue
@@ -2366,7 +2369,7 @@ def main():
     for bd in uniq_bridge_dffs:
         inst = bd['inst']
         # Build per-stage role-set for this DFF
-        for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for stage in active_stages:
             if stage not in ('PrePlace', 'Route') and stage not in bd['stages']:
                 # Synth requires the all-stage subset only when ANY P&R stage is bridge_port
                 pass
@@ -2847,14 +2850,14 @@ def main():
     # netlist that will USE the real wires (the strategy field is metadata;
     # port_connections is what gets applied). The PP/Route real wire may be
     # CTS-rebalanced → FM Route fail despite the entry claiming "no scan".
-    for stage in ('Synthesize', 'PrePlace', 'Route'):
+    for stage in active_stages:
         for e in study.get(stage, []):
             if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
                 continue
             inst = e.get('instance_name', '?')
             strat = e.get('mode_S_strategy_per_stage') or {}
             pcs = e.get('port_connections_per_stage') or {}
-            for chk in ('Synthesize', 'PrePlace', 'Route'):
+            for chk in active_stages:
                 if strat.get(chk) != 'constant_zero':
                     continue
                 pcs_chk = pcs.get(chk) or {}
@@ -6418,7 +6421,7 @@ def main():
     #     gate in the SAME module (driven only in another module = cross-copy leak,
     #     or nowhere = dangling). Produced set is unioned across stages so a gate
     #     emitted only in the Synthesize list doesn't false-flag.
-    _R4_STAGES = ('Synthesize', 'PrePlace', 'Route')
+    _R4_STAGES = active_stages
     _R4_OUT = ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'S', 'CON', 'SN')
     _R4_DPIN = re.compile(r'^(?:D\d*|CP|CK)$')
     produced_by_mod = {}                       # module -> set(n_eco nets produced by a gate)

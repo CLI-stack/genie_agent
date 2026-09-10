@@ -97,12 +97,12 @@ def find_module_body(text, modname, cache=None):
         return ''
     if cache is not None and modname in cache:
         return cache[modname]
-    pats = [r'^module\s+' + re.escape(c) + r'\b'
+    pats = [r'^\s*module\s+' + re.escape(c) + r'\b'
             for c in (modname, modname + '_0', modname + '_1', modname + '_0_0')]
-    pats.append(r'^module\s+\w+_' + re.escape(modname) + r'(?:_\d+)?(?:_0)?\b')
+    pats.append(r'^\s*module\s+\w+_' + re.escape(modname) + r'(?:_\d+)?(?:_0)?\b')
     body = ''
     for pat in pats:
-        m = re.search(pat + r'.*?^endmodule', text, re.S | re.M)
+        m = re.search(pat + r'.*?^\s*endmodule', text, re.S | re.M)
         if m:
             body = m.group(0)
             break
@@ -735,7 +735,7 @@ def check_eco_input_drivers(study_path, ref_dir):
             driven.add(m.group(1))
         for m in re.finditer(r'^\s*wire\s+(?:\[[^\]]+\]\s+)?(\w+)\s*[;,]', body, re.MULTILINE):
             driven.add(m.group(1))
-        for m in re.finditer(r'^\s*(?:input|inout)\s+(?:\[[^\]]+\]\s+)?(\w+)\s*[;,]', body, re.MULTILINE):
+        for m in re.finditer(r'\b(?:input|inout)\s+(?:wire\s+|reg\s+)?(?:\[[^\]]+\]\s+)?([A-Za-z_]\w*)', body):
             driven.add(m.group(1))
         # Submodule INSTANCE output ports — bare net or bus concat
         for m in re.finditer(r'\.\s*\w+\s*\(\s*([A-Za-z_][\w]*)\s*\)', body):
@@ -834,7 +834,7 @@ def check_input_net_strict_driver(study_path, ref_dir):
         # Build {module_name: {port_name: direction}} from module headers.
         port_dir_map = {}
         for mod_m in re.finditer(
-                r'^module\s+(\w+)\s*\(.*?^endmodule\b',
+                r'^\s*module\s+(\w+)\s*\(.*?^\s*endmodule\b',
                 text, re.MULTILINE | re.DOTALL):
             mod_name = mod_m.group(1)
             body = mod_m.group(0)
@@ -864,11 +864,15 @@ def check_input_net_strict_driver(study_path, ref_dir):
             if re.search(rf'^\s*assign\s+{net_esc}\s*=',
                          mod_body, re.MULTILINE):
                 return True
-            # 3. Module input / inout port
-            if re.search(
-                    rf'^\s*(?:input|inout)\s+(?:\[[^\]]+\]\s+)?{net_esc}\s*[;,]',
-                    mod_body, re.MULTILINE):
-                return True
+            # 3. Module input / inout port (scalar, bus bit, or bus name)
+            base_net = net.split('[')[0].strip()
+            flat_base = re.sub(r'_\d+_$', '', base_net)
+            for cand_base in set([net, base_net, flat_base]):
+                cand_esc = re.escape(cand_base)
+                if re.search(
+                        rf'\b(?:input|inout)\s+(?:wire\s+|reg\s+)?(?:\[[^\]]+\]\s+)?{cand_esc}\b',
+                        mod_body):
+                    return True
             # 4. Sub-instance output port — resolve direction via port_dir_map.
             # Match `<module_type> <inst_name> ( ... .<port>(net) ... );`
             for inst_m in re.finditer(
@@ -1727,9 +1731,9 @@ def check_invalid_wire_decl_syntax(ref_dir):
     return failures
 
 
-def check_eco_cell_counts(applied):
+def check_eco_cell_counts(applied, active_stages=None):
     """
-    WARN (not FAIL) if ECO cell counts differ significantly across stages.
+    WARN (not FAIL) if ECO cell counts differ significantly across active stages.
     Route may legitimately have fewer (module renamed in P&R).
     Returns (warnings, failures) — failures are hard FAIL conditions.
     """
@@ -1737,6 +1741,8 @@ def check_eco_cell_counts(applied):
     counts = {}
     for stage, entries in applied.items():
         if not isinstance(entries, list):
+            continue
+        if active_stages is not None and stage not in active_stages:
             continue
         counts[stage] = sum(
             1 for e in entries
@@ -1827,15 +1833,15 @@ def main():
     chk8_json = load_json(check8_path) or {}
     results['check8_verilog_validator'] = {
         'Synthesize': chk8_json.get('Synthesize', 'MISSING'),
-        'PrePlace':   chk8_json.get('PrePlace',   'MISSING'),
-        'Route':      chk8_json.get('Route',      'MISSING'),
+        'PrePlace':   chk8_json.get('PrePlace', 'N/A' if 'PrePlace' not in active_stages else 'MISSING'),
+        'Route':      chk8_json.get('Route',    'N/A' if 'Route' not in active_stages else 'MISSING'),
         'errors':     fails,
     }
     results['check8_verilog'] = 'PASS' if not fails else 'FAIL'
     all_fails.extend([f'[SVR4_SVR9] {f}' for f in fails])
 
     # Check 6 — ECO cell counts (warnings only for partial, hard fail for zero)
-    w, fails = check_eco_cell_counts(applied)
+    w, fails = check_eco_cell_counts(applied, active_stages=active_stages)
     results['eco_cell_counts'] = 'PASS' if not fails else 'FAIL'
     warnings.extend(w)
     all_fails.extend([f'[ZERO_CELLS] {f}' for f in fails])

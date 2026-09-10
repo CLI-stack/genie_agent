@@ -210,8 +210,9 @@ def main():
                     pass
 
     # Load rename map
-    rmap_path = os.path.join(args.base_dir, 'data',
-                             f'{args.tag}_eco_fenets_rename_map.json')
+    rmap_path = os.path.join(args.base_dir, f'{args.tag}_eco_fenets_rename_map.json')
+    if not os.path.exists(rmap_path):
+        rmap_path = os.path.join(args.base_dir, 'data', f'{args.tag}_eco_fenets_rename_map.json')
     rmap = {}
     if os.path.exists(rmap_path):
         try:

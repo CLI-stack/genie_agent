@@ -448,13 +448,15 @@ def build_bridge_plumbing(pick, picker_top, dff_inst, host_module, ref_dir, jira
     picker_top = top-level picker output (has parent_module, host_module)
     """
     pp_gz = Path(ref_dir) / 'data' / 'PreEco' / 'PrePlace.v.gz'
+    if not pp_gz.is_file():
+        pp_gz = Path(ref_dir) / 'data' / 'PreEco' / 'Synthesize.v.gz'
     sibling_module = pick.get('module', '')
     sibling_inst   = pick.get('inst', '')
     if not sibling_module:
         return None, 'sibling_module missing in pick'
 
     # 1. eco_pick_bridge_dffs.py
-    bridge_pick_path = Path(base_dir) / 'data' / f'{tag}_eco_bridge_pick_{dff_inst}.json'
+    bridge_pick_path = Path(base_dir) / f'{tag}_eco_bridge_pick_{dff_inst}.json'
     cmd = (f"python3 {Path(__file__).parent / 'eco_pick_bridge_dffs.py'} "
            f"--netlist {pp_gz} --sibling-mod {sibling_module} "
            f"--output {bridge_pick_path}")
@@ -463,7 +465,12 @@ def build_bridge_plumbing(pick, picker_top, dff_inst, host_module, ref_dir, jira
     except Exception as e:
         return None, f'eco_pick_bridge_dffs.py failed: {e}'
     if not bridge_pick_path.is_file():
-        return None, f'eco_pick_bridge_dffs.py produced no output: {bridge_pick_path}'
+        # Fallback check under data/ for legacy compatibility
+        legacy_pick = Path(base_dir) / 'data' / f'{tag}_eco_bridge_pick_{dff_inst}.json'
+        if legacy_pick.is_file():
+            bridge_pick_path = legacy_pick
+        else:
+            return None, f'eco_pick_bridge_dffs.py produced no output: {bridge_pick_path}'
 
     # 2. Determine parent_module + host_inst per escalation mode
     if parent_is_host:
@@ -481,7 +488,7 @@ def build_bridge_plumbing(pick, picker_top, dff_inst, host_module, ref_dir, jira
         host_inst = 'HOST_INST_UNKNOWN'  # let emitter fail explicitly
 
     # 3. eco_emit_bridge_plumbing.py
-    plumbing_path = Path(base_dir) / 'data' / f'{tag}_eco_bridge_plumbing_{dff_inst}.json'
+    plumbing_path = Path(base_dir) / f'{tag}_eco_bridge_plumbing_{dff_inst}.json'
     cmd = (f"python3 {Path(__file__).parent / 'eco_emit_bridge_plumbing.py'} "
            f"--bridge-pick {bridge_pick_path} --jira {jira} --ref-dir {ref_dir} "
            f"--host-module {host_module} --sibling-module {sibling_module} "
@@ -493,8 +500,12 @@ def build_bridge_plumbing(pick, picker_top, dff_inst, host_module, ref_dir, jira
     except Exception as e:
         return None, f'eco_emit_bridge_plumbing.py failed: {e}'
     if not plumbing_path.is_file():
-        return None, f'eco_emit_bridge_plumbing.py produced no output: {plumbing_path} '\
-                     f'(stderr={r.stderr[:200] if r else "?"})'
+        legacy_plumb = Path(base_dir) / 'data' / f'{tag}_eco_bridge_plumbing_{dff_inst}.json'
+        if legacy_plumb.is_file():
+            plumbing_path = legacy_plumb
+        else:
+            return None, f'eco_emit_bridge_plumbing.py produced no output: {plumbing_path} '\
+                         f'(stderr={r.stderr[:200] if r else "?"})'
     try:
         return json.loads(plumbing_path.read_text()), None
     except Exception as e:
@@ -955,7 +966,7 @@ def main():
         modei_helper = Path(__file__).parent / 'eco_modei_chain_input_check.py'
         for leaf in leaf_candidates:
             leaf_safe = re.sub(r'[^A-Za-z0-9_]', '_', leaf)
-            out_path = Path(args.base_dir) / 'data' / f'{args.tag}_eco_modei_{dff_prefix}_{leaf_safe}.json'
+            out_path = Path(args.base_dir) / f'{args.tag}_eco_modei_{dff_prefix}_{leaf_safe}.json'
             cmd = (
                 f"python3 {modei_helper} --ref-dir {args.ref_dir} "
                 f"--host-module {host_module} --chain-input '{leaf}' "

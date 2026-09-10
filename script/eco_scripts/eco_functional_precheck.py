@@ -218,6 +218,7 @@ def main():
     ap.add_argument('--rtl-diff', required=True)
     ap.add_argument('--ref-dir', required=True)
     ap.add_argument('--jira', required=True)
+    ap.add_argument('--tag', default=None, help='optional flow tag')
     ap.add_argument('--n', type=int, default=2000, help='random vectors for comb_net_force')
     ap.add_argument('--output', default=None,
                     help='write canonical result JSON here (with a `passed` bool) + a '

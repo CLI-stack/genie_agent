@@ -922,7 +922,7 @@ Add `d_input_gate_chain`, `d_input_net`, `d_input_decompose_failed`, `fallback_s
 
 ## Output JSON
 
-Write to `<AI_ECO_FLOW_DIR>/<TAG>_eco_rtl_diff.json` (always use the full absolute path — the agent may be cd'd to REF_DIR for diffs, but output always goes to BASE_DIR/data/):
+Write to `<AI_ECO_FLOW_DIR>/<TAG>_eco_rtl_diff.json` (always use the full absolute path — the agent may be cd'd to REF_DIR for diffs, but output always goes flat directly to AI_ECO_FLOW_DIR/):
 
 ```json
 {

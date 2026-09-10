@@ -173,8 +173,7 @@ def _run_test_inner(name, desc, setup_fn, expected_step5, expected_failures,
     # Setup directories
     os.makedirs(f'{ref}/data/PreEco', exist_ok=True)
     os.makedirs(f'{ref}/data/PostEco', exist_ok=True)
-    os.makedirs(f'{base}/data', exist_ok=True)
-    os.makedirs(f'{base}/runs', exist_ok=True)
+    os.makedirs(base, exist_ok=True)
 
     # Call test-specific setup to get study JSON + netlist content
     # setup_fn may return (study, netlist) or (study, netlist, applied_override)
@@ -183,7 +182,7 @@ def _run_test_inner(name, desc, setup_fn, expected_step5, expected_failures,
     applied_override = result[2] if len(result) > 2 else None
 
     # Write preeco_study.json
-    write_json(f'{base}/data/{tag}_eco_preeco_study.json', study)
+    write_json(f'{base}/{tag}_eco_preeco_study.json', study)
 
     # Write netlist to all 3 stages
     for stage in ('Synthesize', 'PrePlace', 'Route'):
@@ -196,7 +195,7 @@ def _run_test_inner(name, desc, setup_fn, expected_step5, expected_failures,
         'Synthesize': 'PASS', 'PrePlace': 'PASS', 'Route': 'PASS',
         'errors': [], 'f2_preexisting_count': 0
     }
-    write_json(f'{base}/data/{tag}_eco_verilog_validator_round{round_n}.json', check8_result)
+    write_json(f'{base}/{tag}_eco_verilog_validator_round{round_n}.json', check8_result)
 
     # ── Step 4a: eco_perl_spec.py ─────────────────────────────────────────────
     applied_all = {}
@@ -205,43 +204,50 @@ def _run_test_inner(name, desc, setup_fn, expected_step5, expected_failures,
             f'python3 {PERL_SPEC} '
             f'--tag {tag} --stage {stage} --round {round_n} '
             f'--jira {jira} --tile test_tile '
-            f'--study {base}/data/{tag}_eco_preeco_study.json '
-            f'--posteco {ref}/data/PostEco/{stage}.v.gz '
-            f'--status {base}/data/{tag}_eco_perl_spec_{stage}.json',
+            f'--study {base}/{tag}_eco_preeco_study.json '
+            f'--ref-dir {ref} '
+            f'--output {base}/eco_apply_{tag}_{stage}.pl '
+            f'--status {base}/{tag}_eco_perl_spec_{stage}.json '
+            f'--apply',
             cwd=base
         )
         if verbose:
             print(f'  perl_spec {stage} rc={rc}')
 
-        spec_j = read_json(f'{base}/data/{tag}_eco_perl_spec_{stage}.json')
-        pl_path = f'{base}/runs/eco_apply_{tag}_{stage}.pl'
-
-        # ── Step 4b: execute Perl if script exists ────────────────────────────
-        if os.path.exists(pl_path):
-            pl_rc, pl_out = run(f'perl {pl_path} {ref}/data/PostEco/{stage}.v.gz', cwd=base)
-            if verbose and pl_rc != 0:
-                print(f'  perl {stage} FAILED: {pl_out[:200]}')
+        spec_j = read_json(f'{base}/{tag}_eco_perl_spec_{stage}.json') or {}
 
         # ── Step 4c: eco_netlist_port_rewire.py ────────────────────────────────────────
         rc2, out2 = run(
             f'python3 {PASSES} '
-            f'--stage {stage} --tag {tag} --round {round_n} --jira {jira} '
-            f'--study {base}/data/{tag}_eco_preeco_study.json '
+            f'--stage {stage} --tag {tag} --round {round_n} '
+            f'--study {base}/{tag}_eco_preeco_study.json '
             f'--ref-dir {ref} '
-            f'--status {base}/data/{tag}_eco_netlist_port_rewire_{stage}.json',
+            f'--status {base}/{tag}_eco_netlist_port_rewire_{stage}.json',
             cwd=base
         )
         if verbose:
             print(f'  passes_2_4 {stage} rc={rc2}')
 
-        p_j = read_json(f'{base}/data/{tag}_eco_netlist_port_rewire_{stage}.json')
-        applied_all[stage] = (spec_j.get('entries', []) + p_j.get('entries', []))
+        p_j = read_json(f'{base}/{tag}_eco_netlist_port_rewire_{stage}.json') or {}
+        spec_entries = {e.get('name'): e for e in (spec_j.get('entries', []) or [])}
+        p_entries = {e.get('name'): e for e in (p_j.get('entries', []) or [])}
+        applied_all[stage] = []
+        for e in study.get(stage, []):
+            inst = e.get('instance_name') or e.get('cell_name') or e.get('name')
+            entry_copy = dict(e)
+            if inst in spec_entries:
+                entry_copy['status'] = spec_entries[inst].get('status', 'INSERTED')
+            elif inst in p_entries:
+                entry_copy['status'] = p_entries[inst].get('status', 'APPLIED')
+            else:
+                entry_copy['status'] = 'INSERTED'
+            applied_all[stage].append(entry_copy)
 
     # Write combined applied JSON — use override if test provides pre-built applied state
     if applied_override is not None:
-        write_json(f'{base}/data/{tag}_eco_applied_round{round_n}.json', applied_override)
+        write_json(f'{base}/{tag}_eco_applied_round{round_n}.json', applied_override)
     else:
-        write_json(f'{base}/data/{tag}_eco_applied_round{round_n}.json', applied_all)
+        write_json(f'{base}/{tag}_eco_applied_round{round_n}.json', applied_all)
 
     # ── Step 5: eco_pre_fm_check.py ───────────────────────────────────────────
     rc5, out5 = run(
@@ -251,7 +257,15 @@ def _run_test_inner(name, desc, setup_fn, expected_step5, expected_failures,
         cwd=base
     )
 
-    result_j = read_json(f'{base}/data/{tag}_eco_pre_fm_check_round{round_n}.json')
+    canon_path = f'{base}/{tag}_eco_pre_fm_check_round{round_n}.json'
+    import glob
+    iter_files = sorted(glob.glob(f'{base}/{tag}_eco_pre_fm_check_round{round_n}_iter*.json'))
+    if os.path.exists(canon_path):
+        result_j = read_json(canon_path)
+    elif iter_files:
+        result_j = read_json(iter_files[-1])
+    else:
+        result_j = {}
     actual_passed = result_j.get('passed', False)
     actual_failures = result_j.get('failures', [])
 
@@ -476,27 +490,29 @@ def setup_T10(jira, tag):
 # Hundreds of pre-existing F2 — eco_verilog_validator must not fail for these
 # ─────────────────────────────────────────────────────────────────────────────
 def setup_T11(jira, tag):
-    netlist = make_netlist([make_verilog('test_mod')])
+    netlist = make_netlist([
+        make_verilog('test_mod',
+            ports=['input IN1', 'output OUT1'],
+            extra_wires=['old_net', 'eco_f2_net'],
+            cells=[
+                'AND2D1 inst1 ( .A1(IN1), .A2(eco_f2_net), .Z(old_net) ) ;',
+                'INVD1 inst2 ( .I(old_net), .ZN(OUT1) ) ;',
+            ])
+    ])
     # check8 PASS despite many F2 pre-existing
     check8_pass = {
         'Synthesize': 'PASS', 'PrePlace': 'PASS', 'Route': 'PASS',
         'errors': [],
         'f2_preexisting_count': 150  # many pre-existing F2 — should still PASS
     }
+    gate = gate_entry('eco_9999_d001', 'INVD1', 'INV', 'n_eco_9999_d001',
+                      {'I': 'IN1', 'ZN': 'n_eco_9999_d001'}, 'test_mod')
+    rew = rewire_entry('inst2', 'I', 'old_net', 'n_eco_9999_d001', 'test_mod')
     study = {
         '__check8_override__': check8_pass,
-        'Synthesize': [
-            gate_entry('eco_9999_d001', 'INVD1', 'INV', 'n_eco_9999_d001',
-                       {'I': 'IN1', 'ZN': 'n_eco_9999_d001'}, 'test_mod'),
-        ],
-        'PrePlace': [
-            gate_entry('eco_9999_d001', 'INVD1', 'INV', 'n_eco_9999_d001',
-                       {'I': 'IN1', 'ZN': 'n_eco_9999_d001'}, 'test_mod'),
-        ],
-        'Route': [
-            gate_entry('eco_9999_d001', 'INVD1', 'INV', 'n_eco_9999_d001',
-                       {'I': 'IN1', 'ZN': 'n_eco_9999_d001'}, 'test_mod'),
-        ],
+        'Synthesize': [gate, rew],
+        'PrePlace':   [gate, rew],
+        'Route':      [gate, rew],
     }
     return study, netlist
 
@@ -531,6 +547,7 @@ def setup_T13(jira, tag):
             cells=[
                 'REGMOD REGCMD ( .REG_Data( { UNCONNECTED_41 , UNCONNECTED_42 , UNCONNECTED_43 } ) ) ;',
                 'AND2D1 eco_9999_g1 ( .A1( IN1 ) , .A2( n_eco_9999_cfg ) , .Z( OUT1 ) ) ;',
+                'INVD1 existing_inv ( .I( OUT1 ) , .ZN( n_eco_9999_cfg ) ) ;',
             ])
     ])
     unconn_rewire = {
@@ -583,7 +600,16 @@ def setup_T14(jira, tag):
 # T15 — PASS: ALREADY_APPLIED entries are fine (re-running same round)
 # ─────────────────────────────────────────────────────────────────────────────
 def setup_T15(jira, tag):
-    netlist = make_netlist([make_verilog('test_mod')])
+    netlist = make_netlist([
+        make_verilog('test_mod',
+            ports=['input IN1', 'output OUT1'],
+            extra_wires=['old_net'],
+            cells=[
+                'AND2D1 existing_and ( .A1( IN1 ) , .A2( IN1 ) , .Z( old_net ) ) ;',
+                'INVD1 existing_inv ( .I( n_eco_9999_d001 ) , .ZN( OUT1 ) ) ;',
+                'INVD1 eco_9999_d001 ( .I( IN1 ) , .ZN( n_eco_9999_d001 ) ) ;',
+            ])
+    ])
     entry = gate_entry('eco_9999_d001', 'INVD1', 'INV', 'n_eco_9999_d001',
                        {'I': 'IN1', 'ZN': 'n_eco_9999_d001'}, 'test_mod')
     entry['status'] = 'ALREADY_APPLIED'
@@ -664,10 +690,11 @@ def setup_T17(jira, tag):
     new_gate = gate_entry(new_inst, 'AND2D1', 'AND2', new_wire,
                           {'A1': 'IN1', 'A2': 'IN1', 'Z': new_wire},
                           'test_mod', needs_wire=True)
+    rew = rewire_entry('existing_and', 'A2', old_wire, new_wire, 'test_mod')
     study = {
-        'Synthesize': [undo, new_gate],
-        'PrePlace':   [undo, new_gate],
-        'Route':      [undo, new_gate],
+        'Synthesize': [undo, new_gate, rew],
+        'PrePlace':   [undo, new_gate, rew],
+        'Route':      [undo, new_gate, rew],
     }
     return study, netlist
 

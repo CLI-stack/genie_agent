@@ -35,10 +35,15 @@ STAGE_RE = re.compile(r"\b(Synthesize|PrePlace|Route)\b")
 
 def discover_specs(base_dir: Path, tag: str) -> list[Path]:
     """All spec files for this tag, newest first by mtime."""
-    data = base_dir / "data"
     candidates = []
-    candidates += list(data.glob(f"{tag}_*spec"))
-    candidates += list(data.glob(f"{tag}_*spec.gz"))
+    # Search flat in base_dir first
+    candidates += list(base_dir.glob(f"{tag}_*spec"))
+    candidates += list(base_dir.glob(f"{tag}_*spec.gz"))
+    # Also check base_dir/data for legacy runs
+    data = base_dir / "data"
+    if data.is_dir():
+        candidates += list(data.glob(f"{tag}_*spec"))
+        candidates += list(data.glob(f"{tag}_*spec.gz"))
     # Common spec naming variants used across the flow:
     #   <fenets_tag>_spec, <fenets_tag>_spec_rerun_round<N>, <retry_tag>_spec_retry<N>
     return sorted(candidates, key=lambda p: -p.stat().st_mtime)
@@ -64,14 +69,31 @@ def main() -> int:
     p.add_argument("--tag", required=True)
     p.add_argument("--round", type=int, required=True)
     p.add_argument("--base-dir", required=True)
+    p.add_argument("--ref-dir", default=None)
     p.add_argument("--output", default=None)
     args = p.parse_args()
 
     base_dir = Path(args.base_dir)
-    out_path = Path(args.output) if args.output else (
-        base_dir / "data" / f"{args.tag}_eco_spec_sources_round{args.round}.json"
-    )
+    if args.output:
+        out_path = Path(args.output)
+    else:
+        out_path = (
+            base_dir / f"{args.tag}_eco_spec_sources_round{args.round}.json"
+            if (base_dir / f"{args.tag}_round_handoff.json").exists() or not (base_dir / "data").is_dir()
+            else base_dir / "data" / f"{args.tag}_eco_spec_sources_round{args.round}.json"
+        )
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Determine active stages from ref_dir if available
+    active_stages = ["Synthesize"]
+    if args.ref_dir and Path(args.ref_dir).is_dir():
+        preeco_dir = Path(args.ref_dir) / "data" / "PreEco"
+        if (preeco_dir / "PrePlace.v.gz").is_file() or (preeco_dir / "PrePlace.v").is_file():
+            active_stages.append("PrePlace")
+        if (preeco_dir / "Route.v.gz").is_file() or (preeco_dir / "Route.v").is_file():
+            active_stages.append("Route")
+    else:
+        active_stages = ["Synthesize", "PrePlace", "Route"]
 
     discovered = discover_specs(base_dir, args.tag)
     spec_sources: dict[str, str] = {}
@@ -88,10 +110,10 @@ def main() -> int:
     }
     out_path.write_text(json.dumps(out, indent=2))
     print(f"ECO_RPT_GENERATED: spec sources → {out_path}")
-    for stg in ("Synthesize", "PrePlace", "Route"):
+    for stg in active_stages:
         print(f"  {stg:11s}: {spec_sources.get(stg, '<NONE>')}")
-    if not all(s in spec_sources for s in ("Synthesize", "PrePlace", "Route")):
-        print("WARN: not all stages have a spec file resolved")
+    if not all(s in spec_sources for s in active_stages):
+        print(f"WARN: not all active stages ({active_stages}) have a spec file resolved")
         return 1
     return 0
 

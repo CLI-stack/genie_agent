@@ -58,6 +58,8 @@ fi
 # Honor ECO_OUT_DIR for the flat output dir; fall back to BASE_DIR when unset.
 if [ -n "${ECO_OUT_DIR}" ]; then
     DATA_DIR="${ECO_OUT_DIR}"
+elif [ -f "${BASE_DIR}/${TAG}_eco_preeco_study.json" ] || [ -f "${BASE_DIR}/${TAG}_round_handoff.json" ] || [ ! -d "${BASE_DIR}/data" ]; then
+    DATA_DIR="${BASE_DIR}"
 elif [ -d "${BASE_DIR}/data" ]; then
     DATA_DIR="${BASE_DIR}/data"
 else

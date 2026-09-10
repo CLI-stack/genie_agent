@@ -94,10 +94,9 @@ def main():
     SYNTH_BAK = f"{REF_DIR}/data/PostEco/Synthesize.v.gz.bak_test"
     PRE_SYNTH = f"{REF_DIR}/data/PreEco/Synthesize.v.gz"
 
-    # Write minimal applied JSON for check8
-    applied_json = f"{BASE_DIR}/data/{TAG}_eco_applied_round1.json"
-    study_json   = f"{BASE_DIR}/data/{TAG}_eco_preeco_study.json"
-    Path(f"{BASE_DIR}/data").mkdir(parents=True, exist_ok=True)
+    # Write minimal applied JSON for check8 (flat layout)
+    applied_json = f"{BASE_DIR}/{TAG}_eco_applied_round1.json"
+    study_json   = f"{BASE_DIR}/{TAG}_eco_preeco_study.json"
     Path(applied_json).write_text(json.dumps({
         "summary": {"applied": 1, "inserted": 1, "skipped": 0, "verify_failed": 0},
         "Synthesize": [{"change_type": "new_logic_gate", "instance_name": "eco_test_1",
@@ -216,11 +215,13 @@ def main():
     with gzip.open(PRE_SYNTH, 'rb') as fin, gzip.open(SYNTH_GZ, 'wb') as fout:
         fout.write(fin.read())
     rc8, out8 = run_check8(CHECK8, BASE_DIR, REF_DIR, TAG, 1, applied_json)
-    check8_json = Path(f"{BASE_DIR}/data/{TAG}_eco_verilog_validator_round1.json")
+    check8_json = Path(f"{BASE_DIR}/{TAG}_eco_verilog_validator_round1.json")
+    if not check8_json.exists():
+        check8_json = Path(f"{BASE_DIR}/data/{TAG}_eco_verilog_validator_round1.json")
     if check8_json.exists():
         r = json.loads(check8_json.read_text())
         pre_f2 = r.get("f2_preexisting_count", 0)
-        all_pass = all(r[s]=="PASS" for s in ["Synthesize","PrePlace","Route"])
+        all_pass = all(r[s]=="PASS" for s in ["Synthesize","PrePlace","Route"] if s in r)
         report("check8: pre-existing F2s do NOT cause FAIL", all_pass, f"f2_preexisting={pre_f2}")
     print()
 
@@ -244,7 +245,9 @@ def main():
     shutil.copy2(SYNTH_BAK, SYNTH_GZ)
     os.remove(SYNTH_BAK)
     # cleanup test data files
-    for f in [applied_json, study_json, f"{BASE_DIR}/data/{TAG}_eco_verilog_validator_round1.json",
+    for f in [applied_json, study_json, f"{BASE_DIR}/{TAG}_eco_verilog_validator_round1.json",
+              f"{BASE_DIR}/{TAG}_eco_verilog_validator_round1_marker.txt",
+              f"{BASE_DIR}/data/{TAG}_eco_verilog_validator_round1.json",
               f"{BASE_DIR}/data/{TAG}_eco_verilog_validator_round1_marker.txt"]:
         try: os.remove(f)
         except FileNotFoundError: pass

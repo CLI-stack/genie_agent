@@ -356,12 +356,22 @@ def main() -> int:
 
     base_dir = Path(args.base_dir)
     ref_dir = Path(args.ref_dir)
-    evidence_path = Path(args.evidence_json) if args.evidence_json else (
-        base_dir / "data" / f"{args.tag}_eco_fm_evidence_round{args.round}.json"
-    )
-    out_path = Path(args.output) if args.output else (
-        base_dir / "data" / f"{args.tag}_eco_fm_xstage_round{args.round}.json"
-    )
+    if args.evidence_json:
+        evidence_path = Path(args.evidence_json)
+    else:
+        evidence_path = (
+            base_dir / f"{args.tag}_eco_fm_evidence_round{args.round}.json"
+            if (base_dir / f"{args.tag}_eco_fm_evidence_round{args.round}.json").exists() or not (base_dir / "data").is_dir()
+            else base_dir / "data" / f"{args.tag}_eco_fm_evidence_round{args.round}.json"
+        )
+    if args.output:
+        out_path = Path(args.output)
+    else:
+        out_path = (
+            base_dir / f"{args.tag}_eco_fm_xstage_round{args.round}.json"
+            if (base_dir / f"{args.tag}_eco_fm_evidence_round{args.round}.json").exists() or not (base_dir / "data").is_dir()
+            else base_dir / "data" / f"{args.tag}_eco_fm_xstage_round{args.round}.json"
+        )
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not evidence_path.exists():

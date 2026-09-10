@@ -67,19 +67,24 @@ def _find_base_workdir(workdir: str) -> str:
         if os.path.isfile(os.path.join(p, 'revrc.main')):
             return p
         p = os.path.dirname(p)
-    # 2. Strip common nested leaf subfolders so shim lands at the project root
-    norm = cur.rstrip('/')
+    # 2. Strip common nested leaf subfolders iteratively so shim lands at the true project root
     leaf_subfolders = (
         '/data/PreEco', '/PreEco', '/data/PostEco', '/PostEco', '/data',
         '/netlist', '/netlists', '/nl',
         '/rtl_before', '/rtl_after', '/rtl', '/src', '/ws'
     )
-    for sub in leaf_subfolders:
-        if norm.endswith(sub):
-            candidate = norm[:-len(sub)]
-            if os.path.isdir(candidate):
-                return candidate
-    return cur
+    norm = cur.rstrip('/')
+    changed = True
+    while changed:
+        changed = False
+        for sub in leaf_subfolders:
+            if norm.endswith(sub):
+                candidate = norm[:-len(sub)]
+                if os.path.isdir(candidate) and candidate != norm:
+                    norm = candidate.rstrip('/')
+                    changed = True
+                    break
+    return norm or cur
 
 
 def main():
