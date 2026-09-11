@@ -296,9 +296,6 @@ P&R renames DFF outputs (CTS/optimization in Route). A wire may exist in scope b
    zgrep -cw "<bare_rtl_name>" <REF_DIR>/data/PreEco/Route.v.gz
    ```
    - **MANDATORY Register Exception (Rule 37):** If the signal is a **register** (`reg <sig>`) in RTL that is also an output port, the bare RTL name exists on the module boundary wire but sits *downstream of buffer/inverter repeater gates*. For registers, **ALWAYS tap the direct `.Q`/`.QN` pin of `<sig>_reg`** (Priority 3/4). NEVER tap the bare output port wire — Formality cuts at register boundaries and will flag a compare point failure on downstream taps.
-   - **MANDATORY Submodule Input Port Check (Rule 38):** If the signal enters the current module via a submodule `input <port_name>`, verify whether synthesis pushed an inverter across the boundary:
-     1. Check if `<port_name>` immediately feeds an inverter `INVD*` / `INVLL*` (`.<in_pin>(<port_name>), .ZN(<net_inv>)`) inside the submodule to recover active-high logic. If so, `<port_name>` carries **inverted polarity**, and you MUST use `<net_inv>` as the true-polarity signal.
-     2. Check the parent module's instantiation of the submodule. If the net driving the port is an inverter (`ZINV*`, `HFSINV*`, `*INV*`), verify its full driver chain polarity.
    - **All three ≥ 1 (for combinational / primary inputs) → bare RTL name exists everywhere AND no fenets override** →
      **USE the bare RTL name in ALL stages.** FM-traceable across all stage comparisons.
      Step 3 validator Check 65 hard-fails when a CTS rename is used but bare name exists

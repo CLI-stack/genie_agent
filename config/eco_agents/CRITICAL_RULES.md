@@ -696,15 +696,3 @@ When an ECO logic gate or comparator consumes an RTL signal that is declared as 
 
 **Critical Hazard:** If `<sig>` is ALSO declared as a module output port (`output reg <sig>`), synthesis often places buffer/inverter repeater chains between `<sig>_reg.Q` and the module boundary wire named `<sig>`. **NEVER** connect an ECO gate input to the bare port wire `<sig>` — Formality cuts at register boundaries (`<sig>_reg.Q`); tapping downstream of the flop's `.Q` pin introduces combinational repeaters outside the cut point, breaking formal equivalence and causing false LEC compare point failures.
 
----
-
-## RULE 38 — Submodule Input Port Phase/Polarity Inversion Check
-
-When an ECO logic gate inside a submodule consumes a signal that enters via a **submodule input port** (`input <sig>`):
-
-1. **Port-Boundary Inverter Push Hazard:** Logic synthesis often optimizes across hierarchical boundaries by pushing inverters across module ports. As a result, a module input port wire named `<sig>` may electrically carry the **inverted polarity (`~<sig>`)**.
-2. **Immediate Receiver Check:** Always inspect what the input port `<sig>` connects to immediately inside the submodule:
-   - If `<sig>` drives an inverter instance (`INVD*` / `INVLL*` -> `<net_inv>`) to restore active-high logic, the port wire carries **inverted polarity**, and **`<net_inv>` is the true-polarity active-high signal**.
-   - An ECO gate requiring true active-high `<sig>` MUST connect to `<net_inv>`, **NEVER** to the bare input port wire.
-3. **Parent Instantiation Check:** Cross-verify the parent module's instantiation of the submodule. If the net driving the port is an inverter (`ZINV*`, `HFSINV*`, `*INV*`), verify the full driver chain polarity to ensure correct phase alignment.
-
