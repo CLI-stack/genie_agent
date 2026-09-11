@@ -518,7 +518,7 @@ python3 script/eco_scripts/eco_cone_rebuild.py --emit-into-study \
     --rename-map <AI_ECO_FLOW_DIR>/<TAG>_eco_fenets_rename_map.json \
     --output <AI_ECO_FLOW_DIR>/<TAG>_eco_preeco_study.json
 ```
-`--ref-dir` makes it FAIL-CLOSED (exit 2, study untouched) on any ungrounded leaf or missing per-stage combinational driver. Verify stdout shows `ECO_SCRIPT_LAUNCHED: eco_cone_rebuild.py --emit-into-study`.
+`--ref-dir` makes it FAIL-CLOSED (exit 2, study untouched) on any ungrounded leaf or missing per-stage combinational driver. Verify stdout shows `ECO_SCRIPT_LAUNCHED: eco_cone_rebuild.py --emit-into-study`. This same invocation also covers `reg_guard_delta` (Intent-A, register guard `and_term` changes) — see STUDY_ORCHESTRATOR.md for its behavior, including that it BINDS to an already-emitted `new_logic_gate` signal (tagged `new_logic_dependency_signal`) instead of re-deriving it, when the guard's new term is such a signal.
 
 **MANDATORY: Run eco_emit_rewire_finalize.py after expand_chains** (same as STUDY Step 3) — fills per-stage cell/pin for P&R-merged flops and emits per-module SI/SE=1'b0 so REWIRE-CELL-ABSENT / Check 64 pass by construction:
 ```bash

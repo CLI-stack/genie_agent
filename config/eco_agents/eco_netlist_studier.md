@@ -186,6 +186,15 @@ Update `old_driver_inverting` in the study entry to match the FM polarity (true 
 >
 > The rule below applies ONLY to combinational term-folds (NO `branch_assigns` and NO `branch_loads`).
 
+> **Cross-emitter signal reuse.** If the widened branch's new term is itself an RTL signal that a
+> sibling `new_logic_gate` change already realizes (that gate's terminal entry tags
+> `new_logic_dependency_signal`), `emit_reg_guard_delta_batch` BINDS to that already-emitted net
+> instead of independently re-deriving the same comparator/decode logic from raw RTL — this avoids
+> emitting two competing implementations of the same signal, where one would end up dangling (0
+> fan-out) in the applied netlist. You don't need to hand-wire anything for this — just make sure the
+> earlier `new_logic_gate` change is correctly tagged with `new_logic_dependency_signal` so the
+> builder can find and bind to it.
+
 Pick the pattern from what `old_token` drives — do NOT rename the driver by default:
 
 - **`old_token` drives a register's D-cone (the common case, e.g. `rcqe_pgst`, any `*_reg.D`) → DFF-pin-rewire (REQUIRED):** leave the original driver of `old_token` UNTOUCHED (no rename). The new NOR2/INR2 (and any combine) gate reads `old_token` directly as its A1 input and outputs a FRESH `n_eco_<jira>_<seq>` net. Then emit a `rewire` that repoints the consuming **DFF `.D` pin** from `old_token` to the fresh net. Renaming the old driver's output here breaks FM LATCG matching → `HIGH/41-REWIRE-DESTROYS-OLD-NET` + "Unmatched Cone Input". See `rtl_diff_analyzer.md` "MANDATORY insertion pattern — DFF-pin-rewire".
