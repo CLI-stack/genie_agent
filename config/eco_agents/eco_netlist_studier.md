@@ -288,14 +288,15 @@ P&R renames DFF outputs (CTS/optimization in Route). A wire may exist in scope b
    to map those two CTS nets. If the SVF gap causes RouteVsPP FAIL, the re_studier (Round 2)
    tries the bare RTL name as fallback when it exists in all 3 stages and Rule 66 passes.
 
-   **Check B — Bare name preferred when no fenets actual_wire:**
+   **Check B — Bare name preferred when no fenets actual_wire (Combinational / Primary Inputs only):**
    If the fenets map has NO `actual_wire_<stage>` for this signal, then check:
    ```bash
    zgrep -cw "<bare_rtl_name>" <REF_DIR>/data/PreEco/Synthesize.v.gz
    zgrep -cw "<bare_rtl_name>" <REF_DIR>/data/PreEco/PrePlace.v.gz
    zgrep -cw "<bare_rtl_name>" <REF_DIR>/data/PreEco/Route.v.gz
    ```
-   - **All three ≥ 1 → bare RTL name exists everywhere AND no fenets override** →
+   - **MANDATORY Register Exception:** If the signal is a **register** (`reg <sig>`) in RTL that is also an output port, the bare RTL name exists on the module boundary wire but sits *downstream of buffer/inverter repeater gates*. For registers, **ALWAYS tap the direct `.Q`/`.QN` pin of `<sig>_reg`** (Priority 3/4). NEVER tap the bare output port wire — Formality cuts at register boundaries and will flag a compare point failure on downstream taps.
+   - **All three ≥ 1 (for combinational / primary inputs) → bare RTL name exists everywhere AND no fenets override** →
      **USE the bare RTL name in ALL stages.** FM-traceable across all stage comparisons.
      Step 3 validator Check 65 hard-fails when a CTS rename is used but bare name exists
      and has no fenets actual_wire entry.

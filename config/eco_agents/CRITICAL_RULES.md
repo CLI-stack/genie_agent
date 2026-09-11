@@ -687,3 +687,12 @@ Every ORCHESTRATOR and ROUND_ORCHESTRATOR MUST write these fields before spawnin
   "pre_fm_check_failed": false }
 ```
 Missing any field → the spawned agent cannot recover state correctly.
+
+---
+
+## RULE 37 — Register Output Signals Must Tap Direct Flop .Q Pin (Never Downstream Port Wire)
+
+When an ECO logic gate or comparator consumes an RTL signal that is declared as a **register** (`reg <sig>`), the studier must **ALWAYS tap the direct `.Q`/`.QN` output pin of `<sig>_reg`** (or its multi-bit slice).
+
+**Critical Hazard:** If `<sig>` is ALSO declared as a module output port (`output reg <sig>`), synthesis often places buffer/inverter repeater chains between `<sig>_reg.Q` and the module boundary wire named `<sig>`. **NEVER** connect an ECO gate input to the bare port wire `<sig>` — Formality cuts at register boundaries (`<sig>_reg.Q`); tapping downstream of the flop's `.Q` pin introduces combinational repeaters outside the cut point, breaking formal equivalence and causing false LEC compare point failures.
+
