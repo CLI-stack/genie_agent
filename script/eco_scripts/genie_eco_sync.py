@@ -70,7 +70,6 @@ def sync_to_genie_agent(commit_msg: str) -> dict:
     """Sync Complete mode & shared scripts to genie_agent and git push."""
     rel_paths = [
         "config/eco_agents",
-        "config/eco_agents_simple",
         "script/eco_scripts",
         "script/rtg_oss_feint/supra/eco_analyze.csh",
         "script/rtg_oss_feint/supra/find_equivalent_nets.csh",
