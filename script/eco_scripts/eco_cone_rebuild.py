@@ -528,7 +528,26 @@ def _bindable_from_rename_map(rename_map):
     return out
 
 
-def _synth_setup(ref_dir, module, jira='eco', rename_map=None):
+def _study_dependency_binds(study, module, active_stages):
+    """Map RTL identifier -> already-emitted net for any new_logic_gate entry in the
+    CURRENT study that records new_logic_dependency_signal (e.g. eco_expand_chains'
+    comparator-tree terminal gate for ReqInCnclSuccMtch_p1). Lets a sibling emitter
+    (e.g. reg_guard_delta) BIND to the already-emitted net instead of re-lowering the
+    same logic from raw RTL — fixes the JIRA-11233 duplicate/dangling-gate class."""
+    out = {}
+    if not study:
+        return out
+    for st in active_stages:
+        for e in study.get(st, []):
+            if e.get('change_type') != 'new_logic_gate' or e.get('module_name') != module:
+                continue
+            sig, net = e.get('new_logic_dependency_signal'), e.get('output_net')
+            if sig and net:
+                out.setdefault(sig, net)
+    return out
+
+
+def _synth_setup(ref_dir, module, jira='eco', rename_map=None, study_binds=None):
     """Build a shared _Synth (+ mk, rtl texts, width map) for a module. Multiple signals in
     the same module reuse ONE synth so its _sig_cache/_path_cache dedup the shared logic
     (e.g. the WCK-sync guard on both recdsp_c0mop and recdsp_c0vld is built once)."""
@@ -561,7 +580,7 @@ def _synth_setup(ref_dir, module, jira='eco', rename_map=None):
     const_ports = _parent_const_ports(ref_dir, full_module)
     bindable = _bindable_from_rename_map(rename_map)
     synth = _Synth(cfg, wm, rtl_text, innl, mk, full_module,
-                   const_ports=const_ports, bindable=bindable)
+                   const_ports=const_ports, bindable=bindable, study_binds=study_binds)
     return synth, mk, rtl_text, old_text, wm
 
 
@@ -1140,18 +1159,25 @@ def _flop_dpins_per_bit(ref_dir, module, reg, width):
     return res
 
 
-def emit_reg_guard_delta_batch(ref_dir, module, changes, jira='eco', rename_map=None, tech_map=True):
+def emit_reg_guard_delta_batch(ref_dir, module, changes, jira='eco', rename_map=None, tech_map=True,
+                               study=None):
     """Emit register guard-change (Intent-A) ECOs for one or more registers in the SAME module
     through a SHARED synth. Each change dict needs {target_register, old_token} (branch_assigns is
     validated upstream). Returns {'gates','rewires','errors','summary'} (study-shaped, per-stage
-    resolved) — study UNTOUCHED semantics via the caller on any error."""
+    resolved) — study UNTOUCHED semantics via the caller on any error.
+
+    `study`: the in-progress study JSON (all stages). Used to bind guard-region references to
+    signals a sibling emitter (e.g. eco_expand_chains) already realized as a new_logic_gate,
+    instead of independently re-deriving the same logic — see _study_dependency_binds."""
     # Distinct net namespace: reg-guard nets become n_eco_<jira>rg_cr_* so they can NEVER collide
     # with the comb_net_force emitter's n_eco_<jira>_cr_* nets — both emitters build through their
     # OWN _synth_setup (independent per-synth `seq` counters), so without a namespace their low-seq
     # 'cr_and_<n>'/'cr_or_<n>' names would overlap when both run in one --emit-into-study.
-    synth, mk, rtl_text, old_text, wm = _synth_setup(ref_dir, module, f'{jira}rg', rename_map=rename_map)
-    from eco_emit_priority_force import _driver_map
     active_stages = _active_stages(ref_dir)
+    study_binds = _study_dependency_binds(study, module, active_stages)
+    synth, mk, rtl_text, old_text, wm = _synth_setup(ref_dir, module, f'{jira}rg', rename_map=rename_map,
+                                                      study_binds=study_binds)
+    from eco_emit_priority_force import _driver_map
     dmaps = {st: _driver_map(ref_dir, module, st) for st in active_stages}
     def _dnet_driver_ps(net_ps):
         """net_ps: {stage: Dnet}. Return (cps, pps, ok): per-stage combinational driver cell/pin of
@@ -1350,7 +1376,7 @@ def emit_reg_guard_delta_into_study(rtl_diff, study, jira, ref_dir, rename_map=N
             errs.append(f"reg_guard_delta: change(s) missing module_name.")
             continue
         try:
-            out = emit_reg_guard_delta_batch(ref_dir, mod, cs, jira=jira, rename_map=rename_map)
+            out = emit_reg_guard_delta_batch(ref_dir, mod, cs, jira=jira, rename_map=rename_map, study=study)
         except Exception as e:
             errs.append(f"reg_guard_delta {mod}: build failed: {e}")
             continue

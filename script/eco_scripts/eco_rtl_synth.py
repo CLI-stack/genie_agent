@@ -358,7 +358,7 @@ _DEF_CELLS = {'INV': 'INVD1BWP136P5M156H3P48CPDLVT', 'AND2': 'AN2D1BWP136P5M156H
 
 class _Synth:
     def __init__(self, cfg, wm, rtl_text, in_netlist, mk, module, cells=None, const_ports=None,
-                 bindable=None):
+                 bindable=None, study_binds=None):
         self.cfg = cfg
         self.wm = wm
         self.rtl = rtl_text
@@ -377,6 +377,11 @@ class _Synth:
         # netlist net. This is what keeps the selector small: e.g. the branch guard's
         # `dsp_cnt_end` (a counter comparison) is reused, not rebuilt from the counters.
         self.bindable = bindable or set()
+        # RTL identifier -> net already emitted by a SIBLING emitter in this same study run
+        # (e.g. eco_expand_chains' comparator-tree terminal gate). Ground these as leaves at
+        # their exact already-emitted net instead of re-deriving the same logic from raw RTL —
+        # prevents duplicate/dangling-gate emission (JIRA-11233 class of bug).
+        self.study_binds = study_binds or {}
         self.macros = {k: cfg.value(k) for k in cfg.defs if cfg.value(k) is not None} if cfg else {}
         self.gates = []
         self._sig_cache = {}      # signal name -> {bit: net} (rebuilt comb signals)
@@ -686,6 +691,14 @@ class _Synth:
         if cp is not None and i in cp:
             return "1'b1" if cp[i] else "1'b0"
         w = self.wm.get(name)
+        # STUDY-PROVIDED bind: a sibling emitter already realized this scalar RTL signal as a
+        # new_logic_gate in the current study (see _study_dependency_binds). Ground directly at
+        # its already-emitted net — no per-stage resolution needed, it's already a concrete net.
+        # Scoped to scalar signals (i==0, width 1/None): a multi-bit signal with only one
+        # recorded net can't be safely bit-indexed, so fall through to the normal path instead.
+        sb = self.study_binds.get(name)
+        if sb is not None and i == 0 and w in (1, None):
+            return sb
         netname = name if (w in (1, None)) else f'{name}[{i}]'
         # FM-verified reusable net: ground as a leaf instead of re-deriving the folded
         # cone. Per-stage resolution maps this leaf to the equivalent netlist net.
