@@ -177,6 +177,42 @@ def sync_to_oss_workspace(refdir: str) -> dict:
         "identical": identical
     }
 
+def check_eco_analyze_skill_drift():
+    """Warn (do not block) if the marketplace-plugin command (eco-analyze.md) was modified
+    more recently, per git history, than its independently hand-written OSS-native
+    counterpart (src/meta/skills/oss-eco/SKILL.md). The two describe the same flow but use
+    different formats (plugin command + separate eco_orchestrator agent, vs a single
+    self-contained OSS skill) -- they cannot be auto-copied and must be manually
+    reconciled. Returns a warning string, or None if no drift is detected / git info is
+    unavailable."""
+    eco_analyze = MASTER_DIR / "plugins/genie-eco-msip-marketplace/plugins/genie_eco_msip/commands/eco-analyze.md"
+    skill_md = MASTER_DIR / "src/meta/skills/oss-eco/SKILL.md"
+    if not (eco_analyze.is_file() and skill_md.is_file()):
+        return None
+
+    def last_commit_time(p):
+        r = subprocess.run(
+            ["git", "log", "-1", "--format=%ct", "--", str(p.relative_to(MASTER_DIR))],
+            cwd=MASTER_DIR, capture_output=True, text=True
+        )
+        out = r.stdout.strip()
+        return int(out) if out.isdigit() else None
+
+    t_analyze = last_commit_time(eco_analyze)
+    t_skill = last_commit_time(skill_md)
+    if t_analyze is None or t_skill is None:
+        return None
+    if t_analyze > t_skill:
+        return (
+            "eco-analyze.md was last modified more recently (per git history) than "
+            "src/meta/skills/oss-eco/SKILL.md. These are independently hand-written "
+            "(plugin command + eco_orchestrator agent vs a single standalone OSS skill) and "
+            "cannot be auto-copied -- please manually reconcile SKILL.md with the latest "
+            "eco-analyze.md changes before/along with this sync."
+        )
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description="Synchronize Genie AI ECO flow changes across repos/workspaces.")
     parser.add_argument("--refdir", help="Path to target OSS workspace (e.g. /proj/.../oss8_0_...)")
@@ -186,6 +222,10 @@ def main():
     print("================================================================================")
     print("GENIE ECO SYNC — Centralized Repo Master (/home/abinbaba/eco_flow)")
     print("================================================================================")
+
+    drift_warning = check_eco_analyze_skill_drift()
+    if drift_warning:
+        print(f"\n[WARNING] {drift_warning}")
 
     # 1. Sync to genie_agent
     print("\n1. Syncing to Shared Production Repo (/proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent)...")
