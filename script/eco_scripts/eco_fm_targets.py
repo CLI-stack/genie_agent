@@ -142,6 +142,97 @@ def detect_targets(ref_dir, phase, stages=None):
     return [found.get(stage, fb[stage]) for stage in stages if stage in found or stage in fb]
 
 
+_IMPL_NETLIST_RX = re.compile(
+    r'read_verilog\s+-i\s+-netlist\s+"([^"]+)"[^\n]*-work_library\s+FMWORK_IMPL_'
+)
+
+
+def _find_impl_netlist_path(cmd_file):
+    """Return the netlist path from the uncommented
+    `read_verilog -i -netlist "<path>" ... -work_library FMWORK_IMPL_*` line in a
+    Formality .cmd file (the rev/impl-side read), or None if not found."""
+    try:
+        with open(cmd_file) as f:
+            for line in f:
+                if line.lstrip().startswith("#"):
+                    continue
+                m = _IMPL_NETLIST_RX.search(line)
+                if m:
+                    return m.group(1)
+    except OSError:
+        return None
+    return None
+
+
+def _md5_of_verilog(path):
+    """md5 of decompressed content for a .v/.v.gz netlist file; None if unreadable."""
+    import gzip
+    import hashlib
+    try:
+        opener = gzip.open if path.endswith(".gz") else open
+        h = hashlib.md5()
+        with opener(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def verify_content(fm_session_dir, target_name):
+    """Content-verify that `target_name`'s .cmd (under `fm_session_dir/cmds/`) reads
+    the TRUE pre-ECO baseline netlist (`fm_session_dir/data/PreEco/<Stage>.v[.gz]`)
+    for its stage, regardless of whether the target NAME contains 'PreEco'. This
+    replaces the old name-substring gate: what matters is what netlist the target
+    actually reads, not what it is called (proven on JIRA-11233, where
+    'FmEqvSynthesizeVsSynRtl' — a normal post-synthesis target, not PreEco-named —
+    was manually repointed at a true baseline netlist and served find_equivalent_nets
+    correctly).
+
+    Returns a dict:
+      result: one of
+        MATCH            - cmd's netlist content == baseline content -> usable for fenets
+        MISMATCH         - cmd's netlist content != baseline content -> reject
+        NO_CMD_FILE      - no cmds/<target_name>.cmd on disk at all (e.g. only the
+                            eco_fm_targets.py canonical-fallback name was returned by
+                            --detect, nothing real backs it)
+        NO_STAGE         - target_name doesn't match any known stage suffix
+        NO_NETLIST_LINE  - .cmd exists but no FMWORK_IMPL read_verilog line found in it
+        NO_BASELINE      - fm_session_dir/data/PreEco/<Stage>.v[.gz] doesn't exist
+        UNREADABLE       - one of the two netlist files couldn't be read/decompressed
+      stage, cmd_netlist, baseline_netlist: resolved paths (or None) for messaging.
+    """
+    stage = target_to_stage(target_name)
+    if not stage:
+        return {"result": "NO_STAGE", "stage": None, "cmd_netlist": None, "baseline_netlist": None}
+
+    cmd_file = os.path.join(str(fm_session_dir), "cmds", target_name + ".cmd")
+    if not os.path.isfile(cmd_file):
+        return {"result": "NO_CMD_FILE", "stage": stage, "cmd_netlist": None, "baseline_netlist": None}
+
+    cmd_netlist = _find_impl_netlist_path(cmd_file)
+    if not cmd_netlist:
+        return {"result": "NO_NETLIST_LINE", "stage": stage, "cmd_netlist": None, "baseline_netlist": None}
+    if not os.path.isabs(cmd_netlist):
+        cmd_netlist = os.path.join(str(fm_session_dir), cmd_netlist)
+
+    baseline = os.path.join(str(fm_session_dir), "data", "PreEco", stage + ".v.gz")
+    if not os.path.isfile(baseline):
+        alt = os.path.join(str(fm_session_dir), "data", "PreEco", stage + ".v")
+        if os.path.isfile(alt):
+            baseline = alt
+    if not os.path.isfile(baseline):
+        return {"result": "NO_BASELINE", "stage": stage, "cmd_netlist": cmd_netlist, "baseline_netlist": baseline}
+
+    md5_cmd = _md5_of_verilog(cmd_netlist)
+    md5_base = _md5_of_verilog(baseline)
+    if md5_cmd is None or md5_base is None:
+        return {"result": "UNREADABLE", "stage": stage, "cmd_netlist": cmd_netlist, "baseline_netlist": baseline}
+
+    result = "MATCH" if md5_cmd == md5_base else "MISMATCH"
+    return {"result": result, "stage": stage, "cmd_netlist": cmd_netlist, "baseline_netlist": baseline}
+
+
 def smart_eco_targets(ref_dir, applied_json, prev_verify_json):
     """Round-2+ SMART_TARGETS selection: pick the minimal Eco target set to
     re-run based on which stages the applier changed + which targets already
@@ -191,7 +282,15 @@ if __name__ == "__main__":
     elif len(sys.argv) >= 3 and sys.argv[1] == "--stage":
         # usage: eco_fm_targets.py --stage <target_name>
         print(target_to_stage(sys.argv[2]) or "")
+    elif len(sys.argv) >= 4 and sys.argv[1] == "--verify-content":
+        # usage: eco_fm_targets.py --verify-content <fm_session_dir> <target_name>
+        r = verify_content(sys.argv[2], sys.argv[3])
+        print("RESULT=%s" % r["result"])
+        print("STAGE=%s" % (r["stage"] or ""))
+        print("CMD_NETLIST=%s" % (r["cmd_netlist"] or ""))
+        print("BASELINE_NETLIST=%s" % (r["baseline_netlist"] or ""))
     else:
         print("usage: eco_fm_targets.py --detect <ref_dir> <PreEco|Eco>", file=sys.stderr)
         print("       eco_fm_targets.py --stage <target_name>", file=sys.stderr)
+        print("       eco_fm_targets.py --verify-content <fm_session_dir> <target_name>", file=sys.stderr)
         sys.exit(2)
