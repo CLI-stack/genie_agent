@@ -165,11 +165,16 @@ def _find_impl_netlist_path(cmd_file):
 
 
 def _md5_of_verilog(path):
-    """md5 of decompressed content for a .v/.v.gz netlist file; None if unreadable."""
+    """md5 of decompressed content for a netlist file, gzip or plain. Detects gzip by
+    magic bytes (\\x1f\\x8b) rather than a '.gz' filename suffix — a caller-supplied
+    `baseline_override` (e.g. a manually-named '.preeco_bak' backup) may hold gzip
+    content without a '.gz' extension. None if unreadable."""
     import gzip
     import hashlib
     try:
-        opener = gzip.open if path.endswith(".gz") else open
+        with open(path, "rb") as f:
+            magic = f.read(2)
+        opener = gzip.open if magic == b"\x1f\x8b" else open
         h = hashlib.md5()
         with opener(path, "rb") as f:
             for chunk in iter(lambda: f.read(65536), b""):
@@ -179,15 +184,23 @@ def _md5_of_verilog(path):
         return None
 
 
-def verify_content(fm_session_dir, target_name):
+def verify_content(fm_session_dir, target_name, baseline_override=None):
     """Content-verify that `target_name`'s .cmd (under `fm_session_dir/cmds/`) reads
-    the TRUE pre-ECO baseline netlist (`fm_session_dir/data/PreEco/<Stage>.v[.gz]`)
-    for its stage, regardless of whether the target NAME contains 'PreEco'. This
-    replaces the old name-substring gate: what matters is what netlist the target
-    actually reads, not what it is called (proven on JIRA-11233, where
-    'FmEqvSynthesizeVsSynRtl' — a normal post-synthesis target, not PreEco-named —
-    was manually repointed at a true baseline netlist and served find_equivalent_nets
-    correctly).
+    the TRUE pre-ECO baseline netlist for its stage, regardless of whether the target
+    NAME contains 'PreEco'. This replaces the old name-substring gate: what matters is
+    what netlist the target actually reads, not what it is called (proven on
+    JIRA-11233, where 'FmEqvSynthesizeVsSynRtl' — a normal post-synthesis target, not
+    PreEco-named — was manually repointed at a true baseline netlist and served
+    find_equivalent_nets correctly).
+
+    By default the true baseline is looked up at
+    `fm_session_dir/data/PreEco/<Stage>.v[.gz]` — the tile's own recorded PreEco
+    snapshot. Some TileBuilder dirs never keep that snapshot at all (e.g. a tile many
+    ECOs deep, where the '.cmd''s own commented-out history shows it previously read a
+    PRIOR ECO's PostEco netlist as its baseline, not a dedicated PreEco/ dir). For
+    those, pass `baseline_override` — an explicit path to whatever file the caller
+    knows is the true baseline (a backup copy, a prior ECO's PostEco netlist, etc.) —
+    and that is compared instead of the default lookup.
 
     Returns a dict:
       result: one of
@@ -198,7 +211,8 @@ def verify_content(fm_session_dir, target_name):
                             --detect, nothing real backs it)
         NO_STAGE         - target_name doesn't match any known stage suffix
         NO_NETLIST_LINE  - .cmd exists but no FMWORK_IMPL read_verilog line found in it
-        NO_BASELINE      - fm_session_dir/data/PreEco/<Stage>.v[.gz] doesn't exist
+        NO_BASELINE      - no baseline netlist found (default location absent, or
+                            baseline_override was given but doesn't exist on disk)
         UNREADABLE       - one of the two netlist files couldn't be read/decompressed
       stage, cmd_netlist, baseline_netlist: resolved paths (or None) for messaging.
     """
@@ -216,11 +230,14 @@ def verify_content(fm_session_dir, target_name):
     if not os.path.isabs(cmd_netlist):
         cmd_netlist = os.path.join(str(fm_session_dir), cmd_netlist)
 
-    baseline = os.path.join(str(fm_session_dir), "data", "PreEco", stage + ".v.gz")
-    if not os.path.isfile(baseline):
-        alt = os.path.join(str(fm_session_dir), "data", "PreEco", stage + ".v")
-        if os.path.isfile(alt):
-            baseline = alt
+    if baseline_override:
+        baseline = str(baseline_override)
+    else:
+        baseline = os.path.join(str(fm_session_dir), "data", "PreEco", stage + ".v.gz")
+        if not os.path.isfile(baseline):
+            alt = os.path.join(str(fm_session_dir), "data", "PreEco", stage + ".v")
+            if os.path.isfile(alt):
+                baseline = alt
     if not os.path.isfile(baseline):
         return {"result": "NO_BASELINE", "stage": stage, "cmd_netlist": cmd_netlist, "baseline_netlist": baseline}
 
@@ -283,8 +300,11 @@ if __name__ == "__main__":
         # usage: eco_fm_targets.py --stage <target_name>
         print(target_to_stage(sys.argv[2]) or "")
     elif len(sys.argv) >= 4 and sys.argv[1] == "--verify-content":
-        # usage: eco_fm_targets.py --verify-content <fm_session_dir> <target_name>
-        r = verify_content(sys.argv[2], sys.argv[3])
+        # usage: eco_fm_targets.py --verify-content <fm_session_dir> <target_name> [--baseline <path>]
+        baseline_override = None
+        if len(sys.argv) >= 6 and sys.argv[4] == "--baseline":
+            baseline_override = sys.argv[5]
+        r = verify_content(sys.argv[2], sys.argv[3], baseline_override=baseline_override)
         print("RESULT=%s" % r["result"])
         print("STAGE=%s" % (r["stage"] or ""))
         print("CMD_NETLIST=%s" % (r["cmd_netlist"] or ""))
@@ -292,5 +312,5 @@ if __name__ == "__main__":
     else:
         print("usage: eco_fm_targets.py --detect <ref_dir> <PreEco|Eco>", file=sys.stderr)
         print("       eco_fm_targets.py --stage <target_name>", file=sys.stderr)
-        print("       eco_fm_targets.py --verify-content <fm_session_dir> <target_name>", file=sys.stderr)
+        print("       eco_fm_targets.py --verify-content <fm_session_dir> <target_name> [--baseline <path>]", file=sys.stderr)
         sys.exit(2)
