@@ -32,13 +32,21 @@ def file_md5(p: Path) -> str:
             h.update(chunk)
     return h.hexdigest()
 
-def _is_junk_file(name: str) -> bool:
-    """Editor/build artifacts that should never be synced: compiled Python, and
-    editor swap/backup files (vim .swp/.swo/.swn, emacs/vim backup trailing ~).
-    A stray .swp file leaking into an OSS deployment (real incident: caught and
-    manually cleaned up) motivated this filter."""
-    return (name.endswith(".pyc") or name.endswith(".swp") or name.endswith(".swo")
-            or name.endswith(".swn") or name.endswith("~"))
+def _is_junk_file(name: str, size: int = None) -> bool:
+    """Editor/build artifacts and manual-backup cruft that should never be synced:
+    compiled Python, editor swap/backup files (vim .swp/.swo/.swn, emacs/vim backup
+    trailing ~), ad hoc '.bak'/'.backup_*' copies, and stray zero-byte extensionless
+    files (e.g. a shell-redirect accident like a file literally named '2'). Real
+    incidents (a stray .swp, and ~45 .pyc/.bak/.backup_*/~ files) leaking into an
+    OSS deployment via the wholesale directory sync motivated this filter — keep it
+    widened as new junk patterns are found rather than hand-cleaning post-sync."""
+    if (name.endswith(".pyc") or name.endswith(".swp") or name.endswith(".swo")
+            or name.endswith(".swn") or name.endswith("~") or name.endswith(".bak")
+            or ".backup_" in name or ".bak_" in name):
+        return True
+    if size == 0 and "." not in name:
+        return True
+    return False
 
 
 def sync_tree(src_dir: Path, dst_dir: Path, rel_paths: list) -> tuple:
@@ -49,7 +57,7 @@ def sync_tree(src_dir: Path, dst_dir: Path, rel_paths: list) -> tuple:
         d_path = dst_dir / rel
 
         if s_path.is_file():
-            if _is_junk_file(s_path.name) or "__pycache__" in str(s_path):
+            if _is_junk_file(s_path.name, s_path.stat().st_size) or "__pycache__" in str(s_path):
                 continue
             d_path.parent.mkdir(parents=True, exist_ok=True)
             if file_md5(s_path) != file_md5(d_path):
@@ -62,7 +70,7 @@ def sync_tree(src_dir: Path, dst_dir: Path, rel_paths: list) -> tuple:
                 if "__pycache__" in root:
                     continue
                 for file in files:
-                    if _is_junk_file(file):
+                    if _is_junk_file(file, (Path(root) / file).stat().st_size):
                         continue
                     s_file = Path(root) / file
                     r_file = s_file.relative_to(src_dir)
@@ -193,9 +201,9 @@ def sync_to_oss_workspace(refdir: str) -> dict:
                 if "__pycache__" in root:
                     continue
                 for file in files:
-                    if _is_junk_file(file):
-                        continue
                     s_file = Path(root) / file
+                    if _is_junk_file(file, s_file.stat().st_size):
+                        continue
                     r_file = s_file.relative_to(MASTER_DIR)
                     d_file = dst_skill_dir / r_file
                     _sync_file_to_oss(s_file, d_file, str(r_file), synced, identical)
