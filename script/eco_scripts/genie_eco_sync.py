@@ -121,6 +121,37 @@ def sync_to_genie_agent(commit_msg: str) -> dict:
         "pushed": git_pushed
     }
 
+_OSS_ANCHOR = "src/meta/skills/oss-eco"
+
+def _oss_content(s_file: Path) -> bytes:
+    """Bytes to write to the OSS destination for this file: identical to the source,
+    except occurrences of the master dev repo path (MASTER_DIR, e.g.
+    `GENIE_ROOT = /home/abinbaba/eco_flow`) are replaced with the OSS skill's own
+    self-contained relative anchor (`src/meta/skills/oss-eco`) -- the dev repo path
+    isn't reachable from an OSS deployment, where this skill is fully self-contained
+    (all scripts/config copied alongside it). Source files (SKILL.md,
+    SIMPLE_ORCHESTRATOR.md, etc.) keep hardcoding the dev repo path as-is, since that's
+    correct for the marketplace-plugin deployment that reads them in place -- this
+    substitution only happens for the copy written into the OSS tree. Falls back to
+    the raw bytes unchanged if the file can't be decoded as text (binary)."""
+    raw = s_file.read_bytes()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw
+    return text.replace(str(MASTER_DIR), _OSS_ANCHOR).encode("utf-8")
+
+def _sync_file_to_oss(s_file: Path, d_file: Path, label: str, synced: list, identical: list):
+    d_file.parent.mkdir(parents=True, exist_ok=True)
+    content = _oss_content(s_file)
+    existing = d_file.read_bytes() if d_file.is_file() else None
+    if existing is None or hashlib.md5(existing).hexdigest() != hashlib.md5(content).hexdigest():
+        d_file.write_bytes(content)
+        shutil.copystat(s_file, d_file)
+        synced.append(label)
+    else:
+        identical.append(label)
+
 def sync_to_oss_workspace(refdir: str) -> dict:
     """Sync self-contained oss-eco skill to <refdir>/src/meta/skills/oss-eco."""
     ref_path = Path(refdir)
@@ -151,22 +182,12 @@ def sync_to_oss_workspace(refdir: str) -> dict:
     for rel in rel_paths:
         s_path = MASTER_DIR / rel
         if rel == "src/meta/skills/oss-eco/SKILL.md":
-            d_path = dst_skill_dir / "SKILL.md"
-            if file_md5(s_path) != file_md5(d_path):
-                shutil.copy2(s_path, d_path)
-                synced.append("SKILL.md")
-            else:
-                identical.append("SKILL.md")
+            _sync_file_to_oss(s_path, dst_skill_dir / "SKILL.md", "SKILL.md", synced, identical)
             continue
 
         d_path = dst_skill_dir / rel
         if s_path.is_file():
-            d_path.parent.mkdir(parents=True, exist_ok=True)
-            if file_md5(s_path) != file_md5(d_path):
-                shutil.copy2(s_path, d_path)
-                synced.append(str(rel))
-            else:
-                identical.append(str(rel))
+            _sync_file_to_oss(s_path, d_path, str(rel), synced, identical)
         elif s_path.is_dir():
             for root, _, files in os.walk(s_path):
                 if "__pycache__" in root:
@@ -177,12 +198,7 @@ def sync_to_oss_workspace(refdir: str) -> dict:
                     s_file = Path(root) / file
                     r_file = s_file.relative_to(MASTER_DIR)
                     d_file = dst_skill_dir / r_file
-                    d_file.parent.mkdir(parents=True, exist_ok=True)
-                    if file_md5(s_file) != file_md5(d_file):
-                        shutil.copy2(s_file, d_file)
-                        synced.append(str(r_file))
-                    else:
-                        identical.append(str(r_file))
+                    _sync_file_to_oss(s_file, d_file, str(r_file), synced, identical)
 
     return {
         "dest": str(dst_skill_dir),
