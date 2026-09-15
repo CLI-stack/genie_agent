@@ -19,7 +19,7 @@ The old monolithic `ORCHESTRATOR.md` (1078 lines) was split into STUDY (Steps 1-
 
 ---
 
-## Rules Index (39 rules — jump-table for cross-references)
+## Rules Index (40 rules — jump-table for cross-references)
 
 | #     | Title                                                                                  |
 |-------|----------------------------------------------------------------------------------------|
@@ -62,6 +62,8 @@ The old monolithic `ORCHESTRATOR.md` (1078 lines) was split into STUDY (Steps 1-
 | 34    | FM Failure Mode Reference Table (Modes A through H + special codes)                    |
 | 35    | MAX_ROUNDS is the ONLY exit (`manual_only` abolished)                                  |
 | 36    | `round_handoff.json` Required Fields                                                   |
+| 37    | Register Output Signals Must Tap Direct Flop .Q Pin (Never Downstream Port Wire)       |
+| 38    | Script-Bug Self-Fix: Copy to /tmp, Patch, Re-run — Never Edit Shared Repo Mid-Run       |
 
 ---
 
@@ -695,4 +697,22 @@ Missing any field → the spawned agent cannot recover state correctly.
 When an ECO logic gate or comparator consumes an RTL signal that is declared as a **register** (`reg <sig>`), the studier must **ALWAYS tap the direct `.Q`/`.QN` output pin of `<sig>_reg`** (or its multi-bit slice).
 
 **Critical Hazard:** If `<sig>` is ALSO declared as a module output port (`output reg <sig>`), synthesis often places buffer/inverter repeater chains between `<sig>_reg.Q` and the module boundary wire named `<sig>`. **NEVER** connect an ECO gate input to the bare port wire `<sig>` — Formality cuts at register boundaries (`<sig>_reg.Q`); tapping downstream of the flop's `.Q` pin introduces combinational repeaters outside the cut point, breaking formal equivalence and causing false LEC compare point failures.
+
+---
+
+## RULE 38 — Script-Bug Self-Fix: Copy to `/tmp`, Patch, Re-run — Never Edit the Shared Repo Script Mid-Run
+
+**When any deterministic script (emitter, validator, studier, applier component) aborts fail-closed, first decide WHY before deciding how to respond:**
+
+- **Data/correctness fail-close** — the input is genuinely ambiguous or unresolvable per the correctness bar (cell selection, polarity, shared-chain, scan pins — see Rules 1–37 and the studier/applier's own hard gates). Here, STOP is correct: follow the existing hard-gate / ROUND recovery path (e.g. `eco_fm_analyzer.md` classification, Rules 21/22/34). Never guess to force a script through.
+- **Script-bug fail-close** — you can confirm, against the raw netlist / RTL / study JSON, that the case IS legitimately resolvable, but the script aborts on its **own** limitation (an over-strict exact match, a missing null/scalar case, a field-name mismatch — the class of bug this flow keeps surfacing in its Python/csh helper scripts). In this case:
+  1. Copy the offending script to `/tmp/<script>_<TAG>.py` (or `.csh`) — **never edit the shared repo script mid-run.**
+  2. Make the **minimal, evidence-backed** fix to the `/tmp` copy. It MUST be a genuine bug fix verified against the raw netlist/RTL/study data — **NOT** fudging data, substituting a constant, or loosening a correctness gate to force the run through.
+  3. Re-run the `/tmp` copy in place of the original and continue the flow.
+  4. Record it: add `SCRIPT-SELF-FIX: <script> — <bug> → <fix>` to the relevant step's RPT, so the fix is visible to the user and can be upstreamed to the shared repo afterward (this session's own SELF-FIX log entries, e.g. in `find_equivalent_nets.csh`, are the pattern this codifies).
+- If you cannot tell which category it is, or a fix would require guessing data → treat it as a data fail-close and STOP.
+
+**This does NOT override RULE 26 (FM ABORT → ROUND_ORCHESTRATOR, never self-fix).** An FM abort is a result from the FM *tool*, not a bug in our own script tooling — it must still be handed off untouched, exactly as Rule 26 requires. This rule applies only to bugs in this flow's own deterministic helper scripts (emitters, validators, studiers, appliers, fenets runner helpers, etc.), not to FM's own abort/fail results.
+
+> **This rule prevents:** a real, evidence-backed fix being blocked by a script's own coding limitation, while also preventing an agent from "fixing" its way past a genuine correctness gate. Same pattern already in force for simple mode (`config/eco_agents_simple/SIMPLE_ORCHESTRATOR.md` Rule 4) — this extends it to complete mode's STUDY/APPLY/ROUND phases.
 

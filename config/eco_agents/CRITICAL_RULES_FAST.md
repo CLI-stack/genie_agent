@@ -15,6 +15,7 @@
 8. **All active stages must change** — verify md5 of each active PostEco stage differs from `.bak_<TAG>_round<N>`. Missing an active stage = partial ECO = FM fail. [Rule 12]
 9. **Sub-agents write JSON only; orchestrator writes RPTs** — sub-agent context pressure must not block the RPT. [Rule 14]
 10. **FM ABORT → next ROUND_ORCHESTRATOR, never self-fix** — write `eco_fm_verify.json` → EXIT. Don't re-submit FM, don't patch inline, don't loop. [Rule 26]
+11. **Script-bug (not FM abort) fail-close → self-fix in `/tmp`, never edit the shared repo mid-run.** If a deterministic script aborts on its OWN limitation (not genuine data ambiguity), copy it to `/tmp/<script>_<TAG>`, make the minimal evidence-backed fix, re-run the `/tmp` copy, and log `SCRIPT-SELF-FIX: <script> — <bug> → <fix>` in the step RPT. Does NOT apply to FM aborts (Rule 26 still governs those). [Rule 38]
 
 **Forbidden (NEVER, under any pressure):**
 - NEVER modify `EcoChange.svf` — AI flow is permanently prohibited from SVF updates. [Rule 27]
