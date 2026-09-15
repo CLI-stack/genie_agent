@@ -237,11 +237,10 @@ Only fall back to `wire_swap + driver_substitution` when `and_term` is truly inf
 The net to check is **NOT necessarily `old_token` itself** — `old_token` is often a bare primary
 input/register with no driver at this module's scope (its real driver may sit one level up the
 hierarchy). The correct target is **whatever net literal your own cone-trace already found feeding
-the consuming gate's pin** — i.e. the exact operand appearing at that pin, which may already be an
-INV/buffer of `old_token` sitting inside this cone (e.g. tracing the D-input down to a gate pin
-`B = phfnn_2383543`, where `phfnn_2383543` is a pre-existing `INV(old_token)`, not `old_token`
-itself). Whatever net you name in the cone-trace as directly feeding that pin — that is the net
-whose driver you check.
+the consuming gate's pin** — i.e. the exact operand appearing at that pin, which may already be a
+pre-existing INV/buffer of `old_token` sitting inside this cone, under whatever synthesis-internal
+net name your cone-trace resolved for it — not `old_token`'s own name. Whatever net you name in the
+cone-trace as directly feeding that pin — that is the net whose driver you check.
 
 Find that net's immediate driver cell in the PreEco netlist (module-scoped). If the driver's output
 net has **sole fanout** (only its own `wire` decl + its own output pin — `grep -c <net>` == 2), set
