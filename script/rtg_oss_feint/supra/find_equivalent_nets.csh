@@ -131,7 +131,21 @@ set tb_status_log = "/tmp/tb_fm_status_${tag}.log"
 cd $refdir_name
 $TBTERM -x "TileBuilderShow >& $tb_status_log"
 cd $source_dir
-sleep 5
+
+# Poll for up to 30s instead of a blind sleep -- on some hosts the xterm-launched
+# TileBuilderShow takes 15-20s to populate $tb_status_log; a fixed short sleep
+# races ahead of that, leaving the log empty when checked below and causing every
+# target to read back as fm_status=UNKNOWN (Phase 3 then aborts before FM is ever
+# launched).
+set _fenets_wait = 0
+while ($_fenets_wait < 30)
+    if (-f "$tb_status_log" && -s "$tb_status_log") then
+        set _fm_line_count = `wc -l < $tb_status_log`
+        if ($_fm_line_count > 0) break
+    endif
+    sleep 2
+    @ _fenets_wait += 2
+end
 
 # Validate each target status
 foreach tgt ($target_list)
