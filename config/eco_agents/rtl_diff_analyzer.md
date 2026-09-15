@@ -232,6 +232,10 @@ If the grep finds gates that compute `old_expression & ~new_term` (e.g. `AN2`, `
 
 Only fall back to `wire_swap + driver_substitution` when `and_term` is truly infeasible: (a) old driver is a hard-macro output (BBPin), (b) FM polarity check fails for both NOR2 and INR2 candidates, or (c) no compound cell at hop 0 can host the new term in a polarity-correct way. Document the SPECIFIC reason in `mux_select_reasoning` (e.g. "and_term infeasible: ctmi_485620 IAOI21 hop-0 driver — both NOR2 and INR2 polarity-check FAIL because…"). A generic "decompose_failed → fallback" reasoning is INVALID.
 
+**MANDATORY — for a DIRECT single-operand substitution (`old_token` → `new_token`, same position/polarity, no condition/priority-chain change at all), check for a sole-fanout driver BEFORE considering `driver_substitution` or new-gate synthesis:**
+
+Find `old_token`'s immediate driver cell in the PreEco netlist (module-scoped). If that driver's output net has **sole fanout** (only its own `wire` decl + its own output pin — `grep -c <net>` == 2), set `fallback_strategy: "sole_fanout_driver_repoint"` and just repoint that cell's own input pin to `new_token` — insert no new gate, touch no downstream consumer. If it has other consumers, repointing would affect them too — fall through to `driver_substitution`/new-gate synthesis as today. Skipping this check risks leaving the original driver dangling (zero fanout) instead of reusing it. Record `sole_fanout_driver_cell`, `sole_fanout_driver_output_net`, `sole_fanout_driver_pin` for Step 3 to emit as a plain input-pin rewire. Check independently per stage (P&R may restructure the cell).
+
 For each change record:
 ```json
 {
