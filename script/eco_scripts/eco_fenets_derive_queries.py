@@ -301,15 +301,31 @@ def derive(rtl_diff, tile='', ref_dir=None):
         # fenets' only chance to catch it structurally.
         if ct in ('new_logic', 'new_logic_dff', 'new_logic_gate'):
             for g in (c.get('d_input_gate_chain') or []):
-                # EQ_CMP_BUS operands are multi-bit buses being compared bit-for-bit
-                # (e.g. `ReqPlr_p1 == CnclSuccPlr`). FM `find_equivalent_nets` only
-                # resolves individual bit-level points, not whole bus names — querying
-                # the bare bus name (as the plain per-input walk below would) returns
-                # FM-036 "Unknown name" for EVERY such signal (confirmed on JIRA-11233's
-                # manual round-1 query: every Bus-Var=YES signal FM-036'd; only per-bit
-                # round-2 queries resolved). Expand to one query per bit here instead.
-                is_eq_cmp_bus = g.get('gate_function') == 'EQ_CMP_BUS'
-                for inp in (g.get('inputs') or []):
+                # EQ_CMP_BUS / COMPARE_EQ operands are multi-bit buses being compared
+                # bit-for-bit (e.g. `ReqPlr_p1 == CnclSuccPlr`). FM `find_equivalent_nets`
+                # only resolves individual bit-level points, not whole bus names —
+                # querying the bare bus name (as the plain per-input walk below would)
+                # returns FM-036 "Unknown name" for EVERY such signal (confirmed on
+                # JIRA-11233's manual round-1 query: every Bus-Var=YES signal FM-036'd;
+                # only per-bit round-2 queries resolved). Expand to one query per bit
+                # here instead.
+                #
+                # SCHEMA TOLERANCE (this is agent-authored analyzer output, not a fixed
+                # format — confirmed to vary run-to-run on the SAME ECO): leaf operands
+                # may appear as an `inputs: [...]` list (older run, gate_function
+                # "EQ_CMP_BUS"), OR as scalar `operand_a`/`operand_b` fields (newer run,
+                # gate_function "COMPARE_EQ", `width` given directly). Collect leaves from
+                # BOTH shapes rather than assuming one — a schema-specific `.get('inputs')`
+                # silently found nothing at all for the operand_a/operand_b shape, which is
+                # exactly how this class of leaf went unqueried in the first place.
+                is_bus_cmp = g.get('gate_function') in ('EQ_CMP_BUS', 'COMPARE_EQ')
+                leaves = list(g.get('inputs') or [])
+                for k in ('operand_a', 'operand_b'):
+                    v = g.get(k)
+                    if isinstance(v, str):
+                        leaves.append(v)
+                explicit_width = g.get('width') if isinstance(g.get('width'), int) else None
+                for inp in leaves:
                     if not isinstance(inp, str):
                         continue
                     base = inp.split('[')[0]
@@ -317,8 +333,8 @@ def derive(rtl_diff, tile='', ref_dir=None):
                         continue
                     if not base:
                         continue
-                    width = None
-                    if is_eq_cmp_bus and ref_dir and _resolve_bus_width:
+                    width = explicit_width if is_bus_cmp else None
+                    if width is None and is_bus_cmp and ref_dir and _resolve_bus_width:
                         preeco_synth = str(Path(ref_dir) / 'data' / 'PreEco' / 'Synthesize.v.gz')
                         width = _resolve_bus_width(base, preeco_synth)
                     if width and width > 1:
