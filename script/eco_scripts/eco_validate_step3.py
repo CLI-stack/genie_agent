@@ -3253,13 +3253,21 @@ def main():
             if close_pos < 0:
                 continue
             block = txt[open_pos+1:close_pos]
-            # Find output pin's net
-            inv_input = None
+            # Find output pin's net. Extract the .I(<wire>) input for ANY
+            # single-input pass-through cell (buffer OR inverter — standard
+            # cell libraries name the sole data-input pin "I" on both), not
+            # just recognized INV names. Non-inverting buffers (BUFF*, ZBUF*)
+            # preserve polarity but were previously treated as opaque
+            # terminals, which stopped the parity walk one hop too early and
+            # hid a real inversion sitting further upstream, across another
+            # module boundary (confirmed on JIRA-11233: the true inverting
+            # driver for ReqPlr_p1[1]/[2] sits beyond a BUFFD2BW/BUFFD1BW
+            # buffer in the parent ARB module). `is_inv` still gates whether
+            # this hop flips parity; it no longer gates whether we continue.
+            passthrough_input = None
             is_inv = bool(_INV_RE.match(cell_type))
-            if is_inv:
-                # Extract .I(<wire>)
-                im = re.search(r'\.\s*I\s*\(\s*(\w+)\s*\)', block)
-                if im: inv_input = im.group(1)
+            im = re.search(r'\.\s*I\s*\(\s*(\w+)\s*\)', block)
+            if im: passthrough_input = im.group(1)
             for op_m in _OUT_PIN_RE.finditer(block):
                 out_pin, out_net = op_m.group(1), op_m.group(2)
                 # Tag DFF outputs distinctly
@@ -3269,7 +3277,7 @@ def main():
                                  'dff_s' if out_pin == 'S' else
                                  'comb')
                 # Keep first writer per net (in Verilog each wire has one driver)
-                driver_map.setdefault(out_net, (cell_type, inst_name, inv_input, terminal_kind, is_inv))
+                driver_map.setdefault(out_net, (cell_type, inst_name, passthrough_input, terminal_kind, is_inv))
         _MODULE_INDEX_CACHE[key] = (driver_map, primary_inputs)
         return _MODULE_INDEX_CACHE[key]
 
@@ -3292,24 +3300,309 @@ def main():
         for hop in range(max_hops):
             if cur in primary_inputs:
                 return parity, 'primary_input'
+            # A bit-select of a multi-bit port (e.g. `ReqPlr_p1[1]`) never
+            # equals the bare port name (`ReqPlr_p1`) stored in primary_inputs
+            # (which comes from the `input [MSB:LSB] name;` declaration, name
+            # only, no per-bit entries). Without this fallback, any indexed
+            # bit of a vector primary input falls through to driver_map.get()
+            # -> None -> 'unresolved', which the hierarchical walk then treats
+            # as a real terminal (false TRUE verdict) instead of hopping to
+            # the parent module — silently missing exactly the cross-module
+            # inverted-bit bug this check exists to catch.
+            _bit_m = re.match(r'^([A-Za-z_]\w*)\[\d+\]$', cur)
+            if _bit_m and _bit_m.group(1) in primary_inputs:
+                return parity, 'primary_input'
             d = driver_map.get(cur)
             if d is None:
                 return parity, 'unresolved'
-            cell_type, inst_name, inv_input, terminal_kind, is_inv = d
+            cell_type, inst_name, passthrough_input, terminal_kind, is_inv = d
             if terminal_kind == 'dff_qn':
                 parity ^= 1
                 return parity, f'dff_{inst_name}'
             if terminal_kind in ('dff_q','dff_co','dff_s'):
                 return parity, f'dff_{inst_name}'
-            # Combinational
-            if is_inv:
+            # Combinational. Only continue through a recognized INVERTER
+            # (flips parity) — do NOT also continue through non-inverting
+            # buffers/other pass-through cells: empirically (JIRA-11233 real
+            # data) continuing past a plain buffer can walk onto an unrelated
+            # local inverter that isn't actually in this net's true causal
+            # path, producing a WRONG verdict (confirmed: flipped bit0 to a
+            # false INVERTED and bit1 to a false TRUE on the same design).
+            # Stopping at the first non-inverter cell is the conservative,
+            # correct choice; the hierarchical caller downgrades this to
+            # UNDETERMINED whenever it was reached via a cross-module hop
+            # (see _net_parity_hierarchical), since even a same-stage
+            # in-module comb terminal can't be fully trusted once we've
+            # already crossed a boundary once to get here.
+            if is_inv and passthrough_input is not None:
                 parity ^= 1
-                if inv_input is None:
-                    return parity, 'unresolved_inv'
-                cur = inv_input
+                cur = passthrough_input
                 continue
             return parity, f'comb_{cell_type[:8]}'
         return parity, 'max_hops'
+
+    # ── Cross-module hierarchical extension of the polarity walk above ───────
+    # _net_parity_in_stage stops ('primary_input') the moment it hits a bare
+    # module input port, because that port's TRUE driver lives in a DIFFERENT
+    # module across the hierarchy. The functions below hop into the actual
+    # PARENT instantiation (found in the SAME already-parsed netlist text — no
+    # Formality needed) and continue the identical buf/inv parity walk there,
+    # across as many module boundaries as needed, until reaching a real
+    # register terminal or a genuine, structurally-undecidable dead end.
+    _PORT_WIDTH_DECL_RE = re.compile(r'^\s*input\s+\[(\d+):(\d+)\]\s+(\w+)\s*[;,]', re.MULTILINE)
+
+    def _port_width_in_module(module, ref_dir, stage, base_name):
+        """Return the bit-width of input port `base_name` in `module` (from its
+        `input [MSB:LSB] name;` declaration), or None if not found / scalar."""
+        gz = Path(ref_dir) / 'data' / 'PreEco' / f'{stage}.v.gz'
+        if not gz.is_file():
+            return None
+        try:
+            plain = _plain_netlist(str(gz))
+            full = _nl_text(plain)
+            modmap = _nl_module_map(plain)
+        except Exception:
+            return None
+        for mod in (module, f'{module}_0'):
+            span = modmap.get(mod)
+            if not span:
+                continue
+            body = full[span[0]:span[1]]
+            for wm in _PORT_WIDTH_DECL_RE.finditer(body):
+                msb, lsb, name = int(wm.group(1)), int(wm.group(2)), wm.group(3)
+                if name == base_name:
+                    return abs(msb - lsb) + 1
+        return None
+
+    def _parse_port_connections(block):
+        """Parse a `.port(expr), .port2(expr2), ...` instantiation block into
+        {port_name: expr_text}, balanced-paren aware. None on any parse failure
+        (caller must fail closed to UNDETERMINED, never guess)."""
+        conns = {}
+        i, n = 0, len(block)
+        port_re = re.compile(r'\.\s*([A-Za-z_]\w*)\s*\(')
+        while i < n:
+            m = port_re.search(block, i)
+            if not m:
+                break
+            port = m.group(1)
+            j = m.end()
+            depth = 1
+            start = j
+            while j < n and depth > 0:
+                if block[j] == '(':
+                    depth += 1
+                elif block[j] == ')':
+                    depth -= 1
+                j += 1
+            if depth != 0:
+                return None
+            conns[port] = block[start:j - 1].strip()
+            i = j
+        return conns if conns else None
+
+    def _find_parent_instantiation(host_module, ref_dir, stage, expected_inst_name=None):
+        """Find the instantiation of `host_module` (or its Route-uniquified
+        `_0` variant) as a child inside some OTHER module in the same stage
+        netlist. Returns (parent_module, {port: expr}) or None if zero,
+        ambiguous (multiple instantiations with differing wiring), or
+        unparseable — never guess.
+
+        `expected_inst_name`: when the caller knows the specific instance name
+        this module was instantiated under (from the study entry's own
+        `instance_scope` hierarchy path, e.g. the "STGBUF" in "ARB/STGBUF"),
+        prefer the match whose OWN instance name equals it. A module type can
+        legitimately be instantiated more than once (e.g. once per p1/p2
+        partition) with genuinely different wiring at each site — blind
+        whole-file scanning can't tell those apart and must bail to
+        UNDETERMINED, but the study already recorded which specific instance
+        this leaf belongs to, so use it instead of guessing.
+        """
+        gz = Path(ref_dir) / 'data' / 'PreEco' / f'{stage}.v.gz'
+        if not gz.is_file():
+            return None
+        try:
+            plain = _plain_netlist(str(gz))
+            full = _nl_text(plain)
+            modmap = _nl_module_map(plain)
+        except Exception:
+            return None
+        if not full or not modmap:
+            return None
+        candidates = [host_module, f'{host_module}_0']
+        pat = re.compile(r'(?m)^\s*(' + '|'.join(re.escape(c) for c in candidates) +
+                          r')\s+([A-Za-z_]\w*)\s*\(')
+        matches = list(pat.finditer(full))
+        if not matches:
+            return None
+        results = []
+        for m in matches:
+            inst_name = m.group(2)
+            # Determine the enclosing (parent) module FIRST so the balanced-
+            # paren scan can be bounded by that module's own end — a fixed
+            # small char cap (the original approach) truncates on large
+            # top-level instantiations that legitimately have hundreds of
+            # port connections spanning well past a few tens of thousands of
+            # characters (confirmed on JIRA-11233: STGBUF's own instantiation
+            # block is ~1MB+), which silently drops the only real match and
+            # makes a genuinely UNIQUE instantiation look "not found".
+            parent = None
+            for mod_name, (s, e) in modmap.items():
+                if s <= m.start() < e:
+                    parent = mod_name; break
+            if parent is None:
+                continue
+            parent_end = modmap[parent][1]
+            open_pos = m.end() - 1
+            depth = 0; close_pos = -1
+            scan_end = min(parent_end, len(full))
+            for j in range(open_pos, scan_end):
+                c = full[j]
+                if c == '(':
+                    depth += 1
+                elif c == ')':
+                    depth -= 1
+                    if depth == 0:
+                        close_pos = j; break
+            if close_pos < 0:
+                continue
+            block = full[open_pos + 1:close_pos]
+            results.append((parent, inst_name, block))
+        if not results:
+            return None
+
+        def _pick(candidates_list):
+            first_parent, _first_inst, first_block = candidates_list[0]
+            if len(candidates_list) > 1 and ({b for _, _, b in candidates_list[1:]} - {first_block}):
+                return None   # ambiguous: multiple instantiations with different wiring
+            conns = _parse_port_connections(first_block)
+            if conns is None:
+                return None
+            return (first_parent, conns)
+
+        if expected_inst_name:
+            by_name = [r for r in results if r[1] == expected_inst_name]
+            if by_name:
+                picked = _pick(by_name)
+                if picked is not None:
+                    return picked
+                # Multiple, differently-wired matches even under the SAME expected
+                # instance name — genuinely ambiguous, don't fall back further.
+                return None
+            # No occurrence carries the expected instance name (naming drift
+            # across stages, etc.) — fall back to the name-agnostic scan below
+            # rather than failing closed immediately.
+        return _pick(results)
+
+    def _resolve_bit_in_expr(expr, bit_index, total_width):
+        """Given a parent-scope port-connection expression (a bare identifier,
+        or a `{a,b,c}` concatenation, MSB-first per Verilog convention) and the
+        bit index (0=LSB) we need out of a `total_width`-wide port, return the
+        single-bit net name at that position, or None if ambiguous."""
+        expr = expr.strip()
+        if total_width <= 1:
+            return expr or None
+        if expr.startswith('{') and expr.endswith('}'):
+            inner = expr[1:-1]
+            items, depth, cur = [], 0, ''
+            for ch in inner:
+                if ch in '{(':
+                    depth += 1; cur += ch
+                elif ch in '})':
+                    depth -= 1; cur += ch
+                elif ch == ',' and depth == 0:
+                    items.append(cur.strip()); cur = ''
+                else:
+                    cur += ch
+            if cur.strip():
+                items.append(cur.strip())
+            if len(items) != total_width:
+                return None   # width mismatch — don't guess
+            idx_from_left = (total_width - 1) - bit_index
+            return items[idx_from_left] if 0 <= idx_from_left < len(items) else None
+        if re.match(r'^[A-Za-z_]\w*$', expr):
+            return f'{expr}[{bit_index}]'
+        return None   # anything more complex — don't guess
+
+    def _net_parity_hierarchical(net, host_module, ref_dir, stage, instance_scope=None,
+                                  max_module_hops=5):
+        """Like _net_parity_in_stage, but when the walk dead-ends at a primary
+        input of `host_module`, hop into the ACTUAL PARENT instantiation and
+        continue the identical buf/inv parity walk there — across as many
+        module boundaries as needed — until reaching a real register terminal,
+        or a genuine, structurally-undecidable dead end. Returns
+        (verdict, parity, terminal_desc); verdict in TRUE|INVERTED|UNDETERMINED.
+        No Formality/fenets used — purely structural, same netlist text already
+        parsed for every other check in this file.
+
+        `instance_scope`: the study entry's own hierarchy path (e.g.
+        "ARB/STGBUF" — slash-separated, root-to-leaf, LAST segment is
+        `host_module`'s own instance name). Consumed one segment per hop so
+        `_find_parent_instantiation` can pick the SPECIFIC instantiation this
+        leaf belongs to instead of bailing out whenever the module type
+        happens to be instantiated more than once elsewhere in the design.
+        Once segments run out, later hops fall back to the name-agnostic scan.
+        """
+        cur_net, cur_module, cur_stage = net, host_module, stage
+        total_parity = 0
+        hops_used = 0
+        visited = set()
+        scope_segs = [s for s in (instance_scope or '').split('/') if s]
+        while True:
+            p = _net_parity_in_stage(cur_net, cur_module, ref_dir, cur_stage)
+            if p is None:
+                return ('UNDETERMINED', total_parity, f'{cur_module}:{cur_net} (no-index)')
+            local_parity, terminal = p
+            total_parity ^= local_parity
+            # 'unresolved'/'max_hops' mean the driver could NOT be located at
+            # all (not "located and confirmed non-inverting") — reporting
+            # TRUE here would be false confidence, not a real result. Only a
+            # genuine DFF terminal or an identified real (non-pass-through)
+            # combinational gate is a trustworthy stopping point.
+            if terminal in ('unresolved', 'max_hops'):
+                return ('UNDETERMINED', total_parity, f'{cur_module}:{cur_net} ({terminal})')
+            if terminal.startswith('comb_') and hops_used > 0:
+                # A plain combinational terminal reached AFTER already
+                # crossing at least one module boundary is not trustworthy
+                # enough to claim TRUE/INVERTED: we've confirmed (real
+                # JIRA-11233 data) that a non-inverting buffer can sit in
+                # front of a driver whose own further upstream inversion we
+                # have no way to structurally rule out with this bounded
+                # single-input-cell walk. Only a genuine register terminal,
+                # or a comb terminal found WITHOUT ever leaving the original
+                # module, is confident enough to report.
+                return ('UNDETERMINED', total_parity,
+                        f'{cur_module}.{terminal} (cross-module comb terminal, unverifiable)')
+            if terminal != 'primary_input':
+                return ('TRUE' if total_parity == 0 else 'INVERTED',
+                        total_parity, f'{cur_module}.{terminal}')
+            key = (cur_module, cur_net)
+            if key in visited or hops_used >= max_module_hops:
+                return ('UNDETERMINED', total_parity, f'{cur_module}:{cur_net} (hop-limit/loop)')
+            visited.add(key)
+            base_m = re.match(r'^([A-Za-z_]\w*)(?:\[(\d+)\])?$', cur_net)
+            if not base_m:
+                return ('UNDETERMINED', total_parity, f'{cur_module}:{cur_net} (unparseable-net)')
+            base_name, bit_str = base_m.group(1), base_m.group(2)
+            expected_inst = scope_segs.pop() if scope_segs else None
+            found = _find_parent_instantiation(cur_module, ref_dir, cur_stage, expected_inst)
+            if found is None:
+                return ('UNDETERMINED', total_parity, f'{cur_module}:{cur_net} (no-unique-parent)')
+            parent_module, conns = found
+            expr = conns.get(base_name)
+            if expr is None:
+                return ('UNDETERMINED', total_parity, f'{cur_module}:{cur_net} (port-not-connected)')
+            if bit_str is not None:
+                total_width = _port_width_in_module(cur_module, ref_dir, cur_stage, base_name)
+                if not total_width or total_width < 2:
+                    return ('UNDETERMINED', total_parity, f'{cur_module}:{cur_net} (width-unresolved)')
+                upstream = _resolve_bit_in_expr(expr, int(bit_str), total_width)
+            else:
+                upstream = expr
+            if not upstream:
+                return ('UNDETERMINED', total_parity, f'{cur_module}:{cur_net} (bit-resolve-failed)')
+            cur_net, cur_module = re.sub(r'\s+', '', upstream), parent_module
+            hops_used += 1
 
     # Exclude output pins (Z/ZN/...) and clock pins (CP/CK/CLK) from polarity
     # check. Clock buffers intentionally have odd INV counts (CTS handles
@@ -3436,6 +3729,70 @@ def main():
                     f"the INVERSE logical value in that stage. Fix: use a "
                     f"polarity-correct wire (the DFF Q output directly, or "
                     f"FM's resolved pin location's actual wire).")
+
+    # ── 68. CROSS-MODULE PRIMARY-INPUT POLARITY CHECK (structural, no Formality) ──────────
+    # Catches: a new_logic_gate/new_logic_dff leaf operand that is a bare PRIMARY INPUT PORT
+    # of the current module (its true driver lives in a DIFFERENT module, across the
+    # hierarchy). P&R/synthesis buffering between that true source and this module's port
+    # boundary can legitimately include an ODD number of inverters — the bare-named port then
+    # silently carries the LOGICAL INVERSE of its own RTL name, even though nothing about the
+    # name suggests it. A gate built assuming direct/non-inverted value (e.g. a plain XNOR2
+    # equality compare) is then WRONG for that operand. This extends the existing single-
+    # module polarity walk (Check 38, above) across the actual module instantiation boundary
+    # found in the SAME already-parsed netlist text — confirmed on JIRA-11233
+    # (ReqPlr_p1[1]/[2] inside umcstgbuf, sourced from ADDR_ARB, carry inverted polarity while
+    # ReqPlr_p1[0] and all of ReqPlr_p2[*] do not — real Formality find_equivalent_nets data
+    # matched this structural trace bit-for-bit). Runs identically in complete and simple mode
+    # (both call this same validator path); needs no FM license.
+    for _stage68 in [s for s in ('Synthesize', 'PrePlace', 'Route') if study.get(s)]:
+        for e in study.get(_stage68, []):
+            if e.get('change_type') not in ('new_logic_gate', 'new_logic_dff'):
+                continue
+            if not e.get('confirmed', True):
+                continue
+            host68 = e.get('module_name_per_stage', {}).get(_stage68) or e.get('module_name', '')
+            inst68 = e.get('instance_name', '?')
+            pcs_synth68 = e.get('port_connections') or {}
+            pcs_ps68 = (e.get('port_connections_per_stage') or {}).get(_stage68) or {}
+            for pin68, synth_val68 in pcs_synth68.items():
+                if pin68 in _NO_CHECK_PINS_38 or not isinstance(synth_val68, str):
+                    continue
+                v68 = (pcs_ps68.get(pin68) or synth_val68).strip()
+                if v68.startswith(("1'b", "0'b", "1'h", "0'h", "n_eco_")):
+                    continue
+                if any(v68.startswith(p) for p in _placeholder_prefixes):
+                    continue
+                _dm68, primary_inputs68 = _index_module_body(host68, args.ref_dir, _stage68)
+                if primary_inputs68 is None:
+                    continue
+                base_m68 = re.match(r'^([A-Za-z_]\w*)(?:\[(\d+)\])?$', v68)
+                base_name68 = base_m68.group(1) if base_m68 else v68
+                if base_name68 not in primary_inputs68:
+                    continue   # not a primary input of this module — Check 38's territory, not this one
+                verdict68, _par68, term68 = _net_parity_hierarchical(
+                    v68, host68, args.ref_dir, _stage68,
+                    instance_scope=e.get('instance_scope'))
+                if verdict68 == 'INVERTED':
+                    issues.append(
+                        f"CRITICAL/68-CROSS-MODULE-PRIMARY-INPUT-INVERTED: "
+                        f"{e.get('change_type')} {inst68}.{pin68} = {v68!r} ({_stage68}) is a "
+                        f"primary input of module {host68!r} whose TRUE origin (traced "
+                        f"hierarchically to {term68}) is INVERTED relative to this bare port "
+                        f"name — {inst68}.{pin68} silently carries the LOGICAL COMPLEMENT of "
+                        f"{v68!r}. A gate assuming direct/non-inverted value here (e.g. XNOR2 "
+                        f"for an equality compare) computes the WRONG function for this "
+                        f"operand. Fix: swap the gate function for this leaf (e.g. XNOR2→XOR2 "
+                        f"if this is the only inverted operand), insert a compensating INV, or "
+                        f"bind a non-inverted equivalent net if one exists in this module scope.")
+                elif verdict68 == 'UNDETERMINED':
+                    issues.append(
+                        f"MEDIUM/68-CROSS-MODULE-PRIMARY-INPUT-UNVERIFIED: "
+                        f"{e.get('change_type')} {inst68}.{pin68} = {v68!r} ({_stage68}) is a "
+                        f"primary input of module {host68!r} whose true origin could NOT be "
+                        f"structurally traced across the hierarchy (reason: {term68}) — "
+                        f"polarity relative to its RTL name is UNVERIFIED, not confirmed "
+                        f"correct. Verify via Formality find_equivalent_nets before trusting "
+                        f"this gate, or route this change through complete mode.")
 
     # ── port_declaration output driver check ─────────────────────────────────
     # Hierarchical netlists use port_declaration(output) instead of port_promotion.

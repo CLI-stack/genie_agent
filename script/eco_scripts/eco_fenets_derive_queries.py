@@ -47,12 +47,14 @@ try:
                                          _module_netlist_body)
     from eco_cone_rebuild import (cone_leaves, selector_folded_conditions,
                                   reg_guard_folded_conditions, reg_guard_cone_leaves)
+    from eco_resolve_bus_width import resolve_from_netlist as _resolve_bus_width
 except Exception:
     RtlConfig = extract_added_branch_condition = resolve_rtl = None
     synthesize_condition = _module_netlist_body = cone_leaves = selector_folded_conditions = None
     reg_guard_folded_conditions = reg_guard_cone_leaves = None
     _PErr = Exception
     _OUT_PINS_DRV = ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO')
+    _resolve_bus_width = None
 
 
 def _pf_cone_leaves(change, ref_dir):
@@ -270,7 +272,7 @@ def derive(rtl_diff, tile='', ref_dir=None):
                         'source':   f'changes[{idx}].equality_decode_leaf',
                     })
 
-        # Cat 2 + 3 + 4: new_logic_dff context
+        # Cat 2 + 3: new_logic_dff-only context (clock/reset pins don't apply to new_logic_gate)
         if ct in ('new_logic', 'new_logic_dff'):
             if c.get('dff_clock'):
                 out.append({
@@ -286,7 +288,27 @@ def derive(rtl_diff, tile='', ref_dir=None):
                     'category': 3,
                     'source':   f'changes[{idx}].reset_signal',
                 })
+
+        # Cat 4: every chain leaf input that is NOT a `n_eco_*` intermediate or constant.
+        # Runs for ALL three new-logic change types, including plain `new_logic_gate` —
+        # NOT just new_logic_dff. A `new_logic_gate` entry with a `d_input_gate_chain`
+        # (e.g. an EQ_CMP_BUS two-signal bit-equality tree, built by the studier when no
+        # deterministic emitter owns it — confirmed on JIRA-11233: `eco_emit_eq_decode.py`
+        # only handles signal==CONSTANT compares, `eco_cone_rebuild.py` only handles
+        # comb_net_force/reg_guard_delta) has leaf operands (e.g. a bare primary-input
+        # port like `ReqPlr_p1`) that are JUST as much at risk of a hidden cross-module
+        # polarity flip as any new_logic_dff leaf — skipping them here silently drops
+        # fenets' only chance to catch it structurally.
+        if ct in ('new_logic', 'new_logic_dff', 'new_logic_gate'):
             for g in (c.get('d_input_gate_chain') or []):
+                # EQ_CMP_BUS operands are multi-bit buses being compared bit-for-bit
+                # (e.g. `ReqPlr_p1 == CnclSuccPlr`). FM `find_equivalent_nets` only
+                # resolves individual bit-level points, not whole bus names — querying
+                # the bare bus name (as the plain per-input walk below would) returns
+                # FM-036 "Unknown name" for EVERY such signal (confirmed on JIRA-11233's
+                # manual round-1 query: every Bus-Var=YES signal FM-036'd; only per-bit
+                # round-2 queries resolved). Expand to one query per bit here instead.
+                is_eq_cmp_bus = g.get('gate_function') == 'EQ_CMP_BUS'
                 for inp in (g.get('inputs') or []):
                     if not isinstance(inp, str):
                         continue
@@ -295,12 +317,26 @@ def derive(rtl_diff, tile='', ref_dir=None):
                         continue
                     if not base:
                         continue
-                    out.append({
-                        'net_path': _abs_path(tile, scope, base),
-                        'signal':   base,
-                        'category': 4,
-                        'source':   f'changes[{idx}].chain[{g.get("seq", "?")}]',
-                    })
+                    width = None
+                    if is_eq_cmp_bus and ref_dir and _resolve_bus_width:
+                        preeco_synth = str(Path(ref_dir) / 'data' / 'PreEco' / 'Synthesize.v.gz')
+                        width = _resolve_bus_width(base, preeco_synth)
+                    if width and width > 1:
+                        for b in range(width):
+                            bit_sig = f'{base}[{b}]'
+                            out.append({
+                                'net_path': _abs_path(tile, scope, bit_sig),
+                                'signal':   bit_sig,
+                                'category': 4,
+                                'source':   f'changes[{idx}].chain[{g.get("seq", "?")}].bit{b}',
+                            })
+                    else:
+                        out.append({
+                            'net_path': _abs_path(tile, scope, base),
+                            'signal':   base,
+                            'category': 4,
+                            'source':   f'changes[{idx}].chain[{g.get("seq", "?")}]',
+                        })
 
         # Cat 5: port_promotion — one query per instance when instances[] present
         if ct == 'port_promotion':

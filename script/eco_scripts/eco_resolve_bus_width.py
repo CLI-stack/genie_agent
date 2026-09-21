@@ -21,6 +21,8 @@ Usage:
 
 Exit: 0 = resolved, 1 = could not determine width (outputs width: null)
 """
+from __future__ import annotations   # `int | None` hints below need this on Python < 3.10
+
 import argparse
 import gzip
 import json
