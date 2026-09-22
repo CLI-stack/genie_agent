@@ -252,14 +252,23 @@ TCLEOF
                 #   TILEBUILDER_LSFQUEUE (TileBuilderIntCommonLSF: the
                 #   `if ("x$queue"=="x")` fallback is skipped when queue is set).
                 set _mem = 130000
-                # SPECIAL CASE — PreEco synth-vs-synth (FmEqv...PreEcoSynthesize
-                #   VsPreEcoSynRtl): reserve 100 GB, not 130 GB. 130000 lands in
+                # SPECIAL CASE — baseline synth-vs-SynRtl compare (no P&R content
+                #   involved yet): reserve 100 GB, not 130 GB. 130000 lands in
                 #   the gb256 memory boundary (tbsub's gb-flag logic) and forces
                 #   the job onto gb256-class hosts / the saturated gb256 queue;
                 #   100000 stays under that boundary so it runs on regr_high.
-                #   Infix-tolerant suffix match handles UPF names (soundwave:
-                #   FmEqvPwrAllUpfSuppliesOnPreEcoSynthesizeVsPreEcoSynRtl).
-                set _is_preeco_syn = `echo "$tgt" | grep -cE 'PreEcoSynthesizeVsPreEcoSynRtl$'`
+                #   Matches BOTH naming conventions seen in the wild: the
+                #   PreEco-infixed form (FmEqv...PreEcoSynthesizeVsPreEcoSynRtl,
+                #   infix-tolerant for UPF names like
+                #   FmEqvPwrAllUpfSuppliesOnPreEcoSynthesizeVsPreEcoSynRtl) AND
+                #   the bare/un-phased form some projects use instead
+                #   (FmEqvSynthesizeVsSynRtl, no PreEco/Eco infix at all —
+                #   confirmed real-world on a tile that has no
+                #   phase-infixed targets). Same comparison semantics either
+                #   way (RTL vs Synthesize, nothing post-P&R), so same memory
+                #   footprint — a bare-named target on this tile allowlist
+                #   would otherwise silently get the wrong (larger) reservation.
+                set _is_preeco_syn = `echo "$tgt" | grep -cE '(PreEcoSynthesizeVsPreEcoSynRtl|SynthesizeVsSynRtl)$'`
                 if ($_is_preeco_syn > 0) set _mem = 100000
                 set extra_opts = "-r $_mem -q regr_high"
                 echo "${tgt}: using -r $_mem -q regr_high (high-memory tile: $tile_name)"

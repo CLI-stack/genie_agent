@@ -3260,9 +3260,9 @@ def main():
             # preserve polarity but were previously treated as opaque
             # terminals, which stopped the parity walk one hop too early and
             # hid a real inversion sitting further upstream, across another
-            # module boundary (confirmed on JIRA-11233: the true inverting
-            # driver for ReqPlr_p1[1]/[2] sits beyond a BUFFD2BW/BUFFD1BW
-            # buffer in the parent ARB module). `is_inv` still gates whether
+            # module boundary (confirmed against a real gate-level netlist: the
+            # true inverting driver sat beyond a non-inverting buffer in the
+            # parent module). `is_inv` still gates whether
             # this hop flips parity; it no longer gates whether we continue.
             passthrough_input = None
             is_inv = bool(_INV_RE.match(cell_type))
@@ -3300,8 +3300,8 @@ def main():
         for hop in range(max_hops):
             if cur in primary_inputs:
                 return parity, 'primary_input'
-            # A bit-select of a multi-bit port (e.g. `ReqPlr_p1[1]`) never
-            # equals the bare port name (`ReqPlr_p1`) stored in primary_inputs
+            # A bit-select of a multi-bit port (e.g. `sig_name[1]`) never
+            # equals the bare port name (`sig_name`) stored in primary_inputs
             # (which comes from the `input [MSB:LSB] name;` declaration, name
             # only, no per-bit entries). Without this fallback, any indexed
             # bit of a vector primary input falls through to driver_map.get()
@@ -3323,10 +3323,10 @@ def main():
                 return parity, f'dff_{inst_name}'
             # Combinational. Only continue through a recognized INVERTER
             # (flips parity) — do NOT also continue through non-inverting
-            # buffers/other pass-through cells: empirically (JIRA-11233 real
-            # data) continuing past a plain buffer can walk onto an unrelated
-            # local inverter that isn't actually in this net's true causal
-            # path, producing a WRONG verdict (confirmed: flipped bit0 to a
+            # buffers/other pass-through cells: empirically (confirmed against
+            # a real gate-level netlist) continuing past a plain buffer can walk
+            # onto an unrelated local inverter that isn't actually in this
+            # net's true causal path, producing a WRONG verdict (confirmed: flipped bit0 to a
             # false INVERTED and bit1 to a false TRUE on the same design).
             # Stopping at the first non-inverter cell is the conservative,
             # correct choice; the hierarchical caller downgrades this to
@@ -3410,7 +3410,7 @@ def main():
 
         `expected_inst_name`: when the caller knows the specific instance name
         this module was instantiated under (from the study entry's own
-        `instance_scope` hierarchy path, e.g. the "STGBUF" in "ARB/STGBUF"),
+        `instance_scope` hierarchy path, e.g. the "STGBUF" in "PARENT/CHILD"),
         prefer the match whose OWN instance name equals it. A module type can
         legitimately be instantiated more than once (e.g. once per p1/p2
         partition) with genuinely different wiring at each site — blind
@@ -3443,9 +3443,9 @@ def main():
             # small char cap (the original approach) truncates on large
             # top-level instantiations that legitimately have hundreds of
             # port connections spanning well past a few tens of thousands of
-            # characters (confirmed on JIRA-11233: STGBUF's own instantiation
-            # block is ~1MB+), which silently drops the only real match and
-            # makes a genuinely UNIQUE instantiation look "not found".
+            # characters (confirmed against a real design: a single module's own
+            # instantiation block was ~1MB+), which silently drops the only real
+            # match and makes a genuinely UNIQUE instantiation look "not found".
             parent = None
             for mod_name, (s, e) in modmap.items():
                 if s <= m.start() < e:
@@ -3536,7 +3536,7 @@ def main():
         parsed for every other check in this file.
 
         `instance_scope`: the study entry's own hierarchy path (e.g.
-        "ARB/STGBUF" — slash-separated, root-to-leaf, LAST segment is
+        "PARENT/CHILD" — slash-separated, root-to-leaf, LAST segment is
         `host_module`'s own instance name). Consumed one segment per hop so
         `_find_parent_instantiation` can pick the SPECIFIC instantiation this
         leaf belongs to instead of bailing out whenever the module type
@@ -3564,8 +3564,8 @@ def main():
             if terminal.startswith('comb_') and hops_used > 0:
                 # A plain combinational terminal reached AFTER already
                 # crossing at least one module boundary is not trustworthy
-                # enough to claim TRUE/INVERTED: we've confirmed (real
-                # JIRA-11233 data) that a non-inverting buffer can sit in
+                # enough to claim TRUE/INVERTED: we've confirmed (against a
+                # real gate-level netlist) that a non-inverting buffer can sit in
                 # front of a driver whose own further upstream inversion we
                 # have no way to structurally rule out with this bounded
                 # single-input-cell walk. Only a genuine register terminal,
@@ -3739,10 +3739,10 @@ def main():
     # name suggests it. A gate built assuming direct/non-inverted value (e.g. a plain XNOR2
     # equality compare) is then WRONG for that operand. This extends the existing single-
     # module polarity walk (Check 38, above) across the actual module instantiation boundary
-    # found in the SAME already-parsed netlist text — confirmed on JIRA-11233
-    # (ReqPlr_p1[1]/[2] inside umcstgbuf, sourced from ADDR_ARB, carry inverted polarity while
-    # ReqPlr_p1[0] and all of ReqPlr_p2[*] do not — real Formality find_equivalent_nets data
-    # matched this structural trace bit-for-bit). Runs identically in complete and simple mode
+    # found in the SAME already-parsed netlist text — confirmed against a real design
+    # (a cross-module operand carried inverted polarity while sibling bits/operands did not —
+    # real Formality find_equivalent_nets data matched this structural trace bit-for-bit).
+    # Runs identically in complete and simple mode
     # (both call this same validator path); needs no FM license.
     for _stage68 in [s for s in ('Synthesize', 'PrePlace', 'Route') if study.get(s)]:
         for e in study.get(_stage68, []):

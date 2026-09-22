@@ -14,7 +14,8 @@ infix — notably UPF power-aware designs (soundwave), whose targets look like
 the STABLE stage-revealing suffix instead of the full literal, so they work for
 konark (plain) and soundwave (UPF) identically, and for any future infix.
 
-Two phases exist and are DIFFERENT target sets:
+Two phases exist and are DIFFERENT target sets on projects that name them that
+way:
   * PreEco  — the baseline netlist<->RTL equivalence, queried by Step 2
               (find_equivalent_nets) to resolve per-stage net names.
   * Eco     — the post-ECO verification, run by Step 6 (post_eco_formality).
@@ -26,6 +27,17 @@ Suffix rules (mutually exclusive, infix-agnostic):
 
 Phase discriminator: a PreEco target name contains the substring 'PreEco';
 an Eco target name contains 'Eco' but NOT 'PreEco'.
+
+A THIRD convention exists too: some projects don't distinguish PreEco/Eco by
+name at all — the tile has ONE target per stage (e.g. 'FmEqvSynthesizeVsSynRtl'),
+re-run/re-pointed at whatever netlist content is current, used for BOTH the
+Step 2 baseline resolution AND the Step 6 post-ECO check (confirmed real-world:
+some tiles have no PreEco/Eco-infixed targets at all — only this
+bare form). This is phase 'Bare': a target matching a valid stage suffix but
+containing NEITHER 'PreEco' NOR 'Eco'. `detect_targets()` treats a real 'Bare'
+target found on disk as a valid answer for EITHER phase request when no
+phase-infixed target exists for that stage — a real target beats a fictional
+canonical guess.
 """
 
 # NOTE: intentionally no `from __future__ import annotations` — this module is
@@ -46,6 +58,11 @@ _FALLBACK = {
         "FmEqvEcoSynthesizeVsSynRtl",
         "FmEqvEcoPrePlaceVsEcoSynthesize",
         "FmEqvEcoRouteVsEcoPrePlace",
+    ],
+    "Bare": [
+        "FmEqvSynthesizeVsSynRtl",
+        "FmEqvPrePlaceVsSynthesize",
+        "FmEqvRouteVsPrePlace",
     ],
 }
 
@@ -72,12 +89,16 @@ def target_to_stage(name):
 
 
 def _is_phase(name, phase):
-    """True if `name` belongs to `phase` ('PreEco' or 'Eco')."""
+    """True if `name` belongs to `phase` ('PreEco' | 'Eco' | 'Bare')."""
     has_pre = "PreEco" in name
+    has_eco = "Eco" in name and not has_pre
     if phase == "PreEco":
         return has_pre
-    # 'Eco' phase = an Eco target that is NOT a PreEco target
-    return ("Eco" in name) and not has_pre
+    if phase == "Eco":
+        return has_eco
+    # 'Bare' = neither infix present at all (e.g. 'FmEqvSynthesizeVsSynRtl') —
+    # some projects use one un-phased target for both PreEco and Eco purposes.
+    return not has_pre and not has_eco
 
 
 def _scan_targets(dir_path, phase, strip_suffix=""):
@@ -107,7 +128,7 @@ def _scan_targets(dir_path, phase, strip_suffix=""):
 
 def detect_targets(ref_dir, phase, stages=None):
     """Return the [Synthesize, PrePlace, Route] FM target NAMES for `phase`
-    ('PreEco' | 'Eco'), infix-tolerant (picks up UPF-named targets).
+    ('PreEco' | 'Eco' | 'Bare'), infix-tolerant (picks up UPF-named targets).
     If `stages` is None, auto-detects active stages from <ref_dir>/data/PreEco.
 
     Source priority:
@@ -115,11 +136,17 @@ def detect_targets(ref_dir, phase, stages=None):
          GenerateAllCommands even before a target has ever run. This matters
          for the Eco phase on the FIRST verify (no Eco rpts/ dirs exist yet).
       2. <ref_dir>/rpts/       — fallback if cmds/ is unavailable.
-      3. Canonical plain names — final fallback (keeps konark identical and
-         never returns an empty/short triple).
+      3. A real 'Bare' target on disk (no PreEco/Eco infix at all) for any
+         stage the requested phase didn't find — some projects use ONE
+         un-phased target for both PreEco and Eco purposes (confirmed
+         real-world: some tiles have no phase-infixed targets at all).
+         A real target beats a fictional canonical guess, regardless of
+         which phase was actually requested.
+      4. Canonical plain names for the REQUESTED phase — final fallback
+         (keeps konark identical and never returns an empty/short triple).
     """
-    if phase not in ("PreEco", "Eco"):
-        raise ValueError(f"phase must be 'PreEco' or 'Eco', got {phase!r}")
+    if phase not in ("PreEco", "Eco", "Bare"):
+        raise ValueError(f"phase must be 'PreEco', 'Eco', or 'Bare', got {phase!r}")
 
     if stages is None:
         stages = ["Synthesize"]
@@ -132,10 +159,19 @@ def detect_targets(ref_dir, phase, stages=None):
         else:
             stages = list(_STAGE_ORDER)
 
-    found = _scan_targets(os.path.join(str(ref_dir), "cmds"), phase, strip_suffix=".cmd")
-    # Fill any stages cmds/ missed from rpts/.
-    if len(found) < len(_STAGE_ORDER):
-        for stage, name in _scan_targets(os.path.join(str(ref_dir), "rpts"), phase).items():
+    def _scan_both(phase_):
+        f = _scan_targets(os.path.join(str(ref_dir), "cmds"), phase_, strip_suffix=".cmd")
+        if len(f) < len(_STAGE_ORDER):
+            for stage, name in _scan_targets(os.path.join(str(ref_dir), "rpts"), phase_).items():
+                f.setdefault(stage, name)
+        return f
+
+    found = _scan_both(phase)
+    # A real 'Bare' target on disk fills in any stage the requested phase
+    # didn't find, before resorting to a fictional canonical guess — unless
+    # the caller already asked for 'Bare' (nothing more to try).
+    if phase != "Bare" and len(found) < len(_STAGE_ORDER):
+        for stage, name in _scan_both("Bare").items():
             found.setdefault(stage, name)
 
     fb = dict(zip(_STAGE_ORDER, _FALLBACK[phase]))

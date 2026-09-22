@@ -86,6 +86,26 @@ Exit:
 1. **SE/SI on new ECO DFFs = `1'b0` in ALL 3 stages.** Scan stitching is out of scope; DFT team handles it.
 2. **SI consistency for rewired pre-existing DFFs (Check 64).** When an ECO rewires the `CP` or `D` pin of a pre-existing DFF, check its `SI` pin across all 3 stages. If Synth has `SI=1'b0` but PrePlace/Route has a non-constant SI (TileBuilder scan insertion, e.g. `dftopt*`), emit one `rewire` study entry per MB cell per stage forcing `old_net=<scan_net>`, `new_net=1'b0` for both SI and SE. Keeps scan cone identical across stages so FM pair-wise comparisons pass. Scope: pre-existing DFFs being rewired only.
 3. **Rule 32 polarity check.** Never use a bare RTL name if inverter-parity differs across stages. Use `actual_wire_<stage>` from rename_map, or FM-resolved `<cell>/<pin>` wire. Step 3 validator Check 38 hard-fails violations.
+
+   **Rule 32b — `<stage>_polarity: "INVERTED"` (MANDATORY, do not skip).** If the
+   rename_map entry for a signal has `<stage>_polarity == "INVERTED"`, FM
+   actually queried this net and found ONLY complement (`-`) equivalents — no
+   `+` equivalent exists at all. This is NOT a "no data" case (do not treat it
+   like a missing/absent entry) — it is FM's authoritative PROOF that the bare
+   RTL name silently carries the LOGICAL COMPLEMENT of its own RTL meaning in
+   this stage (confirmed real: a cross-module port that P&R inverted
+   while leaving the name unchanged).
+   **You MUST NOT bind the bare name as-is for this signal in this stage.**
+   Instead, either:
+   - bind `<stage>_inverted_equiv` (the actual FM-confirmed inverted net) and
+     add one compensating `INV` (`n_eco_<jira>_*` output) between it and the
+     gate, or
+   - if this signal feeds a plain equality-style gate (XNOR2/XOR2/comparator),
+     flip that gate's function instead (XNOR2↔XOR2) so the compensation is
+     free — no extra gate needed.
+   Record which fix you used in the entry's `notes` field. Do not silently
+   fall back to the bare name — that reproduces the exact bug this rule
+   exists to catch.
 4. **Scan-output rejection and flat-form preference.** For functional gate pin inputs in PP/Route:
    - **`test_so*` / `scan_*` nets** — rejected as scan-chain outputs UNLESS verified as a DFF Q output in that stage's PreEco netlist via `zgrep -c '\.Q[0-9]*\s*(\s*<net>\s*)' PreEco/<Stage>.v.gz`. Count > 0 means the net IS a DFF Q output carrying a functional value — accept it. This matters when fenets `actual_wire_<stage>` points to a scan-renamed DFF Q output (common after scan stitching renames functional DFF outputs). Check 61 enforces this exemption.
    - **`dftopt*` nets** — use ONLY when flat form `<bus>_<bit>_` is absent in PreEco netlist. If flat form exists, use it → Check 61 FAIL when flat form exists but `dftopt*` used.
@@ -271,7 +291,18 @@ for pin, net in port_connections.items():
 P&R renames DFF outputs (CTS/optimization in Route). A wire may exist in scope but be undriven → FM `X` → DFF0X. For every non-ECO input net, verify it is driven in each stage and record per-stage aliases.
 
 **Rule** — for each input net (skip `n_eco_*` and `new_port_signals`):
-0. **Rule 32 pre-check (MANDATORY, polarity-aware — see CRITICAL_RULES.md Rule 32).** Two sub-cases:
+0. **Rule 32 pre-check (MANDATORY, polarity-aware — see CRITICAL_RULES.md Rule 32).**
+   **FIRST, before anything else in this rule**: check the rename_map entry for
+   `<stage>_polarity == "INVERTED"`. If present, this is FM's own authoritative,
+   already-proven answer (golden reference) — do NOT run your own manual
+   inverter-counting/parity trace on this net, it is redundant with (and less
+   authoritative than) what FM already confirmed. Apply Rule 32b immediately:
+   bind `<stage>_inverted_equiv` + a compensating `INV`, or flip the gate
+   function. Only when the rename_map has NEITHER `actual_wire_<stage>` NOR
+   `<stage>_polarity` for this net (truly no fenets data at all) do the manual
+   sub-cases below apply.
+
+   Two sub-cases:
    - (a) **Bare RTL name missing from current module scope but exists in file:** emit `port_declaration` adding `<net>` as `input` + matching `port_connection` entries up to the visible scope. Use the bare name.
    - (b) **Bare RTL name exists in current module scope:** check fenets rename_map for `actual_wire_<stage>`. If present, USE IT VERBATIM (polarity-correct by construction). If absent, the bare RTL name is OK ONLY when inverter-parity from the bare wire to the nearest DFF.Q matches across all 3 stages. If parity differs in any stage, use FM's resolved `<cell>/<pin>` wire instead of the bare name (Step 3 Check 38 catches violations). Hazard pattern: P&R drive-strength buffer chains (odd INV count between MB-merged DFF.Q and port wire) flip polarity of the port-named wire — same name across stages, opposite logical value in the buffered stage → FM cone divergence.
 1. Check driver in stage scope: `grep -P '\.(Q|Z|ZN|ZN1|CO|S)\s*\(<net>\s*\)'`. Driven → use as-is.
@@ -288,10 +319,20 @@ P&R renames DFF outputs (CTS/optimization in Route). A wire may exist in scope b
    Before consulting the fenets rename map, run TWO checks:
 
    **Check A — Fenets exemption (MANDATORY before Check B):**
-   Look up `<scope>/<bare_rtl_name>` in the fenets rename map. If `actual_wire_<stage>` is
-   present, the fenets `(+)` polarity-correct CTS rename IS authoritative — the bare RTL name
-   in PP/Route scope may refer to a different DFF source. **USE `actual_wire_<stage>` directly.
-   Do NOT use the bare RTL name.** Check 65 exempts this case.
+   Look up `<scope>/<bare_rtl_name>` in the fenets rename map — check BOTH fields it may carry,
+   in this order:
+   1. **`<stage>_polarity == "INVERTED"`** — FM found ONLY complement (`-`) equivalents for this
+      net. This is the golden reference; it OVERRIDES everything below, including a manual
+      inverter-parity trace you might otherwise run. Apply Rule 32b (Phase 0.3 step 0): bind
+      `<stage>_inverted_equiv` + a compensating `INV`, or flip the gate function. Do NOT use the
+      bare RTL name, and do NOT independently re-derive polarity by hand when this field is set.
+   2. **`actual_wire_<stage>`** — if present (and no `INVERTED` marker), the fenets `(+)`
+      polarity-correct CTS rename IS authoritative — the bare RTL name in PP/Route scope may
+      refer to a different DFF source. **USE `actual_wire_<stage>` directly. Do NOT use the bare
+      RTL name.** Check 65 exempts this case.
+
+   Only when NEITHER field is present does Check B (below) — or any manual/structural polarity
+   tracing — apply at all.
 
    When `actual_wire_PrePlace ≠ actual_wire_Route`: FM comparing PP vs Route needs the SVF
    to map those two CTS nets. If the SVF gap causes RouteVsPP FAIL, the re_studier (Round 2)

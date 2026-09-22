@@ -41,6 +41,14 @@ try:
 except Exception:
     _pf_cone_leaves = None
 try:
+    from eco_fenets_derive_queries import _context_line_eq_operands, compute_eco_new_signals
+except Exception:
+    _context_line_eq_operands = compute_eco_new_signals = None
+try:
+    from eco_resolve_bus_width import resolve_from_netlist as _resolve_bus_width_fallback
+except Exception:
+    _resolve_bus_width_fallback = None
+try:
     from eco_cone_rebuild import cone_leaves as _cnf_cone_leaves
 except Exception:
     _cnf_cone_leaves = None
@@ -165,12 +173,71 @@ def parse_raw_rpt(path):
 
 # ── Build query plan from rtl_diff ───────────────────────────────────────────
 
+_RM_WIDTH_CACHE = {}
+_RM_NETLIST_TEXT_CACHE = {}
+
+
+def _rm_bus_width(base, ref_dir):
+    """In-process-decompress-once bus width lookup — same approach used in
+    eco_fenets_derive_queries.py and eco_fenets_chain.py; a fresh `zcat|grep`
+    per signal across dozens of operands is unusably slow."""
+    key = (ref_dir, base)
+    if key in _RM_WIDTH_CACHE:
+        return _RM_WIDTH_CACHE[key]
+    w = None
+    if ref_dir:
+        if ref_dir not in _RM_NETLIST_TEXT_CACHE:
+            preeco_synth = Path(ref_dir) / 'data' / 'PreEco' / 'Synthesize.v.gz'
+            try:
+                import gzip
+                with gzip.open(preeco_synth, 'rt', errors='replace') as f:
+                    _RM_NETLIST_TEXT_CACHE[ref_dir] = f.read()
+            except Exception:
+                _RM_NETLIST_TEXT_CACHE[ref_dir] = ''
+        text = _RM_NETLIST_TEXT_CACHE[ref_dir]
+        if text:
+            bits = {int(m) for m in re.findall(re.escape(base) + r'\[(\d+)\]', text)}
+            if bits:
+                w = len(bits)
+    _RM_WIDTH_CACHE[key] = w
+    return w
+
+
 def derive_queries(rtl_diff, ref_dir=None):
     """Walk changes[] and produce list of {net_path, signal, source} for every
     net we want a per-stage rename for. See eco_fenets_runner.md STEP A
     for the 7 categories. With ref_dir, also derives priority_force condition-cone
     leaves (matching eco_fenets_derive_queries) so the map covers them."""
     queries = []
+    eco_new_signals = compute_eco_new_signals(rtl_diff) if compute_eco_new_signals else set()
+
+    # Cat 0 (passthrough): the analyzer-provided top-level nets_to_query — same
+    # source eco_fenets_derive_queries.py's Cat 0 consumes for the ACTUAL FM
+    # submission. Without mirroring it here too, a signal that only appears at
+    # this top level (not inside any change's own structured fields — including
+    # the `is_bus_variant`-flagged bus form some analyzer runs use) got queried
+    # and resolved by FM, but this function never asked for it, so it was
+    # silently absent from the rename map despite the raw rpt having the answer.
+    for q in (rtl_diff.get('nets_to_query') or []):
+        np = (q.get('net_path') or '').strip()
+        if not np:
+            continue
+        leaf = np.split('/')[-1]
+        base_check = re.sub(r'\[.*$', '', leaf)
+        if base_check in eco_new_signals:
+            continue
+        if q.get('is_bus_variant'):
+            hier_prefix = np.rsplit('/', 1)[0] if '/' in np else ''
+            width = _rm_bus_width(base_check, ref_dir)
+            if width and width > 1:
+                for b in range(width):
+                    bit_np = f'{hier_prefix}/{base_check}[{b}]' if hier_prefix else f'{base_check}[{b}]'
+                    queries.append({'net_path': bit_np, 'signal': f'{base_check}[{b}]',
+                                    'source': (q.get('source') or 'rtl_diff.nets_to_query') + f'.bit{b}'})
+                continue
+        queries.append({'net_path': np, 'signal': leaf,
+                        'source': q.get('source') or 'rtl_diff.nets_to_query'})
+
     for idx, c in enumerate(rtl_diff.get('changes', [])):
         ct = c.get('change_type', '')
         scope = c.get('scope') or c.get('instance_scope') or ''
@@ -245,21 +312,65 @@ def derive_queries(rtl_diff, ref_dir=None):
                 queries.append({'net_path': f'{scope}/{cond}'.strip('/'),
                                 'signal': cond,
                                 'source': f'changes[{idx}].reg_guard_selector_cond'})
-        # Cat 2-4: new_logic DFF + chain leaves
+        # Cat 2-4: new_logic DFF + chain leaves. Also covers plain new_logic_gate
+        # (not just new_logic/new_logic_dff) — a new_logic_gate entry with a
+        # d_input_gate_chain (e.g. a bus-equality tree built by the studier when no
+        # deterministic emitter owns it) has leaf operands JUST as much at risk of
+        # a hidden cross-module polarity flip as any new_logic_dff leaf.
         if ct in ('new_logic', 'new_logic_dff'):
             for fld in ('dff_clock', 'reset_signal'):
                 v = c.get(fld)
                 if v:
                     queries.append({'net_path': f'{scope}/{v}'.strip('/'),
                                     'signal': v, 'source': f'changes[{idx}].{fld}'})
+        if ct in ('new_logic', 'new_logic_dff', 'new_logic_gate'):
             for g in (c.get('d_input_gate_chain') or []):
-                for inp in (g.get('inputs') or []):
+                # SCHEMA TOLERANCE (mirrors eco_fenets_derive_queries.py's Cat 4):
+                # the analyzer's chain-leaf field naming has proven unstable across
+                # otherwise-identical re-runs of the SAME change — collect from BOTH
+                # `inputs: [...]` and scalar `operand_a`/`operand_b`, and decide bus-ness
+                # from the ACTUAL NETLIST (via `_rm_bus_width`), not from whatever the
+                # analyzer named the gate this run.
+                leaves = list(g.get('inputs') or [])
+                for k in ('operand_a', 'operand_b'):
+                    v = g.get(k)
+                    if isinstance(v, str):
+                        leaves.append(v)
+                explicit_width = g.get('width') if isinstance(g.get('width'), int) else None
+                for inp in leaves:
+                    if not isinstance(inp, str):
+                        continue
                     base = inp.split('[')[0]
                     if base.startswith(('n_eco_', "1'b", "0'b")):
                         continue
-                    queries.append({'net_path': f'{scope}/{base}'.strip('/'),
-                                    'signal': base,
-                                    'source': f'changes[{idx}].chain[{g.get("seq","?")}]'})
+                    if not base:
+                        continue
+                    width = explicit_width if explicit_width is not None else _rm_bus_width(base, ref_dir)
+                    if width and width > 1:
+                        for b in range(width):
+                            queries.append({'net_path': f'{scope}/{base}[{b}]'.strip('/'),
+                                            'signal': f'{base}[{b}]',
+                                            'source': f'changes[{idx}].chain[{g.get("seq","?")}].bit{b}'})
+                    else:
+                        queries.append({'net_path': f'{scope}/{base}'.strip('/'),
+                                        'signal': base,
+                                        'source': f'changes[{idx}].chain[{g.get("seq","?")}]'})
+            # Schema-independent fallback: parse context_line directly for ==/!=
+            # operands, the same way eco_fenets_derive_queries.py's Cat 12 does —
+            # runs unconditionally, not gated on d_input_gate_chain shape at all.
+            if _context_line_eq_operands:
+                for base in _context_line_eq_operands(c.get('context_line'), c.get('new_token'),
+                                                        eco_new_signals):
+                    width = _rm_bus_width(base, ref_dir)
+                    if width and width > 1:
+                        for b in range(width):
+                            queries.append({'net_path': f'{scope}/{base}[{b}]'.strip('/'),
+                                            'signal': f'{base}[{b}]',
+                                            'source': f'changes[{idx}].context_line_eq.bit{b}'})
+                    else:
+                        queries.append({'net_path': f'{scope}/{base}'.strip('/'),
+                                        'signal': base,
+                                        'source': f'changes[{idx}].context_line_eq'})
         # Cat 5: port_promotion
         if ct == 'port_promotion':
             s = c.get('signal_name') or c.get('new_token')
@@ -389,7 +500,29 @@ def build_rename_map(rtl_diff, fm_results, tag, tile, raw_rpts, ref_dir=''):
                     if scope_hint and scope_hint in p:
                         pick = p; break
                 if pick is None:
+                    # No POSITIVE equivalent exists at this operand's own scope —
+                    # every '+' FM found is a DIFFERENT, unrelated physical tap
+                    # elsewhere in the design (e.g. the same logical bus read at
+                    # another block entirely). Blindly grabbing `positive[0]` here
+                    # (file-order coincidence) would silently endorse the bare
+                    # name's polarity based on a net that ISN'T the one this gate
+                    # actually consumes. Before doing that, check whether a
+                    # scope-matched INVERTED equivalent exists instead — that IS
+                    # real proof about the actual local net, and must take
+                    # priority (confirmed real: a cross-module operand where every
+                    # equivalent at its own instantiation scope was inverted-only,
+                    # while dozens of unrelated same-bus taps elsewhere were '+').
+                    scope_inverted = [n for n in r['inverted'] if scope_hint and scope_hint in n]
+                    if scope_inverted:
+                        entry[stage] = sig
+                        entry[f'{stage}_polarity'] = 'INVERTED'
+                        entry[f'{stage}_inverted_equiv'] = scope_inverted[0]
+                        continue
+                    # Truly nothing scope-relevant either way — fall back to the
+                    # first positive found anywhere, but flag it: this is a
+                    # weaker, unverified guess, not a scope-confirmed resolution.
                     pick = r['positive'][0]
+                    had_warning = True
 
                 # CLOCK signals: the FM "equivalent nets" for a clock contain
                 # every register's clock pin (CP / clocked_on / etc.) — picking
@@ -440,6 +573,23 @@ def build_rename_map(rtl_diff, fm_results, tag, tile, raw_rpts, ref_dir=''):
                         actual_wire = _wire_on_pin(entry[stage], ref_dir, stage)
                         if actual_wire:
                             entry[f'actual_wire_{stage}'] = actual_wire
+            elif r['status'] == 'FOUND' and r['inverted'] and not r['positive']:
+                # FM DID find equivalent points — every single one of them is the
+                # LOGICAL COMPLEMENT (all '-', none '+'). This is the signature of
+                # a bare RTL-named signal that P&R inverted across a module
+                # boundary while keeping the port name unchanged. Previously this
+                # fell into the generic
+                # "no equivalent nets found" else-branch below, which silently
+                # discarded FM's authoritative answer and returned the bare
+                # (wrong-polarity) name with a misleading warning — the studier
+                # had no way to know FM had actually PROVEN an inversion here.
+                # Record it explicitly instead: bare name for the entry (unchanged
+                # contract for existing consumers), a distinct 'INVERTED' polarity
+                # marker, and the actual inverted-equivalent net so the studier can
+                # bind it directly (with a compensating INV) rather than guessing.
+                entry[stage] = sig
+                entry[f'{stage}_polarity'] = 'INVERTED'
+                entry[f'{stage}_inverted_equiv'] = r['inverted'][0]
             else:
                 entry[stage] = sig
                 had_warning = True

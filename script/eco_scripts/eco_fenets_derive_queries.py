@@ -106,6 +106,73 @@ def _pf_cone_leaves(change, ref_dir):
 
 _SKIP_INPUT_PREFIXES = ("n_eco_", "eco_", "1'b", "0'b", "1'h", "0'h")
 
+# Cat 12: schema-independent equality-operand extraction straight from `context_line`
+# (the raw Verilog source text the analyzer already captured for reporting). The
+# structured `d_input_gate_chain` field the analyzer emits for a bus-equality compare
+# has proven UNSTABLE across otherwise-identical re-runs of the SAME ECO — three
+# different shapes seen on a single real ECO alone (`inputs`+"EQ_CMP_BUS", `operand_a`/
+# `operand_b`+"COMPARE_EQ", `inputs`+"BUS_EQ"+`bus_width_expr`), plus a fourth
+# variant at the Cat 0 top-level (`is_bus_variant` flag). Chasing each new shape as
+# it appears is a losing game. `context_line` itself is just the literal RTL text —
+# its FORMAT never varies, because it isn't the analyzer's own JSON, it's a straight
+# copy of the source. Regex-extracting `==`/`!=` operands from it directly makes Cat
+# 4 (and Cat 0's bus expansion) redundant-but-harmless belt-and-suspenders rather
+# than the only path — this one doesn't care what the analyzer decided to call the
+# gate or how it structured the leaf list.
+_EQ_OPERAND_RE = re.compile(
+    r"([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*(?:==|!=)\s*([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?"
+)
+_VERILOG_KEYWORDS = {
+    'always', 'begin', 'end', 'if', 'else', 'posedge', 'negedge', 'assign',
+    'wire', 'reg', 'input', 'output', 'inout',
+}
+
+
+def compute_eco_new_signals(rtl_diff):
+    """Signals introduced by this ECO (new ports/wires) — do not exist in PreEco,
+    not queryable via find_equivalent_nets. Exposed at module level (not just
+    inlined in `derive()`) so other scripts — e.g. `eco_fenets_chain.py`, which
+    needs the same exclusion set for its own context_line-based leaf extraction —
+    can reuse it instead of recomputing it differently."""
+    eco_new_signals = set()
+    for c in rtl_diff.get('changes', []):
+        if c.get('change_type') in ('new_port', 'port_connection', 'port_promotion'):
+            for f in ('new_token', 'signal_name'):
+                v = c.get(f)
+                if isinstance(v, str) and v:
+                    eco_new_signals.add(v)
+    return eco_new_signals
+
+
+def _context_line_eq_operands(context_line, new_token, eco_new_signals):
+    """Every bare identifier appearing on either side of a `==`/`!=` in this
+    change's raw RTL context line — independent of any analyzer-provided
+    structured field. Filters keywords, the change's own new signal, other
+    ECO-introduced signals, numeric/bit-literal tokens, and n_eco_*/eco_*
+    intermediates."""
+    if not isinstance(context_line, str) or not context_line:
+        return []
+    found = []
+    for m in _EQ_OPERAND_RE.finditer(context_line):
+        for tok in (m.group(1), m.group(2)):
+            if not tok or tok in _VERILOG_KEYWORDS:
+                continue
+            if tok == new_token or tok in eco_new_signals:
+                continue
+            if tok.startswith(_SKIP_INPUT_PREFIXES):
+                continue
+            if re.match(r"^\d", tok):
+                continue
+            found.append(tok)
+    # de-dup, preserve order
+    seen = set()
+    out = []
+    for f in found:
+        if f not in seen:
+            seen.add(f)
+            out.append(f)
+    return out
+
 
 def _scope_of(c):
     return c.get('scope') or c.get('instance_scope') or ''
@@ -137,15 +204,44 @@ def _abs_path(tile, scope, signal):
 
 def derive(rtl_diff, tile='', ref_dir=None):
     out = []
+    # Memoize per (base_signal) — the same operand (e.g. a bus signal name) is now checked
+    # from up to three independent places (Cat 0's is_bus_variant expansion, Cat 4's
+    # chain walk, Cat 12's context_line extraction). `_resolve_bus_width`'s netlist
+    # fallback shells out a FRESH `zcat <30-90MB gz> | grep` per call — with dozens
+    # of distinct operands that took 35-110s just deriving queries. Decompress the
+    # PreEco Synthesize netlist ONCE here and answer every width lookup from the
+    # in-process text instead (same "count distinct signal[N] indices" logic
+    # `eco_resolve_bus_width.resolve_from_netlist` uses, just without re-shelling).
+    _width_cache = {}
+    _netlist_text_cache = [None]   # lazy one-shot decompress, list as a mutable cell
+    _BIT_IDX_RE_CACHE = {}
+
+    def _cached_bus_width(base):
+        if base in _width_cache:
+            return _width_cache[base]
+        w = None
+        if ref_dir:
+            if _netlist_text_cache[0] is None:
+                preeco_synth = Path(ref_dir) / 'data' / 'PreEco' / 'Synthesize.v.gz'
+                try:
+                    import gzip
+                    with gzip.open(preeco_synth, 'rt', errors='replace') as f:
+                        _netlist_text_cache[0] = f.read()
+                except Exception:
+                    _netlist_text_cache[0] = ''
+            text = _netlist_text_cache[0]
+            if text:
+                pat = _BIT_IDX_RE_CACHE.setdefault(
+                    base, re.compile(re.escape(base) + r'\[(\d+)\]'))
+                bits = {int(m) for m in pat.findall(text)}
+                if bits:
+                    w = len(bits)
+        _width_cache[base] = w
+        return w
+
     # Signals introduced by this ECO (new ports/wires) do not exist in PreEco and
     # are not queryable via find_equivalent_nets — used to skip them below.
-    eco_new_signals = set()
-    for c in rtl_diff.get('changes', []):
-        if c.get('change_type') in ('new_port', 'port_connection', 'port_promotion'):
-            for f in ('new_token', 'signal_name'):
-                v = c.get(f)
-                if isinstance(v, str) and v:
-                    eco_new_signals.add(v)
+    eco_new_signals = compute_eco_new_signals(rtl_diff)
 
     # Cat 0 (passthrough): consume the analyzer-provided top-level nets_to_query.
     # Step 1 (rtl_diff_analyzer) pre-resolves fully-qualified, tile-relative cone
@@ -164,6 +260,28 @@ def derive(rtl_diff, tile='', ref_dir=None):
         leaf = np.split('/')[-1]
         if re.sub(r'\[.*$', '', leaf) in eco_new_signals:
             continue
+        # This is the THIRD distinct schema variant seen for the same underlying
+        # bug class (confirmed live on a real run): the analyzer marks a bus
+        # operand with `is_bus_variant: true` right here at the Cat 0 top-level
+        # passthrough, instead of via a d_input_gate_chain entry (Cat 4's
+        # concern). A bare bus net_path submitted as-is to FM find_equivalent_nets
+        # returns FM-036 "Unknown name" (buses only resolve bit-by-bit) — expand
+        # it here too, using whichever hierarchy prefix the analyzer already
+        # resolved for this net_path (do not re-derive scope).
+        if q.get('is_bus_variant') and ref_dir and _resolve_bus_width:
+            base = leaf.split('[')[0]
+            hier_prefix = np.rsplit('/', 1)[0] if '/' in np else ''
+            width = _cached_bus_width(base)
+            if width and width > 1:
+                for b in range(width):
+                    bit_np = f'{hier_prefix}/{base}[{b}]' if hier_prefix else f'{base}[{b}]'
+                    out.append({
+                        'net_path': bit_np,
+                        'signal':   f'{base}[{b}]',
+                        'category': 0,
+                        'source':   (q.get('source') or 'rtl_diff.nets_to_query') + f'.bit{b}',
+                    })
+                continue
         out.append({
             'net_path': np,
             'signal':   leaf,
@@ -293,32 +411,35 @@ def derive(rtl_diff, tile='', ref_dir=None):
         # Runs for ALL three new-logic change types, including plain `new_logic_gate` —
         # NOT just new_logic_dff. A `new_logic_gate` entry with a `d_input_gate_chain`
         # (e.g. an EQ_CMP_BUS two-signal bit-equality tree, built by the studier when no
-        # deterministic emitter owns it — confirmed on JIRA-11233: `eco_emit_eq_decode.py`
-        # only handles signal==CONSTANT compares, `eco_cone_rebuild.py` only handles
+        # deterministic emitter owns it — `eco_emit_eq_decode.py` only handles
+        # signal==CONSTANT compares, `eco_cone_rebuild.py` only handles
         # comb_net_force/reg_guard_delta) has leaf operands (e.g. a bare primary-input
-        # port like `ReqPlr_p1`) that are JUST as much at risk of a hidden cross-module
+        # port) that are JUST as much at risk of a hidden cross-module
         # polarity flip as any new_logic_dff leaf — skipping them here silently drops
         # fenets' only chance to catch it structurally.
         if ct in ('new_logic', 'new_logic_dff', 'new_logic_gate'):
             for g in (c.get('d_input_gate_chain') or []):
                 # EQ_CMP_BUS / COMPARE_EQ operands are multi-bit buses being compared
-                # bit-for-bit (e.g. `ReqPlr_p1 == CnclSuccPlr`). FM `find_equivalent_nets`
+                # bit-for-bit (e.g. `signal_a == signal_b`). FM `find_equivalent_nets`
                 # only resolves individual bit-level points, not whole bus names —
                 # querying the bare bus name (as the plain per-input walk below would)
-                # returns FM-036 "Unknown name" for EVERY such signal (confirmed on
-                # JIRA-11233's manual round-1 query: every Bus-Var=YES signal FM-036'd;
+                # returns FM-036 "Unknown name" for EVERY such signal (confirmed via
+                # manual round-1 query on a real ECO: every Bus-Var=YES signal FM-036'd;
                 # only per-bit round-2 queries resolved). Expand to one query per bit
                 # here instead.
                 #
                 # SCHEMA TOLERANCE (this is agent-authored analyzer output, not a fixed
-                # format — confirmed to vary run-to-run on the SAME ECO): leaf operands
-                # may appear as an `inputs: [...]` list (older run, gate_function
-                # "EQ_CMP_BUS"), OR as scalar `operand_a`/`operand_b` fields (newer run,
-                # gate_function "COMPARE_EQ", `width` given directly). Collect leaves from
-                # BOTH shapes rather than assuming one — a schema-specific `.get('inputs')`
-                # silently found nothing at all for the operand_a/operand_b shape, which is
-                # exactly how this class of leaf went unqueried in the first place.
-                is_bus_cmp = g.get('gate_function') in ('EQ_CMP_BUS', 'COMPARE_EQ')
+                # format — confirmed to vary run-to-run on the SAME ECO, three ways so
+                # far: `inputs: [...]` + gate_function "EQ_CMP_BUS"; scalar
+                # `operand_a`/`operand_b` + gate_function "COMPARE_EQ" + explicit
+                # `width`; `inputs: [...]` + gate_function "BUS_EQ" + `bus_width_expr`
+                # instead of `width`). Matching on gate_function name is a losing game —
+                # collect leaves from EVERY shape (inputs list AND operand_a/operand_b),
+                # and decide "is this a bus" from the ACTUAL NETLIST via
+                # `_resolve_bus_width`, not from whatever the analyzer happened to name
+                # the gate this run. Prefer an explicit integer `width` field when
+                # present (cheaper, no netlist read), but always fall back to the
+                # netlist-driven resolver — it doesn't care what the gate is called.
                 leaves = list(g.get('inputs') or [])
                 for k in ('operand_a', 'operand_b'):
                     v = g.get(k)
@@ -333,10 +454,9 @@ def derive(rtl_diff, tile='', ref_dir=None):
                         continue
                     if not base:
                         continue
-                    width = explicit_width if is_bus_cmp else None
-                    if width is None and is_bus_cmp and ref_dir and _resolve_bus_width:
-                        preeco_synth = str(Path(ref_dir) / 'data' / 'PreEco' / 'Synthesize.v.gz')
-                        width = _resolve_bus_width(base, preeco_synth)
+                    width = explicit_width
+                    if width is None:
+                        width = _cached_bus_width(base)
                     if width and width > 1:
                         for b in range(width):
                             bit_sig = f'{base}[{b}]'
@@ -353,6 +473,28 @@ def derive(rtl_diff, tile='', ref_dir=None):
                             'category': 4,
                             'source':   f'changes[{idx}].chain[{g.get("seq", "?")}]',
                         })
+
+        # Cat 12: schema-independent — parse context_line directly (see helper above).
+        # Runs unconditionally (any change_type with a context_line), not gated on
+        # d_input_gate_chain shape at all.
+        for base in _context_line_eq_operands(c.get('context_line'), c.get('new_token'),
+                                               eco_new_signals):
+            width = _cached_bus_width(base)
+            if width and width > 1:
+                for b in range(width):
+                    out.append({
+                        'net_path': _abs_path(tile, scope, f'{base}[{b}]'),
+                        'signal':   f'{base}[{b}]',
+                        'category': 12,
+                        'source':   f'changes[{idx}].context_line_eq.bit{b}',
+                    })
+            else:
+                out.append({
+                    'net_path': _abs_path(tile, scope, base),
+                    'signal':   base,
+                    'category': 12,
+                    'source':   f'changes[{idx}].context_line_eq',
+                })
 
         # Cat 5: port_promotion — one query per instance when instances[] present
         if ct == 'port_promotion':

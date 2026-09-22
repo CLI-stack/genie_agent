@@ -259,7 +259,7 @@ def trace_polarity_xmod(net, host_module, mods, instance_scope=None,
     same netlist text) and continues — across as many module boundaries as
     needed — until reaching a real register terminal, or a genuine,
     structurally-undecidable dead end. `instance_scope`: the study entry's own
-    hierarchy path (e.g. "ARB/STGBUF", root-to-leaf, last segment = this
+    hierarchy path (e.g. "PARENT/CHILD", root-to-leaf, last segment = this
     module's own instance name) — consumed one segment per hop so the parent
     search can pick the SPECIFIC instantiation this leaf belongs to, instead
     of guessing when the module type is instantiated more than once.
@@ -308,8 +308,8 @@ def trace_polarity_xmod(net, host_module, mods, instance_scope=None,
             # Only continue through a recognized INVERTER, not any
             # `d['bufinv']` cell — that flag also covers non-inverting
             # buffers (BUFF*/CKBUF*/etc, per eco_lol_impact._BUFINV_RE).
-            # Empirically (real JIRA-11233 data) continuing through a plain
-            # buffer can walk onto an unrelated local inverter that isn't
+            # Empirically (confirmed against a real gate-level netlist) continuing
+            # through a plain buffer can walk onto an unrelated local inverter that isn't
             # actually in this net's true causal path, producing a WRONG
             # verdict. Stopping at the first non-inverter cell is the
             # conservative, correct choice — see the cross-module
@@ -395,7 +395,7 @@ def main():
     ap.add_argument('--ref')
     ap.add_argument('--instance-scope', default=None,
                      help='Slash-separated hierarchy path (root-to-leaf, last segment = '
-                          '--module\'s own instance name), e.g. "ARB/STGBUF". Only used for '
+                          '--module\'s own instance name), e.g. "PARENT/CHILD". Only used for '
                           '`polarity` when --ref is omitted (cross-module mode) — lets the '
                           'walk pick the SPECIFIC parent instantiation instead of failing '
                           'closed whenever --module is instantiated more than once elsewhere.')

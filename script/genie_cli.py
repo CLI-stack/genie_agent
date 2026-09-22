@@ -1205,6 +1205,7 @@ class GenieCLI:
         p4_file_list = []
         p4_description = ""
         net_name = ""
+        target_prefix_value = ""
 
         # Split by newlines, commas, and " and " to handle multi-line input and inline params
         # Replace " and " with newline (but only when followed by a param pattern)
@@ -1336,6 +1337,26 @@ class GenieCLI:
                 if remaining:
                     clean_lines.append(remaining)
                 continue
+
+            # Target pattern: target:<FM target name> (colon-joined, mirrors NetName: below).
+            # Without this, `target:<value>` was never split apart by the plain whitespace
+            # word-tokenizer below — it reached check_arguement_csv() as ONE opaque token
+            # ("target:FmEqv...") that could never match a bare vocabulary entry in
+            # arguement.csv (which only lists bare target names, no "target:" prefix). This
+            # silently dropped the target to empty for EVERY target name, not just newly
+            # added ones — confirmed: even an already-registered PreEco-prefixed name failed
+            # the same way with colon-joined syntax. Pre-extracting it here, the same way
+            # NetName: already is, fixes it for all target names at once. Does NOT `continue`
+            # (unlike the other patterns in this chain) — a real instruction commonly has BOTH
+            # `target:` and `NetName:` on the same line, and a hard `continue` here would skip
+            # the NetName check entirely for the rest of this line, silently dropping it.
+            target_match = re.search(r'\btarget:\s*(\S+)', line, re.I)
+            if target_match:
+                target_prefix_value = target_match.group(1).strip()
+                print(f"# Detected Target: {target_prefix_value}")
+                line = (line[:target_match.start()] + ' ' + line[target_match.end():]).strip()
+                if not line:
+                    continue
 
             # NetName pattern: NetName: <net_suffix>
             # Character class includes [ ] to support bus-bit-indexed net paths
@@ -1574,6 +1595,12 @@ class GenieCLI:
         # Populate netName into arguementInfo if detected
         if net_name:
             arguementInfo['netName'] = 'netName:' + net_name
+
+        # Populate target into arguementInfo if detected via colon-joined "target:<value>"
+        # syntax (see the Target regex above) and not already set by the word-loop's
+        # arguement.csv-driven match (space-separated "target <value>" syntax).
+        if target_prefix_value and arguementInfo.get('target') == 'target':
+            arguementInfo['target'] = 'target:' + target_prefix_value
 
         # Bundle all special content lists
         special_content = {

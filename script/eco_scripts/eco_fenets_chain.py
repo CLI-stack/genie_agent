@@ -38,6 +38,14 @@ try:
     from eco_module_inst_path import inst_paths as _inst_paths
 except Exception:
     _inst_paths = None
+try:
+    from eco_fenets_derive_queries import _context_line_eq_operands, compute_eco_new_signals
+except Exception:
+    _context_line_eq_operands = compute_eco_new_signals = None
+try:
+    from eco_resolve_bus_width import resolve_from_netlist as _resolve_bus_width
+except Exception:
+    _resolve_bus_width = None
 
 _SKIP_COND_PREFIXES = ("1'b", "0'b", 'n_eco_', 'PENDING_FM_RESOLUTION')
 
@@ -51,11 +59,43 @@ def _load(p):
         return {}
 
 
+_BUS_WIDTH_CACHE = {}
+_NETLIST_TEXT_CACHE = {}
+
+
+def _cached_bus_width(base, ref_dir):
+    """Same in-process-decompress-once approach as eco_fenets_derive_queries.py's
+    _cached_bus_width — a fresh `zcat <30-90MB gz> | grep` per signal (what
+    eco_resolve_bus_width.resolve_from_netlist does standalone) made this
+    unusably slow once dozens of new_logic_gate leaf operands are in play."""
+    key = (ref_dir, base)
+    if key in _BUS_WIDTH_CACHE:
+        return _BUS_WIDTH_CACHE[key]
+    w = None
+    if ref_dir:
+        if ref_dir not in _NETLIST_TEXT_CACHE:
+            preeco_synth = Path(ref_dir) / 'data' / 'PreEco' / 'Synthesize.v.gz'
+            try:
+                import gzip
+                with gzip.open(preeco_synth, 'rt', errors='replace') as f:
+                    _NETLIST_TEXT_CACHE[ref_dir] = f.read()
+            except Exception:
+                _NETLIST_TEXT_CACHE[ref_dir] = ''
+        text = _NETLIST_TEXT_CACHE[ref_dir]
+        if text:
+            bits = {int(m) for m in re.findall(re.escape(base) + r'\[(\d+)\]', text)}
+            if bits:
+                w = len(bits)
+    _BUS_WIDTH_CACHE[key] = w
+    return w
+
+
 def _conditions(rtl_diff, ref_dir):
     """[(scope, signal, module_name), ...] folded-out guard/selector conditions across all
     comb_net_force AND reg_guard_delta (Intent-A and_term on a register) changes. Uses the
     shared helpers so it matches the deriver (Cat 4d/4e) and the step-2 validator exactly."""
     out = []
+    eco_new_signals = compute_eco_new_signals(rtl_diff) if compute_eco_new_signals else set()
     for c in rtl_diff.get('changes', []):
         ct = c.get('change_type')
         scope = c.get('scope') or c.get('instance_scope') or ''
@@ -87,6 +127,32 @@ def _conditions(rtl_diff, ref_dir):
                     key = (isc, sig, raw)   # mod=raw (module base) for the survival-shortcut body lookup
                     if key not in out:
                         out.append(key)
+        # new_logic / new_logic_dff / new_logic_gate: bus/scalar equality-compare operands
+        # (e.g. `signal_a == signal_b`) built by the studier when no deterministic
+        # emitter owns the change. Their Synthesize resolution (Cat 4/Cat 12 in
+        # eco_fenets_derive_queries.py) was previously a dead end at Synthesize only —
+        # nothing chained these forward, so a genuine cross-module inversion at Synthesize
+        # (confirmed against a real ECO) had no path to being re-verified at
+        # PrePlace/Route either. Reuses the SAME schema-independent context_line extraction
+        # as Cat 12 (not the analyzer's structured chain fields, which have proven unstable
+        # across otherwise-identical re-runs) so this doesn't drift out of sync with the
+        # deriver as the analyzer's JSON shape keeps changing.
+        if ct in ('new_logic', 'new_logic_dff', 'new_logic_gate') and _context_line_eq_operands:
+            for base in _context_line_eq_operands(c.get('context_line'), c.get('new_token'),
+                                                    eco_new_signals):
+                # Expand bus operands into per-bit signal names — MUST match the per-bit
+                # keys eco_fenets_derive_queries.py's Cat 12 actually queried and wrote into
+                # the rename map (a bare bus key here would never match, silently dropping
+                # the chain for every bus operand, exactly the gap this whole fix closes).
+                width = _cached_bus_width(base, ref_dir)
+                sigs2 = [f'{base}[{b}]' for b in range(width)] if width and width > 1 else [base]
+                raw = c.get('module_name') or ''
+                iscopes = (_inst_paths(raw, ref_dir) if (_inst_paths and ref_dir) else None) or [raw]
+                for isc in iscopes:
+                    for sig in sigs2:
+                        key = (isc, sig, raw)
+                        if key not in out:
+                            out.append(key)
     return out
 
 
