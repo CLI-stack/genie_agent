@@ -463,10 +463,24 @@ _PLACEHOLDER_PREFIXES = ("MODE_H_ROUTE_SKIP", "UNRESOLVABLE",
 
 def check_cross_module_polarity(study, ref_dir):
     """Run the '68. CROSS-MODULE PRIMARY-INPUT POLARITY CHECK' over a study JSON's
-    Synthesize/PrePlace/Route entries and return the same issue strings Check 68
-    produces in eco_validate_step3.py — the single shared implementation both
-    complete mode (via that validator) and simple mode (via
-    eco_check_cross_module_polarity.py) call."""
+    Synthesize/PrePlace/Route entries and return issue strings for simple mode's
+    standalone eco_check_cross_module_polarity.py.
+
+    IMPORTANT — REVIEW/ADVISORY only, never a hard gate: this flags a leaf operand
+    that is itself a bare primary-input port of its module whose true origin
+    (traced across the hierarchy) is INVERTED relative to that bare name. That is
+    NOT automatically a bug — a gate can correctly compensate by pairing it with
+    an independently-inverted OTHER operand (e.g. a fully-synthesized, name-mangled
+    local net whose true polarity only Formality/fenets can prove). This check has
+    no way to verify that compensation structurally (the other operand's original
+    RTL name is gone), so it WILL flag some already-correct designs (confirmed
+    against a real, Formality-verified-passing design). Complete mode does not run
+    this at all — its fenets rename map + studier already resolve this class of
+    issue correctly. Every REVIEW finding's message requires the consuming agent
+    to recompute the gate's actual realized truth table (using every pin's REAL
+    polarity, not just this one) and compare it against RTL intent BEFORE deciding
+    it is a real defect — never fix reflexively off the raw finding text alone.
+    """
     issues = []
     for stage in [s for s in ('Synthesize', 'PrePlace', 'Route') if study.get(s)]:
         for e in study.get(stage, []):
@@ -497,19 +511,35 @@ def check_cross_module_polarity(study, ref_dir):
                     v, host, ref_dir, stage, instance_scope=e.get('instance_scope'))
                 if verdict == 'INVERTED':
                     issues.append(
-                        f"CRITICAL/68-CROSS-MODULE-PRIMARY-INPUT-INVERTED: "
+                        f"REVIEW/68-CROSS-MODULE-PRIMARY-INPUT-INVERTED: "
                         f"{e.get('change_type')} {inst}.{pin} = {v!r} ({stage}) is a "
                         f"primary input of module {host!r} whose TRUE origin (traced "
                         f"hierarchically to {term}) is INVERTED relative to this bare port "
                         f"name — {inst}.{pin} silently carries the LOGICAL COMPLEMENT of "
-                        f"{v!r}. A gate assuming direct/non-inverted value here (e.g. XNOR2 "
-                        f"for an equality compare) computes the WRONG function for this "
-                        f"operand. Fix: swap the gate function for this leaf (e.g. XNOR2->XOR2 "
-                        f"if this is the only inverted operand), insert a compensating INV, or "
-                        f"bind a non-inverted equivalent net if one exists in this module scope.")
+                        f"{v!r}. This is NOT automatically a bug: the gate may already "
+                        f"correctly compensate via the OTHER operand (an independently-inverted "
+                        f"pin this check cannot see structurally) or via its chosen gate "
+                        f"function. ACTION REQUIRED — before doing anything else, re-derive and "
+                        f"recompute this gate's ACTUAL realized boolean function using the REAL "
+                        f"polarity of every input pin (not just this one), and compare it against "
+                        f"the RTL-intended function for this leaf: "
+                        f"(1) determine the true polarity of every OTHER input pin too (via the "
+                        f"fenets rename map if one exists for this run, else by tracing each "
+                        f"pin's own driver back to a real register/gate); "
+                        f"(2) build the truth table the gate actually realizes using each pin's "
+                        f"REAL (possibly inverted) value; "
+                        f"(3) compare that truth table against what the RTL requires for this "
+                        f"leaf (e.g. an equality compare must equal 1 exactly when the two "
+                        f"RTL-level operands are equal). "
+                        f"Only report this as a real defect if that recomputed truth table "
+                        f"provably disagrees with RTL intent — if it agrees, this finding is a "
+                        f"false positive and must be dismissed with the reasoning recorded, not "
+                        f"blindly fixed (e.g. do not reflexively swap XNOR2->XOR2 without first "
+                        f"confirming the other operand isn't already compensating, which would "
+                        f"make that swap introduce a NEW bug instead of fixing one).")
                 elif verdict == 'UNDETERMINED':
                     issues.append(
-                        f"MEDIUM/68-CROSS-MODULE-PRIMARY-INPUT-UNVERIFIED: "
+                        f"ADVISORY/68-CROSS-MODULE-PRIMARY-INPUT-UNVERIFIED: "
                         f"{e.get('change_type')} {inst}.{pin} = {v!r} ({stage}) is a "
                         f"primary input of module {host!r} whose true origin could NOT be "
                         f"structurally traced across the hierarchy (reason: {term}) — "

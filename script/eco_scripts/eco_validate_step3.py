@@ -3179,15 +3179,12 @@ def main():
     # cells add 1 to the parity count. Stop at: DFF.Q output, primary
     # input port, or after 8 hops. Compare parity across stages.
     #
-    # Shared engine: this walk (and its hierarchical, cross-module-boundary
-    # extension used by Check 68 below) lives in eco_structural_polarity.py so
-    # complete mode (here) and simple mode's standalone
-    # eco_check_cross_module_polarity.py run the EXACT SAME implementation —
-    # one bug fix applies to both, not two independent copies.
+    # Shared engine: this walk lives in eco_structural_polarity.py so this file
+    # and simple mode's standalone eco_check_cross_module_polarity.py (which
+    # separately extends it with a hierarchical, cross-module-boundary hop —
+    # not used here, see the note further below) share the single-module parts.
     from eco_structural_polarity import (
         net_parity_in_stage as _net_parity_in_stage,
-        net_parity_hierarchical as _net_parity_hierarchical,
-        check_cross_module_polarity as _check_cross_module_polarity,
         _index_module_body,
     )
     # Exclude output pins (Z/ZN/...) and clock pins (CP/CK/CLK) from polarity
@@ -3316,26 +3313,20 @@ def main():
                     f"polarity-correct wire (the DFF Q output directly, or "
                     f"FM's resolved pin location's actual wire).")
 
-    # ── 68. CROSS-MODULE PRIMARY-INPUT POLARITY CHECK (structural, no Formality) ──────────
-    # Catches: a new_logic_gate/new_logic_dff leaf operand that is a bare PRIMARY INPUT PORT
-    # of the current module (its true driver lives in a DIFFERENT module, across the
-    # hierarchy). P&R/synthesis buffering between that true source and this module's port
-    # boundary can legitimately include an ODD number of inverters — the bare-named port then
-    # silently carries the LOGICAL INVERSE of its own RTL name, even though nothing about the
-    # name suggests it. A gate built assuming direct/non-inverted value (e.g. a plain XNOR2
-    # equality compare) is then WRONG for that operand. This extends the existing single-
-    # module polarity walk (Check 38, above) across module instantiation boundaries found in
-    # the SAME already-parsed netlist text — in EITHER direction: hopping UP into a parent
-    # instantiation when a bare net is itself a primary input, and hopping DOWN into a child
-    # RTL submodule's own body when a net's real driver is that child's output port (not a
-    # standard-cell pin). Confirmed against a real design (a cross-module operand carried
-    # inverted polarity while sibling bits/operands did not — real Formality
-    # find_equivalent_nets data matched this structural trace bit-for-bit).
-    #
-    # Implementation lives in eco_structural_polarity.check_cross_module_polarity() — the SAME
-    # function simple mode's standalone eco_check_cross_module_polarity.py calls, so both modes
-    # get identical coverage from one implementation; needs no FM license either way.
-    issues.extend(_check_cross_module_polarity(study, args.ref_dir))
+    # NOTE: a structural (no-Formality) cross-module primary-input polarity check
+    # was evaluated here and deliberately NOT added as a hard gate in complete
+    # mode. Complete mode already resolves this class of issue correctly via the
+    # fenets rename map (its `<stage>_polarity`/`actual_wire_<stage>` fields are
+    # the FM-verified ground truth the studier prioritizes) — a purely structural
+    # check has no way to see that a leaf's cross-module inversion is legitimately
+    # compensated by an independently-inverted OTHER operand (a fully-synthesized,
+    # name-mangled local net whose true polarity only Formality can prove), and
+    # would false-positive-block an already-correct, FM-verified-passing study
+    # (confirmed against a real design). The same check exists as informational,
+    # non-blocking output ONLY in simple mode
+    # (eco_check_cross_module_polarity.py, which has no fenets data at all and
+    # therefore no better ground truth available) — see that script and
+    # eco_structural_polarity.check_cross_module_polarity() for the caveats.
 
     # ── port_declaration output driver check ─────────────────────────────────
     # Hierarchical netlists use port_declaration(output) instead of port_promotion.

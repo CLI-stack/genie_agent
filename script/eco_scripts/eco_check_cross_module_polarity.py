@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """
-eco_check_cross_module_polarity.py — simple-mode standalone structural check.
+eco_check_cross_module_polarity.py — simple-mode-only, INFORMATIONAL structural check.
 
-Runs ONLY the cross-module primary-input polarity check (the same "Check 68" logic
-eco_validate_step3.py runs as one of ~40 checks in complete mode) against a study
-JSON, with NO Formality/fenets dependency and none of complete mode's other checks.
-Simple mode must never run the full eco_validate_step3.py validator (most of its
-checks assume fenets rename-map data simple mode doesn't produce) — this script is
-the lightweight, self-contained substitute for the one check that actually matters
-without FM data.
+Runs the cross-module primary-input polarity check ("Check 68") against a study
+JSON, with NO Formality/fenets dependency. Simple mode has no rename map at all, so
+this is the only available signal for this bug class there; running it is
+MANDATORY in simple mode's flow, but its findings are advisory, NEVER a hard gate.
+
+This does NOT exist in complete mode's eco_validate_step3.py, and deliberately so:
+complete mode's fenets rename map already resolves this class of issue correctly
+(the studier prioritizes its FM-verified `<stage>_polarity`/`actual_wire_<stage>`
+fields). A purely structural check has no way to see that a leaf's cross-module
+inversion is legitimately compensated by an independently-inverted OTHER operand
+(a fully-synthesized, name-mangled local net whose true polarity only Formality can
+prove) — confirmed to false-positive-flag an already-correct, Formality-verified-
+passing design. Treat every finding here as "worth a human look," not "proven bug."
 
 Usage:
   python3 eco_check_cross_module_polarity.py \\
@@ -36,28 +42,28 @@ def main():
     study = json.loads(Path(args.study).read_text())
     issues = check_cross_module_polarity(study, args.ref_dir)
 
-    critical = [i for i in issues if i.startswith('CRITICAL/')]
-    passed = len(critical) == 0
+    review = [i for i in issues if i.startswith('REVIEW/')]
+    advisory = [i for i in issues if i.startswith('ADVISORY/')]
     result = {
         'tag': args.tag,
-        'passed': passed,
+        'passed': True,   # advisory-only — this script never gates the flow
         'issues': issues,
         'issue_count': len(issues),
-        'critical_count': len(critical),
+        'review_count': len(review),
+        'advisory_count': len(advisory),
     }
-    write_result(args.output, result, passed, args.iter)
+    write_result(args.output, result, True, args.iter)
 
-    print(f"ECO_SCRIPT_LAUNCHED: eco_check_cross_module_polarity.py")
-    print(f"  passed: {passed}")
-    print(f"  issues: {len(issues)} ({len(critical)} CRITICAL)")
+    print(f"ECO_SCRIPT_LAUNCHED: eco_check_cross_module_polarity.py (advisory only, never blocking)")
+    print(f"  issues: {len(issues)} ({len(review)} REVIEW, {len(advisory)} ADVISORY)")
     print(f"  output: {args.output}")
     if issues:
-        print("\nISSUES FOUND:")
+        print("\nFINDINGS (review, not proof of a bug):")
         for i in issues:
             print(f"  - {i}")
     else:
         print("\nNo cross-module polarity issues found.")
-    return 0 if passed else 1
+    return 0   # advisory only — always exit 0, never blocks the caller
 
 
 if __name__ == '__main__':
