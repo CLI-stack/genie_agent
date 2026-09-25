@@ -71,7 +71,9 @@ Checks MUST run in this sequence — each row reads the column-1 outputs of all 
 
 - Returns to **STUDY_ORCHESTRATOR / ROUND_ORCHESTRATOR**, which then invokes:
   - `eco_expand_chains.py` — splice gate-level chains for new DFFs
-  - `eco_validate_step3.py` — validator with 38 checks (HARD GATE before applier spawn)
+  - `eco_validate_step3.py` — validator with 38+ checks (HARD GATE before applier spawn), including
+    Check 68 (cross-module primary-input polarity, engine in `eco_structural_polarity.py`, shared
+    with simple mode's `eco_check_cross_module_polarity.py`)
   - `eco_applier.md` — Step 4 (writes PostEco netlists)
 
 ---
