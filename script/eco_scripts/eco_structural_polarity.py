@@ -17,8 +17,10 @@ chains, and crossing module boundaries in BOTH directions:
 
 Neither hop needs Formality/fenets — everything is derived from the PreEco netlist
 text already on disk. One implementation, used by:
-  - eco_validate_step3.py's Check 68 (complete mode)
-  - eco_check_cross_module_polarity.py (simple mode's standalone structural check)
+  - eco_check_cross_module_polarity.py (simple mode's standalone structural check,
+    the only caller of the hierarchical walk below)
+  - eco_validate_step3.py's own Checks 38/65 (reuse net_parity_in_stage directly,
+    single-module only, no hierarchical walk)
 so a fix (or a bug) only exists in one place.
 """
 import re
@@ -29,6 +31,7 @@ from eco_validate_step3 import _plain_netlist, _nl_text, _nl_module_map
 _INV_RE = re.compile(r'^(INV|INVD|INVSKR|INVLLKG|INVTX|INVSK|INVFE)', re.IGNORECASE)
 _OUT_PIN_RE = re.compile(r'\.\s*(Z|ZN|ZN1|Q|QN|CO|S)\s*\(\s*(\w+(?:\[\d+\])?)\s*\)')
 _IN_PIN_RE = re.compile(r'\.\s*I\s*\(\s*(\w+(?:\[\d+\])?)\s*\)')
+_D_PIN_RE = re.compile(r'\.\s*D\s*\(\s*(\w+(?:\[\d+\])?)\s*\)')
 _INST_HEAD_RE = re.compile(r'^([A-Za-z_]\w*)\s+([A-Za-z_]\w*)\s*\(', re.MULTILINE)
 # NOTE: unlike a standard-cell-only scan, this must also match lowercase RTL
 # module instantiations (e.g. `some_child_module some_inst (`) — a child module
@@ -273,6 +276,38 @@ def _port_width_in_module(module, ref_dir, stage, base_name):
     return None
 
 
+def _dff_data_pin(module, ref_dir, stage, inst_name):
+    """Find the literal `.D(...)` connection of one specific DFF instance `inst_name`
+    inside `module`'s own PreEco body. Used only by net_parity_hierarchical's
+    boundary-register confidence check (below) — a separate, targeted lookup so it
+    cannot change net_parity_in_stage's own terminal semantics (shared with Checks
+    38/65). Returns the bare net name (may include a bit index), or None if the
+    instance/pin can't be found unambiguously."""
+    gz = Path(ref_dir) / 'data' / 'PreEco' / f'{stage}.v.gz'
+    if not gz.is_file():
+        return None
+    try:
+        plain = _plain_netlist(str(gz))
+        full = _nl_text(plain)
+        modmap = _nl_module_map(plain)
+    except Exception:
+        return None
+    if not full or not modmap:
+        return None
+    for _mod in (module, f'{module}_0'):
+        span = modmap.get(_mod)
+        if not span:
+            continue
+        body = full[span[0]:span[1]]
+        m = re.search(r'\b' + re.escape(inst_name) + r'\s*\(\s*(.*?)\)\s*;', body, re.DOTALL)
+        if not m:
+            continue
+        dm = _D_PIN_RE.search(m.group(1))
+        if dm:
+            return dm.group(1)
+    return None
+
+
 def _find_parent_instantiation(host_module, ref_dir, stage, expected_inst_name=None):
     """Find the instantiation of `host_module` (or its Route-uniquified `_0` variant)
     as a child inside some OTHER module in the same stage netlist. Returns
@@ -424,6 +459,30 @@ def net_parity_hierarchical(net, host_module, ref_dir, stage, instance_scope=Non
             return ('UNDETERMINED', total_parity,
                     f'{cur_module}.{terminal} (cross-module comb terminal, unverifiable)')
         if terminal != 'primary_input':
+            if terminal.startswith('dff_') and _find_parent_instantiation(
+                    cur_module, ref_dir, stage) is None:
+                # cur_module is the TOP of this netlist slice (no parent instantiation
+                # anywhere in it) — if this register's own D-input traces, within the
+                # same module, to one of cur_module's primary input PORTS, then the
+                # register's true value/polarity is set by whatever drives that port
+                # from OUTSIDE this netlist (a different tile, a different hierarchy
+                # branch, a full-chip top) — invisible to this structural walk. Stop
+                # here and don't claim a confident verdict: a register sampling a
+                # top-level boundary port is not the same as a register whose source
+                # is fully contained in the visible netlist. (Confirmed on a real
+                # design: a boundary-fed register can land on a different physical
+                # synchronizer copy than the one Formality's RTL-equivalence mapping
+                # resolves to, producing a false TRUE/INVERTED verdict here.)
+                d_net = _dff_data_pin(cur_module, ref_dir, stage, terminal[len('dff_'):])
+                if d_net:
+                    dp = net_parity_in_stage(d_net, cur_module, ref_dir, stage)
+                    if dp is not None and dp[1] == f'primary_input:{cur_module}:{d_net}':
+                        return ('UNDETERMINED', total_parity,
+                                f'{cur_module}.{terminal} (boundary-fed register: D-input '
+                                f'{d_net} is a top-level primary input of {cur_module}, '
+                                f'which has no parent instantiation in this netlist — true '
+                                f'source is outside the visible hierarchy, cannot verify '
+                                f'structurally; use fenets/FM instead)')
             return ('TRUE' if total_parity == 0 else 'INVERTED',
                     total_parity, f'{cur_module}.{terminal}')
         key = (cur_module, cur_net)
