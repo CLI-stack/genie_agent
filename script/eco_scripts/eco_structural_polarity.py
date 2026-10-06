@@ -461,25 +461,64 @@ _PLACEHOLDER_PREFIXES = ("MODE_H_ROUTE_SKIP", "UNRESOLVABLE",
                          "PENDING_FM_RESOLUTION", "NEEDS_NAMED_WIRE")
 
 
-def check_cross_module_polarity(study, ref_dir):
+def _rename_map_lookup(rename_map, instance_scope, net):
+    """Look up a bare net's polarity in the fenets rename map, scoped by its
+    instance_scope (e.g. 'ARB/STGBUF'). Returns (found, polarity) where polarity
+    is 'TRUE'/'INVERTED'/None (entry exists but carries no explicit polarity flag
+    — a bare-name/direct match, which fenets only records when it found a (+)
+    equivalent, i.e. TRUE). found=False means no rename map entry at all for this
+    net at this scope — caller must fall back to structural tracing."""
+    if not rename_map:
+        return False, None
+    base_m = _BIT_RE.match(net)
+    base_name = base_m.group(1) if base_m else net
+    candidates = []
+    if instance_scope:
+        candidates.append(f"{instance_scope}/{base_name}")
+    candidates.append(base_name)
+    for key in candidates:
+        entry = rename_map.get(key)
+        if isinstance(entry, dict):
+            pol = None
+            for k, v in entry.items():
+                if k.endswith('_polarity'):
+                    pol = v
+                    break
+            return True, ('INVERTED' if pol == 'INVERTED' else 'TRUE')
+    return False, None
+
+
+def check_cross_module_polarity(study, ref_dir, rename_map=None):
     """Run the '68. CROSS-MODULE PRIMARY-INPUT POLARITY CHECK' over a study JSON's
     Synthesize/PrePlace/Route entries and return issue strings for simple mode's
     standalone eco_check_cross_module_polarity.py.
 
-    IMPORTANT — REVIEW/ADVISORY only, never a hard gate: this flags a leaf operand
-    that is itself a bare primary-input port of its module whose true origin
-    (traced across the hierarchy) is INVERTED relative to that bare name. That is
-    NOT automatically a bug — a gate can correctly compensate by pairing it with
-    an independently-inverted OTHER operand (e.g. a fully-synthesized, name-mangled
-    local net whose true polarity only Formality/fenets can prove). This check has
-    no way to verify that compensation structurally (the other operand's original
-    RTL name is gone), so it WILL flag some already-correct designs (confirmed
-    against a real, Formality-verified-passing design). Complete mode does not run
-    this at all — its fenets rename map + studier already resolve this class of
-    issue correctly. Every REVIEW finding's message requires the consuming agent
-    to recompute the gate's actual realized truth table (using every pin's REAL
-    polarity, not just this one) and compare it against RTL intent BEFORE deciding
-    it is a real defect — never fix reflexively off the raw finding text alone.
+    `rename_map`: the fenets rename map (eco_fenets_rename_map.json), if the run
+    opted into Step 2. GOLDEN REFERENCE — checked FIRST for every candidate net,
+    before any structural tracing. Real Formality equivalence data beats a
+    structural guess every time: confirmed on a real design where the structural
+    walk confidently reported a net INVERTED (by anchoring to the wrong one of
+    several legitimate reset-tree/synchronizer register copies in the design —
+    a real terminal, just not the one Formality's RTL-vs-netlist comparison
+    considers canonically equivalent) while the real rename map showed it was
+    actually TRUE. Structural tracing is a fallback for when no rename map
+    exists, not a peer source of truth to cross-check against one that does.
+
+    IMPORTANT — REVIEW/ADVISORY only, never a hard gate, even with a rename map:
+    for the rename-map path this is about as reliable as the engine gets, but a
+    leaf's structural scope may still mismatch the rename map's assumed scope in
+    edge cases — treat an unexpected rename-map-sourced finding with the same
+    "verify before fixing" discipline. For the no-rename-map (structural) path:
+    a leaf flagged INVERTED is NOT automatically a bug — a gate can correctly
+    compensate by pairing it with an independently-inverted OTHER operand (e.g. a
+    fully-synthesized, name-mangled local net whose true polarity only
+    Formality/fenets can prove), and the structural walk itself can anchor to the
+    wrong terminal when multiple equivalent register copies exist, so it WILL
+    flag some already-correct designs. Every REVIEW finding's message requires
+    the consuming agent to recompute the gate's actual realized truth table
+    (using every pin's REAL polarity, not just this one) and compare it against
+    RTL intent BEFORE deciding it is a real defect — never fix reflexively off
+    the raw finding text alone.
     """
     issues = []
     for stage in [s for s in ('Synthesize', 'PrePlace', 'Route') if study.get(s)]:
@@ -507,6 +546,22 @@ def check_cross_module_polarity(study, ref_dir):
                 base_name = base_m.group(1) if base_m else v
                 if base_name not in primary_inputs:
                     continue   # not a primary input of this module — Check 38's territory
+
+                rm_found, rm_pol = _rename_map_lookup(rename_map, e.get('instance_scope'), v)
+                if rm_found:
+                    if rm_pol == 'INVERTED':
+                        issues.append(
+                            f"REVIEW/68-CROSS-MODULE-PRIMARY-INPUT-INVERTED-RENAME-MAP: "
+                            f"{e.get('change_type')} {inst}.{pin} = {v!r} ({stage}) is confirmed "
+                            f"INVERTED by the fenets rename map (real Formality equivalence "
+                            f"data) — this is the golden reference, not a structural guess. "
+                            f"Still not automatically a bug on its own (another operand could "
+                            f"compensate), but treat this verdict itself as reliable; only "
+                            f"recompute whether the GATE as a whole (all operands) matches RTL "
+                            f"intent before fixing.")
+                    # TRUE (explicit or bare-name/no-flag match) -> confirmed fine, no issue.
+                    continue   # rename map answered — do NOT also run the structural fallback
+
                 verdict, _par, term = net_parity_hierarchical(
                     v, host, ref_dir, stage, instance_scope=e.get('instance_scope'))
                 if verdict == 'INVERTED':
