@@ -510,37 +510,6 @@ def check_cross_module_polarity(study, ref_dir):
                 verdict, _par, term = net_parity_hierarchical(
                     v, host, ref_dir, stage, instance_scope=e.get('instance_scope'))
                 if verdict == 'INVERTED':
-                    input_pins = [p for p, pv in pcs_synth.items()
-                                  if p not in _NO_CHECK_PINS and isinstance(pv, str)]
-                    if len(input_pins) <= 1:
-                        # Single-input cell (INV/BUF) — there is NO other operand that could
-                        # possibly compensate for this inversion; the gate's output is a pure
-                        # function of this one (proven-inverted) pin. Unlike a multi-input gate,
-                        # there is nothing else to re-derive — this is a confirmed defect, not a
-                        # "maybe". Confirmed against a real design: this exact pattern (a fresh
-                        # single-input INV on a cross-module-inverted bare name, double-negating
-                        # it) was the actual root cause of a real Formality failure.
-                        issues.append(
-                            f"REVIEW/68-CROSS-MODULE-PRIMARY-INPUT-INVERTED-SINGLE-INPUT-CONFIRMED: "
-                            f"{e.get('change_type')} {inst}.{pin} = {v!r} ({stage}) is a "
-                            f"primary input of module {host!r} whose TRUE origin (traced "
-                            f"hierarchically to {term}) is INVERTED relative to this bare port "
-                            f"name. {inst} is a SINGLE-INPUT cell — it has no other operand that "
-                            f"could compensate for this inversion, so {inst}'s output polarity is "
-                            f"fully determined and provably NOT what its own name/bare-net "
-                            f"assumption implied: if {inst} is an INVERTER, its output equals "
-                            f"{v!r}'s TRUE (non-inverted) value — the inversion {inst} performs "
-                            f"cancels the inversion already present on {v!r}, rather than adding "
-                            f"one. If {inst} is a non-inverting BUFFER, its output stays equal to "
-                            f"{v!r} itself (still carrying the LOGICAL COMPLEMENT of the true "
-                            f"value). This is a CONFIRMED fact about {inst}'s output polarity, not "
-                            f"a maybe. Fix: check what polarity {inst}'s CONSUMER actually needs "
-                            f"(TRUE or INVERTED) per RTL intent, then either remove {inst} and "
-                            f"wire the consumer to {v!r} directly, or swap {inst} between "
-                            f"INV/BUF, whichever makes the consumer's final net equal the "
-                            f"polarity RTL requires — do not assume removal is always the fix; "
-                            f"confirm against the consumer's own logic first.")
-                        continue
                     issues.append(
                         f"REVIEW/68-CROSS-MODULE-PRIMARY-INPUT-INVERTED: "
                         f"{e.get('change_type')} {inst}.{pin} = {v!r} ({stage}) is a "
