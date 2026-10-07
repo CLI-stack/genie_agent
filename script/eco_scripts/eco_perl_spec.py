@@ -30,6 +30,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import eco_cell_truth_tables as _ett
+    _HAVE_ETT = True
+except ImportError:
+    _HAVE_ETT = False
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -207,12 +214,33 @@ def already_applied(inst_name, gz_path, prev_status=None, force_reapply=False):
     return count > 0
 
 
-def output_pin_key(port_connections):
-    """Find the output pin (Z, ZN, Q, QN) from port_connections dict."""
+def output_pin_key(port_connections, cell_type=None, ref_dir=None):
+    """Find the output pin (Z, ZN, Q, QN, ...) for this gate.
+
+    Step 3 entries normally store ONLY input pins in port_connections (the
+    output net lives separately in the entry's own output_net field), so the
+    old behavior — scan port_connections' keys for a known output-pin name,
+    then fall back to "the last key is usually output" — silently
+    misidentified a real INPUT pin as the output for every plain
+    multi/single-input gate whose port_connections happened to have no
+    output-pin key at all (e.g. a 2-input OR2/AN2 gate: {"A1":..,"A2":..}).
+    Root-caused on a real tile run: this produced gates with a dangling,
+    undriven output net (Formality before_verify_undriven_nets), corrupting
+    every real downstream consumer of the affected signals.
+
+    Prefer the authoritative cell-type → output-pin mapping (same Liberty/
+    truth-table lookup Step 5's Check H uses) before ever trusting
+    port_connections' own keys or falling back to a guess.
+    """
+    if cell_type and _HAVE_ETT:
+        tt = _ett.truth_table_of(cell_type, ref_dir=ref_dir)
+        if tt:
+            return next(iter(tt.keys()))
     for pin in ('ZN', 'Z', 'Q', 'QN', 'CO', 'S'):
         if pin in port_connections:
             return pin
-    # Fallback: last key is usually output
+    # Last resort: last key is usually output (legacy heuristic — unreliable,
+    # kept only so callers without a resolvable cell_type still get *a* pin).
     return list(port_connections.keys())[-1] if port_connections else None
 
 
@@ -501,7 +529,7 @@ def main():
                     pcs[pin] = stage_map[args.stage]
 
             # Check all input nets exist in PostEco
-            out_pin = output_pin_key(pcs)
+            out_pin = output_pin_key(pcs, cell_type=e.get('cell_type', ''), ref_dir=args.ref_dir)
             skip_reason = None
             # skip_input_net_check: gate inputs depend on new ports (Pass 2) or renamed
             # driver nets (Pass 4) — they will exist after those passes run.
@@ -547,11 +575,23 @@ def main():
                 continue
 
             # Dedup guard: skip if same instance already queued in this Perl batch (RISK 1.1)
-            if inst in queued_instances:
+            # BUG FIX (found on a real tile run): keyed on bare `inst` only —
+            # auto-generated generic gate names (d001, d002, d003, ...) are
+            # reused independently per register chain with no module
+            # qualifier, so legitimately distinct gates in different sibling
+            # modules can share the same bare name and collide here. The
+            # second/third occurrence was wrongly treated as an
+            # already-queued duplicate and skipped, leaving its output net
+            # undriven (confirmed via Formality's before_verify_undriven_nets
+            # report, one undriven instance per affected sibling module). Key
+            # on (module, instance_name) instead — only a true re-emission of
+            # the SAME gate in the SAME module is a real duplicate.
+            dedup_key = (mod, inst)
+            if dedup_key in queued_instances:
                 statuses.append({'name': inst, 'status':'ALREADY_APPLIED',
-                                 'reason': f'{inst} already queued in this Perl batch — dedup guard'})
+                                 'reason': f'{inst} already queued in this Perl batch for module {mod} — dedup guard'})
                 continue
-            queued_instances.add(inst)
+            queued_instances.add(dedup_key)
 
             # wire_decls: output net only, NOT if already in PostEco or referenced by rewire (RISK 1.3)
             # Multi-layer defensive dedup against FM-599 'Duplicate wire declaration':
@@ -562,7 +602,13 @@ def main():
             # Run 20260511201004 root cause: dedup #1 didn't fire (reason TBD), wire decl
             # added on top of Pass 4 rewire's implicit wire → FM-599 ABORT. Layers
             # below catch the same condition through orthogonal evidence.
-            out_net_raw = pcs.get(out_pin, '') if out_pin else ''
+            # pcs normally has NO key for out_pin at all (Step 3 stores the
+            # output net separately in entry['output_net'] — see
+            # output_pin_key() docstring above) — only DFF entries embed Q
+            # directly in port_connections. Prefer pcs's own value when the
+            # pin really is already there; otherwise fall back to the
+            # entry's authoritative output_net.
+            out_net_raw = pcs.get(out_pin) if out_pin and out_pin in pcs else e.get('output_net', '')
             # Bug fix: for bus-gate-bit entries (is_bus_gate_bit: true), the
             # output net is a bus-bit access like RowUpperMask[0]. When the bus
             # port is declared as 'input [7:0] RowUpperMask', bracket-indexing
@@ -584,6 +630,15 @@ def main():
                                  'reason': f'output wire_decl "{out_net_raw}" used bus-bit form; '
                                            f'auto-converted to flat-net "{out_net}". '
                                            f'Studier should emit flat-net form directly.'})
+            # BUG FIX (found on a real tile run): pins_str below is built purely from
+            # pcs.items() — if the output pin isn't already a key in pcs (the
+            # normal case; see output_pin_key() docstring), the gate got
+            # emitted with its output pin completely unconnected, leaving
+            # out_net undriven (Formality before_verify_undriven_nets) and
+            # silently corrupting every real downstream consumer. Always wire
+            # the resolved output pin into pcs before the gate line is built.
+            if out_pin and out_pin not in pcs and out_net:
+                pcs[out_pin] = out_net
             if e.get('needs_explicit_wire_decl') and out_net:
                 # Layer 1: rewire-new-nets (Pass 4 will create implicit wire)
                 if out_net in rewire_new_nets:
