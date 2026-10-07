@@ -16,6 +16,7 @@
 9. **Sub-agents write JSON only; orchestrator writes RPTs** — sub-agent context pressure must not block the RPT. [Rule 14]
 10. **FM ABORT → next ROUND_ORCHESTRATOR, never self-fix** — write `eco_fm_verify.json` → EXIT. Don't re-submit FM, don't patch inline, don't loop. [Rule 26]
 11. **Script-bug (not FM abort) fail-close → self-fix in `/tmp`, never edit the shared repo mid-run.** If a deterministic script aborts on its OWN limitation (not genuine data ambiguity), copy it to `/tmp/<script>_<TAG>`, make the minimal evidence-backed fix, re-run the `/tmp` copy, and log `SCRIPT-SELF-FIX: <script> — <bug> → <fix>` in the step RPT. Does NOT apply to FM aborts (Rule 26 still governs those). [Rule 38]
+12. **`confirmed: true` requires a functional proof, not a structural one.** "This signal can reach this pin" / "this is the sole entry point" is a candidate, not a confirmation. Only exhaustive truth-table enumeration, a carried-through algebraic equivalence, or real external equivalence data (Formality/rename-map) earns `confirmed: true`. If your first idea fails that check, escalate to a deeper reconstruction and re-verify — do not drop it and reach for a different unverified shortcut. Can't prove it? Leave it `UNRESOLVABLE`/`polarity_undetermined`. [Rule 39]
 
 **Forbidden (NEVER, under any pressure):**
 - NEVER modify `EcoChange.svf` — AI flow is permanently prohibited from SVF updates. [Rule 27]

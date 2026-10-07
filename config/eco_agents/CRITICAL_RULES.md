@@ -64,6 +64,7 @@ The old monolithic `ORCHESTRATOR.md` (1078 lines) was split into STUDY (Steps 1-
 | 36    | `round_handoff.json` Required Fields                                                   |
 | 37    | Register Output Signals Must Tap Direct Flop .Q Pin (Never Downstream Port Wire)       |
 | 38    | Script-Bug Self-Fix: Copy to /tmp, Patch, Re-run — Never Edit Shared Repo Mid-Run       |
+| 39    | `confirmed: true` Means Functionally Proven, Not Structurally Plausible                |
 
 ---
 
@@ -715,4 +716,45 @@ When an ECO logic gate or comparator consumes an RTL signal that is declared as 
 **This does NOT override RULE 26 (FM ABORT → ROUND_ORCHESTRATOR, never self-fix).** An FM abort is a result from the FM *tool*, not a bug in our own script tooling — it must still be handed off untouched, exactly as Rule 26 requires. This rule applies only to bugs in this flow's own deterministic helper scripts (emitters, validators, studiers, appliers, fenets runner helpers, etc.), not to FM's own abort/fail results.
 
 > **This rule prevents:** a real, evidence-backed fix being blocked by a script's own coding limitation, while also preventing an agent from "fixing" its way past a genuine correctness gate. Same pattern already in force for simple mode (`config/eco_agents_simple/SIMPLE_ORCHESTRATOR.md` Rule 4) — this extends it to complete mode's STUDY/APPLY/ROUND phases.
+
+---
+
+## RULE 39 — `confirmed: true` Means Functionally Proven, Not Structurally Plausible
+
+**Never mark any study/verifier entry `confirmed: true` on the strength of a structural or
+reachability argument alone.** "I found a path from A to B" / "this signal can reach this pin" /
+"this is the only place it enters the cone" is evidence of a *candidate*, not evidence of
+*correctness*. Only a claim backed by an actual functional proof — exhaustive truth-table
+enumeration, an algebraic equivalence (De Morgan, Shannon cofactor, etc.) carried through to a
+checked conclusion, or a real external equivalence result (Formality `find_equivalent_nets`, a
+rename-map entry backed by real `(+)/(-)` data) — may be marked `confirmed: true`.
+
+**Real incident this rule codifies:** an and_term resolution for a shared write-enable cone found a
+gate where a new term's source signal structurally reaches the cone through exactly one point,
+substituted `old_operand -> (old_operand | new_term)` there, and reported "confirmed by exhaustive
+BFS." The BFS had only walked the fan-in graph to prove reachability — it never checked whether the
+substitution preserved the clause's Boolean function. It did not: brute-force truth-table
+verification of that exact gate in isolation showed a 4-of-8 mismatch against RTL intent. Applied
+for real, it broke every bit of the 16-bit cone it touched (and, in one sibling module, two
+unrelated registers that happened to share the same fan-out point) — all while every surrounding
+report confidently read "confirmed," "exhaustive," "proven." A second resolution of the *same*
+underlying signal, on a same-shaped sibling module, instead reconstructed the cone's complete
+existing function and proved the substitution by brute-force enumeration over every input
+combination (zero mismatches) before accepting it — that one held up under real Formality
+verification. Same signal, same class of problem, two different standards of evidence, two
+different real-world outcomes. See `eco_netlist_studier.md`'s and_term combinational-term-fold rule
+for the concrete worked instance of this (Rule 39 applied to that specific entry type).
+
+**What this means in practice for any check, not just and_term:**
+- A word like "exhaustive," "proven," "confirmed," or "verified" in an entry's `reason`/`notes` must
+  be backed by the actual evidence it claims — not asserted because the search process *felt*
+  thorough. If you cannot point to the specific truth table, equivalence data, or algebraic step that
+  proves the claim, the entry is NOT confirmed — it is a candidate, and must be flagged
+  `polarity_undetermined`/`UNRESOLVABLE` instead.
+- If a first, simpler justification fails an actual check, that failure is itself useful signal —
+  escalate to a deeper reconstruction and re-verify it with the same rigor, the way Rule 38's
+  script-bug path escalates rather than giving up or guessing. Do not silently drop the failed
+  attempt and move on to a different, equally unverified shortcut.
+- In simple mode, an entry that cannot clear this bar must stay `UNRESOLVABLE` so the existing Step 3
+  checkpoint punts it to complete mode — never let an unproven "confirmed" slip through to Step 4.
 
