@@ -206,33 +206,62 @@ Update `old_driver_inverting` in the study entry to match the FM polarity (true 
 >
 > The rule below applies ONLY to combinational term-folds (NO `branch_assigns` and NO `branch_loads`).
 
-> **MANDATORY — exhaustive proof before accepting a combinational term-fold, no exceptions for
-> "the new term's source signal can structurally reach this pin."** Reachability is NOT equivalence.
-> A real incident: an agent found a gate where the new term's source signal structurally reaches a
-> 16-bit shared write-enable cone through exactly one point, substituted
-> `old_operand -> (old_operand | new_term)` at that single pin, and reported it "confirmed by
-> exhaustive BFS" — but the BFS only proved reachability, never proved the substitution preserved the
-> clause's Boolean function. It did not, and broke all 16 bits (plus, in one slice, two unrelated
-> sibling registers that also happened to share that pin's fanout) once applied for real. A sibling
-> agent working the SAME signal on a SAME-SHAPED design instead reconstructed the clause's complete
-> existing function (via Shannon-cofactor expansion around the new term) and proved the substitution
-> equivalent by brute-force enumeration of every input combination — zero mismatches — before
-> accepting it; that one held up.
-> Before marking ANY combinational term-fold entry `confirmed: true`:
-> 1. Enumerate every input that the EXISTING clause/cone actually depends on (not just the one pin the
->    new term's source happens to reach) — read the real gate(s), don't assume a single-input pass-through.
-> 2. State the clause's exact pre-existing Boolean function in those inputs.
-> 3. Prove — by exhaustive enumeration of all combinations of those inputs (plus the new term), not by
->    a structural/reachability check alone — that the proposed gate change computes exactly
->    `existing_clause <op> new_term` (OR for a widen, AND-NOT for a narrow, matching RTL intent). Record
->    the truth table (or the brute-force pass/fail count, e.g. "0/N mismatch") in the entry's `notes`
->    so it is auditable, not just asserted.
-> 4. If the single-pin substitution fails that proof, do NOT apply it. Fall back to reconstructing the
->    clause's complete function and re-deriving the widened form from it, then re-run step 3 against
->    the reconstruction. Only `confirmed: true` once the exhaustive proof passes.
-> A reachability-only finding (no exhaustive proof attached) must be left `polarity_undetermined`/
-> `UNRESOLVABLE` rather than `confirmed: true` — in simple mode this means the change gets punted to
-> complete mode per the Step 3 checkpoint, which is correct: an unverified guess must never reach Step 4.
+> **MANDATORY METHOD — build a combinational term-fold by cofactor reconstruction, NEVER by
+> point-substitution.** "The new term's source signal structurally reaches this pin" tells you where
+> a candidate sits — it is not, by itself, a way to build the fix, and checking it with a brute-force
+> truth table AFTER picking it is not enough either (see the real incident below: a single-pin
+> substitution was point-checked in isolation, "passed" by construction of a too-narrow check, and
+> still broke every bit of the cone it touched). Do not design the gate around "which pin can I widen"
+> — design it around "what is the complete existing function, and how does the new term fold into it."
+>
+> **The method, in order:**
+> 1. **Find a candidate point structurally** — same BFS/reachability search as before: trace where the
+>    new term's source could enter the target cone. This gives you a STARTING POINT for investigation,
+>    not an answer.
+> 2. **Recover the COMPLETE existing function from that point, not just the local gate.** Walk forward
+>    from the candidate gate to its real consumer(s) until you reach the actual target DFF(s)' full
+>    write-enable/data equation, expressed in terms of its real operands
+>    (`OLD_EXPR(op1, op2, ..., opN)`) — not the one local 2/3-input gate in isolation. A single gate
+>    read in isolation is almost never the whole story; the candidate point is usually embedded inside
+>    a larger AND/OR structure (other clauses, other shared terms) that also matters.
+> 3. **Derive the correct combine via Shannon-cofactor expansion, using the new term as the cofactor
+>    variable.** Evaluate `OLD_EXPR` at whichever operand value makes the EXISTING clause the new term
+>    is meant to override (e.g. cofactor at the operand that forces the clause you're widening to its
+>    "already true" value) — the resulting reduced expression is the exact existing sub-term `S` that
+>    the new term needs to be combined with. This `S` is normally buildable from nets that **already
+>    exist** in the netlist (do not invent new structure you don't need); identify those real net names.
+> 4. **Build the fold from the reconstruction, not from the candidate pin:** emit
+>    `NEW_EXPR = OLD_EXPR <op> (S & new_term)` (OR-widen) or the AND-NOT equivalent for a narrow —
+>    wired from the `S` you actually derived in step 3, at the register's actual D/write-enable
+>    boundary (per the DFF-pin-rewire vs driver-rename rule above), not by editing the candidate gate
+>    found in step 1 in place.
+> 5. **Only now run the exhaustive proof, as confirmation of the derivation — not as the primary
+>    method.** Enumerate every input `OLD_EXPR` depends on (all of them, not just the ones near the
+>    candidate pin) plus `new_term`, and brute-force every combination to confirm
+>    `NEW_EXPR == OLD_EXPR <op> new_term` exactly, with 0 mismatches. If built correctly from steps
+>    2-4 this should pass by construction. Record the truth table (or "0/N mismatch") in the entry's
+>    `notes` so it is auditable, not just asserted.
+> 6. **A failure at step 5 means the reconstruction in steps 2-4 has an error — fix the algebra and
+>    redo it.** It does NOT mean "try a different candidate pin and point-check that instead"; that is
+>    exactly the shortcut that caused the real incident below. Only after a genuinely correct
+>    reconstruction passes step 5 may the entry be marked `confirmed: true`.
+>
+> **Real incident this method is built from:** an agent found a gate where the new term's source
+> signal structurally reaches a 16-bit shared write-enable cone through exactly one point, and skipped
+> straight to editing that single pin — `old_operand -> (old_operand | new_term)` — without ever
+> recovering the complete existing equation around it. It reported this "confirmed by exhaustive BFS,"
+> but the BFS had only proved reachability; the substitution itself was never proven against the
+> clause's real function. It broke all 16 bits of the cone (plus, in one slice, two unrelated sibling
+> registers that happened to share that same pin's fan-out) once applied for real. A sibling agent
+> working the SAME signal on a SAME-SHAPED design instead followed exactly the method above —
+> recovered the complete 3-clause write-enable, cofactor-expanded it to find which existing nets the
+> new term needed to combine with, built the fold from that, and only then brute-force-confirmed it
+> (zero mismatches across every combination) — and that one held up under real Formality verification.
+>
+> Any entry that only clears step 1 (reachability) without having gone through steps 2-5 must be left
+> `polarity_undetermined`/`UNRESOLVABLE`, never `confirmed: true` — in simple mode this means the
+> change gets punted to complete mode per the Step 3 checkpoint, which is correct: an unproven
+> point-substitution must never reach Step 4.
 
 > **Cross-emitter signal reuse.** If the widened branch's new term is itself an RTL signal that a
 > sibling `new_logic_gate` change already realizes (that gate's terminal entry tags
