@@ -206,6 +206,34 @@ Update `old_driver_inverting` in the study entry to match the FM polarity (true 
 >
 > The rule below applies ONLY to combinational term-folds (NO `branch_assigns` and NO `branch_loads`).
 
+> **MANDATORY — exhaustive proof before accepting a combinational term-fold, no exceptions for
+> "the new term's source signal can structurally reach this pin."** Reachability is NOT equivalence.
+> A real incident: an agent found a gate where the new term's source signal structurally reaches a
+> 16-bit shared write-enable cone through exactly one point, substituted
+> `old_operand -> (old_operand | new_term)` at that single pin, and reported it "confirmed by
+> exhaustive BFS" — but the BFS only proved reachability, never proved the substitution preserved the
+> clause's Boolean function. It did not, and broke all 16 bits (plus, in one slice, two unrelated
+> sibling registers that also happened to share that pin's fanout) once applied for real. A sibling
+> agent working the SAME signal on a SAME-SHAPED design instead reconstructed the clause's complete
+> existing function (via Shannon-cofactor expansion around the new term) and proved the substitution
+> equivalent by brute-force enumeration of every input combination — zero mismatches — before
+> accepting it; that one held up.
+> Before marking ANY combinational term-fold entry `confirmed: true`:
+> 1. Enumerate every input that the EXISTING clause/cone actually depends on (not just the one pin the
+>    new term's source happens to reach) — read the real gate(s), don't assume a single-input pass-through.
+> 2. State the clause's exact pre-existing Boolean function in those inputs.
+> 3. Prove — by exhaustive enumeration of all combinations of those inputs (plus the new term), not by
+>    a structural/reachability check alone — that the proposed gate change computes exactly
+>    `existing_clause <op> new_term` (OR for a widen, AND-NOT for a narrow, matching RTL intent). Record
+>    the truth table (or the brute-force pass/fail count, e.g. "0/N mismatch") in the entry's `notes`
+>    so it is auditable, not just asserted.
+> 4. If the single-pin substitution fails that proof, do NOT apply it. Fall back to reconstructing the
+>    clause's complete function and re-deriving the widened form from it, then re-run step 3 against
+>    the reconstruction. Only `confirmed: true` once the exhaustive proof passes.
+> A reachability-only finding (no exhaustive proof attached) must be left `polarity_undetermined`/
+> `UNRESOLVABLE` rather than `confirmed: true` — in simple mode this means the change gets punted to
+> complete mode per the Step 3 checkpoint, which is correct: an unverified guess must never reach Step 4.
+
 > **Cross-emitter signal reuse.** If the widened branch's new term is itself an RTL signal that a
 > sibling `new_logic_gate` change already realizes (that gate's terminal entry tags
 > `new_logic_dependency_signal`), `emit_reg_guard_delta_batch` BINDS to that already-emitted net
