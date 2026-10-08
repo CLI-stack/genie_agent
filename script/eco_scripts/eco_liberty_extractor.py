@@ -168,10 +168,34 @@ def select_lib_files(lib_dir):
 
 # ── Main ──────────────────────────────────────────────────────────────────
 
+def resolve_lib_dir(lib_dir_arg):
+    """Resolve a user-supplied --lib-dir to the actual leaf directory containing
+    *.lib.gz files. Users naturally hand over a PDK release root or a
+    libreldir-style symlink, not the exact ccs/ leaf — try, in order:
+    <path> itself, <path>/synopsys/ccs, <path>/tech/synopsys/ccs. Returns the
+    first candidate that actually contains *.lib.gz files, or None (with the
+    tried paths) if none do."""
+    base = Path(lib_dir_arg)
+    candidates = [base, base / 'synopsys' / 'ccs', base / 'tech' / 'synopsys' / 'ccs']
+    for cand in candidates:
+        if cand.is_dir() and any(cand.glob('*.lib.gz')):
+            return cand, candidates
+    return None, candidates
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     p.add_argument('--ref-dir', required=True,
-                   help='TileBuilder ref dir containing tech/synopsys/ccs/ and data/')
+                   help='TileBuilder ref dir containing tech/synopsys/ccs/ and data/ '
+                        '(data/eco_cell_library.json is always written here, '
+                        'regardless of where --lib-dir points)')
+    p.add_argument('--lib-dir', default=None,
+                   help='Override: read .lib.gz files from here instead of '
+                        '<REF_DIR>/tech/synopsys/ccs — e.g. a PDK release root or '
+                        'libreldir symlink. Auto-descends into synopsys/ccs or '
+                        'tech/synopsys/ccs if the path given does not itself '
+                        'contain .lib.gz files. Used by simple mode when REF_DIR '
+                        'is a shim directory with no tech/ tree of its own.')
     p.add_argument('--output', default=None,
                    help='Output JSON path (default: <REF_DIR>/data/eco_cell_library.json)')
     p.add_argument('--force', action='store_true',
@@ -182,18 +206,36 @@ def main():
 
     ref_dir = Path(args.ref_dir)
     out_path = Path(args.output) if args.output else ref_dir / 'data' / 'eco_cell_library.json'
+    marker_path = str(out_path).replace('.json', '_marker.txt')
+
+    def write_marker(text):
+        full = f'ECO_SCRIPT_LAUNCHED: eco_liberty_extractor.py\n{text}'
+        print(full)
+        try:
+            Path(marker_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(marker_path).write_text(full)
+        except OSError:
+            pass
 
     # Skip if cache exists and --force not set
     if out_path.exists() and not args.force:
         n = len(json.loads(out_path.read_text()))
-        print(f'ECO_LIBERTY_EXTRACTOR: cache exists at {out_path} ({n} families). Use --force to refresh.')
+        write_marker(f'  cache exists at {out_path} ({n} families). Use --force to refresh.\n')
         return 0
 
-    lib_dir = ref_dir / 'tech' / 'synopsys' / 'ccs'
+    if args.lib_dir:
+        lib_dir, tried = resolve_lib_dir(args.lib_dir)
+        if lib_dir is None:
+            write_marker(f'  ABORTED — no *.lib.gz files found under any of: '
+                         f'{", ".join(str(t) for t in tried)}\n')
+            return 1
+    else:
+        lib_dir = ref_dir / 'tech' / 'synopsys' / 'ccs'
+
     libs = select_lib_files(lib_dir)
 
     if not libs:
-        print(f'ECO_LIBERTY_EXTRACTOR: no Liberty files found under {lib_dir}', file=sys.stderr)
+        write_marker(f'  ABORTED — no Liberty files found under {lib_dir}\n')
         return 1
 
     print(f'ECO_LIBERTY_EXTRACTOR: scanning {len(libs)} Liberty files from {lib_dir}')
@@ -230,14 +272,13 @@ def main():
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(out, indent=2, sort_keys=True))
 
-    print(f'\nECO_LIBERTY_EXTRACTOR: done in {elapsed:.1f}s')
-    print(f'  cells parsed:    {len(all_cells)}')
-    print(f'  families stored: {len(out)}')
-    print(f'  output:          {out_path}')
+    summary = (f'  done in {elapsed:.1f}s\n'
+               f'  cells parsed:    {len(all_cells)}\n'
+               f'  families stored: {len(out)}\n'
+               f'  output:          {out_path}\n')
     if errors:
-        print(f'  warnings ({len(errors)}):')
-        for e in errors:
-            print(f'    - {e}')
+        summary += f'  warnings ({len(errors)}):\n' + ''.join(f'    - {e}\n' for e in errors)
+    write_marker(summary)
 
     return 0
 

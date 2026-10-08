@@ -4,146 +4,1968 @@
     "format": "<cell_family_prefix>: {<output_pin>: <boolean expression in input pins>}",
     "operators": "Python boolean: ~ (not), & (and), | (or), ^ (xor)",
     "cell_family": "extracted by regex ^([A-Z]+\\d*) before drive-strength suffix Dn",
-    "scope": "common combinational cells; extend as new ones appear in study JSON"
+    "scope": "common combinational cells; extend as new ones appear in study JSON",
+    "provenance": "Regenerated from real vendor Liberty data (eco_liberty_extractor.py run against UMCCMD_ECO1_ECO2_fix2_fenets_v2/reference/libreldir, 635 families from 4295 real cells) to replace prior hand-curated approximations. Confirmed real collisions fixed vs the prior hand-curated version: INR3, AO12, OA12 (wrong pin-to-role mapping), AOI211 (double-negation schema bug \u2014 compound {function,output_is_inverting} form double-applied an inversion already baked into the function string; real data never uses the compound schema, only simple {pin: expr}, so that schema is retired here). Dropped one dead, mis-keyed entry (NR2D1SPG1AMDBWP136P5M156H3P48CPDLVT \u2014 a redundant, unreachable duplicate; the correct NR2 family entry already covers this cell)."
+  },
+  "AIOI21": {
+    "ZN": "((~A1|~A2) & B)"
+  },
+  "AN2": {
+    "Z": "(A1 & A2)"
+  },
+  "AN2CDC": {
+    "Z": "(A & EN)"
+  },
+  "AN2EQA": {
+    "Z": "(A1 & A2)"
+  },
+  "AN2LLKG": {
+    "Z": "(A1 & A2)"
+  },
+  "AN2SR2": {
+    "Z": "(A1 & A2)"
+  },
+  "AN2XOR2": {
+    "Z": "A1&A2&~B | ~A1&B | ~A2&B"
+  },
+  "AN2XOR2EQA": {
+    "Z": "A1&A2&~B | ~A1&B | ~A2&B"
+  },
+  "AN3": {
+    "Z": "((A1 & A2) & A3)"
+  },
+  "AN3SR2": {
+    "Z": "((A1 & A2) & A3)"
+  },
+  "AN4": {
+    "Z": "(((A1 & A2) & A3) & A4)"
+  },
+  "AN4EQA": {
+    "Z": "(((A1 & A2) & A3) & A4)"
+  },
+  "AO112": {
+    "Z": "((A1 & A2)|B|C)"
+  },
+  "AO12": {
+    "Z": "((A1 & A2)|B)"
+  },
+  "AO21": {
+    "Z": "((A1&A2)|B)"
+  },
+  "AO211": {
+    "Z": "(((A1 & A2)|B)|C)"
+  },
+  "AO21MUX2": {
+    "Z": "A1&A2&~S | B&~S | I&S"
+  },
+  "AO21MUX2EQA": {
+    "Z": "A1&A2&~S | B&~S | I&S"
+  },
+  "AO22": {
+    "Z": "((A1 & A2) | (B1 & B2))"
+  },
+  "AO221": {
+    "Z": "(((A1 & A2)|(B1 & B2))|C)"
+  },
+  "AO222": {
+    "Z": "((A1 & A2)|(B1 & B2)|(C1 & C2))"
+  },
+  "AO2222": {
+    "Z": "((A1 & A2)|(B1 & B2)|(C1 & C2)|(D1 & D2))"
+  },
+  "AO2222OR2": {
+    "Z": "(((A1 & A2)|(B1 & B2)|(C1 & C2)|(D1 & D2)) | A)"
+  },
+  "AO2222OR2OPTA": {
+    "Z": "(((A1 & A2)|(B1 & B2)|(C1 & C2)|(D1 & D2)) | A)"
+  },
+  "AO222OPT": {
+    "Z": "((A1 & A2)|(B1 & B2)|(C1 & C2))"
+  },
+  "AO22EQ2A": {
+    "Z": "((A1 & A2) | (B1 & B2))"
+  },
+  "AO22EQA": {
+    "Z": "((A1 & A2) | (B1 & B2))"
+  },
+  "AO31": {
+    "Z": "(((A1 & A2) & A3)|B)"
+  },
+  "AO32": {
+    "Z": "((B1 & B2)|((A1 & A2) & A3))"
+  },
+  "AO33": {
+    "Z": "(((B1 & B2) & B3)|((A1 & A2) & A3))"
+  },
+  "AOAI211": {
+    "ZN": "(~(((A1 & A2) | B) & C))"
+  },
+  "AOAI211OPT": {
+    "ZN": "(~(((A1 & A2) | B) & C))"
+  },
+  "AOI12": {
+    "ZN": "~((A1 & A2)|B)"
+  },
+  "AOI21": {
+    "ZN": "(~((A1 & A2)|B))"
+  },
+  "AOI211": {
+    "ZN": "(~(((A1 & A2)|B)|C))"
+  },
+  "AOI211BA1": {
+    "ZN": "(~(((~A1 & A2)|B)|C))"
+  },
+  "AOI211EQA": {
+    "ZN": "(~(((A1 & A2)|B)|C))"
+  },
+  "AOI211OPTPA": {
+    "ZN": "(~(((A1 & A2)|B)|C))"
+  },
+  "AOI211OPTPAEQ2A": {
+    "ZN": "(~(((A1 & A2)|B)|C))"
+  },
+  "AOI211SKF": {
+    "ZN": "(~(((A1 & A2)|B)|C))"
+  },
+  "AOI211SKR": {
+    "ZN": "(~(((A1 & A2)|B)|C))"
+  },
+  "AOI21EQA": {
+    "ZN": "(~((A1 & A2)|B))"
+  },
+  "AOI21OPTPA": {
+    "ZN": "(~((A1 & A2)|B))"
+  },
+  "AOI21SKF": {
+    "ZN": "(~((A1 & A2)|B))"
+  },
+  "AOI21SKR": {
+    "ZN": "(~((A1 & A2)|B))"
+  },
+  "AOI22": {
+    "ZN": "(~((A1 & A2)|(B1 & B2)))"
+  },
+  "AOI221": {
+    "ZN": "(~(((A1 & A2)|(B1 & B2))|C))"
+  },
+  "AOI221EQ2A": {
+    "ZN": "(~(((A1 & A2)|(B1 & B2))|C))"
+  },
+  "AOI221LLKG": {
+    "ZN": "(~(((A1 & A2)|(B1 & B2))|C))"
+  },
+  "AOI222": {
+    "ZN": "(~(((A1 & A2)|(C1 & C2))|(B1 & B2)))"
+  },
+  "AOI2222": {
+    "ZN": "(~((A1 & A2)|(B1 & B2)|(C1 & C2)|(D1 & D2)))"
+  },
+  "AOI222EQ2A": {
+    "ZN": "(~(((A1 & A2)|(C1 & C2))|(B1 & B2)))"
+  },
+  "AOI222EQA": {
+    "ZN": "(~(((A1 & A2)|(C1 & C2))|(B1 & B2)))"
+  },
+  "AOI222EQB": {
+    "ZN": "(~(((A1 & A2)|(C1 & C2))|(B1 & B2)))"
+  },
+  "AOI222IOA21": {
+    "ZN": "A1&A2 | B1&B2 | C1&C2 | D1&D2"
+  },
+  "AOI222IOA21EQA": {
+    "ZN": "A1&A2 | B1&B2 | C1&C2 | D1&D2"
+  },
+  "AOI222XNR2": {
+    "ZN": "A1&A2&~D | ~A1&~B1&~C1&D | ~A1&~B1&~C2&D | ~A1&~B2&~C1&D | ~A1&~B2&~C2&D | ~A2&~B1&~C1&D | ~A2&~B1&~C2&D | ~A2&~B2&~C1&D | ~A2&~B2&~C2&D | B1&B2&~D | C1&C2&~D"
+  },
+  "AOI222XNR2EQA": {
+    "ZN": "A1&A2&~D | ~A1&~B1&~C1&D | ~A1&~B1&~C2&D | ~A1&~B2&~C1&D | ~A1&~B2&~C2&D | ~A2&~B1&~C1&D | ~A2&~B1&~C2&D | ~A2&~B2&~C1&D | ~A2&~B2&~C2&D | B1&B2&~D | C1&C2&~D"
+  },
+  "AOI22BA1M2": {
+    "ZN": "(~((~A1 & A2)|(B1 & B2)))"
+  },
+  "AOI22BA1M2EQ2A": {
+    "ZN": "(~((~A1 & A2)|(B1 & B2)))"
+  },
+  "AOI22EQA": {
+    "ZN": "(~((A1 & A2)|(B1 & B2)))"
+  },
+  "AOI22EQB": {
+    "ZN": "(~((A1 & A2)|(B1 & B2)))"
+  },
+  "AOI22IOA21": {
+    "ZN": "A1&A2 | B1&B2 | C1&C2"
+  },
+  "AOI22IOA21EQA": {
+    "ZN": "A1&A2 | B1&B2 | C1&C2"
+  },
+  "AOI22LLKG": {
+    "ZN": "(~((A1 & A2)|(B1 & B2)))"
+  },
+  "AOI22M2": {
+    "ZN": "(~((A1 & A2)|(B1 & B2)))"
+  },
+  "AOI22M2EQ2A": {
+    "ZN": "(~((A1 & A2)|(B1 & B2)))"
+  },
+  "AOI22ND2": {
+    "ZN": "A1&A2 | B1&B2 | ~C"
+  },
+  "AOI22ND2EQA": {
+    "ZN": "A1&A2 | B1&B2 | ~C"
+  },
+  "AOI22OPTPA": {
+    "ZN": "(~((A1 & A2)|(B1 & B2)))"
+  },
+  "AOI22OPTPAEQ2A": {
+    "ZN": "(~((A1 & A2)|(B1 & B2)))"
+  },
+  "AOI22SKF": {
+    "ZN": "(~((A1 & A2)|(B1 & B2)))"
+  },
+  "AOI22SKR": {
+    "ZN": "(~((A1 & A2)|(B1 & B2)))"
+  },
+  "AOI22SKREQ2A": {
+    "ZN": "(~((A1 & A2)|(B1 & B2)))"
+  },
+  "AOI31": {
+    "ZN": "(~(((A1 & A2) & A3)|B))"
+  },
+  "AOI311": {
+    "ZN": "(~((((A1 & A2) & A3)|B)|C))"
+  },
+  "AOI311EQ2A": {
+    "ZN": "(~((((A1 & A2) & A3)|B)|C))"
+  },
+  "AOI31SKF": {
+    "ZN": "(~(((A1 & A2) & A3)|B))"
+  },
+  "AOI31SKR": {
+    "ZN": "(~(((A1 & A2) & A3)|B))"
+  },
+  "AOI32": {
+    "ZN": "(~(((A1 & A2) & A3)|(B1 & B2)))"
+  },
+  "AOI33": {
+    "ZN": "(~(((A1 & A2) & A3)|((B1 & B2) & B3)))"
+  },
+  "BREC": {
+    "X1": "(~(A1^A0))",
+    "X2": "(~((A2^A1) & ~(A1^A0)))"
+  },
+  "BRECEN": {
+    "X1": "(~((A1^A0) & EN))",
+    "X2": "(~((A2^A1) & ~(A1^A0) & EN))"
+  },
+  "BSEL": {
+    "BN1": "(~(N^B1))",
+    "PP": "(~((X1|~(N^B1)) & (X2|BN0)))"
+  },
+  "BUFF": {
+    "Z": "I"
+  },
+  "BUFFCDC": {
+    "Z": "A"
+  },
+  "BUFFEQA": {
+    "Z": "I"
+  },
+  "BUFFLLKG": {
+    "Z": "I"
+  },
+  "BUFFPAD": {
+    "Z": "I"
+  },
+  "BUFFSKF": {
+    "Z": "I"
+  },
+  "BUFFSKFLLKG": {
+    "Z": "I"
+  },
+  "BUFFSKR": {
+    "Z": "I"
+  },
+  "BUFFSKRLLKG": {
+    "Z": "I"
+  },
+  "BUFFSR2": {
+    "Z": "I"
+  },
+  "BUFFSR2SKF": {
+    "Z": "I"
+  },
+  "BUFFSR2SKR": {
+    "Z": "I"
+  },
+  "BUFT": {
+    "Z": "I"
+  },
+  "CKAN2": {
+    "Z": "(CP & EN)"
+  },
+  "CKAO21LNQ": {
+    "Z": "IQ"
+  },
+  "CKAO21LNQLPS": {
+    "Z": "IQ"
+  },
+  "CKB": {
+    "Z": "I"
+  },
+  "CKBICP": {
+    "Z": "CP"
+  },
+  "CKINV": {
+    "ZN": "(~CP)"
+  },
+  "CKINVICP": {
+    "ZN": "(~CP)"
+  },
+  "CKINVICPPAD": {
+    "ZN": "(~CP)"
+  },
+  "CKINVICPTWA": {
+    "ZN": "(~CP)"
+  },
+  "CKINVICPZPDLLKG": {
+    "ZN": "(~CP)"
+  },
+  "CKISOCHSNKHDCW": {
+    "Z": "(CP|ISO)"
+  },
+  "CKISOCLSNKHDCW": {
+    "Z": "((~ISO)&CP)"
+  },
+  "CKLHQL": {
+    "Z": "IQ"
+  },
+  "CKLNQL": {
+    "Z": "IQ"
+  },
+  "CKMUX2": {
+    "Z": "((CP0&(~CPSEL))|(CP1&CPSEL))"
+  },
+  "CKMUX2OPTBAL": {
+    "Z": "((CP0&(~CPSEL))|(CP1&CPSEL))"
+  },
+  "CKMUX2SBAL": {
+    "Z": "((EN0&(~CPSEL))|(EN1&CPSEL))"
+  },
+  "CKN": {
+    "ZN": "(~I)"
+  },
+  "CKND2": {
+    "ZN": "(~(CP & EN))"
+  },
+  "CKND2SKF": {
+    "ZN": "(~(CP & EN))"
+  },
+  "CKND2SKR": {
+    "ZN": "(~(CP & EN))"
+  },
+  "CKNPAD": {
+    "ZN": "(~I)"
+  },
+  "CKNR2": {
+    "ZN": "(~(CP|EN))"
+  },
+  "CKNR2TWA": {
+    "ZN": "(~(A1|A2))"
+  },
+  "CKNTWA": {
+    "ZN": "(~I)"
+  },
+  "CKNZPDLLKG": {
+    "ZN": "(~I)"
+  },
+  "CKOR2": {
+    "Z": "(CP|EN)"
+  },
+  "CKOR2LNND2QN": {
+    "QN": "~(CP&IQ)"
+  },
+  "CKOR2LNNR2QHS": {
+    "Z": "(~(~IQ|~CP))"
+  },
+  "CKOR2LNQ": {
+    "Z": "IQ"
+  },
+  "CKOR2LNQLPS": {
+    "Z": "IQ"
+  },
+  "CKOR2LNQPG": {
+    "Z": "IQ"
+  },
+  "CKOR2LNQSI": {
+    "Z": "IQ"
+  },
+  "CKOR2TWA": {
+    "Z": "(A1|A2)"
+  },
+  "CKXOR2": {
+    "Z": "(A1^A2)"
+  },
+  "DCCKB": {
+    "Z": "I"
+  },
+  "DCCKBICP": {
+    "Z": "CP"
+  },
+  "DCCKINVICP": {
+    "ZN": "(~CP)"
+  },
+  "DCCKINVICPTWA": {
+    "ZN": "(~CP)"
+  },
+  "DCCKN": {
+    "ZN": "(~I)"
+  },
+  "DELA": {
+    "Z": "I"
+  },
+  "DELAA": {
+    "Z": "I"
+  },
+  "DELB": {
+    "Z": "I"
+  },
+  "DELBB": {
+    "Z": "I"
+  },
+  "DELC": {
+    "Z": "I"
+  },
+  "DELD": {
+    "Z": "I"
+  },
+  "DELE": {
+    "Z": "I"
+  },
+  "DELF": {
+    "Z": "I"
+  },
+  "DELG": {
+    "Z": "I"
+  },
+  "DELH": {
+    "Z": "I"
+  },
+  "DELHH": {
+    "Z": "I"
+  },
+  "DFKRPQSXG": {
+    "Q": "IQ"
+  },
+  "DFKSNQSXG": {
+    "Q": "IQ"
+  },
+  "DFKSRPQSXG": {
+    "Q": "IQ"
+  },
+  "DFMQSXG": {
+    "Q": "IQ"
+  },
+  "DFNQNSXG": {
+    "QN": "IQN"
+  },
+  "DFNQSXG": {
+    "Q": "IQ"
+  },
+  "DFNRPQNSXG": {
+    "QN": "IQN"
+  },
+  "DFNRPQSXG": {
+    "Q": "IQ"
+  },
+  "DFNSNQNSXG": {
+    "QN": "IQN"
+  },
+  "DFNSNQSXG": {
+    "Q": "IQ"
+  },
+  "DFNSRNQSXG": {
+    "Q": "IQ"
+  },
+  "DFNSRNQSXGEQ2A": {
+    "Q": "IQ"
+  },
+  "DFNSRPQSXG": {
+    "Q": "IQ"
+  },
+  "DFNSRPQSXGEQ2A": {
+    "Q": "IQ"
+  },
+  "DFNTXG": {
+    "Q": "IQ",
+    "QN": "IQN"
+  },
+  "DFQNSXG": {
+    "QN": "IQN"
+  },
+  "DFQNTXG": {
+    "QN": "IQN"
+  },
+  "DFQSXG": {
+    "Q": "IQ"
+  },
+  "DFQTXG": {
+    "Q": "IQ"
+  },
+  "DFRNQNTXG": {
+    "QN": "IQN"
+  },
+  "DFRNQNTXGEQ2A": {
+    "QN": "IQN"
+  },
+  "DFRNQTXG": {
+    "Q": "IQ"
+  },
+  "DFRNQTXGEQ2A": {
+    "Q": "IQ"
+  },
+  "DFRPQNSXG": {
+    "QN": "IQN"
+  },
+  "DFRPQNTXG": {
+    "QN": "IQN"
+  },
+  "DFRPQSXG": {
+    "Q": "IQ"
+  },
+  "DFRPQTXG": {
+    "Q": "IQ"
+  },
+  "DFSNQNSXG": {
+    "QN": "IQN"
+  },
+  "DFSNQSXG": {
+    "Q": "IQ"
+  },
+  "DFSRNQSXG": {
+    "Q": "IQ"
+  },
+  "DFSRNQSXGEQ2A": {
+    "Q": "IQ"
+  },
+  "DFSRPQSXG": {
+    "Q": "IQ"
+  },
+  "DFSRPQSXGEQ2A": {
+    "Q": "IQ"
+  },
+  "DFSYNC1Q": {
+    "Q": "IQ"
+  },
+  "DFTXG": {
+    "Q": "IQ",
+    "QN": "IQN"
+  },
+  "DPMUX2": {
+    "Z": "((D0&(~CKM))|(D1&CKM))"
+  },
+  "EDFQSXG": {
+    "Q": "IQ"
+  },
+  "EDFQSXGEQ2A": {
+    "Q": "IQ"
+  },
+  "EDFRPQSXG": {
+    "Q": "IQ"
+  },
+  "EDFRPQSXGEQ2A": {
+    "Q": "IQ"
+  },
+  "FA1SNCON": {
+    "CON": "~(((A&B)|(B&CI))|(CI&A))",
+    "SN": "~((A^B)^CI)"
+  },
+  "FCICO": {
+    "CO": "(((A & B)|(B & CI))|(CI & A))"
+  },
+  "FCICOEQ2A": {
+    "CO": "(((A & B)|(B & CI))|(CI & A))"
+  },
+  "FCICON": {
+    "CON": "(~(((A & B)|(B & CI))|(CI & A)))"
+  },
+  "FCICONEQ2A": {
+    "CON": "(~(((A & B)|(B & CI))|(CI & A)))"
+  },
+  "FCIS": {
+    "S": "((A^B)^CI)"
+  },
+  "FCISEQ2A": {
+    "S": "((A^B)^CI)"
+  },
+  "FCISN": {
+    "SN": "(~((A^B)^CI))"
+  },
+  "FCISNEQ2A": {
+    "SN": "(~((A^B)^CI))"
+  },
+  "FCSICON": {
+    "CON0": "(~(((A & B)|(B & CI0))|(CI0 & A)))",
+    "CON1": "(~(((A & B)|(B & CI1))|(CI1 & A)))",
+    "S": "((((CS & CI1) | (~CS & CI0))^A)^B)"
+  },
+  "FCSICONEQ2A": {
+    "CON0": "(~(((A & B)|(B & CI0))|(CI0 & A)))",
+    "CON1": "(~(((A & B)|(B & CI1))|(CI1 & A)))",
+    "S": "((((CS & CI1) | (~CS & CI0))^A)^B)"
+  },
+  "FIICON": {
+    "CON0": "(~(A & B))",
+    "CON1": "(~(A|B))",
+    "S": "((A^B)^C)"
+  },
+  "GAN2": {
+    "Z": "(A1 & A2)"
+  },
+  "GAN3": {
+    "Z": "((A1 & A2) & A3)"
+  },
+  "GAN4": {
+    "Z": "(((A1 & A2) & A3) & A4)"
+  },
+  "GAO21": {
+    "Z": "((A1 & A2) | B)"
+  },
+  "GAO22": {
+    "Z": "((A1 & A2) | (B1 & B2))"
+  },
+  "GAOI21": {
+    "ZN": "(~((A1 & A2)|B))"
+  },
+  "GAOI22": {
+    "ZN": "(~((A1 & A2)|(B1 & B2)))"
+  },
+  "GBUFF": {
+    "Z": "I"
+  },
+  "GDELB": {
+    "Z": "I"
+  },
+  "GDELE": {
+    "Z": "I"
+  },
+  "GINV": {
+    "ZN": "(~I)"
+  },
+  "GISOCHSNKCW": {
+    "Z": "(I|ISO)"
+  },
+  "GISOCLSNKCW": {
+    "Z": "((~ISO)&I)"
+  },
+  "GLHQ": {
+    "Q": "IQ"
+  },
+  "GLNQ": {
+    "Q": "IQ"
+  },
+  "GMUX2": {
+    "Z": "((S & I1) | (~S & I0))"
+  },
+  "GMUX2N": {
+    "ZN": "(~((S & I1) | (~S & I0)))"
+  },
+  "GND2": {
+    "ZN": "(~(A1 & A2))"
+  },
+  "GND3": {
+    "ZN": "(~((A1 & A2) & A3))"
+  },
+  "GNR2": {
+    "ZN": "(~(A1|A2))"
+  },
+  "GNR3": {
+    "ZN": "(~((A1|A2)|A3))"
+  },
+  "GOA21": {
+    "Z": "((A1 | A2) & B)"
+  },
+  "GOA22": {
+    "Z": "((A1 | A2) & (B1 | B2))"
+  },
+  "GOAI21": {
+    "ZN": "(~((A1|A2) & B))"
+  },
+  "GOR2": {
+    "Z": "(A1|A2)"
+  },
+  "GOR3": {
+    "Z": "((A1|A2)|A3)"
+  },
+  "GOR4": {
+    "Z": "(((A1|A2)|A3)|A4)"
+  },
+  "GPTBUFFHDCW": {
+    "Z": "I"
+  },
+  "GPTBUFFHDCWEQ2A": {
+    "Z": "I"
+  },
+  "GPTINVHDCW": {
+    "ZN": "(~I)"
+  },
+  "GPTINVHDCWEQ2A": {
+    "ZN": "(~I)"
+  },
+  "GPTISOCHSNKHDCW": {
+    "Z": "(I|ISO)"
+  },
+  "GPTISOCHSNKHDCWEQ2A": {
+    "Z": "(I|ISO)"
+  },
+  "GPTISOCLSNKHDCW": {
+    "Z": "((~ISO)&I)"
+  },
+  "GPTISOCLSNKHDCWEQ2A": {
+    "Z": "((~ISO)&I)"
+  },
+  "GPTND2HDCW": {
+    "ZN": "(~(A1 & A2))"
+  },
+  "GPTND2HDCWEQ2A": {
+    "ZN": "(~(A1 & A2))"
+  },
+  "GPTNR2HDCW": {
+    "ZN": "(~(A1|A2))"
+  },
+  "GPTNR2HDCWEQ2A": {
+    "ZN": "(~(A1|A2))"
+  },
+  "GPTTIEHNTGHDCW": {
+    "Z": "1"
+  },
+  "GPTTIEHNTGHDCWEQ2A": {
+    "Z": "1"
+  },
+  "GPTTIELNTGHDCW": {
+    "ZN": "0"
+  },
+  "GPTTIELNTGHDCWEQ2A": {
+    "ZN": "0"
+  },
+  "GTIEHNTG": {
+    "Z": "1"
+  },
+  "GTIELNTG": {
+    "ZN": "0"
+  },
+  "GXNR2": {
+    "ZN": "(~(A1^A2))"
+  },
+  "GXOR2": {
+    "Z": "(A1^A2)"
+  },
+  "HA1": {
+    "CO": "(A&B)",
+    "S": "(A^B)"
+  },
+  "HA1EQ2A": {
+    "CO": "(A & B)",
+    "S": "(A^B)"
+  },
+  "IAO21": {
+    "ZN": "(~((~A1 & ~A2) | B))"
+  },
+  "IAO21EQA": {
+    "ZN": "(~((~A1 & ~A2) | B))"
+  },
+  "IAO22": {
+    "ZN": "(~((~A1 & ~A2) | (B1 & B2)))"
+  },
+  "IAO22EQA": {
+    "ZN": "(~((~A1 & ~A2) | (B1 & B2)))"
+  },
+  "IAO22LLKG": {
+    "ZN": "(~((~A1 & ~A2) | (B1 & B2)))"
+  },
+  "IAOI21": {
+    "ZN": "(~((A1 & ~A2) | B))"
+  },
+  "IAOI21BA1": {
+    "ZN": "A1&~B | ~A2&~B"
+  },
+  "IAOI22BA1": {
+    "ZN": "A1&~B1 | A1&~B2 | ~A2&~B1 | ~A2&~B2"
+  },
+  "IIND3": {
+    "ZN": "(~((~A1 & ~A2) & B1))"
+  },
+  "IIND4": {
+    "ZN": "(~(((~A1 & ~A2) & B1) & B2))"
+  },
+  "IINR3": {
+    "ZN": "((A1 & A2) & ~B1)"
+  },
+  "IINR4": {
+    "ZN": "(((A1 & A2) & ~B1) & ~B2)"
+  },
+  "IND2": {
+    "ZN": "(~((~A1) & B1))"
+  },
+  "IND2EQA": {
+    "ZN": "(~((~A1) & B1))"
+  },
+  "IND2LLKG": {
+    "ZN": "(~((~A1) & B1))"
+  },
+  "IND2OPTPA": {
+    "ZN": "(~((~A1) & B1))"
+  },
+  "IND2SR2": {
+    "ZN": "(~((~A1) & B1))"
+  },
+  "IND3": {
+    "ZN": "(~(((~A1) & B1) & B2))"
+  },
+  "IND3OPTPA": {
+    "ZN": "(~(((~A1) & B1) & B2))"
+  },
+  "IND4": {
+    "ZN": "(~((((~A1) & B1) & B2) & B3))"
+  },
+  "INR2": {
+    "ZN": "(~((~A1)|B1))"
+  },
+  "INR2EQA": {
+    "ZN": "(~((~A1)|B1))"
+  },
+  "INR2LLKG": {
+    "ZN": "(~((~A1)|B1))"
+  },
+  "INR2OPTPA": {
+    "ZN": "(~((~A1)|B1))"
+  },
+  "INR3": {
+    "ZN": "(~(((~A1)|B1)|B2))"
+  },
+  "INR3OPTPA": {
+    "ZN": "(~(((~A1)|B1)|B2))"
+  },
+  "INR4": {
+    "ZN": "(~((((~A1)|B1)|B2)|B3))"
   },
   "INV": {
+    "ZN": "(~I)"
+  },
+  "INVEQA": {
+    "ZN": "(~I)"
+  },
+  "INVLLKG": {
+    "ZN": "(~I)"
+  },
+  "INVPAD": {
+    "ZN": "(~I)"
+  },
+  "INVPADAR": {
+    "ZN": "(~I)"
+  },
+  "INVPADLLKG": {
+    "ZN": "(~I)"
+  },
+  "INVPADLLKGAR": {
+    "ZN": "(~I)"
+  },
+  "INVSKF": {
+    "ZN": "(~I)"
+  },
+  "INVSKFPAD": {
+    "ZN": "(~I)"
+  },
+  "INVSKR": {
+    "ZN": "(~I)"
+  },
+  "INVSKRPAD": {
+    "ZN": "(~I)"
+  },
+  "IOA21": {
+    "ZN": "(~((~(A1 & A2)) & B))"
+  },
+  "IOA21EQA": {
+    "ZN": "(~((~(A1 & A2)) & B))"
+  },
+  "IOA21LLKG": {
+    "ZN": "(~((~(A1 & A2)) & B))"
+  },
+  "IOA22": {
+    "ZN": "((~(B1 | B2)) | (A1 & A2))"
+  },
+  "IOA22EQA": {
+    "ZN": "((~(B1 | B2)) | (A1 & A2))"
+  },
+  "IOAI21": {
+    "ZN": "(~((A1 | ~A2) & B))"
+  },
+  "IOAI21BA1": {
+    "ZN": "A1&~A2 | ~B"
+  },
+  "IOAI22BA1": {
+    "ZN": "A1&~A2 | ~B1&~B2"
+  },
+  "ISOCHSNKCW": {
+    "Z": "(I|ISO)"
+  },
+  "ISOCHSRCCW": {
+    "Z": "(I|ISO)"
+  },
+  "ISOCHSRCCWEQ2A": {
+    "Z": "(I|ISO)"
+  },
+  "ISOCLSNKCW": {
+    "Z": "((~ISO) & I)"
+  },
+  "ISOCLSRCCW": {
+    "Z": "((~ISO) & I)"
+  },
+  "ISOCLSRCCWEQ2A": {
+    "Z": "((~ISO) & I)"
+  },
+  "JTFQ": {
+    "Q": "IQ2"
+  },
+  "JTFQEQ2A": {
+    "Q": "IQ2"
+  },
+  "LHAO22QL": {
+    "Q": "IQ"
+  },
+  "LHCNQ": {
+    "Q": "IQ"
+  },
+  "LHCSNQ": {
+    "Q": "IQ"
+  },
+  "LHQ": {
+    "Q": "IQ"
+  },
+  "LHSNQ": {
+    "Q": "IQ"
+  },
+  "LNAO21QL": {
+    "Q": "IQ"
+  },
+  "LNAO22QL": {
+    "Q": "IQ"
+  },
+  "LNCNQ": {
+    "Q": "IQ"
+  },
+  "LNCSNQ": {
+    "Q": "IQ"
+  },
+  "LNQ": {
+    "Q": "IQ"
+  },
+  "LNSNQ": {
+    "Q": "IQ"
+  },
+  "MAOI22": {
+    "ZN": "(~((~(B1|B2))|(A1 & A2)))"
+  },
+  "MAOI222": {
+    "ZN": "(~(((A & B)|(B & C))|(C & A)))"
+  },
+  "MAOI222EQ2A": {
+    "ZN": "(~(((A & B)|(B & C))|(C & A)))"
+  },
+  "MECOAN2": {
+    "Z": "(A1 & A2)"
+  },
+  "MECOAN3": {
+    "Z": "(A1 & A2 & A3)"
+  },
+  "MECOAO21": {
+    "Z": "((A1&A2)|B)"
+  },
+  "MECOAOI21": {
+    "ZN": "(~((A1 & A2)|B))"
+  },
+  "MECOAOI22": {
+    "ZN": "(~((A1 & A2)|(B1 & B2)))"
+  },
+  "MECOAOI31": {
+    "ZN": "(~(((A1 & A2) & A3)|(B)))"
+  },
+  "MECOBUFF": {
+    "Z": "I"
+  },
+  "MECOINV": {
+    "ZN": "(~I)"
+  },
+  "MECOMUX2": {
+    "Z": "((S&I1)|((~S)&I0))"
+  },
+  "MECOMUX2N": {
+    "ZN": "(~((S & I1) | (~S & I0)))"
+  },
+  "MECOND2": {
+    "ZN": "(~(A1 & A2))"
+  },
+  "MECOND3": {
+    "ZN": "(~(A1 & A2 & A3))"
+  },
+  "MECONR2": {
+    "ZN": "(~(A1|A2))"
+  },
+  "MECONR3": {
+    "ZN": "(~(A1|A2|A3))"
+  },
+  "MECOOR2": {
+    "Z": "(A1|A2)"
+  },
+  "MECOTIEHNTG": {
+    "Z": "1"
+  },
+  "MECOTIELNTG": {
+    "ZN": "0"
+  },
+  "MECOXNR2": {
+    "ZN": "(~(A1^A2))"
+  },
+  "MECOXOR2": {
+    "Z": "(A1^A2)"
+  },
+  "MOAI22": {
+    "ZN": "(~((~(B1 & B2)) & (A1|A2)))"
+  },
+  "MOAI22EQA": {
+    "ZN": "(~((~(B1 & B2)) & (A1|A2)))"
+  },
+  "MRKAN2": {
+    "Z": "(A1 & A2)"
+  },
+  "MRKBUFF": {
+    "Z": "I"
+  },
+  "MRKCKAN2": {
+    "Z": "(CP & EN)"
+  },
+  "MRKCKBICP": {
+    "Z": "CP"
+  },
+  "MRKCKINVICP": {
+    "ZN": "(~CP)"
+  },
+  "MRKCKMUX2": {
+    "Z": "((CP0&(~CPSEL))|(CP1&CPSEL))"
+  },
+  "MRKCKND2": {
+    "ZN": "(~(CP & EN))"
+  },
+  "MRKCKOR2": {
+    "Z": "(CP|EN)"
+  },
+  "MRKDFNTXG": {
+    "Q": "IQ",
+    "QN": "IQN"
+  },
+  "MRKDFQNTXG": {
+    "QN": "IQN"
+  },
+  "MRKINV": {
+    "ZN": "(~I)"
+  },
+  "MRKND2": {
+    "ZN": "(~(A1 & A2))"
+  },
+  "MRKNR2": {
+    "ZN": "(~(A1|A2))"
+  },
+  "MRKOR2": {
+    "Z": "(A1|A2)"
+  },
+  "MRKSDFQTXG": {
+    "Q": "IQ"
+  },
+  "MRKSDFTXG": {
+    "Q": "IQ",
+    "QN": "IQN"
+  },
+  "MUX2": {
+    "Z": "((S&I1)|((~S)&I0))"
+  },
+  "MUX2EQ12A": {
+    "Z": "((S & I1) | (~S & I0))"
+  },
+  "MUX2EQ2A": {
+    "Z": "((S&I1)|((~S)&I0))"
+  },
+  "MUX2EQA": {
+    "Z": "((S & I1) | (~S & I0))"
+  },
+  "MUX2M2": {
+    "Z": "((S&I1)|((~S)&I0))"
+  },
+  "MUX2M2EQ2A": {
+    "Z": "((S&I1)|((~S)&I0))"
+  },
+  "MUX2N": {
+    "ZN": "(~((S & I1) | (~S & I0)))"
+  },
+  "MUX2NEQ2A": {
+    "ZN": "(~((S & I1) | (~S & I0)))"
+  },
+  "MUX2NOPTC": {
+    "ZN": "(~((S & I1) | (~S & I0)))"
+  },
+  "MUX2NOPTCEQ2A": {
+    "ZN": "(~((S & I1) | (~S & I0)))"
+  },
+  "MUX2NP": {
+    "ZN": "(~((S & I1) | (~S & I0)))"
+  },
+  "MUX2NT": {
+    "ZN": "(~((S & I1) | (~S & I0)))"
+  },
+  "MUX2OPTC": {
+    "Z": "((S & I1) | (~S & I0))"
+  },
+  "MUX3": {
+    "Z": "((S1 & I2) | (~S1 & ((S0 & I1) | (~S0 & I0))))"
+  },
+  "MUX3EQ2A": {
+    "Z": "((S1 & I2) | (~S1 & ((S0 & I1) | (~S0 & I0))))"
+  },
+  "MUX3N": {
+    "ZN": "(~((S1 & I2) | (~S1 & ((S0 & I1) | (~S0 & I0)))))"
+  },
+  "MUX3NEQ2A": {
+    "ZN": "(~((S1 & I2) | (~S1 & ((S0 & I1) | (~S0 & I0)))))"
+  },
+  "MUX4": {
+    "Z": "((S1 & ((S0 & I3) | (~S0 & I2))) | (~S1 & ((S0 & I1) | (~S0 & I0))))"
+  },
+  "MUX4EQ2A": {
+    "Z": "((S1 & ((S0 & I3) | (~S0 & I2))) | (~S1 & ((S0 & I1) | (~S0 & I0))))"
+  },
+  "MUX4N": {
+    "ZN": "(~((S1 & ((S0 & I3) | (~S0 & I2))) | (~S1 & ((S0 & I1) | (~S0 & I0)))))"
+  },
+  "MUX4OPTD": {
+    "Z": "((S1 & ((S0 & I3) | (~S0 & I2))) | (~S1 & ((S0 & I1) | (~S0 & I0))))"
+  },
+  "ND2": {
+    "ZN": "(~(A1 & A2))"
+  },
+  "ND2CDC": {
+    "ZN": "(~(A & EN))"
+  },
+  "ND2EQA": {
+    "ZN": "(~(A1 & A2))"
+  },
+  "ND2LLKG": {
+    "ZN": "(~(A1 & A2))"
+  },
+  "ND2OAI21": {
+    "ZN": "A1&A2 | ~B1&~B2"
+  },
+  "ND2OAI21EQA": {
+    "ZN": "A1&A2 | ~B1&~B2"
+  },
+  "ND2OPTPA": {
+    "ZN": "(~(A1 & A2))"
+  },
+  "ND2PAD": {
+    "ZN": "(~(A1 & A2))"
+  },
+  "ND2SKF": {
+    "ZN": "(~(A1 & A2))"
+  },
+  "ND2SKFLLKG": {
+    "ZN": "(~(A1 & A2))"
+  },
+  "ND2SKR": {
+    "ZN": "(~(A1 & A2))"
+  },
+  "ND3": {
+    "ZN": "(~(A1 & A2 & A3))"
+  },
+  "ND3EQA": {
+    "ZN": "(~((A1 & A2) & A3))"
+  },
+  "ND3LLKG": {
+    "ZN": "(~((A1 & A2) & A3))"
+  },
+  "ND3OPTPA": {
+    "ZN": "(~((A1 & A2) & A3))"
+  },
+  "ND3SKF": {
+    "ZN": "(~((A1 & A2) & A3))"
+  },
+  "ND4": {
+    "ZN": "(~(A1 & A2 & A3 & A4))"
+  },
+  "ND4LLKG": {
+    "ZN": "(~(((A1 & A2) & A3) & A4))"
+  },
+  "ND4NR4": {
+    "ZN": "A1&A2&A3&A4&~B1&~B2&~B3"
+  },
+  "ND4NR4EQA": {
+    "ZN": "A1&A2&A3&A4&~B1&~B2&~B3"
+  },
+  "ND4OR4": {
+    "Z": "~A1 | ~A2 | ~A3 | ~A4 | B1 | B2 | B3"
+  },
+  "ND4OR4EQA": {
+    "Z": "~A1 | ~A2 | ~A3 | ~A4 | B1 | B2 | B3"
+  },
+  "ND4SKF": {
+    "ZN": "(~(((A1 & A2) & A3) & A4))"
+  },
+  "NR2": {
+    "ZN": "(~(A1|A2))"
+  },
+  "NR2EQA": {
+    "ZN": "(~(A1|A2))"
+  },
+  "NR2LLKG": {
+    "ZN": "(~(A1|A2))"
+  },
+  "NR2OPTPA": {
+    "ZN": "(~(A1|A2))"
+  },
+  "NR2PAD": {
+    "ZN": "(~(A1|A2))"
+  },
+  "NR2SKF": {
+    "ZN": "(~(A1|A2))"
+  },
+  "NR2SKR": {
+    "ZN": "(~(A1|A2))"
+  },
+  "NR2SKRLLKG": {
+    "ZN": "(~(A1|A2))"
+  },
+  "NR3": {
+    "ZN": "(~((A1|A2)|A3))"
+  },
+  "NR3EQA": {
+    "ZN": "(~(A1|A2|A3))"
+  },
+  "NR3OPTPA": {
+    "ZN": "(~(A1|A2|A3))"
+  },
+  "NR3SKR": {
+    "ZN": "(~((A1|A2)|A3))"
+  },
+  "NR4": {
+    "ZN": "(~(A1|A2|A3|A4))"
+  },
+  "NR4ND4": {
+    "ZN": "A1 | A2 | A3 | A4 | ~B1 | ~B2 | ~B3"
+  },
+  "NR4ND4EQA": {
+    "ZN": "A1 | A2 | A3 | A4 | ~B1 | ~B2 | ~B3"
+  },
+  "NR4SKR": {
+    "ZN": "(~(((A1|A2)|A3)|A4))"
+  },
+  "OA112": {
+    "Z": "(((A1|A2) & B) & C)"
+  },
+  "OA12": {
+    "Z": "((A1|A2) & B)"
+  },
+  "OA21": {
+    "Z": "((A1 | A2) & B)"
+  },
+  "OA211": {
+    "Z": "(((A1|A2) & B) & C)"
+  },
+  "OA22": {
+    "Z": "((A1 | A2) & (B1 | B2))"
+  },
+  "OA221": {
+    "Z": "(((A1|A2) & (B1|B2)) & C)"
+  },
+  "OA222": {
+    "Z": "((A1 | A2) & (B1 | B2) & (C1 | C2))"
+  },
+  "OA2222": {
+    "Z": "((A1 | A2) & (B1 | B2) & (C1 | C2) & (D1 | D2))"
+  },
+  "OA22AO22NR3": {
+    "ZN": "(~(((A|D)(B|C))|(A & D)|(B & C)))"
+  },
+  "OA22AO22NR3EQ2A": {
+    "ZN": "(~(((A|D)(B|C))|(A & D)|(B & C)))"
+  },
+  "OA22EQ2A": {
+    "Z": "((A1 | A2) & (B1 | B2))"
+  },
+  "OA22EQA": {
+    "Z": "((A1 | A2) & (B1 | B2))"
+  },
+  "OA23OA23NR2": {
+    "ZN": "(~(((A|B) & (C & D)) | ((A & B) & (C|D))))"
+  },
+  "OA23OA23NR2EQ2A": {
+    "ZN": "(~(((A|B) & (C & D)) | ((A & B) & (C|D))))"
+  },
+  "OA31": {
+    "Z": "(((A1|A2)|A3) & B)"
+  },
+  "OA32": {
+    "Z": "((B1|B2) & ((A1|A2)|A3))"
+  },
+  "OA33": {
+    "Z": "(((B1|B2)|B3) & ((A1|A2)|A3))"
+  },
+  "OAI12": {
+    "ZN": "~((A1|A2) & B)"
+  },
+  "OAI21": {
+    "ZN": "~((A1|A2) & B)"
+  },
+  "OAI211": {
+    "ZN": "(~(((A1|A2) & B) & C))"
+  },
+  "OAI211BA1": {
+    "ZN": "(~(((~A1|A2) & B) & C))"
+  },
+  "OAI211EQA": {
+    "ZN": "(~(((A1|A2) & B) & C))"
+  },
+  "OAI211LLKG": {
+    "ZN": "(~(((A1|A2) & B) & C))"
+  },
+  "OAI211OPTPA": {
+    "ZN": "(~(((A1|A2) & B) & C))"
+  },
+  "OAI211OPTPAEQ2A": {
+    "ZN": "(~(((A1|A2) & B) & C))"
+  },
+  "OAI211SKF": {
+    "ZN": "(~(((A1|A2) & B) & C))"
+  },
+  "OAI211SKR": {
+    "ZN": "(~(((A1|A2) & B) & C))"
+  },
+  "OAI21EQA": {
+    "ZN": "(~((A1|A2) & B))"
+  },
+  "OAI21LLKG": {
+    "ZN": "(~((A1|A2) & B))"
+  },
+  "OAI21OPTPA": {
+    "ZN": "(~((A1|A2) & B))"
+  },
+  "OAI21SKF": {
+    "ZN": "(~((A1|A2) & B))"
+  },
+  "OAI21SKR": {
+    "ZN": "(~((A1|A2) & B))"
+  },
+  "OAI22": {
+    "ZN": "(~((A1|A2) & (B1|B2)))"
+  },
+  "OAI221": {
+    "ZN": "(~(((A1|A2) & (B1|B2)) & C))"
+  },
+  "OAI221EQ2A": {
+    "ZN": "(~(((A1|A2) & (B1|B2)) & C))"
+  },
+  "OAI222": {
+    "ZN": "(~(((A1|A2) & (C1|C2)) & (B1|B2)))"
+  },
+  "OAI2222": {
+    "ZN": "(~((A1|A2) & (B1|B2) & (C1|C2) & (D1|D2)))"
+  },
+  "OAI222EQ2A": {
+    "ZN": "(~(((A1|A2) & (C1|C2)) & (B1|B2)))"
+  },
+  "OAI222EQA": {
+    "ZN": "(~(((A1|A2) & (C1|C2)) & (B1|B2)))"
+  },
+  "OAI222EQB": {
+    "ZN": "(~(((A1|A2) & (C1|C2)) & (B1|B2)))"
+  },
+  "OAI22BA1M2": {
+    "ZN": "(~((~A1|A2) & (B1|B2)))"
+  },
+  "OAI22BA1M2EQ2A": {
+    "ZN": "(~((~A1|A2) & (B1|B2)))"
+  },
+  "OAI22EQA": {
+    "ZN": "(~((A1|A2) & (B1|B2)))"
+  },
+  "OAI22EQB": {
+    "ZN": "(~((A1|A2) & (B1|B2)))"
+  },
+  "OAI22M2": {
+    "ZN": "(~((A1|A2) & (B1|B2)))"
+  },
+  "OAI22M2EQ2A": {
+    "ZN": "(~((A1|A2) & (B1|B2)))"
+  },
+  "OAI22OPTPA": {
+    "ZN": "(~((A1|A2) & (B1|B2)))"
+  },
+  "OAI22OPTPAEQ2A": {
+    "ZN": "(~((A1|A2) & (B1|B2)))"
+  },
+  "OAI22SKF": {
+    "ZN": "(~((A1|A2) & (B1|B2)))"
+  },
+  "OAI22SKR": {
+    "ZN": "(~((A1|A2) & (B1|B2)))"
+  },
+  "OAI31": {
+    "ZN": "(~(((A1|A2)|A3) & B))"
+  },
+  "OAI311": {
+    "ZN": "(~((((A1|A2)|A3) & B) & C))"
+  },
+  "OAI311EQ2A": {
+    "ZN": "(~((((A1|A2)|A3) & B) & C))"
+  },
+  "OAI31SKF": {
+    "ZN": "(~(((A1|A2)|A3) & B))"
+  },
+  "OAI31SKR": {
+    "ZN": "(~(((A1|A2)|A3) & B))"
+  },
+  "OAI32": {
+    "ZN": "(~(((A1|A2)|A3) & (B1|B2)))"
+  },
+  "OAI33": {
+    "ZN": "(~(((A1|A2)|A3) & ((B1|B2)|B3)))"
+  },
+  "OAOI211": {
+    "ZN": "(~(((A1 | A2) & B) | C))"
+  },
+  "OAOI211OPT": {
+    "ZN": "(~(((A1 | A2) & B) | C))"
+  },
+  "OIAI21": {
+    "ZN": "((~A1 & ~A2)|B)"
+  },
+  "OR2": {
+    "Z": "(A1|A2)"
+  },
+  "OR2EQA": {
+    "Z": "(A1|A2)"
+  },
+  "OR2LLKG": {
+    "Z": "(A1|A2)"
+  },
+  "OR2SR2": {
+    "Z": "(A1|A2)"
+  },
+  "OR3": {
+    "Z": "((A1|A2)|A3)"
+  },
+  "OR3SR2": {
+    "Z": "((A1|A2)|A3)"
+  },
+  "OR4": {
+    "Z": "(((A1|A2)|A3)|A4)"
+  },
+  "OR4EQA": {
+    "Z": "(((A1|A2)|A3)|A4)"
+  },
+  "ORDMUX": {
+    "Z1": "(~(~(A & B) & S))",
+    "Z2": "(~(~(A & B) & SN))"
+  },
+  "PTAN2HDCW": {
+    "Z": "(A1 & A2)"
+  },
+  "PTAN2HDCWEQ2A": {
+    "Z": "(A1 & A2)"
+  },
+  "PTBUFFHDCW": {
+    "Z": "I"
+  },
+  "PTBUFFHDCWEQ2A": {
+    "Z": "I"
+  },
+  "PTCKBICPHDCW": {
+    "Z": "CP"
+  },
+  "PTCKBICPHDCWEQ2A": {
+    "Z": "CP"
+  },
+  "PTCKINVICPHDCW": {
+    "ZN": "~CP"
+  },
+  "PTCKINVICPHDCWEQ2A": {
+    "ZN": "~CP"
+  },
+  "PTCKISOCHSNKHDCW": {
+    "Z": "(CP|ISO)"
+  },
+  "PTCKISOCHSNKHDCWEQ2A": {
+    "Z": "(CP|ISO)"
+  },
+  "PTCKISOCLSNKHDCW": {
+    "Z": "((~ISO)&CP)"
+  },
+  "PTCKISOCLSNKHDCWEQ2A": {
+    "Z": "((~ISO)&CP)"
+  },
+  "PTDELAHDCW": {
+    "Z": "I"
+  },
+  "PTDELAHDCWEQ2A": {
+    "Z": "I"
+  },
+  "PTDELBHDCW": {
+    "Z": "I"
+  },
+  "PTDELBHDCWEQ2A": {
+    "Z": "I"
+  },
+  "PTDELCHDCW": {
+    "Z": "I"
+  },
+  "PTDELCHDCWEQ2A": {
+    "Z": "I"
+  },
+  "PTDELDHDCW": {
+    "Z": "I"
+  },
+  "PTDELDHDCWEQ2A": {
+    "Z": "I"
+  },
+  "PTDELEHDCW": {
+    "Z": "I"
+  },
+  "PTDELEHDCWEQ2A": {
+    "Z": "I"
+  },
+  "PTDELFHDCW": {
+    "Z": "I"
+  },
+  "PTDELFHDCWEQ2A": {
+    "Z": "I"
+  },
+  "PTDELGHDCW": {
+    "Z": "I"
+  },
+  "PTDELGHDCWEQ2A": {
+    "Z": "I"
+  },
+  "PTDFRPQHDCWSXG": {
+    "Q": "IQ"
+  },
+  "PTDFRPQHDCWSXGEQ2A": {
+    "Q": "IQ"
+  },
+  "PTDFRPQHDCWTXG": {
+    "Q": "IQ"
+  },
+  "PTDFRPQHDCWTXGEQ2A": {
+    "Q": "IQ"
+  },
+  "PTINVHDCW": {
     "ZN": "~I"
+  },
+  "PTINVHDCWEQ2A": {
+    "ZN": "~I"
+  },
+  "PTISOCHSNKHDCW": {
+    "Z": "(I|ISO)"
+  },
+  "PTISOCHSNKHDCWEQ2A": {
+    "Z": "(I|ISO)"
+  },
+  "PTISOCLSNKHDCW": {
+    "Z": "((~ISO) & I)"
+  },
+  "PTISOCLSNKHDCWEQ2A": {
+    "Z": "((~ISO) & I)"
+  },
+  "PTISOLHQHDCW": {
+    "Q": "IQ"
+  },
+  "PTISOLHQHDCWEQ2A": {
+    "Q": "IQ"
+  },
+  "PTISOLNQHDCW": {
+    "Q": "IQ"
+  },
+  "PTISOLNQHDCWEQ2A": {
+    "Q": "IQ"
+  },
+  "PTMUX2HDCW": {
+    "Z": "((S & I1) | (~S & I0))"
+  },
+  "PTMUX2HDCWEQ2A": {
+    "Z": "((S & I1) | (~S & I0))"
+  },
+  "PTND2HDCW": {
+    "ZN": "(~(A1 & A2))"
+  },
+  "PTND2HDCWEQ2A": {
+    "ZN": "(~(A1 & A2))"
+  },
+  "PTNR2HDCW": {
+    "ZN": "(~(A1|A2))"
+  },
+  "PTNR2HDCWEQ2A": {
+    "ZN": "(~(A1|A2))"
+  },
+  "PTOR2HDCW": {
+    "Z": "(A1|A2)"
+  },
+  "PTOR2HDCWEQ2A": {
+    "Z": "(A1|A2)"
+  },
+  "PTSDFKSRPQHDCWSXG": {
+    "Q": "IQ"
+  },
+  "PTSDFKSRPQHDCWSXGEQ2A": {
+    "Q": "IQ"
+  },
+  "PTSDFQHDCWTXG": {
+    "Q": "IQ"
+  },
+  "PTSDFQHDCWTXGEQ2A": {
+    "Q": "IQ"
+  },
+  "PTTIEHNTGHDCW": {
+    "Z": "1"
+  },
+  "PTTIEHNTGHDCWEQ2A": {
+    "Z": "1"
+  },
+  "PTTIELNTGHDCW": {
+    "ZN": "0"
+  },
+  "PTTIELNTGHDCWEQ2A": {
+    "ZN": "0"
+  },
+  "SDFKRPQSXG": {
+    "Q": "IQ"
+  },
+  "SDFKSNQSXG": {
+    "Q": "IQ"
+  },
+  "SDFKSRPQSXG": {
+    "Q": "IQ"
+  },
+  "SDFMQSXG": {
+    "Q": "IQ"
+  },
+  "SDFNQNSXG": {
+    "QN": "IQN"
+  },
+  "SDFNQSXG": {
+    "Q": "IQ"
+  },
+  "SDFNRPQSXG": {
+    "Q": "IQ"
+  },
+  "SDFNSNQSXG": {
+    "Q": "IQ"
+  },
+  "SDFNSRPQSXG": {
+    "Q": "IQ"
+  },
+  "SDFNSRPQSXGEQ2A": {
+    "Q": "IQ"
+  },
+  "SDFNTXG": {
+    "Q": "IQ",
+    "QN": "IQN"
+  },
+  "SDFQ": {
+    "Q": "IQ"
+  },
+  "SDFQEQ2A": {
+    "Q": "IQ"
+  },
+  "SDFQNSXG": {
+    "QN": "IQN"
+  },
+  "SDFQNTXG": {
+    "QN": "IQN"
+  },
+  "SDFQSXG": {
+    "Q": "IQ"
+  },
+  "SDFQTXG": {
+    "Q": "IQ"
+  },
+  "SDFQTXGEQA": {
+    "Q": "IQ"
+  },
+  "SDFQTXGOPTBB": {
+    "Q": "IQ"
+  },
+  "SDFQTXGOPTBCE": {
+    "Q": "IQ"
+  },
+  "SDFQTXGOPTQF": {
+    "Q": "IQ"
+  },
+  "SDFRNQTXG": {
+    "Q": "IQ"
+  },
+  "SDFRNQTXGEQ2A": {
+    "Q": "IQ"
+  },
+  "SDFRPQNSXG": {
+    "QN": "IQN"
+  },
+  "SDFRPQNSXGEQ2A": {
+    "QN": "IQN"
+  },
+  "SDFRPQNTXG": {
+    "QN": "IQN"
+  },
+  "SDFRPQNTXGEQ2A": {
+    "QN": "IQN"
+  },
+  "SDFRPQSXG": {
+    "Q": "IQ"
+  },
+  "SDFRPQSXGEQ2A": {
+    "Q": "IQ"
+  },
+  "SDFRPQTXG": {
+    "Q": "IQ"
+  },
+  "SDFRPQTXGEQ2A": {
+    "Q": "IQ"
+  },
+  "SDFRPQTXGOPTBB": {
+    "Q": "IQ"
+  },
+  "SDFRPQTXGOPTBBEQ2A": {
+    "Q": "IQ"
+  },
+  "SDFRPQTXGOPTBCE": {
+    "Q": "IQ"
+  },
+  "SDFRPQTXGOPTBCEEQ2A": {
+    "Q": "IQ"
+  },
+  "SDFRPQTXGOPTQF": {
+    "Q": "IQ"
+  },
+  "SDFRPQTXGOPTQFEQ2A": {
+    "Q": "IQ"
+  },
+  "SDFSNQNSXG": {
+    "QN": "IQN"
+  },
+  "SDFSNQSXG": {
+    "Q": "IQ"
+  },
+  "SDFSNQSXGOPTBB": {
+    "Q": "IQ"
+  },
+  "SDFSNQSXGOPTBCE": {
+    "Q": "IQ"
+  },
+  "SDFSRNQSXG": {
+    "Q": "IQ"
+  },
+  "SDFSRNQSXGEQ2A": {
+    "Q": "IQ"
+  },
+  "SDFSRPQSXG": {
+    "Q": "IQ"
+  },
+  "SDFSRPQSXGEQ2A": {
+    "Q": "IQ"
+  },
+  "SDFSRPQTXGOPTBB": {
+    "Q": "IQ"
+  },
+  "SDFSRPQTXGOPTBBEQ2A": {
+    "Q": "IQ"
+  },
+  "SDFSRPQTXGOPTBCE": {
+    "Q": "IQ"
+  },
+  "SDFSRPQTXGOPTBCEEQ2A": {
+    "Q": "IQ"
+  },
+  "SDFSYNC1QSXG": {
+    "Q": "IQ"
+  },
+  "SDFSYNC1RPQSXG": {
+    "Q": "IQ"
+  },
+  "SDFSYNC1SNQSXG": {
+    "Q": "IQ"
+  },
+  "SDFTXG": {
+    "Q": "IQ",
+    "QN": "IQN"
+  },
+  "SEDFQSXG": {
+    "Q": "IQ"
+  },
+  "SEDFQSXGEQ2A": {
+    "Q": "IQ"
+  },
+  "SEDFRPQSXG": {
+    "Q": "IQ"
+  },
+  "SEDFRPQSXGEQ2A": {
+    "Q": "IQ"
+  },
+  "SPC2AOI22": {
+    "ZN1": "(~((RdSelA & A1)|(RdSelB & B1)))",
+    "ZN2": "(~((RdSelA & A2)|(RdSelB & B2)))"
+  },
+  "SPC2AOI22A1": {
+    "ZN1": "(~((RdSelA & A12)|(B11 & B12)))",
+    "ZN2": "(~((RdSelA & A22)|(B21 & B22)))"
+  },
+  "SPC2AOI22EQ2A": {
+    "ZN1": "(~((RdSelA & A1)|(RdSelB & B1)))",
+    "ZN2": "(~((RdSelA & A2)|(RdSelB & B2)))"
+  },
+  "SPC2BUFF": {
+    "Z1": "I",
+    "Z2": "I"
+  },
+  "SPC2INV": {
+    "ZN1": "(~I)",
+    "ZN2": "(~I)"
+  },
+  "SPC2MUX2": {
+    "Z1": "((S&I11)|((~S)&I10))",
+    "Z2": "((S&I21)|((~S)&I20))"
+  },
+  "SPC2MUX2M2": {
+    "Z1": "((S&I11)|((~S)&I10))",
+    "Z2": "((S&I21)|((~S)&I20))"
+  },
+  "SPC2MUX2M2EQ2A": {
+    "Z1": "((S&I11)|((~S)&I10))",
+    "Z2": "((S&I21)|((~S)&I20))"
+  },
+  "SPC2ND2": {
+    "ZN1": "(~(RdSel & A1))",
+    "ZN2": "(~(RdSel & A2))"
+  },
+  "SPC2NR2": {
+    "ZN1": "(~(RdSel|A1))",
+    "ZN2": "(~(RdSel|A2))"
+  },
+  "SPC2OAI22A1": {
+    "ZN1": "(~((RdSelA|A12) & (B11|B12)))",
+    "ZN2": "(~((RdSelA|A22) & (B21|B22)))"
+  },
+  "SPC2XNR2": {
+    "ZN1": "(~(RdSel^A1))",
+    "ZN2": "(~(RdSel^A2))"
+  },
+  "SPC2XNR2M": {
+    "ZN1": "(~(RdSel^A1))",
+    "ZN2": "(~(RdSel^A2))"
+  },
+  "SPC2XOR2": {
+    "Z1": "(RdSel^A1)",
+    "Z2": "(RdSel^A2)"
+  },
+  "SPC2XOR2M": {
+    "Z1": "(RdSel^A1)",
+    "Z2": "(RdSel^A2)"
+  },
+  "SPC4AOI22": {
+    "ZN1": "(~((RdSelA & A1)|(RdSelB & B1)))",
+    "ZN2": "(~((RdSelA & A2)|(RdSelB & B2)))",
+    "ZN3": "(~((RdSelA & A3)|(RdSelB & B3)))",
+    "ZN4": "(~((RdSelA & A4)|(RdSelB & B4)))"
+  },
+  "SPC4AOI22M2": {
+    "ZN1": "(~((RdSelA & A1)|(RdSelB & B1)))",
+    "ZN2": "(~((RdSelA & A2)|(RdSelB & B2)))",
+    "ZN3": "(~((RdSelA & A3)|(RdSelB & B3)))",
+    "ZN4": "(~((RdSelA & A4)|(RdSelB & B4)))"
+  },
+  "SPC4AOI22M2EQ2A": {
+    "ZN1": "(~((RdSelA & A1)|(RdSelB & B1)))",
+    "ZN2": "(~((RdSelA & A2)|(RdSelB & B2)))",
+    "ZN3": "(~((RdSelA & A3)|(RdSelB & B3)))",
+    "ZN4": "(~((RdSelA & A4)|(RdSelB & B4)))"
+  },
+  "SPC4ND2": {
+    "ZN1": "(~(RdSel & A1))",
+    "ZN2": "(~(RdSel & A2))",
+    "ZN3": "(~(RdSel & A3))",
+    "ZN4": "(~(RdSel & A4))"
+  },
+  "SPC4NR2": {
+    "ZN1": "(~(RdSel|A1))",
+    "ZN2": "(~(RdSel|A2))",
+    "ZN3": "(~(RdSel|A3))",
+    "ZN4": "(~(RdSel|A4))"
+  },
+  "SPC4OAI22": {
+    "ZN1": "(~((RdSelA|A1)(RdSelB|B1)))",
+    "ZN2": "(~((RdSelA|A2)(RdSelB|B2)))",
+    "ZN3": "(~((RdSelA|A3)(RdSelB|B3)))",
+    "ZN4": "(~((RdSelA|A4)(RdSelB|B4)))"
+  },
+  "SRL": {
+    "Q": "IQ",
+    "QN": "IQN"
+  },
+  "TIEHNTG": {
+    "Z": "1"
+  },
+  "TIELNTG": {
+    "ZN": "0"
+  },
+  "XNR2": {
+    "ZN": "(~(A1^A2))"
+  },
+  "XNR2EQA": {
+    "ZN": "(~(A1^A2))"
+  },
+  "XNR3": {
+    "ZN": "(~((A1^A2)^A3))"
+  },
+  "XNR3EQ12A": {
+    "ZN": "(~((A1^A2)^A3))"
+  },
+  "XNR3EQ2A": {
+    "ZN": "(~((A1^A2)^A3))"
+  },
+  "XNR3EQA": {
+    "ZN": "(~((A1^A2)^A3))"
+  },
+  "XNR4": {
+    "ZN": "(~(((A1^A2)^A3)^A4))"
+  },
+  "XOR2": {
+    "Z": "(A1^A2)"
+  },
+  "XOR2EQA": {
+    "Z": "(A1^A2)"
+  },
+  "XOR3": {
+    "Z": "((A1^A2)^A3)"
+  },
+  "XOR3EQ12A": {
+    "Z": "((A1^A2)^A3)"
+  },
+  "XOR3EQ2A": {
+    "Z": "((A1^A2)^A3)"
+  },
+  "XOR3EQA": {
+    "Z": "((A1^A2)^A3)"
+  },
+  "XOR4": {
+    "Z": "(((A1^A2)^A3)^A4)"
+  },
+  "XOR4EQ2A": {
+    "Z": "(((A1^A2)^A3)^A4)"
   },
   "BUF": {
     "Z": "I"
-  },
-  "AN2": {
-    "Z": "A1 & A2"
-  },
-  "ND2": {
-    "ZN": "~(A1 & A2)"
-  },
-  "OR2": {
-    "Z": "A1 | A2"
-  },
-  "NR2": {
-    "ZN": "~(A1 | A2)"
-  },
-  "XOR2": {
-    "Z": "A1 ^ A2"
-  },
-  "XNR2": {
-    "ZN": "~(A1 ^ A2)"
-  },
-  "AN3": {
-    "Z": "A1 & A2 & A3"
-  },
-  "ND3": {
-    "ZN": "~(A1 & A2 & A3)"
-  },
-  "OR3": {
-    "Z": "A1 | A2 | A3"
-  },
-  "NR3": {
-    "ZN": "~(A1 | A2 | A3)"
-  },
-  "AN4": {
-    "Z": "A1 & A2 & A3 & A4"
-  },
-  "ND4": {
-    "ZN": "~(A1 & A2 & A3 & A4)"
-  },
-  "OR4": {
-    "Z": "A1 | A2 | A3 | A4"
-  },
-  "NR4": {
-    "ZN": "~(A1 | A2 | A3 | A4)"
-  },
-  "AOI21": {
-    "ZN": "~((A1 & A2) | B)"
-  },
-  "AOI22": {
-    "ZN": "~((A1 & A2) | (B1 & B2))"
-  },
-  "OAI21": {
-    "ZN": "~((A1 | A2) & B)"
-  },
-  "OAI22": {
-    "ZN": "~((A1 | A2) & (B1 | B2))"
-  },
-  "AO21": {
-    "Z": "(A1 & A2) | B"
-  },
-  "AO22": {
-    "Z": "(A1 & A2) | (B1 & B2)"
-  },
-  "OA21": {
-    "Z": "(A1 | A2) & B"
-  },
-  "OA22": {
-    "Z": "(A1 | A2) & (B1 | B2)"
-  },
-  "INR2": {
-    "ZN": "A1 & ~B1"
-  },
-  "IND2": {
-    "ZN": "~(~A1 & B1)"
-  },
-  "INR3": {
-    "ZN": "~(A1 | (B1 & B2))"
-  },
-  "IND3": {
-    "ZN": "~(A1 & (B1 | B2))"
-  },
-  "IINR3": {
-    "ZN": "(A1 & A2) & ~B1"
-  },
-  "IAOI21": {
-    "ZN": "~(A1 | (A2 & B))"
-  },
-  "IOAI21": {
-    "ZN": "~(A1 & (A2 | B))"
-  },
-  "NR2D1SPG1AMDBWP136P5M156H3P48CPDLVT": {
-    "ZN": "(~(A1|A2))"
-  },
-  "AOI211": {
-    "pins": {
-      "A1": "input",
-      "A2": "input",
-      "B": "input",
-      "C": "input",
-      "ZN": "output"
-    },
-    "function": "~((A1 & A2) | B | C)",
-    "output_pin": "ZN",
-    "output_is_inverting": true
-  },
-  "INR4": {
-    "pins": {
-      "A1": "input",
-      "B1": "input",
-      "B2": "input",
-      "B3": "input",
-      "ZN": "output"
-    },
-    "function": "A1 & ~B1 & ~B2 & ~B3",
-    "output_pin": "ZN",
-    "output_is_inverting": false
-  },
-  "MUX2": {
-    "pins": {
-      "I0": "input",
-      "I1": "input",
-      "S": "input",
-      "Z": "output"
-    },
-    "function": "S ? I1 : I0",
-    "output_pin": "Z",
-    "output_is_inverting": false
-  },
-  "OA12": {
-    "Z": "(A1 & (A2 | B))"
-  },
-  "AO12": {
-    "Z": "A1 | (A2 & B)"
-  },
-  "AO32": {
-    "Z": "(A1 & A2 & A3) | (B1 & B2)"
   }
 }

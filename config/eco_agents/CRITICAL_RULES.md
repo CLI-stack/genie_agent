@@ -65,6 +65,7 @@ The old monolithic `ORCHESTRATOR.md` (1078 lines) was split into STUDY (Steps 1-
 | 37    | Register Output Signals Must Tap Direct Flop .Q Pin (Never Downstream Port Wire)       |
 | 38    | Script-Bug Self-Fix: Copy to /tmp, Patch, Re-run — Never Edit Shared Repo Mid-Run       |
 | 39    | `confirmed: true` Means Functionally Proven, Not Structurally Plausible                |
+| 40    | `UNRESOLVABLE` Requires Exhausting Every Independent Method, Not Just One              |
 
 ---
 
@@ -757,4 +758,66 @@ for the concrete worked instance of this (Rule 39 applied to that specific entry
   attempt and move on to a different, equally unverified shortcut.
 - In simple mode, an entry that cannot clear this bar must stay `UNRESOLVABLE` so the existing Step 3
   checkpoint punts it to complete mode — never let an unproven "confirmed" slip through to Step 4.
+- **For any combinational term-fold (`and_term`, driver-rename, Method A/B/C — see
+  `eco_netlist_studier.md`), the "exhaustive truth-table enumeration" proof above means invoking
+  `script/eco_scripts/eco_verify_boolean_fold.py`, never hand-decoding the candidate gates'
+  Liberty functions and brute-forcing the combinations by eye.** A second real incident (distinct
+  from the one above) built a fold with a correctly-identified, carefully-cross-validated net
+  polarity but the WRONG Boolean operator (`AND(old_term, NOT(new_signal))` where the RTL's own
+  `NOT(A & B & ~C & ~D) = ~A|~B|C|D` De Morgan expansion required `OR(old_term, new_signal)`) — and
+  the mistake survived its own "exhaustive" hand-verification because the same by-eye Liberty-decoding
+  skill built AND graded it. Running `eco_verify_boolean_fold.py` against the as-built gates, with
+  `--target-expr` transcribed directly from the RTL register's always-block, caught the exact
+  mismatch mechanically (`MATCH: False`, failing at every row with the new signal asserted) — proof
+  that build and grade must be independent, and that independence only holds when grading is real
+  code, not the same judgment call restated as a check.
+- The real cell data behind this check has two trust tiers — a tile-specific cache parsed from actual
+  vendor Liberty files (authoritative) vs. a bundled hand-curated fallback (approximate) — see
+  `eco_netlist_studier.md` step 5. Which tier backed a given `confirmed: true` must be disclosed in
+  the entry's `notes` whenever it's the lower tier; "I ran the real script" is not the same claim as
+  "I ran the real script against real vendor data," and Rule 39 requires being able to point to the
+  specific evidence behind any claim, including which data it was evidence from.
+
+---
+
+## RULE 40 — `UNRESOLVABLE` Requires Exhausting Every Independent Method, Not Just One
+
+**Disproving one candidate is not the same as exhausting all paths to resolve a net's identity.**
+When resolving what a gate input/operand actually corresponds to, there is normally more than one
+independent method available (e.g. a rename-map/fenets lookup; a direct RTL-level alias trace; a
+structural driver trace; a cofactor/algebraic derivation). Trying one, disproving it, and then
+declaring the net `UNRESOLVABLE` because "no alternative candidate exists" is only valid if you
+actually tried the alternatives — not if you simply didn't think of them.
+
+**Real incident:** an agent needed to resolve a signal's gate-level identity. It took the one
+candidate a fenets rename map offered — which the rename map itself had already flagged as
+unconfirmed — rigorously disproved it (real Liberty cell functions, full truth-table enumeration,
+caught a real mismatch), and then declared the net unresolvable, "no alternative candidate exists."
+But a second, fully independent method was available and untried: the RTL source itself contained a
+direct, unconditional bit-alias for that exact signal (no mux, no ambiguity) at a different — and
+correct — scope than the one the rename map had guessed at. A prior, successful run of the same ECO
+had used exactly that alias trace and resolved the net correctly. The agent had disproved A, not
+exhausted {A, B, C}.
+
+**What this means in practice:**
+- Before writing `UNRESOLVABLE:<net>`, enumerate every resolution method genuinely available for
+  this net (rename map / fenets lookup, direct RTL alias, structural driver trace, cofactor
+  derivation — see Check 2's priority ladder in `eco_netlist_verifier.md` for the per-stage version
+  of this list) and show that each was actually attempted, not just the first or most convenient one.
+- A rename-map candidate being wrong, unconfirmed, or disproven says nothing about whether an
+  RTL-alias trace or structural trace would also fail — each method must be independently tried and
+  independently fail before the net is genuinely unresolvable.
+- If a prior run of the same or a similar ECO resolved an analogous net successfully, that method is
+  a strong signal of what to try next, not something to skip past on the way to giving up.
+- "No alternative candidate exists" is a claim, not a fact, unless the entry's `notes` show which
+  other methods were tried and why each one failed. An entry that only shows one attempted method is
+  not yet at `UNRESOLVABLE` — it is still mid-investigation.
+- **Only this run's own RTL, netlist, and validated FM session may be used as evidence for an entry
+  in this run's study — never another run's artifacts.** A `confirmed: false` reached via a
+  reproduced, mechanical, exhaustive-proof result against this run's own data may never be overridden
+  by weaker evidence; revisiting it requires an equal-or-stronger proof against this run's own data.
+  Before marking any and_term/combinational-fold entry `confirmed: true`, walk its free variables —
+  if one is itself a signal synthesized earlier in this same run, that upstream entry must also be
+  fully proven against this run's own data first. See `eco_netlist_studier.md`'s and_term section for
+  the concrete mechanics.
 

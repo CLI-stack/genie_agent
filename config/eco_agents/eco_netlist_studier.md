@@ -206,6 +206,21 @@ Update `old_driver_inverting` in the study entry to match the FM polarity (true 
 >
 > The rule below applies ONLY to combinational term-folds (NO `branch_assigns` and NO `branch_loads`).
 
+> **Scope — this applies to ANY hand-built combinational gate chain, not just entries literally
+> tagged `and_term`.** Any time you construct Boolean logic by hand — including a signal-identity
+> resolution that re-derives a registered RTL value via a hand-built AND/OR/mux chain (e.g. resolving
+> what an opaque net corresponds to by rebuilding its defining expression from primary operands) — is
+> the SAME class of risk this method and step 5's exhaustive proof exist for, regardless of what
+> `change_type` the entry carries. Real incident: a signal-identity resolution (not tagged `and_term`)
+> built two structurally-parallel branches of the same construction (a two-way select, each branch
+> handling one of two equivalent source paths) — one branch correctly mirrored the RTL's operand
+> exactly, the other had a spurious extra inversion the builder didn't carry over symmetrically. It
+> went unnoticed because this entry was never run through step 5's mechanical check at all (only
+> `and_term`-tagged entries were) — the bug was asymmetric by construction (right half the time,
+> depending on which of the two branches was active), so point-sampling or partial review would not
+> reliably have caught it either. Never gate this method's applicability on a `change_type` label;
+> gate it on "did I just hand-derive a Boolean function," and if yes, step 5 is mandatory.
+
 > **MANDATORY METHOD — build a combinational term-fold by cofactor reconstruction, NEVER by
 > point-substitution.** "The new term's source signal structurally reaches this pin" tells you where
 > a candidate sits — it is not, by itself, a way to build the fix, and checking it with a brute-force
@@ -214,7 +229,7 @@ Update `old_driver_inverting` in the study entry to match the FM polarity (true 
 > still broke every bit of the cone it touched). Do not design the gate around "which pin can I widen"
 > — design it around "what is the complete existing function, and how does the new term fold into it."
 >
-> **The method, in order:**
+> **METHOD A, in order (the default — use unless the fan-out check below sends you to METHOD B):**
 > 1. **Find a candidate point structurally** — same BFS/reachability search as before: trace where the
 >    new term's source could enter the target cone. This gives you a STARTING POINT for investigation,
 >    not an answer.
@@ -236,15 +251,56 @@ Update `old_driver_inverting` in the study entry to match the FM polarity (true 
 >    boundary (per the DFF-pin-rewire vs driver-rename rule above), not by editing the candidate gate
 >    found in step 1 in place.
 > 5. **Only now run the exhaustive proof, as confirmation of the derivation — not as the primary
->    method.** Enumerate every input `OLD_EXPR` depends on (all of them, not just the ones near the
->    candidate pin) plus `new_term`, and brute-force every combination to confirm
->    `NEW_EXPR == OLD_EXPR <op> new_term` exactly, with 0 mismatches. If built correctly from steps
->    2-4 this should pass by construction. Record the truth table (or "0/N mismatch") in the entry's
->    `notes` so it is auditable, not just asserted.
-> 6. **A failure at step 5 means the reconstruction in steps 2-4 has an error — fix the algebra and
->    redo it.** It does NOT mean "try a different candidate pin and point-check that instead"; that is
->    exactly the shortcut that caused the real incident below. Only after a genuinely correct
->    reconstruction passes step 5 may the entry be marked `confirmed: true`.
+>    method, and NEVER by hand-decoding the gates yourself.** Invoke
+>    `script/eco_scripts/eco_verify_boolean_fold.py` — it substitutes each candidate gate's REAL cell
+>    truth table (from `eco_cell_truth_tables.py`, never an agent reading Liberty text) and brute-forces
+>    every combination of the chain's free inputs in real code:
+>    ```bash
+>    python3 script/eco_scripts/eco_verify_boolean_fold.py \
+>        --study <AI_ECO_FLOW_DIR>/<TAG>_eco_preeco_study.json --stage Synthesize \
+>        --gates <comma-separated instance_names of every new gate in the fold, in any order> \
+>        --output-net <the fold's final output net> \
+>        --target-expr "<OLD_EXPR <op> new_term, written in Python boolean syntax over real net names>" \
+>        --ref-dir <REF_DIR> --result /tmp/<TAG>_<entry>_foldcheck.json
+>    ```
+>    Exit 0 = match (0 mismatches) — record the command line + exit code in the entry's `notes` so it
+>    is auditable, not just asserted. **Also record which data tier backed the check**: if
+>    `<AI_ECO_FLOW_DIR>/<TAG>_eco_library_source.txt` exists (simple mode) and says `bundled_fallback`,
+>    append `library_source: bundled_fallback (not vendor-verified)` to the same `notes` field — the
+>    proof is still real code, not hand-decoding, but a reviewer must be able to tell "verified against
+>    real silicon-accurate Liberty data" from "verified against the hand-curated approximate starter
+>    set" at a glance, not have both look identically `confirmed`. This does NOT block `confirmed:
+>    true` — it is disclosure, not a gate (complete mode and simple-mode's TileBuilder-directory style
+>    both get real tile-cache data automatically; only simple mode's direct-paths style without a
+>    supplied library can land here, and simple mode must never hard-stop over missing library infra).
+>    Exit 1 = mismatch (the result JSON has the exact failing rows).
+>    Exit 2 = error (bad gate list, a cell missing from `eco_cell_truth_tables.py`, a malformed
+>    `--target-expr`) — treat exactly like exit 1, i.e. NOT confirmed; never reinterpret exit 2 as
+>    "probably fine." `--target-expr` is transcribed directly from the RTL clause found in step 2 (a
+>    much lower-risk mechanical step than hand-deriving a truth table) — if the RTL clause itself is in
+>    question, that uncertainty belongs in step 2/3's derivation, not in a hand-rechecked target here.
+>    This decouples **build** (your judgment, steps 1-4) from **grade** (deterministic code) — the real
+>    incident below happened because the same hand-decoding skill built AND graded the fold, so a
+>    misread cell function survived its own "verification."
+> 6. **A non-zero exit at step 5 means the reconstruction in steps 2-4 has an error — fix the algebra
+>    and redo it.** It does NOT mean "try a different candidate pin and point-check that instead"; that
+>    is exactly the shortcut that caused the real incident below. Only after a genuinely correct
+>    reconstruction gets exit 0 from the script may the entry be marked `confirmed: true`.
+>
+> **A net's NAME is not evidence of its polarity — never assume `--target-expr`'s polarity from what a
+> net or output is called.** Real incident: a replacement gate chain's output nets were named
+> `..._true_newvalue` and `..._compl_newvalue` (inherited from an earlier, buggy construction's naming
+> scheme). Verifying `..._true_newvalue` against the RTL's expression directly (assuming the name meant
+> "this one is the true-polarity value") produced a clean, uniform mismatch across every one of its free
+> inputs — a tell-tale sign of a polarity assumption error, not a real functional bug (a genuine bug
+> from this flow's real incidents only ever mismatches on the SPECIFIC rows where the new term's value
+> actually changes the result, never uniformly on 100% of combinations). Re-deriving the polarity from
+> the net's REAL downstream consumers (same technique as the fan-out check below: which cell family
+> and pin slot the net physically feeds) showed the names were backwards — `..._true_newvalue` actually
+> carried the complement value and vice versa. **If a step-5 run shows a mismatch on every single
+> combination (not a subset), treat that as a signal to re-check your own target polarity before
+> concluding the candidate chain is wrong** — trace the output net's actual consumers, never trust a
+> `_true`/`_compl`/`_inv`-style suffix in an instance or net name as ground truth.
 >
 > **Real incident this method is built from:** an agent found a gate where the new term's source
 > signal structurally reaches a 16-bit shared write-enable cone through exactly one point, and skipped
@@ -262,6 +318,108 @@ Update `old_driver_inverting` in the study entry to match the FM polarity (true 
 > `polarity_undetermined`/`UNRESOLVABLE`, never `confirmed: true` — in simple mode this means the
 > change gets punted to complete mode per the Step 3 checkpoint, which is correct: an unproven
 > point-substitution must never reach Step 4.
+>
+> **MANDATORY fan-out check before step 4 (building the fold) — this is what actually made the real
+> incident's damage spread beyond the one cone it was aimed at.** Before wiring the new fold's output
+> anywhere, grep the candidate net/the `S` you derived for how many distinct consumer sites it drives
+> in the real netlist. Do not assume "one entry point" means "one consumer" — a net can be the single
+> way the new term's source *enters* a cone while still fanning out to many unrelated places once
+> inside. Possible outcomes, depending on what you find:
+> - **If the net you're modifying is private to the one target cone** (no other real consumers) —
+>   proceed as above: build the fold at the register's own D/write-enable boundary (METHOD A).
+> - **If the net you're modifying fans out to other consumers you are NOT trying to change** — do
+>   NOT edit it at just the one site that happens to matter to you; every other consumer will keep
+>   reading the OLD value while the one you touched reads the new one, silently corrupting them with
+>   no connectivity error to catch it (this is exactly how the real incident's SLC1 copy broke two
+>   *unrelated* sibling registers it was never asked to touch, purely from editing a shared fan-out
+>   point in place). The right action depends on what those OTHER consumers need:
+>   - **All consumers should see the new value** (the shared term's meaning is genuinely changing
+>     everywhere it's used) → **METHOD B**: rebuild the net's complete value from its true RTL-level
+>     source operands (not a local patch) and re-drive it at **every** one of its fan-out sites — a
+>     full driver-rename, not a point-edit. A confirmed-correct real ECO for this exact class of
+>     problem did precisely this: a shared term consumed at 15-16 different gate inputs across the
+>     module was fully re-derived from its real RTL operands and substituted in at every one of those
+>     sites — zero mismatches, held up under real Formality verification.
+>   - **METHOD B construction must be a literal, operand-for-operand transcription of the RTL
+>     expression — nothing inferred, nothing borrowed.** Write the gate chain so each operand and
+>     operator matches the RTL text exactly: same signals, same AND/OR/NOT structure, no inversions or
+>     polarity adjustments beyond what the RTL literally states. Do not look at any other netlist, any
+>     prior ECO, or "how this is usually built elsewhere" to decide the construction's shape — a correct
+>     literal transcription needs no external corroboration, and consulting one only risks importing a
+>     mistake. A real incident: a signal needed exactly this kind of rebuild after its only candidate
+>     existing net was correctly rejected (disproven twice, via real exhaustive proof, as not matching
+>     the RTL). Instead of transcribing the RTL text directly, the rebuild was shaped after a different,
+>     unrelated netlist's construction of the same signal — which turned out to carry the SAME wrong
+>     inversion the rejection had just identified — reproducing, on the very first build, the exact bug
+>     that had already been disproven moments earlier. A direct, literal transcription would have been
+>     correct immediately, in one attempt, with no rounds and no outside lookups required. **Run step
+>     5's exhaustive proof on the literal transcription right away, before doing anything else.** Zero
+>     mismatches means done — no further rounds needed. Any mismatch means the transcription itself has
+>     an error (a copying mistake against the RTL text) — fix the transcription, never reach for a
+>     different construction style or an external example to explain the mismatch away.
+>   - **Some consumers must keep seeing the OLD value** (the shared gate serves a purpose you are not
+>     changing, e.g. it also feeds a signal protected elsewhere in the design) → **METHOD C**: do NOT
+>     touch the original gate at all. Build a duplicate gate with the same function but the new input,
+>     give it a fresh output net, and redirect ONLY the consumers that actually need the new value to
+>     that duplicate — the original gate and its untouched consumers keep working exactly as before.
+>     Never try to make one shared gate serve two different answers by editing it in place.
+>   METHOD A/B/C are not competing techniques — they answer the same mandatory question ("does this
+>   net have fan-out I'm not accounting for, and if so does every consumer want the same new value?")
+>   with the three correct actions available once you know the answer. Pick whichever fits what the
+>   fan-out check shows; never skip the check itself.
+> - **Multi-bit/multi-bank completeness.** If the target is a multi-bit register or replicated across
+>   bit-groups/banks, do not stop after finding a path for one bit or one bank — different bit-groups
+>   can be driven through completely different nets/gates even for the "same" signal. Explicitly check
+>   every bit-group/bank the change is supposed to cover before calling the entry confirmed; a gate
+>   found for bits [0:N] has told you nothing about bits [N+1:M] unless you checked them too.
+> - **Overreach check (METHOD B only).** When you rebuild a condition from RTL operands rather than
+>   reusing an existing term, confirm the RTL signal/value you're keying on is produced by ONLY the
+>   branch you mean to change. The same output value is often producible by more than one RTL
+>   condition; a condition built to match the value without checking this can silently also fire for
+>   branches that must stay untouched. Trace back to the RTL source and enumerate every place that
+>   value is produced, not just the one the ECO is nominally about.
+> - Either way, step 5's exhaustive proof still applies — for METHOD B/C, enumerate every RTL-level
+>   operand the rebuilt or duplicated net depends on and run `eco_verify_boolean_fold.py` against the
+>   rebuilt/duplicated gate chain with `--target-expr` set to the RTL's own expression for that signal,
+>   the same deterministic discipline as METHOD A step 5 — never a hand-rechecked truth table.
+>
+> **Real incident this exact step-5 tooling is built from (distinct from the reachability incident
+> above):** a different fold — widening an existing AND-NOT suppression term to account for a new
+> input signal — was built with the right candidate net and the right polarity (confirmed via careful,
+> correct Liberty-cell decoding, 16/16 bits cross-validated two independent ways) but the WRONG
+> Boolean operator: `AND(old_term, NOT(new_signal))` instead of the De Morgan-correct
+> `OR(old_term, new_signal)` — i.e. `NOT(X & ~S) = ~X | S`, not `X & ~S`. The entry's own `notes`
+> contained a careful, internally-consistent, wrong derivation, and the error was never caught because
+> the same hand-verification step that should have caught it used the same by-eye skill that built it.
+> Running `eco_verify_boolean_fold.py` against the as-built gates with `--target-expr` taken straight
+> from the RTL (`~(A & B & ~C & ~D)` in the register's always-block) caught the exact mismatch
+> immediately: `MATCH: False`, failing at every input row with `new_signal=1`. This is why step 5 must
+> be the script, never prose.
+
+> **If a live FM session is available, query it before waiting for a round — this applies to ANY net
+> identity question, not just and_term folds.** Rule 40 requires exhausting every independent
+> structural method before calling a net `UNRESOLVABLE`. Once you've genuinely done that — tried the
+> rename map, the direct RTL-alias trace, the structural driver trace, and they conflict or all come
+> up empty — check whether a validated FM session already exists for this run (complete mode: always,
+> fenets is mandatory; simple mode: when `RUN_FENETS=true` and a `FM_SESSION_DIR` was validated). If
+> one does, do not default to waiting for a validator failure or a full FM-round re-study to get more
+> data — issue ONE targeted, single-net `find_equivalent_nets` query against that session right now
+> (same script Step 2 already used: `script/rtg_oss_feint/supra/find_equivalent_nets.csh`, one net
+> instead of a full batch — minutes, not another ~60-minute fenets pass or a whole extra round). Fold
+> the real result into the entry's resolution and re-attempt the proof. Only accept `UNRESOLVABLE` as
+> final once this targeted query was tried (and failed/was unavailable) too — "no FM session exists
+> for this run" is a valid reason to stop here; "I didn't think to ask the session that's already
+> running" is not.
+
+> **Only this run's own RTL, own netlist, and own validated FM session may ever be used as evidence
+> for an entry in this run's study.** A `confirmed: false` reached via a reproduced, mechanical,
+> exhaustive-proof result against this run's own data may never be overridden by anything weaker —
+> revisiting it requires an equal-or-stronger proof against this run's own data, not a reason to doubt
+> the existing one. Before marking any and_term/combinational-fold entry `confirmed: true`, walk its
+> free variables/operands — if one is itself a signal synthesized earlier in this same run, that
+> upstream entry must also be fully proven against this run's own data first. If structural methods
+> and a real targeted query against this run's own FM session are exhausted or unavailable, the only
+> remaining options are `UNRESOLVABLE`/`polarity_undetermined`.
 
 > **Cross-emitter signal reuse.** If the widened branch's new term is itself an RTL signal that a
 > sibling `new_logic_gate` change already realizes (that gate's terminal entry tags
