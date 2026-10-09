@@ -26,3 +26,9 @@ config/eco_agents/9899_fix_plan.md
 config/eco_agents/9899_gaps.md
 config/eco_agents/9905_gaps.md
 config/eco_agents/FUTURE_GAPS.md
+
+# Claude Code local memory and session data
+.claude/memory/
+.claude/scheduled_tasks.json
+.claude/scheduled_tasks.lock
+

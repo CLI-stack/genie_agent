@@ -1,2 +1,0 @@
-- [P4 Submit Description Rules](p4-submit-description-rules.md) — UMC Perforce commit message guidelines (avoid =Stage= for direct commits)
-- [User Scheduling Preference](user-scheduling-preference.md) — Claude Code in-session cron jobs only (no daemons or auto-renewal)
