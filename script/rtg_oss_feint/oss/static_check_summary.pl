@@ -92,45 +92,45 @@ print "Tree Path: $base_dir\n";
 
 # Lint Table
 print "\n#table#\n";
-print "Static_Check,Tile,Run_Status,Errors,Warnings,Waived,Unresolved_Modules,Logfile\n";
+print "Static_Check,Tile,Run_Status,Errors,Warnings,Waived,Filtered_rsmu_dft,Unfiltered_rsmu_dft,Unresolved_Modules,Logfile\n";
 
 if ($tile_name =~ /^osssys$/i) {
     my @ih_sem_paths = ("$base_dir/out/$kernel_dir_pattern/*/config/*/pub/sim/publish/tiles/tile/ih_sem_share/cad/rhea_lint/leda_waiver.log",
                         "$base_dir/out/$kernel_dir_pattern/*/config/*/pub/sim/publish/tiles/tile/ih_sem_share/cad/rhea_lint/report_vc_spyglass_lint.txt");
     my $ih_sem_file = find_first_match(@ih_sem_paths);
-    my ($ih_sem_status, $ih_sem_errors, $ih_sem_warnings, $ih_sem_waivers) = check_lint($ih_sem_file);
+    my ($ih_sem_status, $ih_sem_errors, $ih_sem_warnings, $ih_sem_waivers, $ih_sem_filtered, $ih_sem_unfiltered) = check_lint($ih_sem_file);
     my $ih_sem_dir = $ih_sem_file; $ih_sem_dir =~ s/\/[^\/]+$//;
     my $ih_sem_unresolved = count_unresolved_modules($ih_sem_dir);
 
     my @ih_top_paths = ("$base_dir/out/$kernel_dir_pattern/*/config/*/pub/sim/publish/tiles/tile/ih_top/cad/rhea_lint/leda_waiver.log",
                         "$base_dir/out/$kernel_dir_pattern/*/config/*/pub/sim/publish/tiles/tile/ih_top/cad/rhea_lint/report_vc_spyglass_lint.txt");
     my $ih_top_file = find_first_match(@ih_top_paths);
-    my ($ih_top_status, $ih_top_errors, $ih_top_warnings, $ih_top_waivers) = check_lint($ih_top_file);
+    my ($ih_top_status, $ih_top_errors, $ih_top_warnings, $ih_top_waivers, $ih_top_filtered, $ih_top_unfiltered) = check_lint($ih_top_file);
     my $ih_top_dir = $ih_top_file; $ih_top_dir =~ s/\/[^\/]+$//;
     my $ih_top_unresolved = count_unresolved_modules($ih_top_dir);
-    
-    print "Lint,ih_sem_share,$ih_sem_status,$ih_sem_errors,$ih_sem_warnings,$ih_sem_waivers,$ih_sem_unresolved,$ih_sem_file\n";
-    print "Lint,ih_top,$ih_top_status,$ih_top_errors,$ih_top_warnings,$ih_top_waivers,$ih_top_unresolved,$ih_top_file\n";
+
+    print "Lint,ih_sem_share,$ih_sem_status,$ih_sem_errors,$ih_sem_warnings,$ih_sem_waivers,$ih_sem_filtered,$ih_sem_unfiltered,$ih_sem_unresolved,$ih_sem_file\n";
+    print "Lint,ih_top,$ih_top_status,$ih_top_errors,$ih_top_warnings,$ih_top_waivers,$ih_top_filtered,$ih_top_unfiltered,$ih_top_unresolved,$ih_top_file\n";
 } elsif ($tile_name =~ /^sdma\d+_gc$/) {
-    my ($lint_status, $lint_errors, $lint_warnings, $lint_waivers) = check_lint($lint_file);
+    my ($lint_status, $lint_errors, $lint_warnings, $lint_waivers, $lint_filtered, $lint_unfiltered) = check_lint($lint_file);
     my $lint_dir = $lint_file; $lint_dir =~ s/\/[^\/]+$//;
     my $lint_unresolved = count_unresolved_modules($lint_dir);
-    print "Lint,dma_body_gc,$lint_status,$lint_errors,$lint_warnings,$lint_waivers,$lint_unresolved,$lint_file\n";
+    print "Lint,dma_body_gc,$lint_status,$lint_errors,$lint_warnings,$lint_waivers,$lint_filtered,$lint_unfiltered,$lint_unresolved,$lint_file\n";
 } elsif ($tile_name =~ /^hdp$/i) {
-    my ($lint_status, $lint_errors, $lint_warnings, $lint_waivers) = check_lint($lint_file);
+    my ($lint_status, $lint_errors, $lint_warnings, $lint_waivers, $lint_filtered, $lint_unfiltered) = check_lint($lint_file);
     my $lint_dir = $lint_file; $lint_dir =~ s/\/[^\/]+$//;
     my $lint_unresolved = count_unresolved_modules($lint_dir);
-    print "Lint,hdp_core,$lint_status,$lint_errors,$lint_warnings,$lint_waivers,$lint_unresolved,$lint_file\n";
+    print "Lint,hdp_core,$lint_status,$lint_errors,$lint_warnings,$lint_waivers,$lint_filtered,$lint_unfiltered,$lint_unresolved,$lint_file\n";
 } elsif ($tile_name =~ /^lsdma0$/i) {
-    my ($lint_status, $lint_errors, $lint_warnings, $lint_waivers) = check_lint($lint_file);
+    my ($lint_status, $lint_errors, $lint_warnings, $lint_waivers, $lint_filtered, $lint_unfiltered) = check_lint($lint_file);
     my $lint_dir = $lint_file; $lint_dir =~ s/\/[^\/]+$//;
     my $lint_unresolved = count_unresolved_modules($lint_dir);
-    print "Lint,lsdma0_body,$lint_status,$lint_errors,$lint_warnings,$lint_waivers,$lint_unresolved,$lint_file\n";
+    print "Lint,lsdma0_body,$lint_status,$lint_errors,$lint_warnings,$lint_waivers,$lint_filtered,$lint_unfiltered,$lint_unresolved,$lint_file\n";
 } else {
-    my ($lint_status, $lint_errors, $lint_warnings, $lint_waivers) = check_lint($lint_file);
+    my ($lint_status, $lint_errors, $lint_warnings, $lint_waivers, $lint_filtered, $lint_unfiltered) = check_lint($lint_file);
     my $lint_dir = $lint_file; $lint_dir =~ s/\/[^\/]+$//;
     my $lint_unresolved = count_unresolved_modules($lint_dir);
-    print "Lint,$tile_name,$lint_status,$lint_errors,$lint_warnings,$lint_waivers,$lint_unresolved,$lint_file\n";
+    print "Lint,$tile_name,$lint_status,$lint_errors,$lint_warnings,$lint_waivers,$lint_filtered,$lint_unfiltered,$lint_unresolved,$lint_file\n";
 }
 
 print "#table end#\n";
@@ -185,12 +185,13 @@ sub find_first_match {
 
 sub check_lint {
     my ($file) = @_;
-    return ("Not_Complete", 0, 0, 0) unless ($file && -e $file);
-    
+    return ("Not_Complete", 0, 0, 0, 0, 0) unless ($file && -e $file);
+
     my $errors = 0;
     my $waivers = 0;
-    open(my $fh, '<', $file) or return ("Not_Complete", 0, 0, 0);
-    
+    my $filtered = 0;
+    open(my $fh, '<', $file) or return ("Not_Complete", 0, 0, 0, 0, 0);
+
     if ($file =~ /leda_waiver/i) {
         my ($in_unwaived, $in_waived) = (0, 0);
         while (my $line = <$fh>) {
@@ -198,8 +199,18 @@ sub check_lint {
             elsif ($line =~ /^Waived\s*$/) { $in_unwaived = 0; $in_waived = 1; }
             elsif ($line =~ /^Unused Waivers\s*$/) { $in_unwaived = 0; $in_waived = 0; }
             elsif ($line =~ /\s+\|\s+.*\|\s+.*\|\s+.*\|\s+\d+\s+\|/) {
-                $errors++ if $in_unwaived;
-                $waivers++ if $in_waived;
+                if ($in_unwaived) {
+                    $errors++;
+                    my @fields = split(/\s*\|\s*/, $line);
+                    if (@fields >= 6) {
+                        my $filename = $fields[$#fields - 2];
+                        if ($filename =~ /rsmu|dft/i) {
+                            $filtered++;
+                        }
+                    }
+                } elsif ($in_waived) {
+                    $waivers++;
+                }
             }
         }
     } else {
@@ -210,7 +221,8 @@ sub check_lint {
         }
     }
     close($fh);
-    return ("Complete", $errors, 0, $waivers);
+    my $unfiltered = $errors - $filtered;
+    return ("Complete", $errors, 0, $waivers, $filtered, $unfiltered);
 }
 
 sub check_cdc {

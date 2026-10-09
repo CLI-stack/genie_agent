@@ -20,10 +20,10 @@ RSMU_RDFT
 RDFT_RSMU
 
 # Standard DFT cells - always filter
-ati_sdff.v
+#ati_sdff.v
 
 # SGDC configuration errors - always filter
-umc_top.sgdc
+umc_top.sgdc.*Tdr_Tck
 
 #======================================================================
 # UMC9_3 (Rosenhorn) specific filters
@@ -35,6 +35,13 @@ dsn_hp_block_mcd.v.*umc0_dsn_dft_health_marker
 
 # SMN clock domain errors
 Async.*umc_top\.umc0\.umcdat\.umcsmn\.CplPwrOkDficlk.*is not disabled for 4 flip-flop\(s\) in test-mode
+Clock domain.*umc_top\.umc0\.umcdat\.umcsmn\.UCLKGEN\.ClkDiv2_n0scan.*is not controlled by testclock.*umc_top\.DFICLKin0
+
+#======================================================================
+# UMC17_X (Godavari) specific filters
+#======================================================================
+[umc17_x]
+# ClkDiv2_n0scan not controlled by testclock DFICLKin0
 Clock domain.*umc_top\.umc0\.umcdat\.umcsmn\.UCLKGEN\.ClkDiv2_n0scan.*is not controlled by testclock.*umc_top\.DFICLKin0
 
 #======================================================================

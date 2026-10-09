@@ -11,6 +11,7 @@ echo "========================================="
 
 # Detect current kernel version to match the correct output directory
 # RHEL7: linux_3.10.0_64*, RHEL8: linux_4.18.0_64*
+# Wildcard suffix handles both old (.VCS) and new (no suffix) naming
 set kernel_version = `uname -r`
 if ("$kernel_version" =~ 4.18*) then
     set kernel_dir = "linux_4.18.0_64*"

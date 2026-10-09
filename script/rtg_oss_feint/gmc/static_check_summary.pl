@@ -72,7 +72,7 @@ print "=" x 70 . "\n";
 
 # Lint Table
 print "\n#table#\n";
-print "Static_Check,Tile,Run_Status,Errors,Warnings,Waived,Unresolved_Modules,Logfile\n";
+print "Static_Check,Tile,Run_Status,Errors,Warnings,Waived,Filtered_rsmu_dft,Unfiltered_rsmu_dft,Unresolved_Modules,Logfile\n";
 
 foreach my $tile (@gmc_tiles) {
     my @lint_paths = (
@@ -80,10 +80,10 @@ foreach my $tile (@gmc_tiles) {
         "$base_dir/out/$kernel_dir_pattern/*/config/*/pub/sim/publish/tiles/tile/$tile/cad/rhea_lint/report_vc_spyglass_lint.txt"
     );
     my $lint_file = find_first_match(@lint_paths);
-    my ($lint_status, $lint_errors, $lint_warnings, $lint_waivers) = check_lint($lint_file);
+    my ($lint_status, $lint_errors, $lint_warnings, $lint_waivers, $lint_filtered, $lint_unfiltered) = check_lint($lint_file);
     my $lint_dir = $lint_file; $lint_dir =~ s/\/[^\/]+$// if $lint_dir;
     my $lint_unresolved = count_unresolved_modules($lint_dir);
-    print "Lint,$tile,$lint_status,$lint_errors,$lint_warnings,$lint_waivers,$lint_unresolved,$lint_file\n";
+    print "Lint,$tile,$lint_status,$lint_errors,$lint_warnings,$lint_waivers,$lint_filtered,$lint_unfiltered,$lint_unresolved,$lint_file\n";
 }
 
 print "#table end#\n";
@@ -148,11 +148,12 @@ sub find_first_match {
 
 sub check_lint {
     my ($file) = @_;
-    return ("Not_Complete", 0, 0, 0) unless ($file && -e $file);
+    return ("Not_Complete", 0, 0, 0, 0, 0) unless ($file && -e $file);
 
     my $errors = 0;
     my $waivers = 0;
-    open(my $fh, '<', $file) or return ("Not_Complete", 0, 0, 0);
+    my $filtered = 0;
+    open(my $fh, '<', $file) or return ("Not_Complete", 0, 0, 0, 0, 0);
 
     if ($file =~ /leda_waiver/i) {
         my ($in_unwaived, $in_waived) = (0, 0);
@@ -161,8 +162,18 @@ sub check_lint {
             elsif ($line =~ /^Waived\s*$/) { $in_unwaived = 0; $in_waived = 1; }
             elsif ($line =~ /^Unused Waivers\s*$/) { $in_unwaived = 0; $in_waived = 0; }
             elsif ($line =~ /\s+\|\s+.*\|\s+.*\|\s+.*\|\s+\d+\s+\|/) {
-                $errors++ if $in_unwaived;
-                $waivers++ if $in_waived;
+                if ($in_unwaived) {
+                    $errors++;
+                    my @fields = split(/\s*\|\s*/, $line);
+                    if (@fields >= 6) {
+                        my $filename = $fields[$#fields - 2];
+                        if ($filename =~ /rsmu|dft/i) {
+                            $filtered++;
+                        }
+                    }
+                } elsif ($in_waived) {
+                    $waivers++;
+                }
             }
         }
     } else {
@@ -173,7 +184,8 @@ sub check_lint {
         }
     }
     close($fh);
-    return ("Complete", $errors, 0, $waivers);
+    my $unfiltered = $errors - $filtered;
+    return ("Complete", $errors, 0, $waivers, $filtered, $unfiltered);
 }
 
 sub check_cdc {
