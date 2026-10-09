@@ -135,6 +135,11 @@ if ($tile_name =~ /^osssys$/i) {
 
 print "#table end#\n";
 
+# Lint Unresolved Details (commented out - summary table count is sufficient)
+# my $lint_dir = $lint_file;
+# $lint_dir =~ s/\/[^\/]+$// if $lint_dir;
+# extract_lint_unresolved_details($lint_dir, $tile_name);
+
 # CDC/RDC Table
 print "\n#table#\n";
 print "Static_Check,Tile,Run_Status,Errors,Inferred,Warnings,Waived,Filtered_rsmu_dft,Unfiltered_rsmu_dft,Blackboxes,Unresolved,Logfile\n";
@@ -553,6 +558,44 @@ sub count_unresolved_modules {
     }
     
     return scalar(@std_cells) + scalar(@rtl) + (@memory > 0 ? 1 : 0);
+}
+
+sub extract_lint_unresolved_details {
+    my ($lint_dir, $tile) = @_;
+    return unless $lint_dir;
+
+    my $unresolved_file = "$lint_dir/List_unresolved_refs.txt";
+    return unless (-e $unresolved_file);
+
+    open(my $fh, '<', $unresolved_file) or return;
+    my %modules;
+    while (my $line = <$fh>) {
+        $modules{$1}++ if $line =~ /BB Module:\s*(\S+)/;
+    }
+    close($fh);
+    return unless %modules;
+
+    my (@std_cells, @memory, @rtl);
+    foreach my $mod (sort keys %modules) {
+        if ($mod =~ /^trfp/i) { push @memory, $mod; }
+        elsif ($mod =~ /BWP|AMDBWP|LVT$/i) { push @std_cells, $mod; }
+        else { push @rtl, $mod; }
+    }
+
+    my $memory_str = "";
+    if (@memory > 0) {
+        my $prefix = $memory[0] =~ /^(trfp[^0-9]+)/ ? $1 : "trfp";
+        $memory_str = $prefix . "*(" . scalar(@memory) . ")";
+    }
+
+    my @module_list = (@std_cells, @rtl);
+    push @module_list, $memory_str if $memory_str;
+
+    print "\n#text#\n";
+    print "=" x 70 . "\n";
+    print "Lint Unresolved Modules for $tile:\n";
+    print "=" x 70 . "\n";
+    print "Unresolved Modules: " . join(" ", @module_list) . "\n";
 }
 
 sub count_inferred_clocks {
