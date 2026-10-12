@@ -124,6 +124,7 @@ Exit:
     - **a per-copy `port_declaration`** — a NEW input port must be declared on EVERY uniquified module header (`module_name=<base>_<i>`, NOT the RTL base name, which is not a real netlist module). Validator `UNIQUIFIED-PORTDECL` hard-fails a base-name-only declaration.
     - **intra-copy net names suffixed per copy** — every fresh ECO net inside copy `<base>_<i>` (e.g. `n_eco_<jira>_<sig>_<i>`) must be consistent between its driver and its loads WITHIN that copy. A driver that emits `<net>_<i>` while a load reads the unsuffixed `<net>` leaves the load undriven. Validator `UNIQUIFIED-UNDRIVEN` hard-fails this.
     The completeness contract is netlist-driven: N comes from the netlist, so under-replication fails even if Step 1 under-populated `flat_net_name_per_instance`. (Parent-scope `port_connection` is the exception — one entry with `flat_net_name_per_instance` expands to all N instances, per Phase 0.14.)
+11. **Never wire a new gate to a net name without confirming it is actually driven in that exact scope.** A name appearing as a submodule's port-connection label (`.PortName(actual_net)`) is NOT evidence `PortName` is a usable net at the parent scope — that's Verilog port syntax, not a signal; the same label can appear dozens of times, each pointing at a different real net. Before using any net in a new gate's `port_connections`, grep for a real output-pin connection (`.Z(<net>)` / `.ZN(<net>)` / `.Q(<net>)`) within the exact `instance_scope` the new gate lives in. None found → the net does not exist at this scope; resolve it properly (Method A/B below) or mark it unresolved — never assume it's already there. Real incident: a new gate was wired to a name that appeared throughout the module purely as a port label on unrelated submodule instances; the net was never actually driven at that scope, leaving the gate reading an undriven input — undetected until real Formality flagged it.
 
 ## I HAND OFF TO
 
@@ -302,6 +303,17 @@ Update `old_driver_inverting` in the study entry to match the FM polarity (true 
 > concluding the candidate chain is wrong** — trace the output net's actual consumers, never trust a
 > `_true`/`_compl`/`_inv`-style suffix in an instance or net name as ground truth.
 >
+> **Label polarity at the source, not by discovery order.** When a study entry identifies a pair of
+> buffered/complementary taps (e.g. walking an INV chain and finding two candidate nets), the
+> TRUE/COMPLEMENT label assigned to each MUST come from re-checking each tap's derivation against the
+> net it was derived from — never from which tap was encountered first while tracing. A label assigned
+> by discovery order will propagate through every downstream gate built from it with perfect internal
+> consistency (each new gate is still correctly built relative to its own flipped input), so nothing
+> will look wrong until real verification — this is harder to catch than a normal algebra mistake
+> because every local step checks out. Before naming or using a tap as "TRUE" or "COMPLEMENT", write
+> out the one-line derivation (e.g. "double inversion of X gives Y = X, Z = ~X") and assign the label
+> from that result, not from the order the taps were found in.
+>
 > **Real incident this method is built from:** an agent found a gate where the new term's source
 > signal structurally reaches a 16-bit shared write-enable cone through exactly one point, and skipped
 > straight to editing that single pin — `old_operand -> (old_operand | new_term)` — without ever
@@ -318,6 +330,30 @@ Update `old_driver_inverting` in the study entry to match the FM polarity (true 
 > `polarity_undetermined`/`UNRESOLVABLE`, never `confirmed: true` — in simple mode this means the
 > change gets punted to complete mode per the Step 3 checkpoint, which is correct: an unproven
 > point-substitution must never reach Step 4.
+>
+> **A failed search for METHOD A's private point is NOT grounds for `UNRESOLVABLE` on its own — check
+> whether METHOD B is viable before giving up.** "Does a private existing net already compute this
+> value" (METHOD A) and "do the RTL clause's real operands already exist as real, driven nets" (METHOD
+> B) are two different questions; a NO to the first tells you nothing about the second. Real incident:
+> a simple-mode run searched exhaustively for a METHOD A private candidate point, found none (every
+> candidate's output fanned out into unrelated shared structures), and declared the entry
+> `UNRESOLVABLE` — without ever checking whether the RTL clause's own real operands (the signal's
+> primary sources, named exactly as the RTL spells them) existed as real, driven nets elsewhere in the
+> netlist. They did — every single one, confirmed by direct grep. METHOD B was fully viable and was
+> never attempted. Before writing `UNRESOLVABLE` on any and_term/combinational-fold entry:
+> 1. Grep for every real operand the RTL clause needs (the clause's own named signals — NOT the
+>    folded/target net itself, which is expected to be absent). If ALL exist as real, driven nets,
+>    METHOD B's prerequisite is met and `UNRESOLVABLE` is premature — attempt the rebuild.
+> 2. Only declare `UNRESOLVABLE` if a required operand genuinely cannot be found as a real net
+>    anywhere (not resolvable via fenets/rename-map/structural trace per Rule 40), OR the correct real
+>    redirection boundary for the rebuilt net cannot be identified even after tracing the entangled
+>    node's consumers forward to their actual DFF/port boundaries.
+> 3. **This applies identically in simple mode — simple mode lacking an automatic post-apply FM
+>    re-verify is not a reason to stop short of attempting METHOD B.** It is a reason to be MORE
+>    rigorous with `eco_verify_boolean_fold.py` and `eco_verify_consumer_completeness.py` before
+>    calling the entry confirmed, and to spend any validated FM session already available (Rule 40's
+>    targeted-query mechanism) corroborating each tracing step along the way, not just at the final
+>    polarity check.
 >
 > **MANDATORY fan-out check before step 4 (building the fold) — this is what actually made the real
 > incident's damage spread beyond the one cone it was aimed at.** Before wiring the new fold's output
@@ -382,6 +418,26 @@ Update `old_driver_inverting` in the study entry to match the FM polarity (true 
 >   operand the rebuilt or duplicated net depends on and run `eco_verify_boolean_fold.py` against the
 >   rebuilt/duplicated gate chain with `--target-expr` set to the RTL's own expression for that signal,
 >   the same deterministic discipline as METHOD A step 5 — never a hand-rechecked truth table.
+> - **MANDATORY for METHOD B/C — run `eco_verify_consumer_completeness.py` in addition to step 5.**
+>   `eco_verify_boolean_fold.py` only proves the new gate chain's LOGIC is correct; it has no idea
+>   whether every real consumer of the replaced net actually got rewired to the right place. That is
+>   a separate, real failure mode: a true/complement polarity swap once shipped with BOTH replacement
+>   nets independently proven 100% correct by step 5, yet 16 consumer instances were wired to the
+>   wrong one of the two — the gate logic was never the bug, the rewire assignment was. Run:
+>   ```bash
+>   python3 script/eco_scripts/eco_verify_consumer_completeness.py \
+>       --study <AI_ECO_FLOW_DIR>/<TAG>_eco_preeco_study.json --stage Synthesize \
+>       --old-net <the shared net being replaced, as it exists in the PreEco baseline> \
+>       --module <module scope, from instance_scope> \
+>       --keep <comma-separated inst:pin list deliberately left on the old net — METHOD C only> \
+>       --ref-dir <REF_DIR> --result /tmp/<TAG>_<entry>_consumercheck.json
+>   ```
+>   It auto-collects the study's own `rewire` entries for `--old-net` (never hand-retyped — a
+>   caller-typed list would just recreate the same forgotten-consumer gap) and cross-checks against
+>   every REAL consumer of that net in the PreEco baseline, then confirms the already-applied PostEco
+>   netlist is wired exactly that way. Exit 0 = every real consumer accounted for and correctly wired;
+>   non-zero = incomplete or wrong (see `--result` for the exact missing/stale/wrong_net rows) —
+>   treat exactly like a step-5 failure, never `confirmed: true` until this also passes.
 >
 > **Real incident this exact step-5 tooling is built from (distinct from the reachability incident
 > above):** a different fold — widening an existing AND-NOT suppression term to account for a new
@@ -410,6 +466,27 @@ Update `old_driver_inverting` in the study entry to match the FM polarity (true 
 > final once this targeted query was tried (and failed/was unavailable) too — "no FM session exists
 > for this run" is a valid reason to stop here; "I didn't think to ask the session that's already
 > running" is not.
+
+> **When METHOD B's redirect boundary is structurally ambiguous, the targeted FM query MUST target
+> the ambiguous DOWNSTREAM signal itself — not just re-query the upstream operands you already
+> traced.** This is a specific, common way the previous paragraph's fallback gets used WRONG: querying
+> a net you already structurally understand only re-confirms what you already know; it cannot resolve
+> which of several downstream consumers corresponds to which RTL-level clause, because that ambiguity
+> lives on the OTHER side of the node you'd be querying. Real incident: an and_term fold's entry point
+> was a NAND4 whose output fed a shared OR3 with 3+ further real consumers, each implementing a
+> different RTL clause (`RecCmdOpenMtch_d2`, `RecCmdCloseMtch_d2`, and an unrelated term) — structurally
+> indistinguishable from each other by inspection alone. The first attempt ran the Rule-40 fallback
+> query on the NAND4's own upstream inputs (already fully understood) — it only re-confirmed the
+> entanglement and changed nothing. The entry was declared `UNRESOLVABLE` with the correct observation
+> that "METHOD B could not be safely scoped... not confidently resolvable by structural inspection
+> alone" — but the fix was sitting one query away: a second attempt queried the DOWNSTREAM RTL signal
+> whose gate-level identity was actually in question (`RecCmdCloseMtch_d2`) directly, and FM answered
+> immediately with the exact net and its dedicated input pin — dissolving the disentanglement problem
+> in one query. **Before accepting "cannot be safely scoped by structural inspection alone" as a reason
+> to stop, ask: is there a specific downstream RTL-level signal whose identity, if known, would resolve
+> this ambiguity? If yes, that signal — not the already-traced upstream operand — is what the targeted
+> FM query must name.** "Structural inspection alone can't disentangle this" is a reason to query FM
+> about the ambiguous signal, not a reason to give up.
 
 > **Only this run's own RTL, own netlist, and own validated FM session may ever be used as evidence
 > for an entry in this run's study.** A `confirmed: false` reached via a reproduced, mechanical,
@@ -473,9 +550,22 @@ Parse `context_line` for clock/reset/data (DFF) or input signals (combinational)
 
 ```bash
 # WRONG (global): grep -cw "<net>" /tmp/eco_study_<TAG>_Synthesize.v
-# CORRECT (scoped):
+# STILL WRONG (scoped, but counts ANY occurrence): a bare occurrence count is NOT proof of a
+# real net — a submodule port-connection label (`.<net>(<actual_net>)`) matches this pattern too,
+# and counts the SAME regardless of how many unrelated instances use that label (confirmed real
+# incident: a net "confirmed present (8 occurrences)" this way turned out to be an undriven name
+# that only ever appeared as a port-connection label on 4 unrelated submodule instances — never a
+# real signal at this scope at all):
 awk '/^module <module_name>\b/,/^endmodule/' /tmp/eco_study_<TAG>_Synthesize.v | grep -cw "<net>"
+
+# CORRECT — require an actual DRIVER (output-pin connection), not just any text match:
+awk '/^module <module_name>\b/,/^endmodule/' /tmp/eco_study_<TAG>_Synthesize.v \
+  | grep -E '\.(Z|ZN|Q|Q[0-9]+)\s*\(\s*<net>\s*\)'
 ```
+Zero matches on the driver-check pattern → the net is NOT real at this scope, no matter how many
+times the bare string otherwise appears (port-connection labels, other pins reading it, etc.) —
+treat it exactly like any other unresolved signal (Method A/B below, or mark unresolved). Only a
+real output-pin match counts as "confirmed present."
 
 Use `<module_name>` from `change.declaring_module` (or derived from `instance_scope`).
 

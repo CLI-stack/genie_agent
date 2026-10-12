@@ -368,6 +368,8 @@ python3 script/eco_scripts/eco_emit_rewire_finalize.py \
 ```
 For every D/CP rewire on a pre-existing DFF this (a) fills `cell_name_per_stage`+`pin_per_stage` when the flop was P&R-merged in a later stage (e.g. `postcas_reg`→`<big>_reg_0_`/`D2`) and (b) emits per-module `SI/SE=1'b0` rewires so FM scan cones match. This makes Check 64 / REWIRE-CELL-ABSENT pass without the catch-and-fix loop. Verify stdout shows `ECO_SCRIPT_LAUNCHED: eco_emit_rewire_finalize.py`.
 
+**MANDATORY audit check — METHOD B/C entries must show `eco_verify_consumer_completeness.py` ran:** for every `and_term`/combinational-fold entry in the study whose `notes` indicate METHOD B or METHOD C was used (per `eco_netlist_studier.md`'s fan-out-check rule), grep that entry's `notes` for `ECO_SCRIPT_LAUNCHED: eco_verify_consumer_completeness.py` with a `COMPLETE: True` result, the same way `eco_verify_boolean_fold.py`'s step-5 marker is already checked. This proves the rewire was checked for completeness against the real netlist, not just claimed — absence means the entry is NOT `confirmed: true` yet; send it back to the studier.
+
 **MANDATORY Step 3b — Spawn eco_netlist_verifier (Deep Verify + Enrich Pass) — runs AFTER all emitters:**
 
 > **Sequential contract:** ALL emitter scripts above (expand_chains → eq_decode → priority_force → eco_cone_rebuild → uniquify → rewire_finalize) MUST complete and write `eco_preeco_study.json` before eco_netlist_verifier is spawned. The verifier reads the FULL study (studier + emitter gates) and resolves per-stage nets / NET-ABSENT for EVERY entry — including the emitter gates. Never spawn in parallel with the emitters.
