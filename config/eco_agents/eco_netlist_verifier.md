@@ -35,7 +35,8 @@ If a stage has `SPEC_SOURCES[stage] = "FALLBACK"` → no FM results exist for th
 - `SPEC_SOURCES` — per-stage fenets spec map (Check 2 + Check 10 use it)
 - `GAP15_CHECK_PATH` — pre-computed `is_output_port` per old_token
 - `<AI_ECO_FLOW_DIR>/<TAG>_eco_preeco_study.json` — studier's skeleton (I enrich in place)
-- `<AI_ECO_FLOW_DIR>/<TAG>_eco_rtl_diff.json` — Step 1 RTL diff (cross-reference for Check 5/6)
+- `<AI_ECO_FLOW_DIR>/<TAG>_eco_rtl_diff.json` — Step 1 RTL diff (cross-reference for Check 5/6; its
+  top-level `modules_with_rtl_changes` field is Check 15's ground truth)
 - `<AI_ECO_FLOW_DIR>/<TAG>_eco_fenets_rename_map.json` — for Check 2 cell_name_per_stage resolution
 
 ## CHECK EXECUTION ORDER — dependency table
@@ -58,12 +59,13 @@ Checks MUST run in this sequence — each row reads the column-1 outputs of all 
 | 12 | **Check 13** (real-net preference) | all nets in port_connections_per_stage | `net_source` flag | Reads final resolved nets |
 | 13 | **Check 10** (cone verification) | rewire entries (incl. auto-added by 7/8/9) | `in_backward_cone` / `forward_trace_verified` | Last — sees all auto-added entries |
 | 14 | **Check 14** (decompose A/B fallback) | entries with `d_input_decompose_failed: true` | `intermediate_net_strategy` | Last — needs per-stage resolution complete |
+| 15 | **Check 15** (Method-A candidate module-scope provenance) | and_term entries resolved via FM/fenets private point, `eco_rtl_diff.json`'s `modules_with_rtl_changes` | `module_scope_mismatch`, can FORCE `confirmed: false` regardless of what Checks 1-14 set | Independent re-derivation, runs last so it can veto any earlier `confirmed: true` built on a since-disproven candidate |
 
 ## HARD RULES — break these = fail the round (top 5)
 
 1. **Run checks in dependency order** (table above). Skipping the order causes stale data — e.g. Check 10 cone verify must see Check 7/8/9 auto-added entries.
 2. **Never leave `PENDING_FM_RESOLUTION:*` after Check 12** — resolve to real net OR mark `UNRESOLVABLE:*`. Never substitute a constant (`1'b0`) — changes ECO logic.
-3. **Module-scope net validation for every accepted net** — a net present in a child module body is NOT accessible at the parent. Using it causes SVR-14 / FM-599 ABORT on all 3 stages.
+3. **Module-scope net validation for every accepted net** — a net present in a child module body is NOT accessible at the parent. Using it causes SVR-14 / FM-599 ABORT on all 3 stages. **This is an ACCESSIBILITY check (can this net even be referenced here), not an IDENTITY check (is this net actually the target signal) — Check 15 is the separate, additional check for identity/provenance; passing rule 3 does not imply passing Check 15.**
 4. **`needs_explicit_wire_decl: true` ONLY on output pins (ZN/Z/Q)** — never on inputs (SVR-9 duplicate decl).
 5. **Never default PP/Route cell_name_per_stage to Synth's value** — Synth cells are frequently renamed/absent in P&R. Verify `zgrep -cw "<cell>" PreEco/<stage>.v.gz ≥ 1` before writing.
 
@@ -878,6 +880,110 @@ Verify gate types exist in PreEco: `grep -cm1 "<gate_type>" PreEco/Synthesize.v.
 
 ---
 
+## Check 15 — Method-A Candidate Module-Scope Provenance (Every and_term Entry Resolved to a Private FM/Fenets Candidate)
+> **SKIP IF** no `and_term` entry was resolved by narrowing an FM `find_equivalent_nets`/fenets
+> rename_map candidate in place (METHOD B/C literal RTL-operand rebuilds are lower-risk for this
+> specific failure mode — see the lightweight check for them at the end of this section).
+> **DONE WHEN** every such candidate's declaring module has been independently re-derived from the
+> real netlist and cross-checked against both (a) the TRUE target module looked up from
+> `eco_rtl_diff.json`'s original change entry by `old_token` (Step 0 below — NOT `entry["module_name"]`,
+> which the studier overwrites to the candidate's own module once a candidate is picked) and (b)
+> `eco_rtl_diff.json`'s `modules_with_rtl_changes`; any mismatch is rejected — `confirmed: false` —
+> never accepted on FM's say-so alone, even if an earlier check already set `confirmed: true`.
+
+**Why this check exists (real incident — do not remove without reading this).** A real, deployed
+and_term resolution accepted an FM `find_equivalent_nets` candidate as the private point. FM's
+value-equivalence was 100% real — but the candidate was declared and driven inside a SIBLING
+child module computing its OWN, unrelated, PRE-EXISTING signal that only became formula-identical
+to the edited top-level expression AFTER the RTL edit. The real top-level signal (declared in the
+module Step 1 actually recorded) was never touched — the applied gates were functional no-ops.
+Value-equivalence proves two nets compute the same Boolean function; it never proves they are the
+SAME signal. This check closes that gap independently of the studier (which now also carries this
+rule — Check 15 exists so a studier mistake doesn't ship unchallenged).
+
+**Step 0 — find the TRUE target module (do NOT read `entry["module_name"]` directly — it is
+unreliable here).** Once the studier picks a candidate, it sets the `new_logic_gate`/`rewire`
+entry's own `module_name` to wherever the gate is actually being inserted — i.e. the CANDIDATE's
+own module. Comparing the candidate against that field is circular (it was just set *from* the
+candidate) and can NEVER detect a mismatch, including the real one. (Confirmed real: a deployed
+entry carried `module_name: <candidate's own module>` on its gate entry, while `eco_rtl_diff.json`
+still correctly recorded the true target's module for the same `old_token`.) Instead, look up the
+**original `eco_rtl_diff.json` change entry** matching this entry's `old_token` (or
+`target_register`) and use ITS `module_name` as the true target:
+```python
+rtl_diff = json.load(open(f"{AI_ECO_FLOW_DIR}/{TAG}_eco_rtl_diff.json"))
+true_target_module_name = next(c["module_name"] for c in rtl_diff["changes"]
+                                if c.get("old_token") == entry.get("old_token"))
+```
+
+**Step 1 — re-derive the candidate's declaring module from the real netlist (never trust the
+rename_map/FM session's own scope label for the net):**
+```bash
+zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | \
+  awk '/^module /{m=$2} ($0 ~ /\b<candidate_net>\b/) && /wire |reg |\.ZN\(|\.Z\(|\.Q\(/{print m}' \
+  | sort -u
+```
+If this returns more than one module, the candidate's name is a generic auto-generated label
+(`FxSynthesize_HFSNET_*`, `tmp_net*`, `ctmn_*`) reused independently by synthesis elsewhere — do
+NOT assume the first hit is right; re-scope to the entry's own `instance_scope` and confirm
+exactly one real driver within it. **This returns a real NETLIST module name — tile-prefixed and,
+for a uniquified/generate-array module, suffixed. It will almost never equal
+`true_target_module_name` (Step 0) or any entry in `modules_with_rtl_changes`
+character-for-character, because those are bare RTL-declared names (`grep -m1 '^module ' <file>`)
+— do NOT compare them directly (see Step 2).**
+
+**Step 2 — MANDATORY normalization: resolve bare RTL module names to their real netlist name(s)
+before comparing anything.** Reuse the exact uniquified-family discovery pattern from
+`rtl_diff_analyzer.md` §C.7b:
+```bash
+zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | \
+  grep -oE "^module +([A-Za-z0-9_]*_)?<rtl_module_name>(_[0-9]+)?\b" | sort -u
+```
+Run this once for `true_target_module_name` (Step 0 — **never** `entry["module_name"]`; narrow to
+the entry's `instance_scope` if more than one netlist name comes back, e.g. a uniquified module
+instantiated multiple times) to get `module_name_resolved` (a small set of real netlist module
+names), and once for every entry in
+`eco_rtl_diff.json`'s `modules_with_rtl_changes` to build `touched_modules_resolved` (the union of
+all their real netlist names). **A raw string `!=`/`not in` against the bare RTL name will
+mismatch on the tile prefix alone even for a genuinely correct candidate — always compare against
+these resolved sets, never the bare names.**
+
+**Step 3 — compare and decide severity:**
+```python
+mismatch = candidate_declaring_module not in module_name_resolved
+candidate_untouched = candidate_declaring_module not in touched_modules_resolved
+```
+- `candidate_untouched` → **HARD REJECT.** This is the exact signature of the real incident above:
+  a candidate living in a module this ECO never even edited cannot be the signal the ECO changed —
+  any value match is coincidental. Set `confirmed: false`, `module_scope_mismatch: true`,
+  `candidate_declaring_module: <module>`, `re_study_note: "VERIFIER CHECK 15: candidate <net>
+  declared in <module>, which modules_with_rtl_changes shows is UNTOUCHED by this ECO —
+  coincidental cross-module match, not the target signal. Route to METHOD B (rebuild from
+  true_target_module_name's own real operands)."`, `force_reapply: true`. This OVERRIDES any
+  `confirmed: true` an earlier check (or the studier) already set.
+- `mismatch and not candidate_untouched` (the candidate's module WAS edited by this diff, but is
+  still not in `module_name_resolved`) → only acceptable if the entry's `notes` already records an
+  explicit structural trace proving the candidate is a genuine upstream/downstream derivative of
+  the target signal on a real data path, not merely value-equivalent. No such trace present → same
+  HARD REJECT as above.
+- `not mismatch` (`candidate_declaring_module` is in `module_name_resolved`) → `module_scope_mismatch:
+  false`, proceed normally.
+
+**Lightweight pass for METHOD B/C entries.** A literal RTL-operand transcription is grounded
+directly in named RTL signals, not a coincidentally-matching opaque net, so this specific failure
+mode is far less likely — but still confirm every operand named in the rebuild resolves to a real
+net inside `entry["module_name"]`'s own declared hierarchy (reuse Check 2's
+`extract_module_scope`/`net_in_scope` helpers), not a same-named signal borrowed from an unrelated
+module.
+
+**Write to RPT:**
+```
+CHECK 15 Module-scope provenance: <N> and_term entries checked, <N> mismatches rejected
+  (of which <N> were candidates in modules modules_with_rtl_changes shows UNTOUCHED by this ECO)
+```
+
+---
+
 ## Step Final — Write Enriched JSON and RPT
 
 **Sort all entries by PASS_ORDER before writing (including auto-added entries from Checks 7/8/9):**
@@ -917,6 +1023,7 @@ CHECK 11 named_wire:     <N> entries flagged
 CHECK 12 PENDING_FM:     <N> resolved, <N> marked UNRESOLVABLE
 CHECK 13 Real-net pref:  <N> P&R aliases detected
 CHECK 14 Decompose:      <N> Strategy A, <N> Strategy B applied
+CHECK 15 Module scope:   <N> and_term candidates checked, <N> rejected (coincidental cross-module match)
 ----------------------------------------
 TOTAL ENTRIES:   <N>   confirmed: <N>   confirmed_false: <N>
 AUTO-ADDED:      <N> new entries inserted by verifier

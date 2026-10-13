@@ -49,6 +49,20 @@ diff -u -w <REF_DIR>/data/PreEco/SynRtl/<file> <REF_DIR>/data/SynRtl/<file>
 
 ---
 
+## Step A2 — MANDATORY Module-Change Manifest
+
+**Record `modules_with_rtl_changes` — the ground-truth set of modules this diff actually edited:**
+For every file `diff -rqw` reported as differing (excluding only files that land in
+`excluded_non_changes[]` per the zero-assumption rule above), resolve its declaring module name
+(`grep -m1 '^module ' <file>`) and add it to a top-level
+`"modules_with_rtl_changes": ["<module>", ...]` list in `eco_rtl_diff.json`. This is the ground
+truth Check 15 uses to recognize "a Method-A candidate's module was never part of this ECO at
+all" — do not confuse it with the per-change `module_name` field (which names the module OWNING
+one specific changed signal); this new field is the complete set across the WHOLE diff, including
+any module that changed only via port-threading to an ancestor/descendant.
+
+---
+
 ## Step B — Classify Each Change
 
 For each diff hunk, classify as ONE of:
@@ -951,6 +965,7 @@ Write to `<AI_ECO_FLOW_DIR>/<TAG>_eco_rtl_diff.json` (always use the full absolu
 
 ```json
 {
+  "modules_with_rtl_changes": ["<declaring_module_1>", "<declaring_module_2>"],
   "changes": [
     {
       "file": "<rtl_file.v>",
@@ -1039,6 +1054,8 @@ Write to `<AI_ECO_FLOW_DIR>/<TAG>_eco_rtl_diff.json` (always use the full absolu
 ```
 
 **Field notes:**
+- `modules_with_rtl_changes`: see Step A2 — ground-truth changed-module manifest, consumed by
+  `eco_netlist_studier.md`'s Method-A module-scope check and `eco_netlist_verifier.md` Check 15.
 - `change_type`: one of `wire_swap|and_term|new_port|port_promotion|new_logic|port_connection|enable_swap`
 - `scope`: full instance hierarchy path to declaring module (e.g. `umccmd/ARB/CMDARB`). **MANDATORY for `new_logic`** when module has multiple instances. Same format as `net_path` but without the signal name.
 - `declaration_type`: **MANDATORY for `new_port`** — `input`, `output`, or `wire` (wire = parent-scope connector, no port-list update needed)

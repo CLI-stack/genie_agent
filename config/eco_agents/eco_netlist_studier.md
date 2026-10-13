@@ -234,6 +234,79 @@ Update `old_driver_inverting` in the study entry to match the FM polarity (true 
 > 1. **Find a candidate point structurally** — same BFS/reachability search as before: trace where the
 >    new term's source could enter the target cone. This gives you a STARTING POINT for investigation,
 >    not an answer.
+>
+> 1b. **MODULE-SCOPE PROVENANCE CHECK (MANDATORY — before step 2, for every candidate sourced from FM
+>    `find_equivalent_nets` or the fenets rename_map, not just a bare structural BFS hit).**
+>    Value-equivalence ("FM/fenets says this net computes the same Boolean function") is NOT the same
+>    claim as identity ("this net IS the target signal"). Before investing any further work in a
+>    candidate:
+>    1. Independently re-derive the candidate's DECLARING module from the real netlist — never trust
+>       the rename_map/FM session's own labeling of which module a net belongs to:
+>       ```bash
+>       zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | \
+>         awk '/^module /{m=$2} ($0 ~ /\b<candidate_net>\b/) && /wire |reg |\.ZN\(|\.Z\(|\.Q\(/{print m}' \
+>         | sort -u
+>       ```
+>       If more than one module matches, the net name is reused elsewhere by synthesis (common for
+>       auto-generated names like `FxSynthesize_HFSNET_*`, `tmp_net*`, `ctmn_*`) — re-scope the search
+>       to the exact `instance_scope` this entry lives in and confirm exactly one real driver there.
+>       **This returns a real NETLIST module name — tile-prefixed and, for a uniquified/generate-array
+>       module, suffixed (`<prefix>_<rtl_module_name>` or `<prefix>_<rtl_module_name>_<N>`). It will
+>       almost never equal `module_name`/`modules_with_rtl_changes` character-for-character, because
+>       those are bare RTL-declared names (`grep -m1 '^module ' <file>`) — see step 2 before comparing.**
+>    2. **MANDATORY normalization — resolve the TARGET module (and each entry in
+>       `modules_with_rtl_changes`) to its OWN real netlist module name(s) the same way, before
+>       comparing anything.** The "target module" here is the `module_name` recorded on the
+>       **original `eco_rtl_diff.json` change entry** for this and_term (look it up by matching
+>       `old_token`/`target_register`) — **never** a `module_name` you may already have written onto
+>       this and_term's own `new_logic_gate`/`rewire` study entry once a candidate has been chosen,
+>       because that field gets set to wherever the gate is being inserted (i.e. the CANDIDATE's own
+>       module) — comparing the candidate against that is circular and will never detect a mismatch,
+>       even the real one. (This is a genuine mistake a real run made: it recorded `module_name:
+>       umccmd_umcstgbufslice_0` on the gate entry — the wrong candidate's own module — while
+>       `eco_rtl_diff.json` still correctly said `module_name: umcstgbuf` for that same `old_token`.
+>       Always resolve from the latter.) Reuse the exact uniquified-family discovery pattern from
+>       `rtl_diff_analyzer.md` §C.7b:
+>       ```bash
+>       zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | \
+>         grep -oE "^module +([A-Za-z0-9_]*_)?<rtl_module_name>(_[0-9]+)?\b" | sort -u
+>       ```
+>       This gives the small set of real netlist module name(s) that correspond to the bare RTL name
+>       (usually one; several for a uniquified/generate-array module — narrow to the instance that
+>       matches this entry's `instance_scope` when more than one comes back). **Compare the
+>       candidate's declaring module (step 1) against membership in THIS resolved set — never
+>       compare the bare RTL name directly against the netlist name; a raw string `!=` will mismatch
+>       on the tile prefix alone even for a genuinely correct candidate.**
+>    3. If the candidate's declaring module is NOT in `module_name`'s resolved set, STOP — do not
+>       build anything against this candidate yet.
+>    4. Resolve every name in `eco_rtl_diff.json`'s top-level `modules_with_rtl_changes` the same way
+>       (step 2) to build the real set of netlist modules this ECO actually touched. If the
+>       candidate's declaring module is NOT in that resolved set — i.e. this ECO never touched that
+>       module's RTL at all — treat the candidate as a coincidental cross-module match and DISCARD
+>       it; proceed exactly as if METHOD A's search had found nothing (per the "failed METHOD A
+>       search is not grounds for UNRESOLVABLE" rule above — check METHOD B before giving up). Do NOT
+>       accept it just because FM reported it and nothing else was found — an unproven coincidental
+>       match is worse than no candidate at all, because it ships looking `confirmed: true`.
+>    5. If the candidate's module IS in the resolved `modules_with_rtl_changes` set but still not in
+>       `module_name`'s own resolved set (step 3), you may only proceed if you independently trace a
+>       genuine structural link (the candidate is a real upstream/downstream derivative of the target
+>       signal on an actual data path, not merely value-equivalent) — record that trace in the
+>       entry's `notes`. No trace found → discard, same as step 4.
+>
+>    **Real incident this check is built from:** a real, deployed and_term resolution accepted an FM
+>    `find_equivalent_nets` candidate as the private point and narrowed it in place. The FM match was
+>    completely real — the candidate genuinely computed the post-edit top-level formula. But it was
+>    declared and driven inside a SIBLING child module computing its OWN, unrelated, PRE-EXISTING
+>    signal (used for a different purpose entirely) that only became formula-identical to the
+>    top-level expression AFTER this ECO's edit — a coincidence, not a resolution. The real target
+>    signal, declared in the module Step 1 actually recorded, was never touched; the shipped gates
+>    were functional no-ops. This check would have caught it at step 3 above: the candidate's
+>    declaring module was not in the recorded `module_name`'s resolved netlist-module set — and
+>    because the REF_DIR used for that run staged only the single edited RTL file,
+>    `modules_with_rtl_changes` could not even be computed; a complete staging (Step A2 of
+>    `rtl_diff_analyzer.md`) would have shown the sibling module as untouched, an immediate hard
+>    discard at step 4.
+>
 > 2. **Recover the COMPLETE existing function from that point, not just the local gate.** Walk forward
 >    from the candidate gate to its real consumer(s) until you reach the actual target DFF(s)' full
 >    write-enable/data equation, expressed in terms of its real operands
