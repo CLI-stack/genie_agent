@@ -962,10 +962,11 @@ candidate_untouched = candidate_declaring_module not in touched_modules_resolved
   true_target_module_name's own real operands)."`, `force_reapply: true`. This OVERRIDES any
   `confirmed: true` an earlier check (or the studier) already set.
 - `mismatch and not candidate_untouched` (the candidate's module WAS edited by this diff, but is
-  still not in `module_name_resolved`) → only acceptable if the entry's `notes` already records an
-  explicit structural trace proving the candidate is a genuine upstream/downstream derivative of
-  the target signal on a real data path, not merely value-equivalent. No such trace present → same
-  HARD REJECT as above.
+  still not in `module_name_resolved`) → only acceptable if the entry's `notes` record a **passing
+  (exit 0) `eco_verify_cone_equivalence.py` run** proving the candidate's real fan-in cone computes
+  the same value as the target's own RTL-derived formula. A prose/manual structural trace alone is
+  **not** sufficient — re-run it yourself if the referenced run/result is missing or stale; do not
+  take the studier's notes on faith. No passing run present → same HARD REJECT as above.
 - `not mismatch` (`candidate_declaring_module` is in `module_name_resolved`) → `module_scope_mismatch:
   false`, proceed normally.
 

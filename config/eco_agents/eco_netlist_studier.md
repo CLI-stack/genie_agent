@@ -288,10 +288,13 @@ Update `old_driver_inverting` in the study entry to match the FM polarity (true 
 >       accept it just because FM reported it and nothing else was found — an unproven coincidental
 >       match is worse than no candidate at all, because it ships looking `confirmed: true`.
 >    5. If the candidate's module IS in the resolved `modules_with_rtl_changes` set but still not in
->       `module_name`'s own resolved set (step 3), you may only proceed if you independently trace a
->       genuine structural link (the candidate is a real upstream/downstream derivative of the target
->       signal on an actual data path, not merely value-equivalent) — record that trace in the
->       entry's `notes`. No trace found → discard, same as step 4.
+>       `module_name`'s own resolved set (step 3), you may only proceed if you obtain a **passing
+>       (exit 0) `eco_verify_cone_equivalence.py` run** proving the candidate's real fan-in cone
+>       computes the same value as the target's own RTL-derived formula, and record the exact command
+>       line + result path in the entry's `notes`. A prose/manual structural trace alone is **not**
+>       sufficient here — that is the same unverified reasoning class the rest of this flow's hardening
+>       exists to eliminate (see Rule 39: `confirmed: true` requires a functional proof, never
+>       structural plausibility). No passing run → discard, same as step 4.
 >
 >    **Real incident this check is built from:** a real, deployed and_term resolution accepted an FM
 >    `find_equivalent_nets` candidate as the private point and narrowed it in place. The FM match was
@@ -546,20 +549,37 @@ Update `old_driver_inverting` in the study entry to match the FM polarity (true 
 > a net you already structurally understand only re-confirms what you already know; it cannot resolve
 > which of several downstream consumers corresponds to which RTL-level clause, because that ambiguity
 > lives on the OTHER side of the node you'd be querying. Real incident: an and_term fold's entry point
-> was a NAND4 whose output fed a shared OR3 with 3+ further real consumers, each implementing a
-> different RTL clause (`RecCmdOpenMtch_d2`, `RecCmdCloseMtch_d2`, and an unrelated term) — structurally
-> indistinguishable from each other by inspection alone. The first attempt ran the Rule-40 fallback
-> query on the NAND4's own upstream inputs (already fully understood) — it only re-confirmed the
-> entanglement and changed nothing. The entry was declared `UNRESOLVABLE` with the correct observation
-> that "METHOD B could not be safely scoped... not confidently resolvable by structural inspection
-> alone" — but the fix was sitting one query away: a second attempt queried the DOWNSTREAM RTL signal
-> whose gate-level identity was actually in question (`RecCmdCloseMtch_d2`) directly, and FM answered
+> fed a shared gate with several further real consumers, each implementing a different RTL clause —
+> structurally indistinguishable from each other by inspection alone. The first attempt ran the
+> Rule-40 fallback query on the shared gate's own upstream inputs (already fully understood) — it only
+> re-confirmed the entanglement and changed nothing. The entry was declared `UNRESOLVABLE` with the
+> correct observation that "METHOD B could not be safely scoped... not confidently resolvable by
+> structural inspection alone" — but the fix was sitting one query away: a second attempt queried the
+> DOWNSTREAM RTL signal whose gate-level identity was actually in question directly, and FM answered
 > immediately with the exact net and its dedicated input pin — dissolving the disentanglement problem
 > in one query. **Before accepting "cannot be safely scoped by structural inspection alone" as a reason
 > to stop, ask: is there a specific downstream RTL-level signal whose identity, if known, would resolve
 > this ambiguity? If yes, that signal — not the already-traced upstream operand — is what the targeted
 > FM query must name.** "Structural inspection alone can't disentangle this" is a reason to query FM
 > about the ambiguous signal, not a reason to give up.
+>
+> **If that downstream query ALSO comes back with no equivalent net, that is the start of a walk, not
+> the end of one — keep going forward, not back.** A single empty downstream query only proves that
+> particular RTL-level signal didn't survive synthesis under its own name; it says nothing about the
+> signal(s) it itself feeds into, which may well be where the real redirection boundary actually
+> resolves. Real incident: a signal's immediate downstream consumer came back `No Equivalent Nets`,
+> and so did that consumer's own next downstream consumer — the real boundary wasn't found until a
+> *third* tier, several real RTL product-terms further forward, was queried directly. Procedure:
+> 1. Identify, from the RTL, what this downstream signal itself feeds into next (grep for it as an
+>    RHS operand elsewhere in the same module).
+> 2. Query FM about *that* next-tier signal.
+> 3. If still empty, repeat from the newly-identified signal — one hop further forward each time.
+> 4. Stop only when a real FM hit is found, the walk reaches the module's own real output port (there
+>    is nothing further downstream to query), or the RTL chain genuinely has no further consumer.
+> Record every hop attempted (signal name + result) in the entry's `notes`, not just the final one, so
+> a reviewer can see the whole walk rather than only its last step. Do not declare `UNRESOLVABLE` after
+> only the first downstream query comes back empty — that is exactly as premature as stopping at the
+> first (upstream) query this whole paragraph already warns against.
 
 > **Only this run's own RTL, own netlist, and own validated FM session may ever be used as evidence
 > for an entry in this run's study.** A `confirmed: false` reached via a reproduced, mechanical,
