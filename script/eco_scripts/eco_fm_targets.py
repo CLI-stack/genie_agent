@@ -204,9 +204,16 @@ def verify_session(fm_session_dir, target_name):
 
     run_dir = os.path.join(str(fm_session_dir), "rpts", target_name, target_name + "_runData")
     for status in ("passed", "failed"):
-        fss = os.path.join(run_dir, target_name + "_" + status + ".fss")
-        if os.path.isfile(fss):
-            return {"result": "MATCH", "stage": stage, "fss_path": fss, "status": status}
+        base = os.path.join(run_dir, target_name + "_" + status + ".fss")
+        # FM may leave this file either uncompressed (.fss) or gzipped (.fss.gz)
+        # depending on the run/archiving config -- both are real, reopenable
+        # sessions (TileBuilderIntFM reads .fss.gz natively, same as Formality
+        # reads .v.gz netlists). A real incident: a genuinely passed PrePlace
+        # session was reported NO_FSS purely because it happened to be the
+        # gzipped form and only the bare name was checked -- check both.
+        for fss in (base, base + ".gz"):
+            if os.path.isfile(fss):
+                return {"result": "MATCH", "stage": stage, "fss_path": fss, "status": status}
     return {"result": "NO_FSS", "stage": stage, "fss_path": None, "status": None}
 
 
